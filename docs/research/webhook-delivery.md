@@ -31,10 +31,12 @@ results are in `.dev/probe/` (gitignored).
    repo is synced, the API read is the only way to get the stub.
 4. **Relationship changes never bump `updated_at`**, on either issue, for any of the three
    kinds, whether same-repo or cross-repo. A `since=`-based reconciliation won't see them.
-5. **Relates-to sends no webhook at all, and doesn't appear in the timeline.** `addRelatesTo` /
-   `removeRelatesTo` work (both issues list each other under `relatesTo` straight away), but
-   nothing is delivered, `updated_at` doesn't move, and no timeline event appears. The only way
-   to learn about a relates-to change made outside beghu is to read `relatesTo` again.
+5. **Relates-to has its own event, `issue_relates_to`, and the app must subscribe to it.** The
+   first run was missing it from the manifest and got nothing. After subscribing, a same-repo
+   link sends **one** delivery carrying both issues (`issue` and `related_issue`). A cross-repo
+   link sends one delivery to each repo, and each carries only its own `issue`, the same split
+   as in Answer 3. Deliveries arrived 0.4–0.8 s after the change. `relates_to_added` and
+   `relates_to_removed` also appear on the timeline. The event is now in `manifest.json`.
 6. **Retention of `GET /app/hook/deliveries` is still open.** The app is new and has no
    deliveries older than today. To settle 3 days vs 7, run
    `node github-app/probe/app.mjs "/app/hook/deliveries?per_page=100" --all` on or after
@@ -44,7 +46,8 @@ results are in `.dev/probe/` (gitignored).
 ## Setup notes
 
 - **The manifest flow works as documented.** GitHub accepted every requested permission and
-  event, including `sub_issues` and `issue_dependencies`. The redirect and callback can use a
+  event, including `sub_issues` and `issue_dependencies`. `issue_relates_to` was added later in
+  the app settings, and it's in the manifest now. The redirect and callback can use a
   plain-HTTP internal hostname (`http://devinator.i.advangrid.com:4567/created`,
   `…:3000/auth/callback`). Credentials land in `.dev/github-app/<slug>.{json,pem}`.
 - **smee.io worked for dev with no setup.** A channel is just a URL (`curl -sI
@@ -86,7 +89,13 @@ a 20 s window, and `updated_at` was read before and after.
 | Blocked-by remove, same repo | beghu: `blocked_by_removed`, `blocking_removed` | no |
 | Blocked-by add, cross repo | lang-exp: `blocking_added`; beghu: `blocked_by_added` | no |
 | Blocked-by remove, cross repo | beghu: `blocked_by_removed`; lang-exp: `blocking_removed` | no |
-| Relates-to add/remove, same and cross repo | none | no |
+| Relates-to add, same repo | beghu: `relates_to_added` (one delivery) | no |
+| Relates-to remove, same repo | beghu: `relates_to_removed` (one delivery) | no |
+| Relates-to add, cross repo | beghu: `relates_to_added`; lang-exp: `relates_to_added` | no |
+| Relates-to remove, cross repo | beghu: `relates_to_removed`; lang-exp: `relates_to_removed` | no |
+
+The relates-to rows come from a second run after subscribing the app to `issue_relates_to`. In
+the first run, without the subscription, relates-to changes produced no deliveries.
 
 Payload keys besides `repository`, `sender` and `installation`:
 
@@ -99,3 +108,7 @@ Payload keys besides `repository`, `sender` and `installation`:
 - Cross repo, dependencies: the blocked issue's repo gets only `blocked_issue_id`,
   `blocked_issue`, and the blocking issue's repo gets only `blocking_issue_id`,
   `blocking_issue`.
+- Same repo, relates-to: `issue_id`, `issue`, `related_issue_id`, `related_issue`.
+- Cross repo, relates-to: each repo gets only `issue_id`, `issue`. In this run, both deliveries
+  of a cross-repo pair had GUIDs with the same leading timestamp segment (`d4202120-c6e2-11f1-…`),
+  but GitHub doesn't document that, so don't use it for pairing.

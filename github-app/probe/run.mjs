@@ -87,7 +87,8 @@ const ops = [
   ["relates-to add, cross repo", A, B, () => gql(`addRelatesTo(input:{issueId:"${A.node_id}",relatedIssueId:"${B.node_id}"}){clientMutationId}`)],
   ["relates-to remove, cross repo", A, B, () => gql(`removeRelatesTo(input:{issueId:"${A.node_id}",relatedIssueId:"${B.node_id}"}){clientMutationId}`)],
 ];
-for (const [name, x, y, fn] of ops) {
+const only = process.env.ONLY; // e.g. ONLY=relates-to reruns just those changes
+for (const [name, x, y, fn] of ops.filter(([name]) => !only || name.startsWith(only))) {
   const before = { x: issue(x.repo, x.n).updated_at, y: issue(y.repo, y.n).updated_at };
   await sleep(1500); // updated_at has 1 s resolution
   let error = null, t0 = Date.now(), t1;

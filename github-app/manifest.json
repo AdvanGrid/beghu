@@ -14,6 +14,7 @@
     "milestone",
     "pull_request",
     "sub_issues",
-    "issue_dependencies"
+    "issue_dependencies",
+    "issue_relates_to"
   ]
 }
