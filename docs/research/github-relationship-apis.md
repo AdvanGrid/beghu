@@ -1,4 +1,4 @@
-# GitHub relationship APIs: sub-issues and issue dependencies
+# GitHub relationship APIs: sub-issues, issue dependencies and "relates to"
 
 Research date: 2026-10-13. Sources: docs.github.com (fetched as Markdown through
 `https://docs.github.com/api/article/body?pathname=…`), GitHub's published OpenAPI description
@@ -14,8 +14,10 @@ reasoning only.
 
 Scratch issues created for the probe, all now closed as "not planned" with their relationships
 removed: `tomsjansons/beghu#29` (A), `#30` (B), `#31` (C), and `tomsjansons/pi-advissue-smoke-test#2`
-(D, a private repo). Creating a temporary repo webhook to capture real deliveries was refused by
-the session's permission policy, so nothing about webhook *deliveries* is verified.
+(D, a private repo) for sub-issues and dependencies; `tomsjansons/beghu#32` (E), `#33` (F),
+`#34` (G) and `tomsjansons/pi-advissue-smoke-test#3` (H) for "relates to". Creating a
+temporary repo webhook to capture real deliveries was refused by the session's permission
+policy, so nothing about webhook *deliveries* is verified.
 
 ## Answers
 
@@ -67,8 +69,34 @@ the session's permission policy, so nothing about webhook *deliveries* is verifi
    numeric database `id` (passing a number gives 404, verified); GraphQL takes node ids. Reads
    were briefly stale after writes, about 1 s (verified twice). One GraphQL query for 100 issues
    with `parent`, `subIssues(first:100)`, `blockedBy(first:50)`, `blocking(first:50)` cost 3
-   points (verified). A third relationship type, "relates to", went GA on 2026-09-25 and has its
-   own endpoints and `issue_relates_to` webhook (documented).
+   points (verified).
+6. **"Relates to"** (GA 2026-09-25) is a true symmetric, undirected link. See section 6.
+   - Endpoints: REST `GET`/`POST …/issues/{n}/relates_to` (body `issue_id`) and
+     `DELETE …/relates_to/{issue_id}`. GraphQL has `Issue.relatesTo` and the mutations
+     `addRelatesTo` / `removeRelatesTo`. Permissions are the same Issues read/write
+     (documented).
+   - Symmetry: adding E→F makes F list E, either side can remove it, and adding the
+     reverse is a duplicate (verified).
+   - `updated_at` is unchanged on both issues for every add and remove (verified).
+   - Order: REST lists oldest-added first; GraphQL defaults to `RELATES_TO_ADDED_AT DESC`
+     (verified).
+   - Cross-repo: works between a public and a private repo. A caller who can't see the
+     other issue gets it silently dropped from lists and timelines (verified).
+   - Errors and overlap: a duplicate in either direction is 422 "The relationship already
+     exists", and a self-link is 422 (verified). A pair can also be parent/child or
+     blocked/blocking at the same time (verified).
+   - Limits: no limit is documented, and the maximum count was not probed.
+   - Remove: removing an absent link to a real issue returns 200 (idempotent), and an id
+     that doesn't exist returns 404 (verified). GraphQL `removeRelatesTo` repeated also
+     succeeds (verified).
+   - Events: `relates_to_added` / `relates_to_removed` appear on both issues' timelines
+     and in each repo's `issues/events` feed. **They name no other issue at all**: no
+     number, no id, no repository (verified). GraphQL has no timeline item type for them
+     (verified by introspection).
+   - Summary field: the issue object has none (verified; documented by absence).
+   - Webhook `issue_relates_to`: a same-repo link sends **one** delivery with both issues.
+     A cross-repo link sends one delivery per repo, containing only that repo's issue, so
+     the other side is unidentifiable from the payload (documented).
 
 ## 1. Read and write surface
 
@@ -342,14 +370,6 @@ only by refetching.
   skip issues with zero counts. GraphQL is far cheaper: a query for 100 issues with `parent`,
   `subIssues(first:100)`, `blockedBy(first:50)` and `blocking(first:50)` cost 3 points (verified
   via `rateLimit { cost }`).
-- **"Relates to".** A third, undirected relationship. Public preview 2026-08-07, GA 2026-09-25
-  (https://github.blog/changelog/2026-08-07-connecting-issues-and-multi-select-field-support/,
-  https://github.blog/changelog/2026-09-25-personal-saved-views-for-repository-issues-and-more/).
-  REST `GET/POST …/issues/{n}/relates_to` and `DELETE …/relates_to/{issue_id}`; GraphQL
-  `relatesTo`, `addRelatesTo`, `removeRelatesTo`; webhook `issue_relates_to` with actions
-  `relates_to_added` and `relates_to_removed`. For cross-repo links, each delivery "omits the
-  related issue, its ID, and its repository details" (documented). It falls outside the CONTEXT.md
-  definition of Relationship, but would fit the same model if added.
 - **Inherited fields.** Sub-issues "inherit the Project and Milestone of their parent issue by
   default" (changelog 2025-09-11). Not tested; the probe parents had no milestone or project.
   If inheritance also applies when an existing issue is attached, it would change the child's
@@ -360,21 +380,146 @@ only by refetching.
   `…/creating-issue-dependencies`; changelog 2026-06-10). Inferred: they produce the same
   webhooks and events as the raw API calls used here.
 
+## 6. "Relates to"
+
+An undirected link that implies no blocking, containment or duplication. Public preview
+2026-08-07, GA 2026-09-25. The GA note says it "now works across the REST API, GraphQL API,
+webhooks, timeline events, issues search, and projects search"
+(https://github.blog/changelog/2026-08-07-connecting-issues-and-multi-select-field-support/,
+https://github.blog/changelog/2026-09-25-personal-saved-views-for-repository-issues-and-more/).
+No docs.github.com help page for it was found. Probe issues: E = `beghu#32`, F = `#33`,
+G = `#34`, H = `pi-advissue-smoke-test#3` (private).
+
+### Endpoints (documented, all exercised)
+
+| Operation | REST | GraphQL |
+|---|---|---|
+| List | `GET …/issues/{n}/relates_to` (`per_page`, `page`) | `Issue.relatesTo(first, after, last, before, orderBy)` |
+| Add | `POST …/issues/{n}/relates_to`, body `issue_id` (database id). 201, returns issue `n` | `addRelatesTo(issueId: ID!, relatedIssueId: ID!)` returns `issue`, `relatedIssue` |
+| Remove | `DELETE …/issues/{n}/relates_to/{issue_id}`. 200, returns issue `n` | `removeRelatesTo(issueId: ID!, relatedIssueId: ID!)` |
+
+The OpenAPI files these under the `issues` subcategory, not a subcategory of their own, so
+the docs page is `/rest/issues/issues#add-a-related-issue` and so on. Permissions:
+Issues **read** for the GET and Issues **write** for POST/DELETE, with user and installation
+tokens (`/rest/authentication/permissions-required-for-github-apps`). GraphQL
+`relatesTo`/`addRelatesTo`/`removeRelatesTo` entered the schema on 2026-09-28
+(`/graphql/overview/changelog`). No preview header was needed (verified).
+
+### Symmetry (verified)
+
+- After `POST /issues/32/relates_to {issue_id: F}`, REST and GraphQL both listed `[33]` on E
+  and `[32]` on F.
+- Adding the reverse (F→E) gave 422 "The relationship already exists", the same error as
+  repeating E→F. There is one undirected edge, not two directed ones.
+- Either side can remove it: `DELETE /issues/33/relates_to/{E.id}` removed it from both
+  lists. The cross-repo link E–H was removed through H's repo path
+  (`pi-advissue-smoke-test/issues/3/relates_to/{E.id}`).
+- In GraphQL, `addRelatesTo(issueId: E, relatedIssueId: F)` followed by
+  `removeRelatesTo(issueId: F, relatedIssueId: E)`, with the argument order swapped, removed
+  it.
+
+### Errors and overlap (verified)
+
+| Case | Result |
+|---|---|
+| Duplicate, same direction or reversed | 422 "An error occurred while adding the related issue to the issue. The relationship already exists." |
+| Self-link | 422 "…Validation failed: Target issue cannot be the same as the source issue" |
+| Issue number instead of id | 404 |
+| Pair already parent/child (E→G with G a sub-issue of E) | 201, both links coexist |
+| Pair already a dependency (F→G with F blocked by G) | 201, both links coexist |
+| Remove a link that exists | 200 |
+| Remove the same link again, or an existing issue that was never related | 200 (idempotent) |
+| Remove an `issue_id` that isn't an issue (`1`) | 404 |
+| GraphQL `removeRelatesTo` for a link already gone | succeeds, no error |
+
+Max count: neither the docs nor the changelogs give one. It was not probed, because that would
+mean creating dozens of issues in a public repo against the 80/min content limit. The issue
+schema's other caps (50 per dependency type) suggest there is one (inferred).
+
+### `updated_at` (verified)
+
+E, F, G and H kept their creation `updated_at` (07:55:08 to 07:55:11) through every add and
+remove from 07:55:17 to 07:56:35, via REST and GraphQL, same-repo and cross-repo. This is the
+same behaviour as the other two types.
+
+### Ordering (verified)
+
+There is no manual order. REST `GET …/32/relates_to` returned `[33, 34, 3]`, the order they
+were added. GraphQL `relatesTo` defaults to `{field: RELATES_TO_ADDED_AT, direction: DESC}`
+and returned `[3, 34, 33]`. `orderBy` also accepts `CREATED_AT`, the creation time of the
+related issue (schema).
+
+### Cross-repo and visibility (verified)
+
+E (public `beghu`) ↔ H (private repo, same owner) worked. Authenticated, E listed
+`[33, 34, 3]` and H listed `[32]`. Anonymously, E listed `[33, 34]`: H was silently dropped.
+The anonymous timeline also omitted the `relates_to_added` event for H, while showing the
+other two. There is no summary field, so there is no count to disagree with the list.
+Cross-owner was not tested, and nothing documents a restriction.
+
+### Summary field (verified)
+
+None. The REST issue object has `sub_issues_summary` and `issue_dependencies_summary` but
+nothing for "relates to" (the OpenAPI issue schema has no such field). GraphQL `Issue` likewise
+has no `relatesToSummary`. Reading the count means fetching `relatesTo { totalCount }`.
+
+### Timeline and repo events (verified)
+
+- `relates_to_added` and `relates_to_removed` appear in `GET …/issues/{n}/timeline` and
+  `…/{n}/events` on **both** issues, and in each repo's `GET /repos/{o}/{r}/issues/events`
+  feed. For E–H, the event landed in the private repo's feed too.
+- **The event names nothing but itself.** Its keys are `actor, commit_id, commit_url,
+  created_at, event, id, node_id, performed_via_github_app, url`. There is no related-issue
+  object, number, id or repository, unlike the sub-issue and dependency events. An event tells
+  you that issue N's related set changed, and nothing more. Reconciliation has to refetch
+  N's `relates_to` list.
+- Repeated idempotent removes produced no extra events.
+- The OpenAPI issue-event and timeline schemas have no entry for these events, and GraphQL's
+  `IssueTimelineItemsItemType` has no `RELATES_TO_*` value, so they can't be read via GraphQL
+  `timelineItems` (introspection).
+
+### Webhook `issue_relates_to` (documented, not verified)
+
+From `/webhooks/webhook-events-and-payloads#issue_relates_to` and the OpenAPI `x-webhooks`
+section:
+
+- Actions are `relates_to_added` and `relates_to_removed`. Subscribing needs Issues: read.
+  Available to repository, organization and App webhooks.
+- The payload has `issue_id`, `issue` ("the issue the relationship was added to"),
+  `related_issue_id` ("Only present when both issues belong to the same repository"),
+  `related_issue`, `repository`, `installation`, `organization`, `sender`. `organization` is
+  marked required, as with `issue_dependencies`.
+- **Same repo:** "GitHub sends one delivery containing both issues." This differs from the
+  other two types, where each change is a pair of actions.
+- **Different repos:** "GitHub sends one delivery for each repository. Each cross-repository
+  delivery contains only the issue in the repository receiving the delivery and omits the
+  related issue, its ID, and its repository details."
+- Inferred: for a same-repo link, `issue` is the side the user acted on. Which side that is
+  can't be relied on, so treat the pair as unordered.
+
 ## Implications for beghu
 
-- **Subscribe the App to `sub_issues` and `issue_dependencies`** in addition to `issues`.
+- **Subscribe the App to `sub_issues`, `issue_dependencies` and `issue_relates_to`** in
+  addition to `issues`.
   These are the only push signals for relationship changes. `updated_at`-based catch-up never
   sees them.
 - **Apply relationship webhooks directly.** The payload has both full issues and both ids.
   Expect each change to arrive as two deliveries (one per side) when both repos are synced,
   and make applying them idempotent (upsert or delete the edge keyed by
   `(parent_id, child_id)` or `(blocked_id, blocking_id)`).
+- **"Relates to" needs a refetch for cross-repo links.** A same-repo delivery has both ids,
+  so the edge can be applied directly, keyed as the unordered pair `(min_id, max_id)`. A
+  cross-repo delivery has only the local issue. On it, refetch that issue's `relates_to` list
+  (or `relatesTo` in GraphQL) and replace its edge set. The timeline and repo events say just
+  as little, so reconciliation for this type is "refetch the lists of the issues named in
+  `relates_to_*` events".
 - **Reorders are invisible to push.** Re-list a parent's sub-issues whenever the mirror touches
   it (a `sub_issues` event on it, or opening it), and in periodic reconciliation.
-- **Reconciliation:** poll `GET /repos/{o}/{r}/issues/events` per synced repo for the eight
-  relationship event types and refetch the named issues' lists, or periodically refetch
-  relationships via GraphQL (cheap). Resolve event targets by `(repo, number)`, since events
-  carry no id.
+- **Reconciliation:** poll `GET /repos/{o}/{r}/issues/events` per synced repo for the ten
+  relationship event types (eight for sub-issues and dependencies, plus `relates_to_added` and
+  `relates_to_removed`) and refetch the named issues' lists. Alternatively, refetch
+  relationships via GraphQL periodically (cheap). Resolve sub-issue and dependency targets by
+  `(repo, number)`, since those events carry no id; relates-to events carry no target at all.
 - **Stubs:** cross-repo targets the installation can't see are dropped by GitHub without any
   signal. The mirror can only make Stubs for issues it can read. Don't derive "has N children"
   from `sub_issues_summary` if it must agree with the listed rows.
@@ -398,5 +543,9 @@ only by refetching.
   not tested.
 - Whether deleting or transferring an issue emits `*_removed` events or webhooks for its
   relationships, and what happens to the edges.
-- GraphQL relationship mutations were not exercised; only their schema was read.
+- GraphQL sub-issue and dependency mutations were not exercised; only their schema was read.
+  The relates-to mutations were exercised.
+- "Relates to": the maximum number of links per issue (undocumented, not probed), whether
+  cross-owner links work, and the actual `issue_relates_to` deliveries (one vs. two per link,
+  and which issue is `issue` vs. `related_issue`).
 - Exact read-after-write staleness window (observed about 1 s; seen twice, on one account).
