@@ -21,7 +21,7 @@ The browser-side copy of data from the mirror. It exists only to make the app fa
 _Avoid_: Local store, offline store
 
 **Relationship**:
-A link between two issues: either a sub-issue (parent/child) or a dependency (blocked by / blocking).
+A link between two issues: a sub-issue (parent/child), a dependency (blocked by / blocking), or "relates to" (symmetric, no direction).
 _Avoid_: Link, edge
 
 **Stub**:
