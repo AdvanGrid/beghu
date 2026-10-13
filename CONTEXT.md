@@ -1,15 +1,15 @@
-# begihup
+# beghu
 
-A fast frontend for GitHub issues, for one person and a few teammates. GitHub is the source of truth; begihup keeps disposable copies of its data so the app can be fast.
+A fast frontend for GitHub issues, for one person and a few teammates. GitHub is the source of truth; beghu keeps disposable copies of its data so the app can be fast.
 
 ## Language
 
 **Connected account**:
-A GitHub account that has signed in to begihup and whose repos it syncs.
+A GitHub account that has signed in to beghu and whose repos it syncs.
 _Avoid_: User, tenant
 
 **Synced repo**:
-A repo whose issues and PRs begihup copies into a mirror.
+A repo whose issues and PRs beghu copies into a mirror.
 _Avoid_: Tracked repo, watched repo
 
 **Mirror**:

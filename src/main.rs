@@ -23,7 +23,8 @@ async fn root_layout(slot: Slot<'_>) -> Result<impl View> {
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <title>"begihup"</title>
+                <title>"beghu"</title>
+                <link rel="icon" type="image/svg+xml" href=(asset!("./favicon.svg"))>
                 // Blocking on purpose: sets the theme before first paint to avoid a flash.
                 <script src=(asset!("./theme.js"))></script>
                 <link rel="stylesheet" href=(tailwind::stylesheet!())>
@@ -31,7 +32,10 @@ async fn root_layout(slot: Slot<'_>) -> Result<impl View> {
             </head>
             <body class="min-h-screen bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
                 <header class="flex items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
-                    <span class="font-semibold">"begihup"</span>
+                    <a href="/" class="flex items-center gap-2 text-lg font-extrabold tracking-tight text-orange-950 dark:text-orange-50">
+                        <img src=(asset!("./favicon.svg")) alt="" class="size-7">
+                        <span>"be"<span class="text-orange-600 dark:text-orange-300">"ghu"</span></span>
+                    </a>
                     theme_switch()
                 </header>
                 <main class="mx-auto max-w-3xl px-6 py-12">
@@ -45,6 +49,8 @@ async fn root_layout(slot: Slot<'_>) -> Result<impl View> {
 #[page]
 async fn home() -> Result<impl View> {
     Ok(view! {
+        <img src=(asset!("./logo.svg")) alt="beghu" class="mb-10 w-72 dark:hidden">
+        <img src=(asset!("./logo-dark.svg")) alt="beghu" class="mb-10 hidden w-72 dark:block">
         hello(name: "World")
     })
 }
