@@ -1,0 +1,19 @@
+{
+  "url": "https://github.com/tomsjansons/beghu",
+  "public": false,
+  "request_oauth_on_install": false,
+  "default_permissions": {
+    "issues": "write",
+    "pull_requests": "read",
+    "metadata": "read"
+  },
+  "default_events": [
+    "issues",
+    "issue_comment",
+    "label",
+    "milestone",
+    "pull_request",
+    "sub_issues",
+    "issue_dependencies"
+  ]
+}
