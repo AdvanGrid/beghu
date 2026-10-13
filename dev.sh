@@ -13,19 +13,43 @@ LOG_FILE="$STATE_DIR/server.log"
 
 usage() {
     cat <<EOF
+dev.sh - manage the topcoat dev server
+
 Usage: ./dev.sh <command> [args]
 
 Commands:
-  start [topcoat args]   Start the dev server in the background
-  stop                   Stop the dev server
+  start [topcoat args]   Start the dev server in the background. Blocks until
+                         the server is ready; exits 1 and prints the log tail
+                         if the build fails. No-op if already running.
+  stop                   Stop the dev server and the app it spawned
   restart [topcoat args] Stop, then start
   status                 Print whether the server is running (exit 1 if not)
-  logs [-f] [-n N]       Print the last N log lines (default 100); -f follows
-  grep <pattern>         Search the log (grep -E, case-insensitive)
-  run [topcoat args]     Run in the foreground (interactive)
+  logs [-f] [-n N]       Print the last N log lines (default 100);
+                         -f keeps following new lines until Ctrl-C
+  grep <pattern>         Search the whole log (extended regex, case-insensitive,
+                         with line numbers); exit 1 if nothing matches
+  run [topcoat args]     Run in the foreground (interactive, press r to reload)
+  help                   Show this help
 
-Env: HOST (default 0.0.0.0), PORT (default 3000)
-Log: $LOG_FILE (ANSI colors stripped)
+Environment:
+  HOST           Bind address (default 0.0.0.0, reachable from other machines)
+  PORT           Port (default 3000)
+  START_TIMEOUT  Seconds start waits for "ready" (default 600)
+
+Files:
+  $LOG_FILE  Server output, ANSI colors stripped; reset on each start
+  $PID_FILE  PID of the background server
+
+Examples:
+  ./dev.sh start                 # start, wait for ready
+  ./dev.sh logs -n 50            # recent output, e.g. after a code change
+  ./dev.sh grep 'error|panic'    # look for build or runtime failures
+  PORT=8080 ./dev.sh restart     # restart on another port
+
+Notes:
+  The server rebuilds automatically when files change; check logs afterwards.
+  Live reload only works from localhost; remote browsers need a manual refresh.
+  Agents: avoid 'logs -f' and 'run', they never exit on their own.
 EOF
 }
 
@@ -133,6 +157,6 @@ case $cmd in
     logs) cmd_logs "$@" ;;
     grep) cmd_grep "$@" ;;
     run) exec topcoat dev "$@" ;;
-    -h | --help | help) usage ;;
+    "" | -h | --help | help) usage ;;
     *) usage >&2; exit 2 ;;
 esac
