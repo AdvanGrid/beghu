@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { goto, invalidate, preloadData } from '$app/navigation';
+	import { onMount, untrack } from 'svelte';
+	import { goto, preloadData } from '$app/navigation';
 	import { page } from '$app/state';
 	import Detail from '#lib/Detail.svelte';
 	import LabelChip from '#lib/LabelChip.svelte';
@@ -10,14 +10,42 @@
 
 	let { data }: PageProps = $props();
 
+	// The load function renders the first page on the server. After that the page fetches rows
+	// itself, so a filter change costs one JSON request instead of a router navigation.
+	let filter = $state(untrack(() => data.filter));
+	let first = $state<Row[]>(untrack(() => data.rows));
+	let generation = 0;
+
 	// Pages loaded on scroll. A new first page (filter change, live update) starts them over.
-	let extra = $derived<Row[]>((data.rows, []));
-	let exhausted = $derived(data.rows.length < PAGE);
+	let extra = $derived.by<Row[]>(() => (void first, []));
+	let exhausted = $derived(first.length < PAGE);
 	let loading = false;
 	const rows = $derived.by(() => {
-		const seen = new Set(data.rows.map((r) => r.id));
-		return [...data.rows, ...extra.filter((r) => !seen.has(r.id))];
+		const seen = new Set(first.map((r) => r.id));
+		return [...first, ...extra.filter((r) => !seen.has(r.id))];
 	});
+
+	async function fetchRows(f: Filter, offset: number, limit: number): Promise<Row[]> {
+		const p = filterToParams(f);
+		p.set('offset', String(offset));
+		p.set('limit', String(limit));
+		return (await fetch(`/api/issues?${p}`)).json();
+	}
+
+	async function reload() {
+		const gen = ++generation;
+		const fresh = await fetchRows(filter, 0, PAGE);
+		if (gen === generation) first = fresh;
+	}
+
+	function setFilter(e: Event | null, f: Filter) {
+		e?.preventDefault();
+		filter = f;
+		reload();
+		// The URL stays shareable without rerunning load. Updated in its own task, while the request
+		// is in flight, so the request goes out first.
+		setTimeout(() => goto(href(f), { shallow: true, replace: true }));
+	}
 
 	let hydrated = $state(false);
 	// No page is fetched until the user scrolls, so loading doesn't render a second page.
@@ -32,12 +60,10 @@
 	async function loadMore() {
 		if (loading || exhausted) return;
 		loading = true;
-		const first = data.rows;
-		const p = filterToParams(data.filter);
-		p.set('offset', String(rows.length));
-		const more: Row[] = await fetch(`/api/issues?${p}`).then((r) => r.json());
+		const page = first;
+		const more = await fetchRows(filter, rows.length, MORE);
 		loading = false;
-		if (first !== data.rows) return;
+		if (page !== first) return;
 		extra = [...extra, ...more];
 		exhausted = more.length < MORE;
 	}
@@ -73,7 +99,7 @@
 		const events = new EventSource('/events');
 		events.onmessage = (e) => {
 			const { ids } = JSON.parse(e.data) as { ids: string[] };
-			invalidate('app:issues', true);
+			reload();
 			const open = page.state.selected?.issue.id;
 			if (open && ids.includes(open)) refreshDetail(open);
 		};
@@ -90,16 +116,15 @@
 
 <header
 	class="sticky top-0 z-10 space-y-2 border-b border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
-	data-sveltekit-keepfocus
-	data-sveltekit-noscroll
-	data-sveltekit-replacestate
+	data-sveltekit-preload-data="false"
 >
 	<div class="flex items-center gap-2">
 		{#each ['open', 'closed'] as const as s (s)}
 			<a
-				href={href({ ...data.filter, state: s })}
+				href={href({ ...filter, state: s })}
+				onclick={(e) => setFilter(e, { ...filter, state: s })}
 				role="button"
-				aria-pressed={data.filter.state === s}
+				aria-pressed={filter.state === s}
 				data-bench="filter-state"
 				data-value={s}
 				class={chip}>{s}</a
@@ -110,8 +135,8 @@
 			type="search"
 			placeholder="Search titles"
 			autocomplete="off"
-			value={data.filter.q}
-			oninput={(e) => goto(href({ ...data.filter, q: e.currentTarget.value }), { reset: false, replace: true })}
+			value={filter.q}
+			oninput={(e) => setFilter(null, { ...filter, q: e.currentTarget.value })}
 			class="flex-1 rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
 		/>
 		<ThemeSwitch />
@@ -119,9 +144,10 @@
 	<div class="flex flex-wrap gap-1">
 		{#each data.facets.labels as l (l)}
 			<a
-				href={href({ ...data.filter, labels: toggled(data.filter.labels, l) })}
+				href={href({ ...filter, labels: toggled(filter.labels, l) })}
+				onclick={(e) => setFilter(e, { ...filter, labels: toggled(filter.labels, l) })}
 				role="button"
-				aria-pressed={data.filter.labels.includes(l)}
+				aria-pressed={filter.labels.includes(l)}
 				data-bench="filter-label"
 				data-value={l}
 				class={chip}>{l}</a
@@ -131,9 +157,10 @@
 	<div class="flex flex-wrap gap-1">
 		{#each data.facets.assignees as a (a)}
 			<a
-				href={href({ ...data.filter, assignees: toggled(data.filter.assignees, a) })}
+				href={href({ ...filter, assignees: toggled(filter.assignees, a) })}
+				onclick={(e) => setFilter(e, { ...filter, assignees: toggled(filter.assignees, a) })}
 				role="button"
-				aria-pressed={data.filter.assignees.includes(a)}
+				aria-pressed={filter.assignees.includes(a)}
 				data-bench="filter-assignee"
 				data-value={a}
 				class={chip}>@{a}</a
