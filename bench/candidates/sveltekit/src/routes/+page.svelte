@@ -84,7 +84,7 @@
 <svelte:head><title>beghu · SvelteKit</title></svelte:head>
 
 <header
-	class="sticky top-0 z-10 space-y-2 border-b border-zinc-200 bg-white/95 p-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95"
+	class="sticky top-0 z-10 space-y-2 border-b border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
 	data-sveltekit-keepfocus
 	data-sveltekit-noscroll
 	data-sveltekit-replacestate
