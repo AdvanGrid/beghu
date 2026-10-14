@@ -1,13 +1,16 @@
 // The issue list with its filters, and an outlet for the open issue. Filters live in the URL's
 // search params; the list is one infinite query per filter, windowed with TanStack Virtual.
+// Filter chips and rows are buttons that navigate, not <Link>s: at 6x CPU a Link each cost
+// too much on load and while scrolling (see the change log on the ticket).
 
-import { Link, Outlet, createFileRoute, stripSearchParams, useNavigate } from '@tanstack/solid-router'
+import { Outlet, createFileRoute, stripSearchParams, useNavigate, useRouter } from '@tanstack/solid-router'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/solid-query'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { DEFAULT_FILTERS, facetsQuery, issuesQuery, validateFilters, type Filters, type IssueRow } from '~/issues'
 
 export const Route = createFileRoute('/_app')({
+  ssr: 'data-only',
   validateSearch: validateFilters,
   search: { middlewares: [stripSearchParams(DEFAULT_FILTERS)] },
   loaderDeps: ({ search }) => search,
@@ -27,6 +30,9 @@ function AppLayout() {
   const navigate = useNavigate({ from: Route.fullPath })
   const facets = useQuery(() => facetsQuery())
   const queryClient = useQueryClient()
+  const router = useRouter()
+  // Hover preloads the filtered list, as a <Link> with defaultPreload: 'intent' would.
+  const preload = (search: (prev: Filters) => Filters) => router.preloadRoute({ from: Route.fullPath, search }).catch(() => {})
 
   onMount(() => {
     const events = new EventSource('/api/events')
@@ -44,15 +50,16 @@ function AppLayout() {
         <div class="flex items-center gap-2">
           <For each={['open', 'closed'] as const}>
             {(state) => (
-              <Link
-                from={Route.fullPath}
-                search={(prev: Filters) => ({ ...prev, state })}
+              <button
+                type="button"
+                onPointerEnter={() => preload((prev: Filters) => ({ ...prev, state }))}
+                onClick={() => navigate({ search: (prev: Filters) => ({ ...prev, state }) })}
                 data-bench="filter-state"
                 data-value={state}
                 class={`${chip} ${search().state === state ? chipOn : ''}`}
               >
                 {state}
-              </Link>
+              </button>
             )}
           </For>
           <input
@@ -68,30 +75,32 @@ function AppLayout() {
         <div class="flex flex-wrap gap-1">
           <For each={facets.data?.labels}>
             {(name) => (
-              <Link
-                from={Route.fullPath}
-                search={(prev: Filters) => ({ ...prev, labels: toggle(prev.labels, name) })}
+              <button
+                type="button"
+                onPointerEnter={() => preload((prev: Filters) => ({ ...prev, labels: toggle(prev.labels, name) }))}
+                onClick={() => navigate({ search: (prev: Filters) => ({ ...prev, labels: toggle(prev.labels, name) }) })}
                 data-bench="filter-label"
                 data-value={name}
                 class={`${chip} ${search().labels.includes(name) ? chipOn : ''}`}
               >
                 {name}
-              </Link>
+              </button>
             )}
           </For>
         </div>
         <div class="flex flex-wrap gap-1">
           <For each={facets.data?.assignees}>
             {(login) => (
-              <Link
-                from={Route.fullPath}
-                search={(prev: Filters) => ({ ...prev, assignees: toggle(prev.assignees, login) })}
+              <button
+                type="button"
+                onPointerEnter={() => preload((prev: Filters) => ({ ...prev, assignees: toggle(prev.assignees, login) }))}
+                onClick={() => navigate({ search: (prev: Filters) => ({ ...prev, assignees: toggle(prev.assignees, login) }) })}
                 data-bench="filter-assignee"
                 data-value={login}
                 class={`${chip} ${search().assignees.includes(login) ? chipOn : ''}`}
               >
                 @{login}
-              </Link>
+              </button>
             )}
           </For>
         </div>
@@ -128,7 +137,7 @@ function IssueList(props: { filters: Filters }) {
   createEffect(() => {
     const items = virtualizer.getVirtualItems()
     const last = items[items.length - 1]
-    if (last && last.index >= rows().length - 20 && query.hasNextPage && !query.isFetchingNextPage) query.fetchNextPage()
+    if (last && last.index >= rows().length - 5 && query.hasNextPage && !query.isFetchingNextPage) query.fetchNextPage()
   })
 
   return (
@@ -148,17 +157,18 @@ function IssueList(props: { filters: Filters }) {
   )
 }
 
+// Hover preloads the issue, as a <Link> with defaultPreload: 'intent' would.
 function Row(props: { row: IssueRow; top: number }) {
+  const navigate = useNavigate()
+  const router = useRouter()
+  const target = () => ({ from: Route.fullPath, to: '/issues/$id' as const, params: { id: props.row.id }, search: (prev: Filters) => prev })
   return (
-    <Link
-      to="/issues/$id"
-      params={{ id: props.row.id }}
-      from={Route.fullPath}
-      search={(prev) => prev}
+    <div
       data-bench="row"
       data-id={props.row.id}
-      class="absolute left-0 flex w-full items-center gap-3 border-b border-zinc-100 px-3 text-sm hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900"
-      activeProps={{ class: 'bg-blue-50 dark:bg-blue-950' }}
+      onPointerEnter={() => router.preloadRoute(target()).catch(() => {})}
+      onClick={() => navigate(target())}
+      class="absolute left-0 flex w-full cursor-pointer items-center gap-3 border-b border-zinc-100 px-3 text-sm hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900"
       style={{ height: `${ROW_HEIGHT}px`, transform: `translateY(${props.top}px)` }}
     >
       <span class="w-32 shrink-0 truncate text-xs text-zinc-500 dark:text-zinc-400">
@@ -168,6 +178,6 @@ function Row(props: { row: IssueRow; top: number }) {
         {props.row.title}
       </span>
       <span class="ml-auto shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{props.row.labels.map((l) => l.name).join(' ')}</span>
-    </Link>
+    </div>
   )
 }

@@ -37,7 +37,7 @@ export function validateFilters(s: Record<string, unknown>): Filters {
 
 export const DEFAULT_FILTERS: Filters = { state: 'open', labels: [], assignees: [], q: '' }
 
-export const PAGE = 100
+export const PAGE = 50
 
 const fetchFacets = createServerFn({ method: 'GET' }).handler(() => mirror.facets)
 

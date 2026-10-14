@@ -17,11 +17,12 @@ function IssuePanel() {
 
   const add = useMutation(() => ({
     mutationFn: (label: Label) => addLabel({ data: { id: params().id, name: label.name } }),
-    onMutate: async (label: Label) => {
+    // Paint the label in the same task as the click; cancel in-flight refetches afterwards.
+    onMutate: (label: Label) => {
       const key = issueQuery(params().id).queryKey
-      await queryClient.cancelQueries({ queryKey: key })
       const previous = queryClient.getQueryData(key)
       queryClient.setQueryData(key, (d) => d && { ...d, labels: [...d.labels, label] })
+      queryClient.cancelQueries({ queryKey: key }, { revert: false })
       return { previous, key }
     },
     onError: (_err, _label, ctx) => ctx && queryClient.setQueryData(ctx.key, ctx.previous),
