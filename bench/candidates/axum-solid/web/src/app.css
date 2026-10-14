@@ -28,7 +28,8 @@ button[aria-pressed='true'] { background: var(--accent); color: var(--accent-fg)
 input[type='search'] { font: inherit; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); width: 240px; }
 main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
 .list { overflow-y: auto; border-right: 1px solid var(--line); contain: strict; }
-.row { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 8px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); cursor: pointer; white-space: nowrap; }
+.window { will-change: transform; }
+.row { contain: strict; height: 36px; display: flex; gap: 8px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); cursor: pointer; white-space: nowrap; }
 .row:hover { background: var(--hover); }
 .repo, .meta { color: var(--muted); }
 .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }

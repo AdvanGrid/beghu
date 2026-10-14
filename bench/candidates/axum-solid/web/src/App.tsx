@@ -118,7 +118,7 @@ export function App() {
   );
 }
 
-function IssueList(props: { rows: { id: number; number: number; repo: string; title: string; labels: { name: string }[] }[]; ready: boolean; onOpen: (id: number) => void; onNearEnd: () => void }) {
+function IssueList(props: { rows: IssueRow[]; ready: boolean; onOpen: (id: number) => void; onNearEnd: () => void }) {
   let scroller!: HTMLDivElement;
   const virtualizer = createVirtualizer({
     get count() {
@@ -127,6 +127,11 @@ function IssueList(props: { rows: { id: number; number: number; repo: string; ti
     getScrollElement: () => scroller,
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
+  });
+  const visible = createMemo(() => {
+    const items = virtualizer.getVirtualItems();
+    const first = items[0]?.index ?? 0;
+    return { first, rows: props.rows.slice(first, first + items.length) };
   });
 
   return (
@@ -143,32 +148,25 @@ function IssueList(props: { rows: { id: number; number: number; repo: string; ti
       }}
     >
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
-        <For each={virtualizer.getVirtualItems()}>
-          {(item) => {
-            const row = () => props.rows[item.index];
-            return (
-              <Show when={row()}>
-                {(r) => (
-                  <div
-                    class="row"
-                    data-bench="row"
-                    data-id={r().id}
-                    style={{ transform: `translateY(${item.start}px)`, height: `${ROW_HEIGHT}px` }}
-                    onClick={() => props.onOpen(r().id)}
-                  >
-                    <span class="repo">
-                      {r().repo}#{r().number}
-                    </span>
-                    <span class="title" data-bench="title">
-                      {r().title}
-                    </span>
-                    <span class="meta">{r().labels.map((l) => l.name).join(' ')}</span>
-                  </div>
-                )}
-              </Show>
-            );
-          }}
-        </For>
+        {/* One translated wrapper around rows in normal flow, keyed by the row objects from the
+            resource. A row that stays in the window keeps its DOM node and isn't touched; the
+            documented For over getVirtualItems() rebuilt every row on every scroll, since the
+            virtualizer hands out fresh item objects. */}
+        <div class="window" style={{ transform: `translateY(${visible().first * ROW_HEIGHT}px)` }}>
+          <For each={visible().rows}>
+            {(r) => (
+              <div class="row" data-bench="row" data-id={r.id} onClick={() => props.onOpen(r.id)}>
+                <span class="repo">
+                  {r.repo}#{r.number}
+                </span>
+                <span class="title" data-bench="title">
+                  {r.title}
+                </span>
+                <span class="meta">{r.labels.map((l) => l.name).join(' ')}</span>
+              </div>
+            )}
+          </For>
+        </div>
       </div>
     </div>
   );

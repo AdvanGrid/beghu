@@ -183,11 +183,11 @@ async fn list_issues(State(s): State<AppState>, Query(q): Query<ListQuery>) -> R
         let mut sql = format!("{ROW} WHERE i.kind = 'issue' AND i.is_stub = 0 AND i.state = ?");
         let mut args: Vec<SqlValue> = vec![if q.state.as_deref() == Some("closed") { "closed" } else { "open" }.to_string().into()];
         for name in q.label {
-            sql += " AND EXISTS (SELECT 1 FROM item_labels il JOIN labels l ON l.id = il.label_id WHERE il.item_id = i.id AND l.name = ?)";
+            sql += " AND i.id IN (SELECT item_id FROM item_labels WHERE label_id IN (SELECT id FROM labels WHERE name = ?))";
             args.push(name.into());
         }
         for login in q.assignee {
-            sql += " AND EXISTS (SELECT 1 FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = i.id AND u.login = ?)";
+            sql += " AND i.id IN (SELECT item_id FROM item_assignees WHERE user_id IN (SELECT id FROM users WHERE login = ?))";
             args.push(login.into());
         }
         if let Some(text) = q.q.filter(|t| !t.is_empty()) {
@@ -445,6 +445,16 @@ async fn main() {
     let manager = SqliteConnectionManager::file(&path)
         .with_init(|c| c.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;"));
     let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("open mirror");
+    // Indexes that let label and assignee filters start from the matching items instead of
+    // walking the whole list in order.
+    pool.get()
+        .unwrap()
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS item_labels_by_label ON item_labels(label_id, item_id);
+             CREATE INDEX IF NOT EXISTS item_assignees_by_user ON item_assignees(user_id, item_id);
+             ANALYZE;",
+        )
+        .expect("create indexes");
     let (events, _) = broadcast::channel(256);
     let state = AppState { pool, events, latency };
 
