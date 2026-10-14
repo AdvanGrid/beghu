@@ -66,7 +66,8 @@
 
 	<section class="space-y-3">
 		{#each issue.comments as comment (comment.id)}
-			<div data-bench="comment" class="rounded border border-zinc-200 p-3 dark:border-zinc-800">
+			<!-- Off-screen comments skip layout and paint until scrolled to. -->
+			<div data-bench="comment" class="[contain-intrinsic-size:auto_160px] [content-visibility:auto] rounded border border-zinc-200 p-3 dark:border-zinc-800">
 				<div class="mb-1 text-xs text-zinc-500 dark:text-zinc-400">{comment.author} · {comment.created_at}</div>
 				<pre class="font-sans text-sm whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">{comment.body}</pre>
 			</div>
