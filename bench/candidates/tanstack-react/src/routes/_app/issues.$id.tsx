@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { issueQuery } from '#/lib/queries'
 import { addLabel } from '#/lib/issues.functions'
-import type { IssueDetail, Label } from '#/lib/types'
+import type { Label } from '#/lib/types'
 
 export const Route = createFileRoute('/_app/issues/$id')({
   loader: ({ context: { queryClient }, params }) => queryClient.ensureQueryData(issueQuery(params.id)),
@@ -15,19 +15,20 @@ function Detail() {
   const queryClient = useQueryClient()
   const key = issueQuery(id).queryKey
 
+  // Optimistic "via the UI": the pending label renders straight from the mutation's variables,
+  // with no await before the first paint (the cache variant awaits cancelQueries first).
   const add = useMutation({
+    mutationKey: ['add-label', id],
     mutationFn: (label: Label) => addLabel({ data: { id, name: label.name } }),
-    onMutate: async (label) => {
-      await queryClient.cancelQueries({ queryKey: key })
-      const previous = queryClient.getQueryData(key)
-      queryClient.setQueryData(key, (old: IssueDetail | undefined) => old && { ...old, labels: [...old.labels, label] })
-      return { previous }
-    },
-    onError: (_err, _label, ctx) => queryClient.setQueryData(key, ctx?.previous),
     onSettled: () => queryClient.invalidateQueries({ queryKey: key }),
   })
+  const pending = useMutationState({
+    filters: { mutationKey: ['add-label', id], status: 'pending' },
+    select: (m) => m.state.variables as Label,
+  })
+  const labels = [...issue.labels, ...pending.filter((p) => !issue.labels.some((l) => l.name === p.name))]
 
-  const have = new Set(issue.labels.map((l) => l.name))
+  const have = new Set(labels.map((l) => l.name))
   return (
     <article data-bench="detail" data-id={issue.id}>
       <h2 className="mb-2 text-lg font-semibold">
@@ -37,7 +38,7 @@ function Detail() {
         {issue.title}
       </h2>
       <div className="mb-2 flex flex-wrap gap-1">
-        {issue.labels.map((l) => (
+        {labels.map((l) => (
           <span key={l.name} data-bench="label" data-value={l.name} className="rounded-full border border-zinc-200 px-2 dark:border-zinc-800">
             {l.name}
           </span>
