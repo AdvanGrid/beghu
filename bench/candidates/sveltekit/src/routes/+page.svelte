@@ -184,7 +184,7 @@
 					data-id={row.id}
 					onclick={(e) => openDetail(e, row.id)}
 					data-sveltekit-preload-data="false"
-					class="flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 aria-current:bg-blue-50 dark:hover:bg-zinc-900 dark:aria-current:bg-blue-950"
+					class="flex items-center gap-2 px-3 py-2 text-sm aria-current:bg-blue-50 dark:aria-current:bg-blue-950"
 					aria-current={page.state.selected?.issue.id === row.id ? 'true' : undefined}
 				>
 					<span class="w-28 shrink-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{row.repo}#{row.number}</span>
