@@ -5,7 +5,7 @@
 	import Detail from '#lib/Detail.svelte';
 	import LabelChip from '#lib/LabelChip.svelte';
 	import ThemeSwitch from '#lib/ThemeSwitch.svelte';
-	import { PAGE, filterToParams, type Detail as Issue, type Filter, type Row } from '#lib/types.ts';
+	import { MORE, PAGE, filterToParams, type Detail as Issue, type Filter, type Row } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -20,6 +20,8 @@
 	});
 
 	let hydrated = $state(false);
+	// No page is fetched until the user scrolls, so loading doesn't render a second page.
+	let scrolled = $state(false);
 
 	const href = (f: Filter) => {
 		const p = filterToParams(f).toString();
@@ -37,12 +39,13 @@
 		loading = false;
 		if (first !== data.rows) return;
 		extra = [...extra, ...more];
-		exhausted = more.length < PAGE;
+		exhausted = more.length < MORE;
 	}
 
 	// Re-attaches whenever the list grows, so a sentinel still in range asks for the next page.
 	function sentinel(node: HTMLElement) {
 		void rows.length;
+		if (!scrolled) return;
 		const io = new IntersectionObserver(([e]) => e.isIntersecting && loadMore(), { rootMargin: '600px' });
 		io.observe(node);
 		return () => io.disconnect();
@@ -80,6 +83,8 @@
 	const chip =
 		'rounded border px-2 py-0.5 text-xs border-zinc-300 text-zinc-700 hover:bg-zinc-100 aria-pressed:border-blue-600 aria-pressed:bg-blue-600 aria-pressed:text-white dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:aria-pressed:border-blue-500 dark:aria-pressed:bg-blue-500 dark:aria-pressed:text-white';
 </script>
+
+<svelte:window onscroll={() => (scrolled = true)} />
 
 <svelte:head><title>beghu · SvelteKit</title></svelte:head>
 

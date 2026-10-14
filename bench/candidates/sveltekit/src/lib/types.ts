@@ -1,5 +1,7 @@
-// Rows per page: the first screen plus a little, so loads and filter changes render few rows.
+// Rows in the first page: the first screen plus a little, so loads and filter changes render few
+// rows. Pages loaded on scroll are bigger, so a fast scroll doesn't run out.
 export const PAGE = 25;
+export const MORE = 100;
 
 export type Label = { name: string; color: string };
 
