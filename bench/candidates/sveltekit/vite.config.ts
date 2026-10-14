@@ -12,7 +12,9 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-			adapter: adapter()
+			adapter: adapter(),
+			// One JS file instead of a module graph: fewer requests and less module overhead on load.
+			output: { bundleStrategy: 'single' }
 		})
 	]
 });
