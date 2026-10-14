@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# One-command benchmark launcher. See bench/README.md.
+set -euo pipefail
+cd "$(dirname "$0")"
+if [ ! -d node_modules ]; then npm install --silent && npx playwright install chromium; fi
+export NODE_NO_WARNINGS=1
+exec node harness/run.mjs "$@"

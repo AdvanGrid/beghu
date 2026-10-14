@@ -1,0 +1,12 @@
+{
+  "name": "beghu-bench",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway benchmark fixture and harness for the begihup stack comparison",
+  "scripts": {
+    "fixture": "node fixture/generate.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.64.0"
+  }
+}

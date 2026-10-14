@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+// Replays the fake webhook feed into a running candidate.
+//
+//   ./bench/replay <url> [--scale 20k|50k] [--speed 1|10|max] [--limit N]
+//
+// --speed 1 keeps the feed's own gaps (0.2–5 s), 10 is ten times faster, max sends back to back.
+
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const argv = process.argv.slice(2);
+const flag = (name, def) => (argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : def);
+const url = argv.find((a) => a.startsWith('http'));
+if (!url) {
+  console.error('usage: ./bench/replay <url> [--scale 20k|50k] [--speed 1|10|max] [--limit N]');
+  process.exit(2);
+}
+const scale = flag('scale', '20k');
+const speed = flag('speed', '1');
+const limit = Number(flag('limit', Infinity));
+const feed = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'data', `webhooks-${scale}.jsonl`), 'utf8')
+  .trim()
+  .split('\n')
+  .map((l) => JSON.parse(l))
+  .slice(0, limit);
+
+let prev = null;
+for (const [n, e] of feed.entries()) {
+  const at = Date.parse(e.at);
+  if (prev != null && speed !== 'max') await new Promise((r) => setTimeout(r, (at - prev) / Number(speed)));
+  prev = at;
+  const r = await fetch(`${url.replace(/\/$/, '')}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-github-event': e.event, 'x-github-delivery': crypto.randomUUID() },
+    body: JSON.stringify(e.payload),
+  });
+  console.log(`${n + 1}/${feed.length} ${e.event}.${e.payload.action} #${e.payload.issue?.number ?? e.payload.parent_issue?.number} → ${r.status}`);
+}
