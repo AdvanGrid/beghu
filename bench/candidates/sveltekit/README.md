@@ -30,7 +30,7 @@ functions and written by a form action.
 Full matrix, 20 iterations per scenario, `--cpus=1 --memory=512m`, run under the host-wide bench
 lock with nothing else measuring. Raw output (gitignored, on the bench host):
 `bench/results/2026-10-14-100318-sveltekit/` (default, commit d71da26) and
-`bench/results/2026-10-14-110028-sveltekit/` (optimised).
+`bench/results/2026-10-14-110028-sveltekit/` (optimised; only `summary.md`, restored from the console output, since its `results.json` and videos were lost when the worktree was removed).
 
 p95 in ms, **default → optimised**, ✓/✗ against the reference line. `low` = 6× CPU throttle.
 
