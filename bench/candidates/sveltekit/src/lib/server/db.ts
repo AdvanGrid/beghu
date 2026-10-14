@@ -4,7 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { building } from '$app/env';
 import { MIRROR_PATH, GITHUB_LATENCY_MS } from '$app/env/private';
-import type { Detail, Filter, Label, Row } from '#lib/types.ts';
+import { PAGE, type Detail, type Filter, type Label, type Row } from '#lib/types.ts';
 
 // The build imports this module to analyse routes, with no mirror to open.
 const db = new DatabaseSync(building ? ':memory:' : MIRROR_PATH);
@@ -43,7 +43,7 @@ const toRow = (r: RawRow): Row => ({
 	assignees: JSON.parse(r.assignees)
 });
 
-export function listIssues(f: Filter, offset = 0, limit = 50): Row[] {
+export function listIssues(f: Filter, offset = 0, limit = PAGE): Row[] {
 	const where = ["i.kind = 'issue'", 'i.is_stub = 0', 'i.state = ?'];
 	const args: (string | number)[] = [f.state];
 	for (const name of f.labels) {

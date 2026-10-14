@@ -1,3 +1,6 @@
+// Rows per page: the first screen plus a little, so loads and filter changes render few rows.
+export const PAGE = 25;
+
 export type Label = { name: string; color: string };
 
 export type Row = {

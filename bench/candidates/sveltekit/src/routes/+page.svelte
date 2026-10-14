@@ -5,10 +5,9 @@
 	import Detail from '#lib/Detail.svelte';
 	import LabelChip from '#lib/LabelChip.svelte';
 	import ThemeSwitch from '#lib/ThemeSwitch.svelte';
-	import { filterToParams, type Detail as Issue, type Filter, type Row } from '#lib/types.ts';
+	import { PAGE, filterToParams, type Detail as Issue, type Filter, type Row } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
-	const PAGE = 50;
 	let { data }: PageProps = $props();
 
 	// Pages loaded on scroll. A new first page (filter change, live update) starts them over.
@@ -44,7 +43,7 @@
 	// Re-attaches whenever the list grows, so a sentinel still in range asks for the next page.
 	function sentinel(node: HTMLElement) {
 		void rows.length;
-		const io = new IntersectionObserver(([e]) => e.isIntersecting && loadMore(), { rootMargin: '1500px' });
+		const io = new IntersectionObserver(([e]) => e.isIntersecting && loadMore(), { rootMargin: '600px' });
 		io.observe(node);
 		return () => io.disconnect();
 	}

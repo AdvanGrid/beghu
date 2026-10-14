@@ -5,4 +5,4 @@ import { filterFromUrl } from '#lib/types.ts';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = ({ url }) =>
-	json(listIssues(filterFromUrl(url.searchParams), Number(url.searchParams.get('offset') ?? 0), 50));
+	json(listIssues(filterFromUrl(url.searchParams), Number(url.searchParams.get('offset') ?? 0)));
