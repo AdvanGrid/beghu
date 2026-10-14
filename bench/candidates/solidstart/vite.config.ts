@@ -5,6 +5,6 @@ import { solidStart } from "@solidjs/start/config";
 
 export default defineConfig({
   plugins: [solidStart(),
-    nitro()
+    nitro({ compressPublicAssets: { gzip: true, brotli: true } })
   ]
 });

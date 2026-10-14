@@ -1,6 +1,7 @@
 import { Title } from "@solidjs/meta";
-import { createAsync, revalidate, useSearchParams, useSubmissions, type RouteDefinition } from "@solidjs/router";
-import { createMemo, createSignal, For, on, onCleanup, onMount, Show, Suspense, createComputed } from "solid-js";
+import { A, createAsync, revalidate, usePreloadRoute, useSearchParams, useSubmissions, type RouteDefinition } from "@solidjs/router";
+import { createVirtualizer } from "@tanstack/solid-virtual";
+import { createComputed, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, Suspense } from "solid-js";
 import { addLabel, facets, issue, issues, PAGE, type Filter, type Row } from "~/lib/api";
 
 type Params = { state?: string; labels?: string; assignees?: string; q?: string; open?: string };
@@ -16,19 +17,57 @@ const toFilter = (p: Params): Filter => ({
 export const route = {
   preload: ({ location }) => {
     facets();
-    issues(toFilter(location.query as Params), 0);
+    const query = location.query as Params;
+    issues(toFilter(query), 0);
+    if (query.open) issue(query.open);
   },
 } satisfies RouteDefinition;
 
 export default function Home() {
   const [params, setParams] = useSearchParams<Params>();
   const filter = createMemo(() => toFilter(params), undefined, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
-  const [pages, setPages] = createSignal(1);
-  createComputed(on(filter, () => setPages(1), { defer: true }));
-
   const facetList = createAsync(() => facets());
+  // The first page is server-rendered and follows the filter through the router. Later pages load
+  // as the window nears the end, and the virtualizer renders only the rows on screen.
   const first = createAsync(() => issues(filter(), 0));
-  const last = createAsync(() => issues(filter(), pages() - 1));
+  const [more, setMore] = createSignal<Row[][]>([]);
+  createComputed(on(filter, () => setMore([]), { defer: true }));
+  const rows = createMemo(() => (first() ?? []).concat(...more()));
+
+  let loading = false;
+  async function loadMore() {
+    const last = more().at(-1) ?? first();
+    if (loading || !last || last.length < PAGE) return;
+    loading = true;
+    const f = filter();
+    const n = more().length + 1;
+    try {
+      const page = await issues(f, n);
+      if (f === filter() && more().length === n - 1) setMore([...more(), page]);
+    } finally {
+      loading = false;
+    }
+  }
+  async function refreshMore() {
+    const f = filter();
+    const pages = await Promise.all(more().map((_, i) => issues(f, i + 1)));
+    if (f === filter()) setMore(pages);
+  }
+
+  let scrollEl: HTMLDivElement | undefined;
+  const virt = createVirtualizer({
+    get count() {
+      return rows().length;
+    },
+    getScrollElement: () => scrollEl ?? null,
+    estimateSize: () => 36,
+    overscan: 10,
+    initialRect: { width: 640, height: 704 },
+  });
+  createEffect(() => {
+    const last = virt.getVirtualItems().at(-1);
+    if (last && last.index >= rows().length - 10) loadMore();
+  });
 
   const [hydrated, setHydrated] = createSignal(false);
   onMount(() => {
@@ -36,21 +75,32 @@ export default function Home() {
     const es = new EventSource("/api/events");
     es.onmessage = (e) => {
       const { ids } = JSON.parse(e.data) as { ids: string[] };
-      revalidate(issues.key);
+      revalidate(issues.key).then(refreshMore);
       if (params.open && ids.includes(params.open)) revalidate(issue.keyFor(params.open));
     };
     onCleanup(() => es.close());
   });
 
-  const toggle = (key: "labels" | "assignees", value: string) => {
-    const cur = split(params[key]);
-    const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
-    setParams({ [key]: next.length ? next.join(",") : undefined });
+  // Opening an issue is a navigation. Preloading its route on hover starts the detail fetch before
+  // the click, the way <A> links preload.
+  const preloadRoute = usePreloadRoute();
+  const preloadIssue = (id: string) => {
+    const q = new URLSearchParams(location.search);
+    q.set("open", id);
+    preloadRoute(`/?${q}`, { preloadData: true });
   };
 
-  const onScroll = (e: Event) => {
-    const el = e.currentTarget as HTMLElement;
-    if (el.scrollTop + el.clientHeight > el.scrollHeight - 1500 && last()?.length === PAGE) setPages(pages() + 1);
+  // Filters are links to the filtered URL, so the router preloads the list on hover and focus.
+  const hrefWith = (patch: Partial<Params>) => {
+    const q = new URLSearchParams();
+    const next: Params = { ...params, ...patch, open: undefined };
+    for (const [k, v] of Object.entries(next)) if (v) q.set(k, v);
+    return q.size ? `/?${q}` : "/";
+  };
+  const toggled = (key: "labels" | "assignees", value: string) => {
+    const cur = split(params[key]);
+    const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+    return hrefWith({ [key]: next.length ? next.join(",") : undefined });
   };
 
   return (
@@ -60,9 +110,9 @@ export default function Home() {
         <div>
           <For each={["open", "closed"]}>
             {(s) => (
-              <button aria-pressed={filter().state === s} data-bench="filter-state" data-value={s} onClick={() => setParams({ state: s === "open" ? undefined : s })}>
+              <A class="chip" noScroll aria-pressed={filter().state === s} data-bench="filter-state" data-value={s} href={hrefWith({ state: s === "open" ? undefined : s })}>
                 {s}
-              </button>
+              </A>
             )}
           </For>
         </div>
@@ -77,38 +127,36 @@ export default function Home() {
         <div class="chips">
           <For each={facetList()?.labels}>
             {(l) => (
-              <button aria-pressed={filter().labels.includes(l)} data-bench="filter-label" data-value={l} onClick={() => toggle("labels", l)}>
+              <A class="chip" noScroll aria-pressed={filter().labels.includes(l)} data-bench="filter-label" data-value={l} href={toggled("labels", l)}>
                 {l}
-              </button>
+              </A>
             )}
           </For>
         </div>
         <div class="chips">
           <For each={facetList()?.assignees}>
             {(a) => (
-              <button aria-pressed={filter().assignees.includes(a)} data-bench="filter-assignee" data-value={a} onClick={() => toggle("assignees", a)}>
+              <A class="chip" noScroll aria-pressed={filter().assignees.includes(a)} data-bench="filter-assignee" data-value={a} href={toggled("assignees", a)}>
                 @{a}
-              </button>
+              </A>
             )}
           </For>
         </div>
       </header>
       <main>
-        <ul
+        <div
           id="list"
+          ref={scrollEl}
           data-bench="list"
           data-bench-ready={hydrated() && first() ? "" : undefined}
           data-bench-empty={first()?.length === 0 ? "" : undefined}
-          onScroll={onScroll}
         >
-          <For each={Array.from({ length: pages() }, (_, i) => i)}>
-            {(page) => (
-              <Suspense>
-                <IssuePage filter={filter()} page={page} onOpen={(id) => setParams({ open: id })} />
-              </Suspense>
-            )}
-          </For>
-        </ul>
+          <ul style={{ height: `${virt.getTotalSize()}px` }}>
+            <For each={virt.getVirtualItems()}>
+              {(v) => <Show when={rows()[v.index]}>{(row) => <IssueRow row={row()} top={v.start} onPreload={preloadIssue} onOpen={(id) => setParams({ open: id })} />}</Show>}
+            </For>
+          </ul>
+        </div>
         <aside id="detail">
           <Show when={params.open}>
             {(id) => (
@@ -123,14 +171,16 @@ export default function Home() {
   );
 }
 
-function IssuePage(props: { filter: Filter; page: number; onOpen: (id: string) => void }) {
-  const rows = createAsync(() => issues(props.filter, props.page));
-  return <For each={rows()}>{(r) => <IssueRow row={r} onOpen={props.onOpen} />}</For>;
-}
-
-function IssueRow(props: { row: Row; onOpen: (id: string) => void }) {
+function IssueRow(props: { row: Row; top: number; onPreload: (id: string) => void; onOpen: (id: string) => void }) {
   return (
-    <li data-bench="row" data-id={props.row.id} onClick={() => props.onOpen(props.row.id)}>
+    <li
+      data-bench="row"
+      data-id={props.row.id}
+      style={{ transform: `translateY(${props.top}px)` }}
+      onPointerEnter={() => props.onPreload(props.row.id)}
+      onPointerDown={() => props.onPreload(props.row.id)}
+      onClick={() => props.onOpen(props.row.id)}
+    >
       <span class="repo">
         {props.row.repo}#{props.row.number}
       </span>

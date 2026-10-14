@@ -7,7 +7,7 @@ import * as server from "./server";
 
 export type { Filter, Row, Detail, Label } from "./db";
 
-export const PAGE = 100;
+export const PAGE = 50;
 
 export const facets = query(() => server.getFacets(), "facets");
 export const issues = query((filter: Filter, page: number) => server.getIssues(filter, page * PAGE, PAGE), "issues");
