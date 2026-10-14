@@ -38,3 +38,4 @@ input { width: 220px; }
 .label { display: inline-block; border-radius: 999px; padding: 0 8px; margin-right: 4px; border: 1px solid var(--line); }
 .label.pending { border-style: dashed; }
 .comment { border-top: 1px solid var(--line); padding: 8px 0; }
+.spacer { list-style: none; padding: 0; border: 0; }

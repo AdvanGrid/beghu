@@ -1,9 +1,10 @@
 //! topcoat candidate: server-rendered, filtered on the server, top of the list only.
 //!
-//! The list is a shard that owns the filter signals and a `limit`. A filter change or a scroll
-//! near the bottom re-renders the shard on the server. Its rows sit in a `live!` region that stays
-//! connected over topcoat's WebSocket and re-emits when a webhook or write lands. Detail is a
-//! second shard keyed by the open issue id.
+//! The list is a shard that owns the filter signals and the end of a row window. A filter change,
+//! or a scroll past the rendered window, re-renders the shard on the server: at most 40 rows
+//! between two spacers, so the browser's morph and hydrate cost stays flat however deep you go.
+//! The rows sit in a `live!` region that stays connected over topcoat's WebSocket and re-emits
+//! when a webhook or write lands. Detail is a second shard keyed by the open issue id.
 
 mod db;
 
@@ -20,6 +21,10 @@ use topcoat::{
 };
 
 const CHUNK: usize = 20;
+/// Rows rendered at most: two chunks, which always cover the viewport (under 20 rows).
+const WINDOW: usize = 40;
+/// Fixed row height in px (see app.css), so spacers can stand in for unrendered rows.
+const ROW_PX: usize = 36;
 
 struct Latency(Duration);
 
@@ -82,7 +87,8 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
     let db = app_context::<Db>(cx);
     let state = signal(cx, || "open".to_owned());
     let q = signal(cx, String::new);
-    let limit = signal(cx, || CHUNK);
+    // End of the rendered window: the chunk boundary past the bottom visible row.
+    let end = signal(cx, || CHUNK);
     // Flips to true in the browser once the runtime has hydrated the shard.
     let hydrated = signal(cx, || false);
     let labels: Vec<_> = db.labels.iter().map(|l| (l.clone(), signal(&cx.keyed(l.as_str()), || false))).collect();
@@ -95,9 +101,12 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
         assignees: assignees.iter().filter(|(_, s)| s.get()).map(|(a, _)| a.clone()).collect(),
         q: q.get().chars().take(200).collect(),
     };
-    let limit_n = limit.get().clamp(CHUNK, 5_000);
+    let end_n = (end.get() / CHUNK * CHUNK).max(CHUNK);
+    let first_n = end_n.saturating_sub(WINDOW);
     let q_value = filter.q.clone();
     let current_state = filter.state.clone();
+    // The header's handlers borrow `end`; the live region moves its own handle.
+    let win = end.clone();
 
     Ok(view! {
         <header class="filters">
@@ -107,7 +116,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-state"
                         data-value=(s)
                         aria-pressed=(if current_state == s { "true" } else { "false" })
-                        @click=$(|_e| state.set(s.to_owned()))
+                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); state.set(s.to_owned()) })
                     >(s)</button>
                 }
                 <input
@@ -116,7 +125,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                     placeholder="Search titles"
                     autocomplete="off"
                     value=(q_value)
-                    @input=$(|e: Event| q.set(e.target.value))
+                    @input=$(|e: Event| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); q.set(e.target.value) })
                 >
             </div>
             <div class="chips">
@@ -125,7 +134,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-label"
                         data-value=(name.clone())
                         aria-pressed=(if on.get_untracked() { "true" } else { "false" })
-                        @click=$(|_e| on.toggle())
+                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
                     >(name)</button>
                 }
             </div>
@@ -135,7 +144,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-assignee"
                         data-value=(login.clone())
                         aria-pressed=(if on.get_untracked() { "true" } else { "false" })
-                        @click=$(|_e| on.toggle())
+                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
                     >"@" (login)</button>
                 }
             </div>
@@ -144,29 +153,42 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
         (live! {
             let mut changes = db.subscribe();
             loop {
-                let page = db.list(&filter, limit_n)?;
+                let page = db.list(&filter, first_n, end_n - first_n)?;
                 let total = page.total;
+                let below = total.saturating_sub(first_n + page.rows.len()) * ROW_PX;
                 let token = emit! {
                     <section class="list-pane">
                         <p class="count">
-                            (page.rows.len().min(total)) " of " (total)
+                            (total) " issues"
                         </p>
                         <ul
                             data-bench="list"
                             data-bench-empty=(total == 0)
-                            data-limit=(limit_n)
-                            data-total=(total)
+                            data-end=(end_n)
                             :data-bench-ready=$({ let h = hydrated.get(); raw!("(${h}, true)", h) })
+                            // One delegated handler instead of one compiled handler per row.
+                            @click=$(|_e| {
+                                let id = raw!("cx.hydrate({ t: 'Option', v: (r => r && { t: 'i64', bits: 64, v: r.dataset.id })(event.target.closest('[data-bench=row]')) })", None::<i64>);
+                                if id.is_some() {
+                                    open.set(id)
+                                }
+                            })
                             @scroll=$(|_e| {
-                                // A plain JS boolean has no `dehydrate()`; `if` needs a runtime value.
-                                if raw!("cx.hydrate((l => l.scrollTop + l.clientHeight > l.scrollHeight - 1500 && l.querySelectorAll('[data-bench=row]').length >= +l.dataset.limit && +l.dataset.limit < +l.dataset.total)(document.querySelector('[data-bench=list]')))", false) {
-                                    limit.set(limit.get() + 20)
+                                // The chunk boundary past the bottom visible row. While one window request is in
+                                // flight, hold it: topcoat aborts a pending render for a newer one, so
+                                // under continuous scrolling no window would ever land. The marker is
+                                // dropped when the server's HTML morphs in (it has no data-pending).
+                                // `cx.hydrate` turns the JS number into a runtime usize.
+                                let want = raw!("cx.hydrate({ t: 'usize', bits: 64, v: String((l => { if (l.dataset.pending) return +l.dataset.pending; const w = Math.max(20, Math.ceil((l.scrollTop + l.clientHeight) / 36 / 20) * 20); if (w !== +l.dataset.end) l.dataset.pending = w; return w; })(document.querySelector('[data-bench=list]'))) })", 0usize);
+                                if want != win.get() {
+                                    win.set(want)
                                 }
                             })
                         >
+                            <li class="spacer" aria-hidden="true" style=(format!("height:{}px", first_n * ROW_PX))></li>
                             for row in page.rows {
                                 let id = row.id;
-                                <li id=(format!("i{id}")) data-bench="row" data-id=(id) @click=$(|_e| open.set(Some(id)))>
+                                <li id=(format!("i{id}")) data-bench="row" data-id=(id)>
                                     <span class="repo">(row.repo) "#" (row.number)</span>
                                     <span data-bench="title">(row.title)</span>
                                     <span class="meta">
@@ -176,6 +198,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                                     </span>
                                 </li>
                             }
+                            <li class="spacer" aria-hidden="true" style=(format!("height:{below}px"))></li>
                         </ul>
                     </section>
                 }?;

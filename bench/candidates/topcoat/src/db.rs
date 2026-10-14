@@ -1,7 +1,7 @@
 //! The SQLite mirror: list and detail queries, webhook writes and the label write. One connection
 //! behind a mutex; every query here is a few milliseconds, so nothing holds it across an await.
 
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use serde_json::Value as Json;
@@ -10,6 +10,9 @@ use tokio::sync::broadcast;
 pub struct Db {
     conn: Mutex<Connection>,
     changes: broadcast::Sender<Vec<i64>>,
+    /// Match counts per filter, cleared on every write. A scroll re-renders the window but
+    /// keeps the filter, and a count over 50k rows costs tens of ms.
+    counts: Mutex<HashMap<String, usize>>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
 }
@@ -84,7 +87,9 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;
-             CREATE INDEX IF NOT EXISTS items_list ON items(state, updated_at DESC, id DESC) WHERE kind = 'issue' AND is_stub = 0;
+             -- The fixture's items_list doesn't cover is_stub, so counts read every row. Partial and
+             -- with the title, so counts and searches stay inside the index.
+             CREATE INDEX IF NOT EXISTS bench_issue_list ON items(state, updated_at DESC, id DESC, title) WHERE kind = 'issue' AND is_stub = 0;
              CREATE INDEX IF NOT EXISTS comments_item ON comments(item_id, created_at, id);
              CREATE INDEX IF NOT EXISTS item_labels_label ON item_labels(label_id);
              CREATE INDEX IF NOT EXISTS item_assignees_user ON item_assignees(user_id);",
@@ -97,7 +102,7 @@ impl Db {
             .prepare("SELECT DISTINCT u.login FROM item_assignees ia JOIN users u ON u.id = ia.user_id ORDER BY u.id")?
             .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        Ok(Self { conn: Mutex::new(conn), changes: broadcast::channel(256).0, labels, assignees })
+        Ok(Self { conn: Mutex::new(conn), changes: broadcast::channel(256).0, counts: Mutex::default(), labels, assignees })
     }
 
     /// Issue ids touched by each committed change.
@@ -105,7 +110,7 @@ impl Db {
         self.changes.subscribe()
     }
 
-    pub fn list(&self, f: &Filter, limit: usize) -> rusqlite::Result<Page> {
+    pub fn list(&self, f: &Filter, offset: usize, limit: usize) -> rusqlite::Result<Page> {
         let mut wh = vec!["i.kind = 'issue'".to_owned(), "i.is_stub = 0".to_owned(), "i.state = ?".to_owned()];
         let mut args: Vec<Value> = vec![f.state.clone().into()];
         for l in &f.labels {
@@ -122,10 +127,20 @@ impl Db {
         }
         let wh = wh.join(" AND ");
         let conn = self.conn.lock().unwrap();
-        let total = conn.prepare_cached(&format!("SELECT count(*) FROM items i WHERE {wh}"))?.query_row(params_from_iter(&args), |r| r.get::<_, i64>(0))? as usize;
+        let key = format!("{wh}{args:?}");
+        let cached = self.counts.lock().unwrap().get(&key).copied();
+        let total = match cached {
+            Some(n) => n,
+            None => {
+                let n = conn.prepare_cached(&format!("SELECT count(*) FROM items i WHERE {wh}"))?.query_row(params_from_iter(&args), |r| r.get::<_, i64>(0))? as usize;
+                self.counts.lock().unwrap().insert(key, n);
+                n
+            }
+        };
         args.push((limit as i64).into());
+        args.push((offset as i64).into());
         let rows = conn
-            .prepare_cached(&format!("{ROW} WHERE {wh} ORDER BY i.updated_at DESC, i.id DESC LIMIT ?"))?
+            .prepare_cached(&format!("{ROW} WHERE {wh} ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"))?
             .query_map(params_from_iter(&args), |r| {
                 Ok(Row {
                     id: r.get(0)?,
@@ -173,6 +188,7 @@ impl Db {
         conn.execute("INSERT OR IGNORE INTO item_labels VALUES (?, ?, 0)", (id, label))?;
         conn.execute("UPDATE items SET updated_at = ? WHERE id = ?", (now(), id))?;
         drop(conn);
+        self.counts.lock().unwrap().clear();
         let _ = self.changes.send(vec![id]);
         Ok(true)
     }
@@ -217,6 +233,7 @@ impl Db {
         tx.commit()?;
         drop(conn);
         if !ids.is_empty() {
+            self.counts.lock().unwrap().clear();
             let _ = self.changes.send(ids);
         }
         Ok(())

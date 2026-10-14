@@ -13,15 +13,20 @@ How the data path works:
 
 - **Server.** One Rust binary. `src/db.rs` holds the mirror behind a mutex and a tokio broadcast
   channel of changed ids. `/webhook` and `/healthz` are plain `#[route]`s. Filtering, search and
-  counting run in SQLite on every render.
+  counting run in SQLite on every render, on a partial covering index (`bench_issue_list`); counts
+  are cached per filter and the cache is dropped on every change.
 - **List.** `issue_list` is a `#[shard]` that owns the filter state as signals (state, search
   text, one bool per label and assignee) and a `limit`. Clicking a chip or typing flips a signal
   in the browser; the shard reads them on the server, so topcoat re-renders it and morphs the
   result in. The rows sit in a `live!` region that calls `connected(cx)`, so after the first
   render the shard keeps a run open on topcoat's WebSocket and re-emits the rows whenever the
-  broadcast fires. Filter re-renders travel over that socket too. Rows have stable `id`s.
-- **Scroll.** Only the first 20 rows render. A `@scroll` handler bumps `limit` by 20 when the list
-  nears its end, and the shard re-renders with the longer list.
+  broadcast fires. Filter re-renders travel over that socket too. Rows have stable `id`s. One
+  delegated `@click` on the list opens a row, instead of a compiled handler per row.
+- **Scroll.** The shard renders a window of at most 40 rows (36 px each) between two spacer `<li>`s.
+  A `@scroll` handler sets the window's end signal to the chunk boundary past the bottom visible
+  row, and the shard re-renders that window. Only one window request is in flight at a time: the
+  runtime aborts a pending render when a newer one starts, so under continuous scrolling none would
+  ever land.
 - **Detail.** `issue_detail` is a second shard taking the open issue id from a page-level signal
   that row clicks set. It is also a connected `live!` region, re-emitting when that issue changes.
 - **Write.** Adding a label calls a `#[procedure]`. The chip for every label the issue could gain
@@ -29,3 +34,16 @@ How the data path works:
   the procedure (and its stand-in GitHub latency) returns.
 - **Push.** No app-owned WebSocket or SSE route: `live!` with `connected(cx)` over the runtime's
   socket carries every live update.
+
+## Optimisation pass
+
+Change log, measured locally on the release build with 6× CPU throttle, from input event to frame:
+
+| Change | Target | Before → after | Kind |
+|---|---|---|---|
+| Delegated row click (`cx.hydrate` on a raw JS value) | filter, scroll | filter ~137 → ~127 ms; worst scroll long task 572 → 437 ms | fights the framework: `cx.hydrate` is undocumented |
+| Server-side window of 40 rows plus one-in-flight guard | scroll | row 500 in 9.6 s with 13 long tasks → 3.4 s with 1 (max 104 ms) | documented shards and signals; the guard works around abort-latest |
+| Partial covering index plus count cache | filter, scroll at 50k | filter ~240 → ~140 ms at 50k; scroll long tasks → 0 | plain SQLite |
+
+The fixture already ships an index named `items_list`, so the idiomatic pass's
+`CREATE INDEX IF NOT EXISTS items_list` was a silent no-op; the new index has its own name.
