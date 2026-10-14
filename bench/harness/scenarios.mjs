@@ -156,7 +156,9 @@ export const scenarios = [
       await waitResult(page, 'the bug filter');
 
       const id = expected()[4];
-      const n = state.edited.length;
+      // A counter, not edited.length: once edits re-target an already edited row, the length
+      // stops growing and two edits would share an updated_at, tying their order.
+      const n = (state.edits = (state.edits ?? 0) + 1);
       const title = `Live update ${n} ${Math.random().toString(36).slice(2, 8)}`;
       const updatedAt = new Date(h.expect.fixtureNow() + 86_400_000 + n * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
       await arm(page, 'title', { text: title }, 'date');
