@@ -1,8 +1,10 @@
 //! topcoat candidate: server-rendered, filtered on the server, top of the list only.
 //!
 //! The list is a shard that owns the filter signals and the end of a row window. A filter change,
-//! or a scroll past the rendered window, re-renders the shard on the server: at most 40 rows
-//! between two spacers, so the browser's morph and hydrate cost stays flat however deep you go.
+//! or a scroll near the end of the rendered window, re-renders the shard on the server: at most 40
+//! rows below a spacer that stands in for the rows scrolled past, so the browser's morph and
+//! hydrate cost stays flat however deep you go. There is no spacer below: the list can't be
+//! scrolled past rows the server hasn't sent yet.
 //! The rows sit in a `live!` region that stays connected over topcoat's WebSocket and re-emits
 //! when a webhook or write lands. Detail is a second shard keyed by the open issue id.
 
@@ -21,9 +23,9 @@ use topcoat::{
 };
 
 const CHUNK: usize = 20;
-/// Rows rendered at most: two chunks, which always cover the viewport (under 20 rows).
+/// Rows rendered at most: two chunks, the viewport (under 20 rows) and one chunk ahead.
 const WINDOW: usize = 40;
-/// Fixed row height in px (see app.css), so spacers can stand in for unrendered rows.
+/// Fixed row height in px (see app.css), so a spacer can stand in for the rows scrolled past.
 const ROW_PX: usize = 36;
 
 struct Latency(Duration);
@@ -87,7 +89,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
     let db = app_context::<Db>(cx);
     let state = signal(cx, || "open".to_owned());
     let q = signal(cx, String::new);
-    // End of the rendered window: the chunk boundary past the bottom visible row.
+    // End of the rendered window: one chunk past the bottom visible row's chunk.
     let end = signal(cx, || CHUNK);
     // Flips to true in the browser once the runtime has hydrated the shard.
     let hydrated = signal(cx, || false);
@@ -155,7 +157,6 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
             loop {
                 let page = db.list(&filter, first_n, end_n - first_n)?;
                 let total = page.total;
-                let below = total.saturating_sub(first_n + page.rows.len()) * ROW_PX;
                 let token = emit! {
                     <section class="list-pane">
                         <p class="count">
@@ -174,12 +175,12 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                                 }
                             })
                             @scroll=$(|_e| {
-                                // The chunk boundary past the bottom visible row. While one window request is in
+                                // One chunk past the chunk boundary below the bottom visible row. While one window request is in
                                 // flight, hold it: topcoat aborts a pending render for a newer one, so
                                 // under continuous scrolling no window would ever land. The marker is
                                 // dropped when the server's HTML morphs in (it has no data-pending).
                                 // `cx.hydrate` turns the JS number into a runtime usize.
-                                let want = raw!("cx.hydrate({ t: 'usize', bits: 64, v: String((l => { if (l.dataset.pending) return +l.dataset.pending; const w = Math.max(20, Math.ceil((l.scrollTop + l.clientHeight) / 36 / 20) * 20); if (w !== +l.dataset.end) l.dataset.pending = w; return w; })(document.querySelector('[data-bench=list]'))) })", 0usize);
+                                let want = raw!("cx.hydrate({ t: 'usize', bits: 64, v: String((l => { if (l.dataset.pending) return +l.dataset.pending; const w = Math.ceil((l.scrollTop + l.clientHeight) / 36 / 20) * 20 + 20; if (w !== +l.dataset.end) l.dataset.pending = w; return w; })(document.querySelector('[data-bench=list]'))) })", 0usize);
                                 if want != win.get() {
                                     win.set(want)
                                 }
@@ -198,7 +199,6 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                                     </span>
                                 </li>
                             }
-                            <li class="spacer" aria-hidden="true" style=(format!("height:{below}px"))></li>
                         </ul>
                     </section>
                 }?;
