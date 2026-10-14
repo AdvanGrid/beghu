@@ -16,4 +16,4 @@ Throwaway: it exists to be measured, not to start the real app.
 
 Run it: `./bench/run axum-solid ...` from the repo root. For local dev, `cargo run` in `server/`
 with `MIRROR_PATH` pointing at a copy of `bench/data/mirror-20k.db`, and `npm run dev` in `web/`
-(Vite proxies `/api` and `/events` to port 8080).
+(Vite proxies `/api` and `/events` to port 8080, or to `API_URL` if set).
