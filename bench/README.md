@@ -12,6 +12,9 @@ Everything here is throwaway: it exists to compare candidates, not to start the 
 ./bench/run stub --scenarios filter,live --iterations 5 --no-video   # a quick check while building
 ```
 
+Runs queue on a host-wide lock (`/tmp/beghu-bench.lock`), because two runs on one host skew each
+other. `BENCH_NO_LOCK=1` skips it, for quick checks only.
+
 The first run installs Playwright and Chromium, generates the fixture (about 15 s for 20k and 40 s
 for 50k) and builds the candidate's image.
 

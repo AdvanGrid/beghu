@@ -4,4 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 if [ ! -d node_modules ]; then npm install --silent && npx playwright install chromium; fi
 export NODE_NO_WARNINGS=1
+# Runs share one host, so a second run would skew both. Hold a host-wide lock and queue behind
+# any run already going. BENCH_NO_LOCK=1 skips it (only for quick checks you won't record).
+if [ -z "${BENCH_NO_LOCK:-}" ]; then
+  exec 9>/tmp/beghu-bench.lock
+  flock -n 9 || { echo "another bench run holds /tmp/beghu-bench.lock; waiting for it..." >&2; flock 9; }
+fi
 exec node harness/run.mjs "$@"
