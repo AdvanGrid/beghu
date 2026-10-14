@@ -1,0 +1,18 @@
+{
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", ".output"],
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "target": "ES2023",
+    "types": ["node", "vite/client"],
+    "paths": { "~/*": ["./src/*"] },
+    "noEmit": true
+  }
+}
