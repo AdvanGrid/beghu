@@ -7,7 +7,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/root/.cache \
-    cargo leptos build --release \
+    cargo leptos build --release --precompress \
  && mkdir /out && cp target/release/bench-leptos /out/ && cp -r target/site /out/site
 
 FROM docker.io/library/debian:bookworm-slim

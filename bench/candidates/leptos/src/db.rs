@@ -62,23 +62,26 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
     })
 }
 
-pub fn list(c: &mut Connection, f: &Filter, limit: u32) -> rusqlite::Result<Vec<Row>> {
+pub fn list(c: &mut Connection, f: &Filter, offset: u32, limit: u32) -> rusqlite::Result<Vec<Row>> {
     let mut sql = format!("{ROW} WHERE i.kind = 'issue' AND i.is_stub = 0 AND i.state = ?");
     let mut args: Vec<Value> = vec![(if f.closed { "closed" } else { "open" }).to_string().into()];
     for name in &f.labels {
-        sql += " AND EXISTS (SELECT 1 FROM item_labels il JOIN labels l ON l.id = il.label_id WHERE il.item_id = i.id AND l.name = ?)";
+        // IN, not a correlated EXISTS: SQLite builds the id set once (with a bloom filter) instead of
+        // probing per scanned row, which on a cold page cache took seconds at 50k.
+        sql += " AND i.id IN (SELECT il.item_id FROM item_labels il WHERE il.label_id IN (SELECT id FROM labels WHERE name = ?))";
         args.push(name.clone().into());
     }
     for login in &f.assignees {
-        sql += " AND EXISTS (SELECT 1 FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = i.id AND u.login = ?)";
+        sql += " AND i.id IN (SELECT ia.item_id FROM item_assignees ia WHERE ia.user_id IN (SELECT id FROM users WHERE login = ?))";
         args.push(login.clone().into());
     }
     if !f.q.is_empty() {
         sql += " AND instr(lower(i.title), lower(?)) > 0";
         args.push(f.q.clone().into());
     }
-    sql += " ORDER BY i.updated_at DESC, i.id DESC LIMIT ?";
+    sql += " ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?";
     args.push(i64::from(limit).into());
+    args.push(i64::from(offset).into());
     let mut st = c.prepare_cached(&sql)?;
     st.query_map(params_from_iter(args), row)?.collect()
 }

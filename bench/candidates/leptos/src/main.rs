@@ -59,12 +59,13 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("listening on http://{addr}");
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-        })
-        .await
-        .unwrap();
+    // Open SSE streams never end, so a graceful shutdown would hang: exit on SIGTERM instead.
+    tokio::spawn(async {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        term.recv().await;
+        std::process::exit(0);
+    });
+    axum::serve(listener, app.into_make_service()).await.unwrap();
 }
 
 #[cfg(not(feature = "ssr"))]

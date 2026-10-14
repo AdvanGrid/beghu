@@ -75,14 +75,17 @@ pub fn App() -> impl IntoView {
 fn IssuesPage() -> impl IntoView {
     let live = expect_context::<Live>();
     let filter = RwSignal::new(Filter::default());
-    let limit = RwSignal::new(PAGE);
+    // Pages of rows loaded so far. Each page is its own resource, so scrolling only renders the
+    // new page instead of rebuilding the whole list.
+    let pages = RwSignal::new(1u32);
     // A new filter starts again from the first page.
     let set_filter = move |f: &dyn Fn(&mut Filter)| {
         filter.update(|v| f(v));
-        limit.set(PAGE);
+        pages.set(1);
     };
 
-    let rows = Resource::new(move || (filter.get(), limit.get(), live.tick.get()), |(f, l, _)| list_issues(f, l));
+    let page = move |i: u32| Resource::new(move || (filter.get(), live.tick.get()), move |(f, _)| list_issues(f, i * PAGE, PAGE));
+    let first = page(0);
     let facets = Resource::new(|| (), |_| get_facets());
 
     let hydrated = RwSignal::new(false);
@@ -94,12 +97,12 @@ fn IssuesPage() -> impl IntoView {
         if el.scroll_top() + el.client_height() < el.scroll_height() - 1500 {
             return;
         }
-        let loaded = rows.with_untracked(|r| r.as_ref().and_then(|r| r.as_ref().ok()).map(Vec::len)).unwrap_or(0);
-        if loaded as u32 >= limit.get_untracked() {
-            limit.update(|l| *l += PAGE);
+        // Only ask for another page once the last one came back full.
+        if el.child_element_count() >= pages.get_untracked() * PAGE {
+            pages.update(|p| *p += 1);
         }
     };
-    let empty = move || matches!(rows.get(), Some(Ok(v)) if v.is_empty());
+    let empty = move || matches!(first.get(), Some(Ok(v)) if v.is_empty());
 
     let state_button = move |closed: bool| {
         let name = if closed { "closed" } else { "open" };
@@ -178,20 +181,31 @@ fn IssuesPage() -> impl IntoView {
                 data-bench-ready=move || hydrated.get().then_some("")
                 data-bench-empty=move || empty().then_some("")
             >
-                <Transition>
-                    {move || Suspend::new(async move {
-                        let rows = rows.await.unwrap_or_default();
-                        view! {
-                            // Keyed on updated_at too, so an edited row re-renders.
-                            <For each=move || rows.clone() key=|r| (r.id, r.updated_at.clone()) children=row_view />
-                        }
-                    })}
-                </Transition>
+                <For
+                    each=move || 0..pages.get()
+                    key=|i| *i
+                    children=move |i| view! { <Page rows=if i == 0 { first } else { page(i) } /> }
+                />
             </div>
             <section class="detail">
                 <Outlet />
             </section>
         </main>
+    }
+}
+
+#[component]
+fn Page(rows: Resource<Result<Vec<Row>, ServerFnError>>) -> impl IntoView {
+    view! {
+        <Transition>
+            {move || Suspend::new(async move {
+                let rows = rows.await.unwrap_or_default();
+                view! {
+                    // Keyed on updated_at too, so an edited row re-renders.
+                    <For each=move || rows.clone() key=|r| (r.id, r.updated_at.clone()) children=row_view />
+                }
+            })}
+        </Transition>
     }
 }
 

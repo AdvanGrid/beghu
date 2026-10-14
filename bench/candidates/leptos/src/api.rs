@@ -53,8 +53,8 @@ pub struct Facets {
 }
 
 #[server(input = Json)]
-pub async fn list_issues(filter: Filter, limit: u32) -> Result<Vec<Row>, ServerFnError> {
-    crate::db::run(move |c| crate::db::list(c, &filter, limit.min(1000))).await
+pub async fn list_issues(filter: Filter, offset: u32, limit: u32) -> Result<Vec<Row>, ServerFnError> {
+    crate::db::run(move |c| crate::db::list(c, &filter, offset, limit.min(1000))).await
 }
 
 #[server]
