@@ -163,7 +163,7 @@ Optimised build, against the lines it still misses, all on `low` (6× CPU).
 - **Defaults that hurt this workload.** Hover preloading (`data-sveltekit-preload-data="hover"`
   from the template) starts a request for every row the pointer crosses while scrolling. It is
   easy to switch off, but it is on by default.
-- **No list virtualisation in the box.** Appending 100 rows is a 200–260 ms task at 6× CPU
+- **No list virtualisation in the box.** Appending 100 rows is a 200–330 ms task at 6× CPU
   (about 1.3 ms per row through Svelte's keyed `{#each}`). Slicing and per-page blocks didn't
   help. The fix is a windowed list from a third-party package.
 - **Two type systems for the data path.** `load` and form actions are typed end to end. JSON
