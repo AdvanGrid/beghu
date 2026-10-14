@@ -1,0 +1,17 @@
+[package]
+name = "bench-topcoat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Its own workspace, so the repo-root topcoat scaffold doesn't adopt it.
+[workspace]
+
+[dependencies]
+topcoat = "0.10.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
