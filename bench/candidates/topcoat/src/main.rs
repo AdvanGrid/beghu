@@ -1,7 +1,7 @@
 //! topcoat candidate: server-rendered, filtered on the server, top of the list only.
 //!
 //! The list is a shard that owns the filter signals and the end of a row window. A filter change,
-//! or a scroll near the end of the rendered window, re-renders the shard on the server: at most 40
+//! or a scroll near the end of the rendered window, re-renders the shard on the server: at most 80
 //! rows below a spacer that stands in for the rows scrolled past, so the browser's morph and
 //! hydrate cost stays flat however deep you go. There is no spacer below: the list can't be
 //! scrolled past rows the server hasn't sent yet.
@@ -23,8 +23,12 @@ use topcoat::{
 };
 
 const CHUNK: usize = 20;
-/// Rows rendered at most: two chunks, the viewport (under 20 rows) and one chunk ahead.
-const WINDOW: usize = 40;
+/// Rows rendered at most: the viewport (up to 40 rows, a 1440 px list) plus up to two chunks of
+/// rounding and lookahead below it.
+const WINDOW: usize = 80;
+/// Rows in the first render and after a filter change. More than a tall list shows, so it overflows
+/// and can fire `scroll`: with no spacer below, a list that fits its rows never asks for more.
+const FIRST: usize = 40;
 /// Fixed row height in px (see app.css), so a spacer can stand in for the rows scrolled past.
 const ROW_PX: usize = 36;
 
@@ -90,7 +94,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
     let state = signal(cx, || "open".to_owned());
     let q = signal(cx, String::new);
     // End of the rendered window: one chunk past the bottom visible row's chunk.
-    let end = signal(cx, || CHUNK);
+    let end = signal(cx, || FIRST);
     // Flips to true in the browser once the runtime has hydrated the shard.
     let hydrated = signal(cx, || false);
     let labels: Vec<_> = db.labels.iter().map(|l| (l.clone(), signal(&cx.keyed(l.as_str()), || false))).collect();
@@ -118,7 +122,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-state"
                         data-value=(s)
                         aria-pressed=(if current_state == s { "true" } else { "false" })
-                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); state.set(s.to_owned()) })
+                        @click=$(|_e| { end.set(40); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); state.set(s.to_owned()) })
                     >(s)</button>
                 }
                 <input
@@ -127,7 +131,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                     placeholder="Search titles"
                     autocomplete="off"
                     value=(q_value)
-                    @input=$(|e: Event| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); q.set(e.target.value) })
+                    @input=$(|e: Event| { end.set(40); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); q.set(e.target.value) })
                 >
             </div>
             <div class="chips">
@@ -136,7 +140,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-label"
                         data-value=(name.clone())
                         aria-pressed=(if on.get_untracked() { "true" } else { "false" })
-                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
+                        @click=$(|_e| { end.set(40); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
                     >(name)</button>
                 }
             </div>
@@ -146,7 +150,7 @@ async fn issue_list(cx: &Cx, open: Signal<Option<i64>>) -> Result<impl View> {
                         data-bench="filter-assignee"
                         data-value=(login.clone())
                         aria-pressed=(if on.get_untracked() { "true" } else { "false" })
-                        @click=$(|_e| { end.set(20); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
+                        @click=$(|_e| { end.set(40); raw!("document.querySelector('[data-bench=list]').scrollTop = 0;", ()); on.toggle() })
                     >"@" (login)</button>
                 }
             </div>

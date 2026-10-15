@@ -172,9 +172,12 @@ speed, so results from a faster host aren't comparable without re-running the st
 
 - CDP can't cap a tab's memory, so memory is measured against the budget instead.
 - The container and the browser share the host. `--cpus=1` limits the server, not the browser.
-- CDP network emulation delays HTTP requests. Whether it also delays frames on an open WebSocket or
-  SSE stream hasn't been checked, so treat `far` live-update numbers for push transports with
-  care until it is.
+- CDP network emulation (and DevTools throttling) delays HTTP requests but **not frames on an open
+  WebSocket**: its bandwidth cap applies to them, its latency doesn't. Interactions sent over a socket
+  (topcoat) therefore skipped the round trip in every `far` cell. SSE frames are probably the same,
+  so treat `far` live-update numbers for push transports with care. For honest latency, put
+  `./shape` in front of the server: a TCP proxy that adds round-trip latency and a bandwidth cap to
+  every byte (`./shape 9091 127.0.0.1:8091 --rtt 300 --down 1600 --up 750`).
 - Headless rendering skips the compositor work a visible window does. Use `--headed` to compare.
 
 ### Real-laptop sanity check (once, by the owner)
@@ -190,12 +193,56 @@ flattering:
    it.
 4. Note the laptop's CPU and the result in this section.
 
+**Result (2026-10-15): 6× stays.** The laptop is an Intel Core i5-1135G7 (Tiger Lake, 2020, 8
+threads, 16 GB, Docker 29.9). At 1× it is faster than this host at 6× on every scenario, and about
+level with this host at 1×. So 6× is roughly a 5× slowdown *beyond* the laptop, a stress profile
+rather than a flattering one. The most CPU-bound number, the optimistic write, is 77.7 vs 14.8 ms
+(about 5.2×). Candidates' 6× misses overstate what the laptop will feel; their `fast` numbers are
+closer to it.
+
+| Stub, `far`, 20k: p50 / p95 ms | This host, 6× | Laptop, 1× | This host, 1× |
+|---|---|---|---|
+| Cold load | 721 / 743 | 503 / 541 | 485 / 516 |
+| Warm load | 728 / 759 | 487 / 504 | 481 / 488 |
+| Filter and search | 227 / 1279 | 145 / 162 | 144 / 199 |
+| Scroll 500 rows (frames) | 16.7 / 66.6, 11 long tasks > 100 ms | 16.7 / 16.8, none > 100 ms | 16.7 / 16.8 |
+| Open detail | 240 / 241 | 151 / 165 | 141 / 167 |
+| Live update | 177 / 199 | 150 / 157 | 147 / 158 |
+| Optimistic write | 78 / 80 | 15 / 20 | 11 / 14 |
+
+The stub is light and mostly bound by the 100 ms round trip, so the cleanest CPU signals are the
+write, the scroll long tasks and the filter tail.
+
+## Running a candidate by hand (the feel check)
+
+The harness has no interactive mode, so start the container the way `harness/container.mjs` does,
+on a fresh copy of the mirror (candidates may add indexes to it), then use it in a normal browser.
+Run `./bench/run <candidate> --iterations 1 --scenarios cold --no-video` once first if the image or
+`data/mirror-20k.db` doesn't exist yet.
+
+```sh
+cd bench
+C=axum-solid                                   # any directory under candidates/
+docker build -t beghu-bench-$C candidates/$C
+rm -rf /tmp/beghu-$C && mkdir -p /tmp/beghu-$C && cp data/mirror-20k.db /tmp/beghu-$C/mirror.db
+docker run --rm --name beghu-$C --cpus=1 --memory=512m -p 127.0.0.1:8080:8080 \
+  -v /tmp/beghu-$C:/data -e MIRROR_PATH=/data/mirror.db -e PORT=8080 -e GITHUB_LATENCY_MS=300 \
+  beghu-bench-$C
+```
+
+Open <http://127.0.0.1:8080>. For live changes while you click around, run
+`./bench/replay http://127.0.0.1:8080 --scale 20k --speed 1` in a second terminal. To match the
+headline profile in Chrome, open DevTools → Performance → CPU: 6× slowdown, and add a custom network
+profile of 100 ms latency, 10 Mbps down and 5 Mbps up. DevTools throttling only applies while
+DevTools is open. On the laptop, skip the CPU throttle, since the laptop is the real thing.
+
 ## Layout
 
 ```
 bench/
   run                 the launcher (bash → harness/run.mjs)
   replay              posts the webhook feed into a running candidate
+  shape               a TCP proxy with real latency and bandwidth limits, sockets included
   fixture/            schema.sql, generate.mjs, github-shape.mjs (payload builder)
   harness/            run.mjs, scenarios.mjs, probe.mjs, expect.mjs, metrics.mjs, container.mjs
   candidates/stub/    the reference candidate

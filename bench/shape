@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// A TCP proxy that shapes everything through it like a slow link: round-trip latency, a bandwidth
+// cap per direction shared by every connection, and a handshake round trip for each new
+// connection. Unlike DevTools or CDP throttling, it delays WebSocket and SSE frames too.
+//
+//   ./bench/shape <listen [host:]port> <target host:port> [--rtt ms] [--down kbps] [--up kbps]
+//   ./bench/shape 9091 127.0.0.1:8091 --rtt 300 --down 1600 --up 750
+//
+// Listen on several addresses by repeating --bind host (default 127.0.0.1).
+
+import { createConnection, createServer } from 'node:net';
+
+const argv = process.argv.slice(2);
+const flag = (name, def) => (argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : def);
+const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'));
+const [listen, target] = positional;
+if (!listen || !target) {
+  console.error('usage: ./bench/shape <listen port> <target host:port> [--rtt ms] [--down kbps] [--up kbps] [--bind host]...');
+  process.exit(2);
+}
+const rtt = +flag('rtt', 300);
+const down = +flag('down', 1600) * 1000;
+const up = +flag('up', 750) * 1000;
+const binds = argv.flatMap((a, i) => (a === '--bind' ? [argv[i + 1]] : []));
+const [targetHost, targetPort] = target.split(':');
+const SEGMENT = 4096;
+
+// One direction of the link. A chunk leaves once the link has sent everything queued before it,
+// takes len / bandwidth to serialize, then half the round trip to arrive.
+function pipe(bps) {
+  let freeAt = 0;
+  return (len, notBefore = 0) => {
+    const start = Math.max(Date.now(), freeAt, notBefore);
+    freeAt = start + (len * 8 * 1000) / bps;
+    return freeAt + rtt / 2;
+  };
+}
+const downlink = pipe(down);
+const uplink = pipe(up);
+
+function forward(from, to, link, notBefore) {
+  from.on('data', (buf) => {
+    for (let i = 0; i < buf.length; i += SEGMENT) {
+      const seg = buf.subarray(i, i + SEGMENT);
+      const at = link(seg.length, notBefore());
+      setTimeout(() => to.writable && to.write(seg), Math.max(0, at - Date.now()));
+    }
+  });
+  // Close after the last queued segment has been delivered.
+  from.on('end', () => setTimeout(() => to.end(), Math.max(0, link(0) - Date.now())));
+  from.on('error', () => to.destroy());
+}
+
+const server = createServer((client) => {
+  const handshakeDone = Date.now() + rtt;
+  const upstream = createConnection({ host: targetHost, port: +targetPort });
+  forward(client, upstream, uplink, () => handshakeDone);
+  forward(upstream, client, downlink, () => 0);
+});
+for (const host of binds.length ? binds : ['127.0.0.1']) {
+  createServer(server.listeners('connection')[0]).listen(+listen, host);
+}
+console.log(`${binds.join(', ') || '127.0.0.1'}:${listen} → ${target}  rtt ${rtt} ms, down ${down / 1000} kbps, up ${up / 1000} kbps`);
