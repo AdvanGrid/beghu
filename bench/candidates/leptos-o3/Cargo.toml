@@ -1,0 +1,56 @@
+[package]
+name = "bench-leptos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = "0.8.22"
+leptos_router = "0.8"
+leptos_meta = "0.8"
+serde = { version = "1", features = ["derive"] }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", features = ["EventSource", "MessageEvent", "Element"], optional = true }
+leptos_axum = { version = "0.8", optional = true }
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+futures-util = { version = "0.3", optional = true }
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+r2d2 = { version = "0.8", optional = true }
+r2d2_sqlite = { version = "0.35", optional = true }
+serde_json = { version = "1", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+
+[features]
+hydrate = ["leptos/hydrate", "dep:console_error_panic_hook", "dep:wasm-bindgen", "dep:web-sys"]
+ssr = [
+  "dep:axum", "dep:tokio", "dep:tokio-stream", "dep:futures-util", "dep:leptos_axum",
+  "dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite", "dep:serde_json", "dep:chrono",
+  "leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr",
+]
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.leptos]
+output-name = "bench-leptos"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+env = "DEV"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+lib-profile-release = "wasm-release"

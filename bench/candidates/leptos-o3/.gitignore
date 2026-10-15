@@ -1,0 +1,2 @@
+# Build output from cargo and cargo-leptos: server binary, WASM and the target/site bundle.
+target/
