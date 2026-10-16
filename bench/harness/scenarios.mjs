@@ -49,7 +49,20 @@ export const scenarios = [
       await page.goto(h.url, { waitUntil: 'commit' });
       const r = await waitResult(page, 'first 20 rows of the default view');
       await page.waitForLoadState('load').catch(() => {});
-      return { latency: [r.t], js: await js() };
+      // A candidate that fills a browser cache marks `bench:cache-start` when it begins and
+      // `bench:cache-warm` once the cache is persisted; the latter is recorded from navigation.
+      const warm = await page
+        .waitForFunction(
+          () => {
+            const mark = (n) => performance.getEntriesByName(`bench:${n}`)[0];
+            if (!mark('cache-start')) return { none: true };
+            return mark('cache-warm') ? { t: mark('cache-warm').startTime } : false;
+          },
+          null,
+          { timeout: 120_000, polling: 50 },
+        )
+        .then((h) => h.jsonValue());
+      return { latency: [r.t], js: await js(), ...(warm.none ? {} : { cache_warm_ms: [warm.t] }) };
     },
   },
   {

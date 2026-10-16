@@ -5,8 +5,9 @@ import { join } from 'node:path';
 
 export const LIMITS = ['--cpus=1', '--memory=512m'];
 
-export function build(candidateDir, image) {
-  const r = spawnSync('docker', ['build', '-q', '-t', image, candidateDir], { encoding: 'utf8' });
+export function build(candidateDir, image, buildArgs = {}) {
+  const args = Object.entries(buildArgs).flatMap(([k, v]) => ['--build-arg', `${k}=${v}`]);
+  const r = spawnSync('docker', ['build', '-q', ...args, '-t', image, candidateDir], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`docker build failed for ${candidateDir}:\n${r.stdout}\n${r.stderr}`);
 }
 
@@ -21,14 +22,14 @@ export function freePort() {
 }
 
 // Starts the candidate on a fresh copy of the fixture mirror, mounted at /data/mirror.db.
-export async function start({ image, mirror, workDir, env = {} }) {
+export async function start({ image, mirror, workDir, env = {}, limits = LIMITS }) {
   rmSync(workDir, { recursive: true, force: true });
   mkdirSync(workDir, { recursive: true });
   copyFileSync(mirror, join(workDir, 'mirror.db'));
   const port = await freePort();
   const name = `beghu-bench-${process.pid}-${Date.now().toString(36)}`;
   const envArgs = Object.entries({ MIRROR_PATH: '/data/mirror.db', PORT: '8080', ...env }).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
-  execFileSync('docker', ['run', '-d', '--rm', '--name', name, ...LIMITS, '-p', `127.0.0.1:${port}:8080`, '-v', `${workDir}:/data`, ...envArgs, image], {
+  execFileSync('docker', ['run', '-d', '--rm', '--name', name, ...limits, '-p', `127.0.0.1:${port}:8080`, '-v', `${workDir}:/data`, ...envArgs, image], {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   const url = `http://127.0.0.1:${port}`;

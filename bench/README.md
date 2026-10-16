@@ -34,6 +34,10 @@ Linux for the tab-memory reading.
 | `--no-video` | skip the video pass on the low profile | videos on |
 | `--headed` | show the browser | headless |
 
+A candidate directory can hold several variants of one app: `./bench/run filtering:client` builds
+`candidates/filtering` and starts it with `BENCH_VARIANT=client`. Results go to
+`results/<date>-filtering-client/`.
+
 ## What a run does
 
 For each cell (profile × net × scale) and each scenario:
@@ -92,6 +96,18 @@ Notes on the scenarios:
 | Peak tab memory | PSS of the largest renderer process, from `/proc/<pid>/smaps_rollup`, every 250 ms (budget about 300 MB at 20k) |
 | Long tasks | `PerformanceObserver('longtask')` during the scroll |
 | Server CPU and RAM | `docker stats`, mean and peak CPU, peak RAM |
+| Cache warm | cold load only, for candidates that fill a browser cache: from navigation to the `bench:cache-warm` performance mark, which the candidate sets once the cache is persisted. Recorded only if the page also set `bench:cache-start` |
+
+**Server load under several users.** `./bench/load <candidate>[:<variant>] --scale all --users 1,5,20`
+drives the server over plain HTTP, with no browser: every user cold-loads at once, then runs the
+filter scenario's request sequence, then holds `/events` open while one webhook a second arrives.
+`docker stats` is sampled in each phase. Users of a `client` or `worker` variant fetch the snapshot
+and deltas instead of filtered pages, and send nothing while filtering. See `harness/load.mjs`.
+By default every user is their own account (`--accounts per-user`: the candidate gets
+`BENCH_ACCOUNTS=<users>` and each user sends `x-account`); `--accounts shared` puts every user on
+one mirror. `--conn pool|open` is passed as `BENCH_CONN`, `--cpus N` sets the container's CPU limit
+(default 1), and `--sqlite stock` builds with `STOCK_SQLITE=1`. Candidates that ignore these get
+the default behaviour.
 
 ## The fixture
 
@@ -241,10 +257,11 @@ DevTools is open. On the laptop, skip the CPU throttle, since the laptop is the 
 ```
 bench/
   run                 the launcher (bash → harness/run.mjs)
+  load                server load under several users (bash → harness/load.mjs)
   replay              posts the webhook feed into a running candidate
   shape               a TCP proxy with real latency and bandwidth limits, sockets included
   fixture/            schema.sql, generate.mjs, github-shape.mjs (payload builder)
-  harness/            run.mjs, scenarios.mjs, probe.mjs, expect.mjs, metrics.mjs, container.mjs
+  harness/            run.mjs, scenarios.mjs, probe.mjs, expect.mjs, metrics.mjs, container.mjs, load.mjs
   candidates/stub/    the reference candidate
   data/, results/     generated, gitignored
 ```

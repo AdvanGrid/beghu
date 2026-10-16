@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ./bench/run <candidate> [--profile low|fast] [--net near|far] [--scale 20k|50k] ...
+// ./bench/run <candidate>[:<variant>] [--profile low|fast] [--net near|far] [--scale 20k|50k] ...
 // See bench/README.md for every flag and for the candidate contract.
 
 import { chromium } from 'playwright';
@@ -76,7 +76,7 @@ async function runScenario(scenario, cell, opts, image, runDir) {
     image,
     mirror,
     workDir,
-    env: { GITHUB_LATENCY_MS: opts.latency },
+    env: { GITHUB_LATENCY_MS: opts.latency, ...(opts.variant ? { BENCH_VARIANT: opts.variant } : {}) },
   });
   const stats = dockerStats(box.name);
   const browser = await chromium.launch({ channel: 'chromium', headless: !opts.headed });
@@ -137,11 +137,16 @@ async function runScenario(scenario, cell, opts, image, runDir) {
 
   try {
     let shared = null;
+    let primed = true;
     if (!scenario.fresh) {
       shared = await h.newContext(false);
-      await prime(shared);
+      // A failed prime fails this scenario, not the whole run.
+      await prime(shared).catch((e) => {
+        primed = false;
+        errors.push(`prime: ${e.message.split('\n')[0]}`);
+      });
     }
-    for (let i = 0; i < opts.iterations; i++) {
+    for (let i = 0; primed && i < opts.iterations; i++) {
       const ctx = shared ?? (await h.newContext(false));
       try {
         samples.push(await scenario.iteration(h, ctx, i, state));
@@ -171,6 +176,8 @@ async function runScenario(scenario, cell, opts, image, runDir) {
       await last?.video()?.saveAs(join(videoDir, `${scenario.name}.webm`));
       for (const p of [last, ...tabs]) await p?.video()?.delete();
     }
+  } catch (e) {
+    errors.push(`aborted: ${e.message.split('\n')[0]}`);
   } finally {
     await browser.close();
   }
@@ -204,6 +211,7 @@ async function runScenario(scenario, cell, opts, image, runDir) {
   }
   if (scenario.name === 'write') result.roundtrip_ms = summarize(flat('roundtrip_ms'));
   if (scenario.name === 'cold') {
+    if (flat('cache_warm_ms').length) result.cache_warm_ms = summarize(flat('cache_warm_ms'));
     const js = samples.map((s) => s.js).filter(Boolean);
     const med = (k) => summarize(js.map((j) => j[k])).p50;
     result.js = { files: js[0]?.files ?? 0, wire_kb: med('wire_kb'), decoded_kb: med('decoded_kb') };
@@ -232,6 +240,7 @@ function markdown(run) {
       const m = r.frame_ms ?? r.latency_ms ?? {};
       const mark = v.ok == null ? '—' : v.ok ? '✓' : '✗';
       const notes = [];
+      if (r.cache_warm_ms) notes.push(`cache warm p50 ${r.cache_warm_ms.p50} / p95 ${r.cache_warm_ms.p95} ms`);
       if (r.js) notes.push(`JS ${r.js.wire_kb} KB wire / ${r.js.decoded_kb} KB decoded in ${r.js.files} files`);
       if (r.long_tasks) notes.push(`${r.long_tasks.count} long tasks, ${r.long_tasks.over_100ms} > 100 ms, max ${r.long_tasks.max_ms} ms; reached row 500 in p50 ${r.reach_ms.p50} ms`);
       if (r.roundtrip_ms) notes.push(`server round trip p50 ${r.roundtrip_ms.p50} / p95 ${r.roundtrip_ms.p95} ms`);
@@ -249,10 +258,13 @@ function markdown(run) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts.candidate) {
-    console.error('usage: ./bench/run <candidate> [--profile low|fast|all] [--net near|far|all] [--scale 20k|50k|all] [--iterations 20] [--scenarios cold,warm,...] [--latency 300] [--no-video] [--headed]');
+    console.error('usage: ./bench/run <candidate>[:<variant>] [--profile low|fast|all] [--net near|far|all] [--scale 20k|50k|all] [--iterations 20] [--scenarios cold,warm,...] [--latency 300] [--no-video] [--headed]');
     process.exit(2);
   }
-  const candidateDir = join(root, 'candidates', opts.candidate);
+  // `<dir>:<variant>` builds one candidate directory and starts it with BENCH_VARIANT=<variant>.
+  const [dir, variant] = opts.candidate.split(':');
+  opts.variant = variant;
+  const candidateDir = join(root, 'candidates', dir);
   if (!existsSync(join(candidateDir, 'Dockerfile'))) throw new Error(`no Dockerfile in ${candidateDir}`);
   for (const scale of opts.scales) {
     if (!existsSync(join(root, 'data', `mirror-${scale}.db`))) {
@@ -261,12 +273,12 @@ async function main() {
     }
   }
 
-  const image = `beghu-bench-${opts.candidate}`;
+  const image = `beghu-bench-${dir}`;
   console.log(`building ${image}...`);
   container.build(candidateDir, image);
 
   const started = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const runDir = join(root, 'results', `${started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-${opts.candidate}`);
+  const runDir = join(root, 'results', `${started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-${opts.candidate.replace(':', '-')}`);
   mkdirSync(runDir, { recursive: true });
 
   const probeBrowser = await chromium.launch({ channel: 'chromium' });
