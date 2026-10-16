@@ -93,7 +93,7 @@ async function runScenario(scenario, cell, opts, image, runDir) {
       }),
     async newPage(ctx, { armLoad = false } = {}) {
       const page = await ctx.newPage();
-      await page.addInitScript(probe, armLoad ? { loadIds } : {});
+      await page.addInitScript(probe, { cpuRate: PROFILES[cell.profile].cpu, ...(armLoad ? { loadIds } : {}) });
       const cdp = await ctx.newCDPSession(page);
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: PROFILES[cell.profile].cpu });
       await cdp.send('Network.enable');
@@ -204,14 +204,29 @@ async function runScenario(scenario, cell, opts, image, runDir) {
   } else {
     result.latency_ms = summarize(flat('latency'));
   }
-  if (scenario.name === 'filter') {
+  if (scenario.name === 'filter' || scenario.name === 'early') {
+    // Per step kind ("label", "search", or "early search" / "later label" for early), and per
+    // answerer (server or local cache, see timedStep in scenarios.mjs).
     const byKind = {};
-    for (const s of samples.flatMap((x) => x.steps)) (byKind[s.step.split(' ')[0]] ??= []).push(s.ms);
-    result.steps = Object.fromEntries(Object.entries(byKind).map(([k, v]) => [k, summarize(v)]));
+    const byAnswer = {};
+    const words = scenario.name === 'early' ? 2 : 1;
+    for (const s of samples.flatMap((x) => x.steps)) {
+      (byKind[s.step.split(' ').slice(0, words).join(' ')] ??= []).push(s.ms);
+      (byAnswer[s.by] ??= []).push(s.ms);
+    }
+    const sum = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, summarize(v)]));
+    result.steps = sum(byKind);
+    result.answered_by = sum(byAnswer);
+  }
+  if (scenario.name === 'warm' && flat('cache_ready_ms').length) result.cache_ready_ms = summarize(flat('cache_ready_ms'));
+  if (scenario.name === 'early') {
+    if (flat('cache_ready_ms').length) result.cache_ready_ms = summarize(flat('cache_ready_ms'));
+    result.switched = { same: samples.filter((s) => s.switched === 'same').length, differs: samples.filter((s) => s.switched === 'differs').length };
   }
   if (scenario.name === 'write') result.roundtrip_ms = summarize(flat('roundtrip_ms'));
   if (scenario.name === 'cold') {
     if (flat('cache_warm_ms').length) result.cache_warm_ms = summarize(flat('cache_warm_ms'));
+    if (flat('cache_ready_ms').length) result.cache_ready_ms = summarize(flat('cache_ready_ms'));
     const js = samples.map((s) => s.js).filter(Boolean);
     const med = (k) => summarize(js.map((j) => j[k])).p50;
     result.js = { files: js[0]?.files ?? 0, wire_kb: med('wire_kb'), decoded_kb: med('decoded_kb') };
@@ -241,6 +256,9 @@ function markdown(run) {
       const mark = v.ok == null ? '—' : v.ok ? '✓' : '✗';
       const notes = [];
       if (r.cache_warm_ms) notes.push(`cache warm p50 ${r.cache_warm_ms.p50} / p95 ${r.cache_warm_ms.p95} ms`);
+      if (r.cache_ready_ms) notes.push(`cache ready p50 ${r.cache_ready_ms.p50} / p95 ${r.cache_ready_ms.p95} ms`);
+      if (r.answered_by) notes.push(Object.entries(r.answered_by).map(([k, v]) => `${k} n ${v.n} p95 ${v.p95}`).join(', '));
+      if (r.switched) notes.push(`switchover rows same ${r.switched.same}, differ ${r.switched.differs}`);
       if (r.js) notes.push(`JS ${r.js.wire_kb} KB wire / ${r.js.decoded_kb} KB decoded in ${r.js.files} files`);
       if (r.long_tasks) notes.push(`${r.long_tasks.count} long tasks, ${r.long_tasks.over_100ms} > 100 ms, max ${r.long_tasks.max_ms} ms; reached row 500 in p50 ${r.reach_ms.p50} ms`);
       if (r.roundtrip_ms) notes.push(`server round trip p50 ${r.roundtrip_ms.p50} / p95 ${r.roundtrip_ms.p95} ms`);

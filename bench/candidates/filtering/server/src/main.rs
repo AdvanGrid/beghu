@@ -1,7 +1,8 @@
-// Filtering-location benchmark, forked from the axum + Solid 2 candidate. One server, three
+// Filtering-location benchmark, forked from the axum + Solid 2 candidate. One server, four
 // variants picked by BENCH_VARIANT: `server` filters in SQLite per keystroke; `client` and
 // `worker` load a compact snapshot of every row into the browser (IndexedDB plus memory) and
-// filter there, catching up through `/api/snapshot?since=<seq>`. The Solid SPA (../web) is served
+// filter there, catching up through `/api/snapshot?since=<seq>`; `hybrid` paints from the
+// server and then hands filtering to a worker cache, fed from a stored, precompressed snapshot. The Solid SPA (../web) is served
 // from ./public, one HTML entry per variant.
 
 use std::{convert::Infallible, env, sync::Arc, time::Duration};
@@ -55,6 +56,7 @@ struct AppState {
     events: broadcast::Sender<Changed>,
     latency: Duration,
     variant: &'static str,
+    stored: Option<Arc<Vec<std::sync::RwLock<Arc<Stored>>>>>,
 }
 
 #[derive(Serialize, TS)]
@@ -99,16 +101,17 @@ pub struct Page {
 
 /// One cached row: `[id, number, repo, is_pr, title, open, updated_at, comments, labels, assignees]`.
 /// `repo`, `labels` and `assignees` index the dictionaries of the snapshot that carries it.
+/// `is_pr` and `open` are 0 or 1, and `updated_at` is in Unix seconds, which keeps the JSON short.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct CacheRow(
     #[ts(type = "number")] pub i64,
     #[ts(type = "number")] pub i64,
     pub u32,
-    pub bool,
+    pub u8,
     pub String,
-    pub bool,
-    pub String,
+    pub u8,
+    #[ts(type = "number")] pub i64,
     #[ts(type = "number")] pub i64,
     pub Vec<u32>,
     pub Vec<u32>,
@@ -299,60 +302,139 @@ async fn list_issues(State(s): State<AppState>, Account(a): Account, Query(q): Q
     .await
 }
 
-async fn snapshot(State(s): State<AppState>, Account(a): Account, Query(q): Query<SnapshotQuery>) -> Result<Json<Snapshot>, AppError> {
+fn build_snapshot(c: &rusqlite::Connection, since: i64) -> Result<Snapshot, AppError> {
+    let mut repos = vec![];
+    let mut repo_ix = std::collections::HashMap::new();
+    for r in c.prepare_cached("SELECT id, name FROM repos ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, name) = r?;
+        repo_ix.insert(id, repos.len() as u32);
+        repos.push(name);
+    }
+    let mut labels = vec![];
+    let mut label_ix = std::collections::HashMap::new();
+    for r in c.prepare_cached("SELECT id, name, color FROM labels ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?)))? {
+        let (id, name, color) = r?;
+        label_ix.insert(id, labels.len() as u32);
+        labels.push(Label { name, color });
+    }
+    let mut users = vec![];
+    let mut user_ix = std::collections::HashMap::new();
+    for r in c.prepare_cached("SELECT id, login FROM users ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, login) = r?;
+        user_ix.insert(id, users.len() as u32);
+        users.push(login);
+    }
+    // Label and assignee ids per item, grouped in SQL, mapped to dictionary indexes here.
+    let mut items: Vec<CacheRow> = vec![];
+    let mut stmt = c.prepare_cached(
+        "SELECT i.id, i.number, i.repo_id, i.kind = 'pr', i.title, i.state = 'open', coalesce(unixepoch(i.updated_at), 0), i.comments_count,
+           (SELECT group_concat(label_id) FROM item_labels WHERE item_id = i.id),
+           (SELECT group_concat(user_id) FROM item_assignees WHERE item_id = i.id)
+         FROM items i WHERE i.is_stub = 0 AND i.seq > ? ORDER BY i.updated_at DESC, i.id DESC",
+    )?;
+    let ids = |v: Option<String>, ix: &std::collections::HashMap<i64, u32>| -> Vec<u32> {
+        v.map(|v| v.split(',').filter_map(|x| x.parse().ok()).filter_map(|x| ix.get(&x).copied()).collect()).unwrap_or_default()
+    };
+    let mut rows = stmt.query([since])?;
+    while let Some(r) = rows.next()? {
+        items.push(CacheRow(
+            r.get(0)?,
+            r.get(1)?,
+            repo_ix.get(&r.get::<_, i64>(2)?).copied().unwrap_or(0),
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+            r.get(7)?,
+            ids(r.get(8)?, &label_ix),
+            ids(r.get(9)?, &user_ix),
+        ));
+    }
+    let seq: i64 = c.prepare_cached("SELECT coalesce(max(seq), 0) FROM items")?.query_row([], |r| r.get(0))?;
+    Ok(Snapshot { repos, labels, users, items, seq })
+}
+
+/// A full snapshot as stored, compressed bytes. The hybrid variant builds one per account at
+/// startup and serves it to every `since=0` request without touching SQLite. It goes stale on
+/// purpose: its `seq` is inside the bytes, so the client asks for the delta since then, and a
+/// background job rebuilds it only once enough rows have changed (`BENCH_SNAPSHOT_REBUILD`).
+struct Stored {
+    seq: i64,
+    gzip: bytes::Bytes,
+    br: bytes::Bytes,
+}
+
+// Measured at 50k (5.3 MB of JSON): brotli 5 gives 1220 KB in 0.5 s, 9 gives 1126 KB in 1.3 s and 11 gives
+// 947 KB in 19 s; gzip 6 gives 1233 KB in 0.2 s. Rebuilds are rare, but not rare enough for 19 s.
+const GZIP_LEVEL: u32 = 6;
+const BROTLI_QUALITY: u32 = 5;
+
+fn store_snapshot(c: &rusqlite::Connection, account: usize) -> Result<Stored, AppError> {
+    use std::io::Write;
+    let t0 = std::time::Instant::now();
+    let snap = build_snapshot(c, 0)?;
+    let t1 = t0.elapsed();
+    let json = serde_json::to_vec(&snap)?;
+    let t2 = t0.elapsed();
+    let mut gz = flate2::write::GzEncoder::new(Vec::with_capacity(json.len() / 4), flate2::Compression::new(GZIP_LEVEL));
+    gz.write_all(&json)?;
+    let gzip = gz.finish()?;
+    let t3 = t0.elapsed();
+    let mut br = Vec::with_capacity(json.len() / 5);
+    brotli::BrotliCompress(&mut &json[..], &mut br, &brotli::enc::BrotliEncoderParams { quality: BROTLI_QUALITY as i32, lgwin: 22, ..Default::default() })?;
+    let t4 = t0.elapsed();
+    eprintln!(
+        "snapshot account {account}: seq {} rows {} json {} KB gzip-{GZIP_LEVEL} {} KB br-{BROTLI_QUALITY} {} KB; sql {:?} json {:?} gzip {:?} br {:?}",
+        snap.seq,
+        snap.items.len(),
+        json.len() / 1024,
+        gzip.len() / 1024,
+        br.len() / 1024,
+        t1,
+        t2 - t1,
+        t3 - t2,
+        t4 - t3
+    );
+    Ok(Stored { seq: snap.seq, gzip: gzip.into(), br: br.into() })
+}
+
+async fn snapshot(State(s): State<AppState>, Account(a): Account, headers: HeaderMap, Query(q): Query<SnapshotQuery>) -> Result<Response, AppError> {
     let since = q.since.unwrap_or(0);
-    with_db(&s.db, a, move |c| {
-        let mut repos = vec![];
-        let mut repo_ix = std::collections::HashMap::new();
-        for r in c.prepare_cached("SELECT id, name FROM repos ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
-            let (id, name) = r?;
-            repo_ix.insert(id, repos.len() as u32);
-            repos.push(name);
+    if since == 0 {
+        if let Some(stored) = &s.stored {
+            let stored = stored[a % stored.len()].read().unwrap().clone();
+            let br = headers.get("accept-encoding").and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("br"));
+            let (encoding, body) = if br { ("br", stored.br.clone()) } else { ("gzip", stored.gzip.clone()) };
+            return Ok((
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/json"),
+                    (axum::http::header::CONTENT_ENCODING, encoding),
+                    (axum::http::header::VARY, "accept-encoding"),
+                ],
+                body,
+            )
+                .into_response());
         }
-        let mut labels = vec![];
-        let mut label_ix = std::collections::HashMap::new();
-        for r in c.prepare_cached("SELECT id, name, color FROM labels ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?)))? {
-            let (id, name, color) = r?;
-            label_ix.insert(id, labels.len() as u32);
-            labels.push(Label { name, color });
+    }
+    with_db(&s.db, a, move |c| Ok(Json(build_snapshot(c, since)?).into_response())).await
+}
+
+/// Rebuilds each account's stored snapshot once `threshold` rows have changed since it was built.
+async fn refresh_snapshots(db: Db, stored: Arc<Vec<std::sync::RwLock<Arc<Stored>>>>, threshold: i64) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        for a in 0..stored.len() {
+            let seq = stored[a].read().unwrap().seq;
+            let fresh = with_db(&db, a, move |c| {
+                let changed: i64 = c.prepare_cached("SELECT count(*) FROM items WHERE seq > ?")?.query_row([seq], |r| r.get(0))?;
+                if changed < threshold { Ok(None) } else { store_snapshot(c, a).map(Some) }
+            })
+            .await;
+            if let Ok(Some(fresh)) = fresh {
+                *stored[a].write().unwrap() = Arc::new(fresh);
+            }
         }
-        let mut users = vec![];
-        let mut user_ix = std::collections::HashMap::new();
-        for r in c.prepare_cached("SELECT id, login FROM users ORDER BY id")?.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
-            let (id, login) = r?;
-            user_ix.insert(id, users.len() as u32);
-            users.push(login);
-        }
-        // Label and assignee ids per item, grouped in SQL, mapped to dictionary indexes here.
-        let mut items: Vec<CacheRow> = vec![];
-        let mut stmt = c.prepare_cached(
-            "SELECT i.id, i.number, i.repo_id, i.kind = 'pr', i.title, i.state = 'open', coalesce(i.updated_at, ''), i.comments_count,
-               (SELECT group_concat(label_id) FROM item_labels WHERE item_id = i.id),
-               (SELECT group_concat(user_id) FROM item_assignees WHERE item_id = i.id)
-             FROM items i WHERE i.is_stub = 0 AND i.seq > ? ORDER BY i.updated_at DESC, i.id DESC",
-        )?;
-        let ids = |v: Option<String>, ix: &std::collections::HashMap<i64, u32>| -> Vec<u32> {
-            v.map(|v| v.split(',').filter_map(|x| x.parse().ok()).filter_map(|x| ix.get(&x).copied()).collect()).unwrap_or_default()
-        };
-        let mut rows = stmt.query([since])?;
-        while let Some(r) = rows.next()? {
-            items.push(CacheRow(
-                r.get(0)?,
-                r.get(1)?,
-                repo_ix.get(&r.get::<_, i64>(2)?).copied().unwrap_or(0),
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                ids(r.get(8)?, &label_ix),
-                ids(r.get(9)?, &user_ix),
-            ));
-        }
-        let seq: i64 = c.prepare_cached("SELECT coalesce(max(seq), 0) FROM items")?.query_row([], |r| r.get(0))?;
-        Ok(Json(Snapshot { repos, labels, users, items, seq }))
-    })
-    .await
+    }
 }
 
 async fn issue_detail(State(s): State<AppState>, Account(a): Account, Path(id): Path<i64>) -> Result<Json<IssueDetail>, AppError> {
@@ -611,6 +693,7 @@ async fn main() {
     let variant: &'static str = match env::var("BENCH_VARIANT").as_deref() {
         Ok("client") => "client",
         Ok("worker") => "worker",
+        Ok("hybrid") => "hybrid",
         _ => "server",
     };
 
@@ -626,6 +709,7 @@ async fn main() {
         "CREATE INDEX IF NOT EXISTS item_labels_by_label ON item_labels(label_id, item_id);
          CREATE INDEX IF NOT EXISTS item_assignees_by_user ON item_assignees(user_id, item_id);
          CREATE INDEX IF NOT EXISTS issue_list ON items(state, updated_at DESC, id DESC, title) WHERE kind = 'issue' AND is_stub = 0;
+         CREATE INDEX IF NOT EXISTS items_by_seq ON items(seq);
          CREATE INDEX IF NOT EXISTS item_cache ON items(updated_at DESC, id DESC, number, repo_id, kind, title, state, comments_count, seq) WHERE is_stub = 0;
          ANALYZE;
          PRAGMA wal_checkpoint(TRUNCATE);",
@@ -655,10 +739,23 @@ async fn main() {
         )
     });
     let (events, _) = broadcast::channel(256);
-    let state = AppState { db: Db { paths: Arc::new(paths), pools }, events, latency, variant };
+    let db = Db { paths: Arc::new(paths), pools };
+    let stored = if variant == "hybrid" {
+        let mut all = vec![];
+        for a in 0..db.paths.len() {
+            all.push(std::sync::RwLock::new(Arc::new(with_db(&db, a, move |c| store_snapshot(c, a)).await.ok().expect("build snapshot"))));
+        }
+        let all = Arc::new(all);
+        let threshold = env::var("BENCH_SNAPSHOT_REBUILD").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+        tokio::spawn(refresh_snapshots(db.clone(), all.clone(), threshold));
+        Some(all)
+    } else {
+        None
+    };
+    let state = AppState { db, events, latency, variant, stored };
 
     let pages: &'static [(&'static str, String)] = Box::leak(
-        ["server", "client", "worker"]
+        ["server", "client", "worker", "hybrid"]
             .map(|v| (v, std::fs::read_to_string(format!("{public}/{v}.html")).unwrap_or_default()))
             .into(),
     );

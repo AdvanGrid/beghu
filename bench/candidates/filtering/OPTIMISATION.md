@@ -2,6 +2,12 @@
 
 Run on 2026-10-15 for
 [Benchmark: client-side vs server-side filtering at 20k and 50k issues](https://github.com/tomsjansons/beghu/issues/20).
+
+**Since superseded in part** by [HYBRID.md](HYBRID.md): the shared cache (`web/src/cache.ts`) has
+changed since (tuple rows, compact wire rows, bitmasks, narrowing), and CDP turned out not to
+throttle workers, so the `worker` numbers on the low profile below ran their worker at full
+speed. HYBRID.md has the worker variant re-run with the throttle emulated.
+
 The browser runs used the far network (100 ms RTT, 10 Mbps), 20 iterations each, and held the bench lock
 on this host. Every cell ran its three variants back to back. The host is shared and was heavily
 loaded during the runs, so compare numbers within a cell, not across days.

@@ -12,7 +12,8 @@
 //   live    every user holds /events open while one webhook a second arrives, and refetches
 //           what the app would: its first page (server) or a delta since its cursor (client)
 //
-// `--client` (or a variant named client/worker) switches users to the client behaviour.
+// `--client` (or a variant named client/worker) switches users to the client behaviour. A
+// `hybrid` variant's users also fetch the first page in the burst, then behave as client users.
 //
 // beghu keeps one SQLite mirror per account, so by default every user is their own account
 // (`--accounts per-user`: the candidate gets BENCH_ACCOUNTS=<users> and each user sends
@@ -36,7 +37,9 @@ if (!candidate) {
   process.exit(2);
 }
 const [dir, variant] = candidate.split(':');
-const client = argv.includes('--client') || variant === 'client' || variant === 'worker';
+// A hybrid user also loads its first page from the server, then behaves as a client user.
+const hybrid = variant === 'hybrid';
+const client = argv.includes('--client') || variant === 'client' || variant === 'worker' || hybrid;
 const scales = flag('scale', '20k') === 'all' ? ['20k', '50k'] : flag('scale', '20k').split(',');
 const userCounts = flag('users', '1,5,20').split(',').map(Number);
 const events = Number(flag('events', 30));
@@ -95,6 +98,7 @@ async function burst(box, users) {
           await Promise.all([
             get(`${box.url}/api/facets`, [], null, u),
             get(client ? `${box.url}/api/snapshot?since=0` : issuesUrl(box.url, {}), [], null, u),
+            ...(hybrid ? [get(issuesUrl(box.url, {}), [], null, u)] : []),
           ]);
           times.push(performance.now() - t0);
         }),

@@ -7,7 +7,7 @@ export default defineConfig({
     outDir: '../server/public',
     emptyOutDir: true,
     // One entry per variant; the server serves the one BENCH_VARIANT names at `/`.
-    rollupOptions: { input: { server: 'server.html', client: 'client.html', worker: 'worker.html' } },
+    rollupOptions: { input: { server: 'server.html', client: 'client.html', worker: 'worker.html', hybrid: 'hybrid.html' } },
   },
   worker: { format: 'es' },
   server: {

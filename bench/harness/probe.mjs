@@ -12,6 +12,9 @@ export function probe(init) {
     result: null,
     frames: null,
     longTasks: [],
+    // CDP throttles only a page's main thread, never its workers. A candidate that works in a
+    // worker reads this rate and slows that work to match (see the README's candidate contract).
+    cpuRate: init?.cpuRate ?? 1,
   });
 
   for (const type of ['click', 'input']) {

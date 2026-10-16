@@ -74,6 +74,7 @@ first matched, not the moment Playwright noticed. The expected rows come from th
 | 5 | `detail`: click one of the top 20 rows; each has exactly 30 comments | click event | detail with that id shows its body and 30 comments | ≤ 300 ms |
 | 6 | `live`: filter by `bug`, then POST an `issues.edited` webhook renaming the 5th row | just before the POST (harness clock) | the new title is in a row (page clock, same host) | ≤ 2 s |
 | 7 | `write`: open a row's detail, click to add a label it lacks | click event | the label chip shows in the detail | ≤ 100 ms |
+| 8 | `early`: empty context; type `dark m` the moment the list is live, then (once the page marks `bench:cache-ready`, 60 s at most) clear it and run the filter scenario's three toggles on the same tab | each `input` or click | as in filter | ≤ 200 ms |
 
 Notes on the scenarios:
 
@@ -83,6 +84,15 @@ Notes on the scenarios:
   before it had done anything.
 - **Live** edits move the issue to the top, as on GitHub. The expected list accounts for earlier
   edits in the same run.
+- **Early** is not one of the original 7. It was added for
+  [Benchmark: server + worker hybrid filtering](https://github.com/tomsjansons/beghu/issues/47) to
+  measure filtering while a browser cache is still filling. It isn't in `all` runs of older
+  results.
+- **Filter** and **early** tag every step with who answered it: `local` if the page had marked
+  `bench:cache-ready` (its cache now answers queries) before the input event, else `server`.
+  `answered_by` in the results splits the samples that way. Early also counts, through the
+  `bench:switch-same` / `bench:switch-differs` marks, whether switching to the cache changed the
+  rows on screen.
 - **Write** also records the server round trip: from the click to the response of the first
   non-GET request to the candidate. It has no reference line.
 
@@ -97,6 +107,7 @@ Notes on the scenarios:
 | Long tasks | `PerformanceObserver('longtask')` during the scroll |
 | Server CPU and RAM | `docker stats`, mean and peak CPU, peak RAM |
 | Cache warm | cold load only, for candidates that fill a browser cache: from navigation to the `bench:cache-warm` performance mark, which the candidate sets once the cache is persisted. Recorded only if the page also set `bench:cache-start` |
+| Cache ready | cold load, warm load and early: from navigation to `bench:cache-ready`, which a candidate sets once its cache answers queries. On a warm load, only for pages that marked `bench:cache-start` |
 
 **Server load under several users.** `./bench/load <candidate>[:<variant>] --scale all --users 1,5,20`
 drives the server over plain HTTP, with no browser: every user cold-loads at once, then runs the
@@ -195,6 +206,15 @@ speed, so results from a faster host aren't comparable without re-running the st
   `./shape` in front of the server: a TCP proxy that adds round-trip latency and a bandwidth cap to
   every byte (`./shape 9091 127.0.0.1:8091 --rtt 300 --down 1600 --up 750`).
 - Headless rendering skips the compositor work a visible window does. Use `--headed` to compare.
+- **CDP throttles only a page's main thread, not its Web Workers.** A loop that takes 93 ms in a
+  worker takes 93 ms at 6× too, while the same loop on the main thread goes from 134 to 1072 ms.
+  Chromium refuses `Emulation.setCPUThrottlingRate` on a worker target ("Operation is only
+  supported for pages, not workers"). So the harness puts the profile's rate in
+  `window.__bench.cpuRate`, and a candidate that works in a worker must slow that work itself:
+  the filtering candidate's cache spins after each synchronous chunk of worker work for
+  `rate - 1` times as long as it took. Worker results from before 2026-10-16, including the
+  `worker` variant in [Benchmark: client-side vs server-side filtering](https://github.com/tomsjansons/beghu/issues/20),
+  ran their worker at full speed on the low profile.
 
 ### Real-laptop sanity check (once, by the owner)
 

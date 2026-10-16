@@ -9,4 +9,10 @@ export interface Source {
   live(changed: (ids: number[]) => void): () => void;
 }
 
-export const mark = (name: string) => performance.mark(`bench:${name}`);
+/** A `bench:` performance mark, now or at `at` (epoch ms, for times taken on a worker's clock). */
+export const mark = (name: string, at?: number) =>
+  performance.mark(`bench:${name}`, at === undefined ? undefined : { startTime: at - performance.timeOrigin });
+
+/** The benchmark's CPU rate rides in the worker's name, so the worker can slow its own work to
+ *  match: CDP throttles only the main thread (see Cache's `cpu` option). */
+export const workerName = (suffix = '') => `cpu=${(window as { __bench?: { cpuRate?: number } }).__bench?.cpuRate ?? 1}${suffix}`;

@@ -23,11 +23,47 @@ const arm = (page, kind, arg, clock) => page.evaluate(([k, a, c]) => window.__be
 
 // Time from the input event to the frame that showed the expected DOM.
 async function inputToFrame(page, what, act) {
+  return (await timedStep(page, what, act)).ms;
+}
+
+// The same, plus who answered: `local` once the page had marked `bench:cache-ready` (a browser
+// cache took over the queries) before the input event, else `server`.
+async function timedStep(page, what, act) {
   await act();
   const r = await waitResult(page, what);
   if (!r.input) throw new Error(`${what}: the DOM matched before any input event arrived`);
-  return r.t - r.input.t;
+  const ready = await page.evaluate(() => performance.getEntriesByName('bench:cache-ready')[0]?.startTime ?? null);
+  return { ms: r.t - r.input.t, by: ready !== null && ready < r.input.t ? 'local' : 'server' };
 }
+
+// Toggles a label, then an assignee, then state closed, recording each as a step.
+async function toggles(h, page, i, steps, prefix = '') {
+  const label = FILTER_LABELS[i % FILTER_LABELS.length];
+  const team = h.expect.team();
+  const assignee = team[1 + (i % (team.length - 1))];
+  const toggle = async (name, filter, selector) => {
+    await arm(page, 'rows', { ids: h.expect.ids(filter) });
+    steps.push({ step: prefix + name, ...(await timedStep(page, name, () => page.click(selector))) });
+  };
+  await toggle(`label ${label}`, { labels: [label] }, `[data-bench=filter-label][data-value="${label}"]`);
+  await toggle(`assignee ${assignee}`, { labels: [label], assignees: [assignee] }, `[data-bench=filter-assignee][data-value="${assignee}"]`);
+  await toggle('state closed', { state: 'closed', labels: [label], assignees: [assignee] }, '[data-bench=filter-state][data-value=closed]');
+}
+
+// Types the search term one key at a time, recording each key as a step.
+async function typeSearch(h, page, steps, prefix = '') {
+  await page.click('[data-bench=search]');
+  for (let n = 1; n <= SEARCH_TERM.length; n++) {
+    const q = SEARCH_TERM.slice(0, n);
+    await arm(page, 'rows', { ids: h.expect.ids({ q }) });
+    steps.push({ step: `${prefix}search "${q}"`, ...(await timedStep(page, `search "${q}"`, () => page.keyboard.type(SEARCH_TERM[n - 1]))) });
+  }
+}
+
+const cacheMark = (page, name, timeout) =>
+  page
+    .waitForFunction((n) => performance.getEntriesByName(`bench:${n}`)[0]?.startTime ?? false, name, { timeout, polling: 50 })
+    .then((h) => h.jsonValue());
 
 // Opens the app in a new tab and waits until the list is live.
 async function open(h, ctx) {
@@ -56,13 +92,18 @@ export const scenarios = [
           () => {
             const mark = (n) => performance.getEntriesByName(`bench:${n}`)[0];
             if (!mark('cache-start')) return { none: true };
-            return mark('cache-warm') ? { t: mark('cache-warm').startTime } : false;
+            // `bench:cache-ready` (queries now answered by the cache) is waited for up to 3 s
+            // past cache-warm, since only some candidates mark it.
+            const warm = mark('cache-warm');
+            if (!warm || (!mark('cache-ready') && performance.now() - warm.startTime < 3000)) return false;
+            return { t: warm.startTime };
           },
           null,
           { timeout: 120_000, polling: 50 },
         )
         .then((h) => h.jsonValue());
-      return { latency: [r.t], js: await js(), ...(warm.none ? {} : { cache_warm_ms: [warm.t] }) };
+      const ready = await page.evaluate(() => performance.getEntriesByName('bench:cache-ready')[0]?.startTime ?? null);
+      return { latency: [r.t], js: await js(), ...(warm.none ? {} : { cache_warm_ms: [warm.t] }), ...(ready !== null ? { cache_ready_ms: [ready] } : {}) };
     },
   },
   {
@@ -73,8 +114,12 @@ export const scenarios = [
       const page = await h.newPage(ctx, { armLoad: true });
       await page.goto(h.url, { waitUntil: 'commit' });
       const r = await waitResult(page, 'first 20 rows of the default view');
+      // A page that fills a cache (it marked `bench:cache-start`) may answer from the server until
+      // its cache is ready; record when that is, from navigation, waiting up to 30 s.
+      const caches = await page.evaluate(() => performance.getEntriesByName('bench:cache-start').length > 0);
+      const ready = caches ? await cacheMark(page, 'cache-ready', 30_000).catch(() => null) : null;
       await page.close();
-      return { latency: [r.t] };
+      return { latency: [r.t], ...(ready !== null ? { cache_ready_ms: [ready] } : {}) };
     },
   },
   {
@@ -82,30 +127,37 @@ export const scenarios = [
     title: 'Filter and search',
     reference: { ms: 200 },
     async iteration(h, ctx, i) {
-      const label = FILTER_LABELS[i % FILTER_LABELS.length];
-      const team = h.expect.team();
-      const assignee = team[1 + (i % (team.length - 1))];
       const steps = [];
       let page = await open(h, ctx);
-
-      const toggle = async (name, filter, selector) => {
-        await arm(page, 'rows', { ids: h.expect.ids(filter) });
-        steps.push({ step: name, ms: await inputToFrame(page, name, () => page.click(selector)) });
-      };
-      await toggle(`label ${label}`, { labels: [label] }, `[data-bench=filter-label][data-value="${label}"]`);
-      await toggle(`assignee ${assignee}`, { labels: [label], assignees: [assignee] }, `[data-bench=filter-assignee][data-value="${assignee}"]`);
-      await toggle('state closed', { state: 'closed', labels: [label], assignees: [assignee] }, '[data-bench=filter-state][data-value=closed]');
+      await toggles(h, page, i, steps);
       await page.close();
-
       page = await open(h, ctx);
-      await page.click('[data-bench=search]');
-      for (let n = 1; n <= SEARCH_TERM.length; n++) {
-        const q = SEARCH_TERM.slice(0, n);
-        await arm(page, 'rows', { ids: h.expect.ids({ q }) });
-        steps.push({ step: `search "${q}"`, ms: await inputToFrame(page, `search "${q}"`, () => page.keyboard.type(SEARCH_TERM[n - 1])) });
-      }
+      await typeSearch(h, page, steps);
       await page.close();
       return { latency: steps.map((s) => s.ms), steps };
+    },
+  },
+  {
+    // A first visit that filters at once: the search is typed the moment the list is live, while
+    // a cache would still be filling. Then, once the page marks `bench:cache-ready` (60 s at most;
+    // not waited for if the page never marked `bench:cache-start`), the three toggles run on the same tab.
+    name: 'early',
+    title: 'Filter straight after a cold load',
+    fresh: true,
+    reference: { ms: 200 },
+    async iteration(h, ctx, i) {
+      const steps = [];
+      const page = await open(h, ctx);
+      await typeSearch(h, page, steps, 'early ');
+      // Only a page that marked `bench:cache-start` will ever mark ready.
+      const caches = await page.evaluate(() => performance.getEntriesByName('bench:cache-start').length > 0);
+      const ready = caches ? await cacheMark(page, 'cache-ready', 60_000).catch(() => null) : null;
+      await page.fill('[data-bench=search]', '');
+      await page.waitForFunction(() => document.querySelectorAll('[data-bench=row]').length >= 20, null, { timeout: 30_000, polling: 50 });
+      await toggles(h, page, i, steps, 'later ');
+      const switched = await page.evaluate(() => (performance.getEntriesByName('bench:switch-differs').length ? 'differs' : performance.getEntriesByName('bench:switch-same').length ? 'same' : null));
+      await page.close();
+      return { latency: steps.map((s) => s.ms), steps, ...(ready !== null ? { cache_ready_ms: [ready] } : {}), switched };
     },
   },
   {

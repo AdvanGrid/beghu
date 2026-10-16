@@ -3,5 +3,6 @@
 /**
  * One cached row: `[id, number, repo, is_pr, title, open, updated_at, comments, labels, assignees]`.
  * `repo`, `labels` and `assignees` index the dictionaries of the snapshot that carries it.
+ * `is_pr` and `open` are 0 or 1, and `updated_at` is in Unix seconds, which keeps the JSON short.
  */
-export type CacheRow = [number, number, number, boolean, string, boolean, string, number, Array<number>, Array<number>];
+export type CacheRow = [number, number, number, number, string, number, number, number, Array<number>, Array<number>];
