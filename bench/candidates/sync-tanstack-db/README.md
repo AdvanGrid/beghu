@@ -9,7 +9,11 @@ real app.
 ./bench/run sync-tanstack-db --scenarios all,sync      # headline cell, the stack and sync scenarios
 ./bench/serve sync-tanstack-db --rtt 100 --replay      # the feel session
 ./bench/run sync-tanstack-db-idiomatic:persisted       # the idiomatic pass (see below)
+./bench/run sync-tanstack-db:on-demand                 # the collection in on-demand sync mode (see below)
+./bench/run sync-tanstack-db:progressive               # on-demand until a full copy is loaded in the background
 ```
+
+Both variants also work with `./bench/serve sync-tanstack-db:<variant>`.
 
 ## What it is
 
@@ -35,6 +39,48 @@ framework-free, so it runs in the worker).
 - **Sync orchestration and persistence are the baseline's** (`web/src/worker.ts`): one tab syncs
   (Web Locks), the others follow over `BroadcastChannel`, IndexedDB keeps raw responses and is
   compacted from the collection's own state, reconnect after 0.25, 0.5 and then every 1 s.
+
+## Sync modes
+
+The default page runs the collection **eager**, as described above: every row is in it before
+the worker says the cache is ready. `BENCH_VARIANT=on-demand` and `progressive` serve pages
+(`on-demand.html`, `progressive.html`) whose worker runs it in another mode:
+
+- **On-demand** is TanStack DB's `syncMode: 'on-demand'`. Each live query asks the collection's
+  `loadSubset` for the rows it needs. `loadSubset` reads the view back out of the query's `where`
+  (`viewOf` in `db.ts`) and fetches the missing rows from `/api/issues`, the hybrid's server
+  filter. TanStack DB asks for a page as a prefix (offset 0, limit `offset + limit`), so only the
+  rows past what that view already has are fetched.
+  - A page's total is the server's, from its first page; there is no count query, since a count
+    would load every matching row.
+  - The stream starts from `/api/head` (the cursor, epoch and dictionaries, without rows) and
+    applies every change, so a changed row is in the collection whether or not a view loaded it.
+  - A per-row `seq` keeps a page's older copy from replacing a delta's newer one; pages carry the
+    `seq` they were read at.
+  - Nothing is stored in IndexedDB, and `cache-warm` is marked at once, since there is no full
+    snapshot to store.
+- **Progressive** isn't a mode in TanStack DB core (it's how the Electric adapter describes this
+  behaviour). Here it is on-demand until the full copy is loaded in the background, then local:
+  - The full copy comes from IndexedDB, or else the stored snapshot once the page has painted. It
+    is applied in 1,000-row transactions with yields between them, then caught up from its cursor.
+  - From then on, `loadSubset` returns at once, and new queries take eager's route (per-state
+    derived collections, counted locally).
+  - The syncing tab then stores the collection as one record and marks `cache-warm`.
+
+What these modes needed:
+
+- **A lexically compared sort key, in the query and its index.** Otherwise TanStack DB can't
+  build a page cursor from the string key and loads every row of the view instead.
+- **Two small server additions:** `/api/head`, and `seq` on `/api/issues` pages.
+- **Eager's route once the collection is full.** Page queries straight on a full collection cost
+  0.1–0.6 s per change that moves a row out of a page's window.
+- **Writes to a row no query has loaded.** The page can show a row (server-rendered) before the
+  worker has loaded it, so `addLabel` fetches it from `/api/issues/{id}` first.
+
+Results: [RESULTS.md](RESULTS.md#sync-modes-on-demand-and-progressive).
+
+`mode-probe.mjs` shows a first and a returning visit's marks, stored records and worker
+requests, optionally with a webhook burst.
 
 No Solid adapter was needed. The hybrid puts the cache in a dedicated worker, and the page talks
 to it in messages, so `useLiveQuery` (or a Solid 2 port of `@tanstack/solid-db`) would have

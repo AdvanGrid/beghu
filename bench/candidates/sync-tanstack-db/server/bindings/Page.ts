@@ -4,4 +4,9 @@ import type { IssueRow } from "./IssueRow";
 /**
  * One page of the server-filtered list, with the total number of matches.
  */
-export type Page = { rows: Array<IssueRow>, total: number, };
+export type Page = { rows: Array<IssueRow>, total: number, 
+/**
+ * The mirror's `seq` when the page was read (before its rows): a cache that has applied a
+ * newer delta for one of these rows keeps the delta's copy.
+ */
+seq: number, };

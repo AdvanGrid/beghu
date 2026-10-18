@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>beghu bench: sync (TanStack DB, progressive)</title>
+    <!-- The first page comes from the server; the worker cache warms after it and then takes every query. The URLs must match api.ts exactly. -->
+    <link rel="preload" href="/api/facets" as="fetch" crossorigin />
+    <link rel="preload" href="/api/issues?state=open&offset=0&limit=100" as="fetch" crossorigin />
+    <script>
+      window.__syncMode = 'progressive';
+      document.documentElement.classList.toggle('dark', matchMedia('(prefers-color-scheme: dark)').matches);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/entry.tsx"></script>
+  </body>
+</html>

@@ -20,5 +20,9 @@ export const mark = (name: string, at?: number) =>
   performance.mark(`bench:${name}`, at === undefined ? undefined : { startTime: at - performance.timeOrigin });
 
 /** The benchmark's CPU rate rides in the worker's name, so the worker can slow its own work to
- *  match: CDP throttles only the main thread (see Cache's `cpu` option). */
-export const workerName = (suffix = '') => `cpu=${(window as { __bench?: { cpuRate?: number } }).__bench?.cpuRate ?? 1}${suffix}`;
+ *  match: CDP throttles only the main thread (see Cache's `cpu` option). So does the collection's
+ *  sync mode, which the variant's page sets. */
+export const workerName = (suffix = '') => {
+  const w = window as { __bench?: { cpuRate?: number }; __syncMode?: string };
+  return `cpu=${w.__bench?.cpuRate ?? 1};mode=${w.__syncMode ?? 'eager'}${suffix}`;
+};

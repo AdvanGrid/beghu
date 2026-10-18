@@ -49,7 +49,10 @@ use tokio_stream::{
     StreamExt,
     wrappers::{BroadcastStream, ReceiverStream},
 };
-use tower_http::{compression::CompressionLayer, services::ServeDir};
+use tower_http::{
+    compression::CompressionLayer,
+    services::{ServeDir, ServeFile},
+};
 use ts_rs::TS;
 
 type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -144,6 +147,10 @@ pub struct Page {
     pub rows: Vec<IssueRow>,
     #[ts(type = "number")]
     pub total: i64,
+    /// The mirror's `seq` when the page was read (before its rows): a cache that has applied a
+    /// newer delta for one of these rows keeps the delta's copy.
+    #[ts(type = "number")]
+    pub seq: i64,
 }
 
 /// One cached row: `[id, number, repo, is_pr, title, open, updated_at, comments, labels, assignees]`.
@@ -336,6 +343,7 @@ async fn facets(State(s): State<AppState>, Account(a): Account) -> Result<Json<F
 
 async fn list_issues(State(s): State<AppState>, Account(a): Account, Query(q): Query<ListQuery>) -> Result<Json<Page>, AppError> {
     with_db(&s.db, a, move |c| {
+        let seq: i64 = meta(c, "seq")?.parse()?;
         let mut filter = String::from(" WHERE i.kind = 'issue' AND i.is_stub = 0 AND i.state = ?");
         let mut args: Vec<SqlValue> = vec![if q.state.as_deref() == Some("closed") { "closed" } else { "open" }.to_string().into()];
         // `+i.id` keeps SQLite scanning the covering `issue_list` index and probing each label or
@@ -367,7 +375,7 @@ async fn list_issues(State(s): State<AppState>, Account(a): Account, Query(q): Q
         args.push(q.limit.unwrap_or(100).clamp(1, 500).into());
         args.push(offset.into());
         let rows = c.prepare_cached(&sql)?.query_map(params_from_iter(args), row)?.collect::<Result<_, _>>()?;
-        Ok(Json(Page { rows, total }))
+        Ok(Json(Page { rows, total, seq }))
     })
     .await
 }
@@ -379,6 +387,10 @@ fn meta(c: &rusqlite::Connection, key: &str) -> rusqlite::Result<String> {
 /// Every row with a `seq` after `since`, and the items deleted after it. `since = 0` is the full
 /// snapshot. Read in one transaction, so `seq` matches the rows exactly.
 fn build_delta(c: &mut rusqlite::Connection, since: i64) -> Result<Snapshot, AppError> {
+    build_delta_with(c, since, false)
+}
+
+fn build_delta_with(c: &mut rusqlite::Connection, since: i64, force_dicts: bool) -> Result<Snapshot, AppError> {
     let tx = c.transaction()?;
     let mut repos = vec![];
     let mut repo_ix = std::collections::HashMap::new();
@@ -439,12 +451,24 @@ fn build_delta(c: &mut rusqlite::Connection, since: i64) -> Result<Snapshot, App
     let seq: i64 = meta(&tx, "seq")?.parse()?;
     let epoch = meta(&tx, "epoch")?;
     let dicts = since == 0
+        || force_dicts
         || tx
             .prepare_cached("SELECT EXISTS (SELECT 1 FROM repos WHERE seq > ?1) OR EXISTS (SELECT 1 FROM labels WHERE seq > ?1) OR EXISTS (SELECT 1 FROM users WHERE seq > ?1)")?
             .query_row([since], |r| r.get::<_, bool>(0))?;
     tx.commit()?;
     let (repos, labels, users) = if dicts { (Some(repos), Some(labels), Some(users)) } else { (None, None, None) };
     Ok(Snapshot { epoch, from: since, seq, repos, labels, users, items, deleted })
+}
+
+/// The cursor, epoch and dictionaries, with no rows: where an on-demand cache (one that loads
+/// pages through `/api/issues` instead of a full snapshot) starts its `/api/sync` stream.
+async fn head(State(s): State<AppState>, Account(a): Account) -> Result<Json<Snapshot>, AppError> {
+    with_db(&s.db, a, move |c| {
+        let mut snap = build_delta_with(c, i64::MAX, true)?;
+        snap.from = snap.seq;
+        Ok(Json(snap))
+    })
+    .await
 }
 
 /// A full snapshot as stored, compressed bytes, built per account at startup and served to every
@@ -954,6 +978,7 @@ async fn main() {
         .route("/api/facets", get(facets))
         .route("/api/issues", get(list_issues))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/head", get(head))
         .route("/api/sync", get(sync))
         .route("/api/issues/{id}", get(issue_detail))
         .route("/api/issues/{id}/labels", post(add_label))
@@ -961,7 +986,14 @@ async fn main() {
         .route("/events", get(sse))
         .route("/bench/outage", post(bench_outage))
         .route("/bench/fail-writes", post(bench_fail_writes))
-        .fallback_service(ServeDir::new(&public))
+        .fallback_service(ServeDir::new(&public));
+    // BENCH_VARIANT=on-demand or progressive serves the page whose worker runs the collection in
+    // that sync mode (see the web README); the default page runs it eager.
+    let app = match env::var("BENCH_VARIANT").as_deref() {
+        Ok(v @ ("on-demand" | "progressive")) => app.route_service("/", ServeFile::new(format!("{public}/{v}.html"))),
+        _ => app,
+    };
+    let app = app
         .layer(CompressionLayer::new())
         .with_state(state);
 

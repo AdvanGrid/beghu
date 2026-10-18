@@ -4,7 +4,7 @@
 // each delta to IndexedDB and passes it on over a BroadcastChannel. The others apply what it
 // passes on, and catch up over HTTP when they find a gap. When the syncing tab closes, the lock
 // goes to a waiting tab, which opens the stream from its own cursor.
-import { Store } from './db';
+import { Store, type SyncMode } from './db';
 import type { FromWorker, ToWorker } from './protocol';
 
 const post = (m: FromWorker) => postMessage(m);
@@ -14,6 +14,7 @@ const phase = (name: string) => post({ mark: name, at: performance.timeOrigin + 
 phase('worker-boot');
 
 const cpu = Number(/cpu=([\d.]+)/.exec(self.name)?.[1] ?? 1);
+const mode = (/mode=([\w-]+)/.exec(self.name)?.[1] ?? 'eager') as SyncMode;
 // The worker reads IndexedDB at once but fetches a full snapshot only once the page posts
 // `{ fetch: true }`, after its first paint, so the download doesn't compete with the first page.
 let allowFetch = () => {};
@@ -26,6 +27,7 @@ const opening = Store.open({
   phase,
   fetchAfter,
   cpu,
+  mode,
 });
 
 let ready = false;
@@ -42,6 +44,7 @@ const markReady = () => {
 // it only re-asks for the list.
 void opening.then((s) =>
   s.issues.subscribeChanges((changes) => {
+    if (s.quiet) return;
     const ids = [...new Set(changes.map((c) => c.key))];
     if (!ids.length) return;
     post(ids.every((id) => s.writing.has(id)) ? { changed: ids, own: true } : { changed: ids });

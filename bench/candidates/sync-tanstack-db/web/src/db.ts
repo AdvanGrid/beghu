@@ -7,6 +7,15 @@
 // IndexedDB holds the server's responses as they came, one record per snapshot or delta, as in the
 // hand-rolled baseline (TanStack DB's own SQLite persistence was too slow at this size; see
 // RESULTS.md). Only the tab that syncs writes to it.
+//
+// The collection runs in one of three sync modes (the variant's page picks it):
+// - `eager` (default): every row is in the collection before the cache says it is ready.
+// - `on-demand`: TanStack DB's `syncMode: 'on-demand'`. Each live query asks the collection's
+//   `loadSubset` for the rows it needs, which fetches them from `/api/issues` (the hybrid's server
+//   filter). The stream still applies every change. Nothing is persisted.
+// - `progressive`: on-demand until the full snapshot (IndexedDB, else `/api/snapshot`) has been
+//   loaded in the background, then answered locally, as eager. TanStack DB core has no mode by
+//   that name; it is how its Electric adapter describes this behaviour, built here on `on-demand`.
 import {
   BTreeIndex,
   configureIndexDevMode,
@@ -18,8 +27,11 @@ import {
   inArray,
   type ChangeMessageOrDeleteKeyMessage,
   type Collection,
+  type LoadSubsetOptions,
 } from '@tanstack/db';
-import type { CacheRow, IssueRow, Label, Page, Snapshot, View } from './api';
+import { getIssue, issuesUrl, type CacheRow, type IssueRow, type Label, type Page, type Snapshot, type View } from './api';
+
+export type SyncMode = 'eager' | 'on-demand' | 'progressive';
 
 configureIndexDevMode({ enabled: false });
 
@@ -43,16 +55,20 @@ export type Issue = {
 type Dicts = { repos: string[]; labels: Label[]; users: string[] };
 
 /** A page whose total isn't counted yet (`null`); the worker posts it when it is. */
-export type LazyPage = Omit<Page, 'total'> & { total: number | null };
+export type LazyPage = Omit<Page, 'total' | 'seq'> & { total: number | null };
 
 // Deltas pile up as records; past this many, the syncing tab replaces them with one record of its
 // own state, written in the background.
 const MAX_RECORDS = 50;
 // The page's first request for a view: `warm` builds the same query.
 const FIRST_PAGE = 100;
+// Progressive: rows per sync transaction while the full copy loads in the background.
+const FILL_CHUNK = 1000;
 
-const fetchText = (since: number) =>
-  fetch(`/api/snapshot?since=${since}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))));
+const text = (r: Response) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)));
+const fetchText = (since: number) => fetch(`/api/snapshot?since=${since}`).then(text);
+// The cursor, epoch and dictionaries, without rows (on-demand and progressive start from it).
+const fetchHead = () => fetch('/api/head').then(text);
 
 // Benchmark only: CDP's CPU throttle reaches the main thread but not workers, so synchronous work
 // spins for `cpu - 1` times as long as it took. It wraps every call into TanStack DB that does its
@@ -76,6 +92,55 @@ export function throttled<T>(cpu: number, f: () => T): T {
 }
 
 const pad = (n: number) => String(n).padStart(12, '0');
+
+// A row of a server page (`/api/issues`, issues only) as a collection row.
+const fromRow = (r: IssueRow): Issue => {
+  const updated = Date.parse(r.updated_at) / 1000;
+  return {
+    id: r.id,
+    number: r.number,
+    repo: r.repo,
+    pr: false,
+    title: r.title,
+    open: r.state === 'open',
+    updated,
+    k: pad(updated) + pad(r.id),
+    comments_count: r.comments_count,
+    labels: r.labels,
+    labelNames: r.labels.map((l) => l.name),
+    assignees: r.assignees,
+  };
+};
+
+// The view a subset request is for, from its `where`, in the order the query added its filters,
+// so its key matches the page's. `null` for a request that isn't a view: the tie at a page's
+// boundary (`eq(k, …)`, one row, since `k` is unique and already loaded), or a count.
+function viewOf(where: any): View | null {
+  const v: View = { state: 'open', labels: [], assignees: [], q: '' };
+  let state = false;
+  const field = (e: any) => (e?.type === 'ref' ? e.path[e.path.length - 1] : undefined);
+  const visit = (e: any): boolean => {
+    if (e.type !== 'func') return false;
+    const [a, b] = e.args;
+    switch (e.name) {
+      case 'and':
+        return e.args.every(visit);
+      case 'eq':
+        if (field(a) === 'pr') return true;
+        if (field(a) === 'open') return (v.state = b.value ? 'open' : 'closed'), (state = true);
+        return false;
+      case 'in':
+        if (field(b) === 'labelNames') return v.labels.push(a.value), true;
+        if (field(b) === 'assignees') return v.assignees.push(a.value), true;
+        return false;
+      case 'ilike':
+        return (v.q = String(b.value).slice(1, -1)), field(a) === 'title';
+      default:
+        return false;
+    }
+  };
+  return where && visit(where) && state ? v : null;
+}
 
 const toIssue = (r: CacheRow, d: Dicts): Issue => {
   const [id, number, repo, pr, title, open, updated, comments_count, labels, users] = r;
@@ -108,7 +173,19 @@ export class Store {
   readonly issues: Collection<Issue, number>;
   seq = 0;
   epoch = '';
-  private dicts: Dicts = { repos: [], labels: [], users: [] };
+  dicts: Dicts = { repos: [], labels: [], users: [] };
+  /** Every row is in the collection (always, eager; after the background load, progressive). */
+  full: boolean;
+  /** Set while rows are written that aren't changes (a page loaded, the background load): the
+   *  worker doesn't tell the page about them. */
+  quiet = false;
+  // On-demand and progressive: the `seq` each row was last written at (pages and deltas arrive in
+  // either order, and an older copy must not replace a newer one), how many leading rows of each
+  // view are loaded, and each view's total as the server last counted it.
+  private rowSeq = new Map<number, number>();
+  private coverage = new Map<string, number>();
+  private loading = new Map<string, Promise<void>>();
+  readonly totals = new Map<string, number>();
   private sink!: Sink;
   private chain: Promise<unknown> = Promise.resolve();
   private records = 0;
@@ -127,14 +204,18 @@ export class Store {
   private constructor(
     private db: IDBDatabase,
     private cpu: number,
+    readonly mode: SyncMode,
   ) {
+    this.full = mode === 'eager';
     this.issues = createCollection<Issue, number>({
       id: 'issues',
       getKey: (i) => i.id,
+      syncMode: mode === 'eager' ? 'eager' : 'on-demand',
       sync: {
         rowUpdateMode: 'full',
         sync: ({ begin, write, commit, truncate, markReady }) => {
           this.sink = { begin, write, commit, truncate, markReady };
+          return mode === 'eager' ? undefined : { loadSubset: (o) => this.loadSubset(o) };
         },
       },
       // An optimistic label: post it, then hold the optimistic row until the cache has passed the
@@ -155,7 +236,80 @@ export class Store {
       },
     });
     this.issues.startSyncImmediate();
-    ({ query: this.query, warm: this.warm } = views(this.issues, cpu));
+    ({ query: this.query, warm: this.warm } = mode === 'eager' ? views(this.issues, cpu) : subsetViews(this));
+  }
+
+  get cpuRate() {
+    return this.cpu;
+  }
+
+  private start(head: Snapshot) {
+    this.epoch = head.epoch;
+    this.seq = head.seq;
+    if (head.repos && head.labels && head.users) this.dicts = { repos: head.repos, labels: head.labels, users: head.users };
+  }
+
+  /** On-demand and progressive: makes sure the collection holds the first `offset + limit` rows of
+   *  the view a live query asks for, fetching what's missing from `/api/issues`. TanStack DB asks
+   *  for a page as a prefix (offset 0, limit offset + limit), so only the rows past what this view
+   *  has loaded are fetched. */
+  private loadSubset(o: LoadSubsetOptions): true | Promise<void> {
+    if (this.full) return true;
+    const view = viewOf(o.where);
+    if (!view) return true;
+    const key = JSON.stringify(view);
+    const want = o.limit === undefined ? Infinity : (o.offset ?? 0) + o.limit;
+    if (want <= (this.coverage.get(key) ?? 0)) return true;
+    const run = (this.loading.get(key) ?? Promise.resolve()).then(() => this.loadRange(view, key, want));
+    this.loading.set(key, run.catch(() => {}));
+    return run;
+  }
+
+  private async loadRange(view: View, key: string, want: number) {
+    let have = this.coverage.get(key) ?? 0;
+    while (have < want && !this.full) {
+      const n = Math.min(500, want - have);
+      const body = await fetch(issuesUrl(view, have, n)).then(text);
+      const page = throttled(this.cpu, () => JSON.parse(body)) as Page;
+      if (have === 0) this.totals.set(key, page.total);
+      const receipt = throttled(this.cpu, () => {
+        const { begin, write, commit } = this.sink;
+        this.quiet = true;
+        try {
+          begin();
+          for (const r of page.rows) {
+            if ((this.rowSeq.get(r.id) ?? -1) > page.seq) continue;
+            this.rowSeq.set(r.id, page.seq);
+            write({ type: this.issues.has(r.id) ? 'update' : 'insert', value: fromRow(r) });
+          }
+          return commit() as unknown;
+        } finally {
+          this.quiet = false;
+        }
+      });
+      await receipt;
+      have += page.rows.length;
+      this.coverage.set(key, page.rows.length < n ? Infinity : have);
+      if (page.rows.length < n) break;
+    }
+  }
+
+  /** Writes row `id` from `/api/issues/{id}` unless a change has written it meanwhile. */
+  private async loadRow(id: number) {
+    const row = await getIssue(id);
+    if (this.issues.has(id)) return;
+    const receipt = throttled(this.cpu, () => {
+      const { begin, write, commit } = this.sink;
+      this.quiet = true;
+      try {
+        begin();
+        write({ type: 'insert', value: fromRow(row) });
+        return commit() as unknown;
+      } finally {
+        this.quiet = false;
+      }
+    });
+    await receipt;
   }
 
   /** Opens the cache: from IndexedDB when it has a copy, else from the stored snapshot, fetched
@@ -166,10 +320,21 @@ export class Store {
     fetchAfter: Promise<void>;
     persist: () => boolean;
     cpu: number;
+    mode: SyncMode;
     phase: (name: string) => void;
   }): Promise<Store> {
-    const { phase, cpu } = hooks;
-    const store = new Store(await openIdb(), cpu);
+    const { phase, cpu, mode } = hooks;
+    const store = new Store(await openIdb(), cpu, mode);
+    if (mode !== 'eager') {
+      // The stream starts at the server's cursor now; pages load as queries ask for them.
+      store.start(store.parse(await fetchHead()));
+      phase('cache-head');
+      store.sink.markReady();
+      if (mode === 'progressive') void store.fill(hooks);
+      // Nothing to store: `cache-warm` (a full snapshot persisted) has no meaning here.
+      else hooks.persisted();
+      return store;
+    }
     const saved = await loadSaved(store.db);
     phase('cache-idb-read');
     // Records chain: a full snapshot, then deltas that each start at or before the cursor the ones
@@ -200,6 +365,55 @@ export class Store {
     return store;
   }
 
+  /** Progressive: loads every row in the background, as eager does (IndexedDB, else the stored
+   *  snapshot once the page has painted), catches up from that copy's cursor, then answers every
+   *  query locally. The stream keeps applying changes meanwhile; `rowSeq` keeps the newer copy. The
+   *  syncing tab then persists the collection as one record. */
+  private async fill(hooks: { fetchAfter: Promise<void>; persist: () => boolean; persisted: () => void; phase: (name: string) => void }) {
+    const ctx = { dicts: { repos: [], labels: [], users: [] } as Dicts };
+    let seq = 0;
+    let epoch = '';
+    let used = 0;
+    // In chunks, yielding between them, and outside `serial`: deltas, queries and writes go on
+    // meanwhile (`rowSeq` keeps whichever copy is newer).
+    const load = async (snap: Snapshot) => {
+      for (let i = 0; i < snap.items.length || i === 0; i += FILL_CHUNK) {
+        const last = i + FILL_CHUNK >= snap.items.length;
+        this.quiet = true;
+        try {
+          this.apply({ ...snap, items: snap.items.slice(i, i + FILL_CHUNK), deleted: last ? snap.deleted : [] }, ctx);
+        } finally {
+          this.quiet = false;
+        }
+        await new Promise((r) => setTimeout(r));
+      }
+      seq = Math.max(seq, snap.seq);
+      epoch = snap.epoch;
+    };
+    for (const text of await loadSaved(this.db)) {
+      const snap = this.parse(text);
+      if (used ? snap.from > seq || snap.epoch !== epoch : snap.from !== 0) break;
+      await load(snap);
+      used++;
+    }
+    if (!used) {
+      await hooks.fetchAfter;
+      await load(this.parse(await fetchText(0)));
+    }
+    hooks.phase('cache-filled');
+    // From the copy's cursor to now; these are real changes, so the page hears of them.
+    const since = await fetchText(seq);
+    await this.serial(() => this.apply(this.parse(since), ctx));
+    this.full = true;
+    hooks.phase('cache-full');
+    // Eager's route, built now rather than on the next query.
+    await this.warm();
+    if (hooks.persist()) {
+      this.records = MAX_RECORDS + 1;
+      this.compactSoon(hooks.persisted);
+    }
+  }
+
   /** Runs `f` after every earlier call has finished, so deltas apply one at a time, in order. */
   serial<T>(f: () => Promise<T> | T): Promise<T> {
     const run = this.chain.then(f);
@@ -211,18 +425,28 @@ export class Store {
     return throttled(this.cpu, () => JSON.parse(text));
   }
 
-  // Writes a snapshot or delta into the collection in one sync transaction.
-  private apply(snap: Snapshot) {
+  // Writes a snapshot or delta into the collection in one sync transaction. `ctx` holds the
+  // dictionaries its rows index: the live ones, or (progressive's background load) its own.
+  // Outside eager, a row a newer page or delta already wrote is left alone.
+  private apply(snap: Snapshot, ctx: { dicts: Dicts } = this) {
+    const guard = this.mode !== 'eager';
+    const newer = (id: number) => guard && (this.rowSeq.get(id) ?? -1) > snap.seq;
     throttled(this.cpu, () => {
-      this.epoch = snap.epoch;
-      if (snap.repos && snap.labels && snap.users) this.dicts = { repos: snap.repos, labels: snap.labels, users: snap.users };
+      if (ctx === this) this.epoch = snap.epoch;
+      if (snap.repos && snap.labels && snap.users) ctx.dicts = { repos: snap.repos, labels: snap.labels, users: snap.users };
       const { begin, write, commit } = this.sink;
       begin();
       for (const r of snap.items) {
-        const row = toIssue(r, this.dicts);
+        if (newer(r[0])) continue;
+        if (guard) this.rowSeq.set(r[0], snap.seq);
+        const row = toIssue(r, ctx.dicts);
         write({ type: this.issues.has(row.id) ? 'update' : 'insert', value: row });
       }
-      for (const id of snap.deleted) if (this.issues.has(id)) write({ type: 'delete', key: id });
+      for (const id of snap.deleted) {
+        if (newer(id)) continue;
+        if (guard) this.rowSeq.set(id, snap.seq);
+        if (this.issues.has(id)) write({ type: 'delete', key: id });
+      }
       commit();
     });
     this.seq = Math.max(this.seq, snap.seq);
@@ -249,8 +473,10 @@ export class Store {
     else if (persist && ids.length) await this.persist(text);
   }
 
-  /** Stores a delta the cache has applied. Past MAX_RECORDS, a compaction follows. */
+  /** Stores a delta the cache has applied. Past MAX_RECORDS, a compaction follows. Only a full
+   *  collection is persisted: before that, there's no snapshot for deltas to follow. */
   async persist(text: string) {
+    if (!this.full) return;
     await append(this.db, text, false);
     this.records++;
     this.compactSoon();
@@ -258,8 +484,8 @@ export class Store {
 
   /** Replaces the stored records with the cache's own state, a while from now, if there are too
    *  many. Only the syncing tab calls it. */
-  compactSoon() {
-    if (this.records <= MAX_RECORDS || this.compacting) return;
+  compactSoon(done?: () => void) {
+    if (!this.full || this.records <= MAX_RECORDS || this.compacting) return;
     this.compacting = true;
     const later = () =>
       setTimeout(() => {
@@ -267,6 +493,7 @@ export class Store {
         void this.serial(async () => {
           await append(this.db, throttled(this.cpu, () => this.ownSnapshot()), true);
           this.records = 1;
+          done?.();
         }).finally(() => (this.compacting = false));
       }, 2000);
     later();
@@ -301,8 +528,23 @@ export class Store {
     return JSON.stringify(snap);
   }
 
-  /** Starts over from a fresh snapshot: the server's mirror changed epoch. */
+  /** Starts over from a fresh snapshot: the server's mirror changed epoch. On-demand and
+   *  progressive (not exercised by the benchmark) drop what they loaded and start again from the
+   *  new cursor; queries already open stay empty until they're asked again. */
   async reset(persist: boolean) {
+    if (this.mode !== 'eager') {
+      throttled(this.cpu, () => {
+        this.sink.begin();
+        this.sink.truncate();
+        this.sink.commit();
+      });
+      this.rowSeq.clear();
+      this.coverage.clear();
+      this.totals.clear();
+      this.full = false;
+      this.start(this.parse(await fetchHead()));
+      return;
+    }
     const text = await fetchText(0);
     throttled(this.cpu, () => {
       this.sink.begin();
@@ -320,6 +562,9 @@ export class Store {
   /** Adds `label` to row `id` at once; resolves once the server has it, rejects (after the
    *  collection has rolled it back) if it refused. */
   async addLabel(id: number, label: Label) {
+    // On-demand and progressive: the page can show a row (server-rendered, or opened by link)
+    // before any query has loaded it here, so fetch that one row first.
+    if (!this.issues.has(id) && !this.full) await this.loadRow(id);
     if (!this.issues.has(id)) throw new Error('not in the cache');
     this.writing.add(id);
     try {
@@ -337,11 +582,25 @@ export class Store {
   }
 }
 
-// A view's rows come from a live query over the state's derived collection (non-PR rows of one
+// Eager: a view's rows come from a live query over the state's derived collection (non-PR rows of one
 // state, indexed on the sort key), with `limit`, so TanStack DB walks the index only until the
 // page is full. The total is a separate count query, built after the page is answered: it has to
 // see every row. Recent queries stay alive, so a live change re-reads maintained results.
 function views(issues: Collection<Issue, number>, cpu: number) {
+  const route = stateRoute(issues, cpu);
+  return pagedViews(issues, cpu, () => route, () => true);
+}
+
+/** How a view's pages and total are queried: its filtered query, its order, its total when that
+ *  isn't counted locally (`undefined`: count it), and a tag naming the route in cache keys. */
+type Route = {
+  filtered: (view: View) => (q: any) => any;
+  order: (q: any, by: (r: any) => unknown) => any;
+  serverTotal: (key: string) => number | null | undefined;
+  tag: string;
+};
+
+function stateRoute(issues: Collection<Issue, number>, cpu: number): Route {
   const states = new Map<boolean, Collection<Issue, number>>();
   const state = (open: boolean) => {
     let c = states.get(open);
@@ -370,7 +629,12 @@ function views(issues: Collection<Issue, number>, cpu: number) {
     if (view.q) b = b.where(({ i }: any) => ilike(i.title, `%${view.q}%`));
     return b;
   };
+  return { filtered, order: (q, f) => q.orderBy(f, 'desc'), serverTotal: () => undefined, tag: 'state' };
+}
 
+// Pages, totals and the warm-up over the current route. `warmClosed`: whether warming up also
+// builds the closed state, in the background.
+function pagedViews(issues: Collection<Issue, number>, cpu: number, route: () => Route, warmClosed: () => boolean) {
   const lru = <T extends { cleanup: () => Promise<void> }>(keep: number) => {
     const m = new Map<string, T>();
     return (key: string, make: () => T) => {
@@ -414,20 +678,22 @@ function views(issues: Collection<Issue, number>, cpu: number) {
 
   const query = (view: View, offset: number, limit: number, counted: (n: number) => void): LazyPage | Promise<LazyPage> => {
     const key = JSON.stringify(view);
-    const lq = pages(`${key}|${offset}|${limit}`, () =>
+    const { filtered, order, serverTotal, tag } = route();
+    const lq = pages(`${tag}|${key}|${offset}|${limit}`, () =>
       throttled(cpu, () =>
         createLiveQueryCollection({
           startSync: true,
           query: (q) =>
-            filtered(view)(q)
-              .orderBy(({ i }: any) => i.k, 'desc')
+            order(filtered(view)(q), ({ i }: any) => i.k)
               .offset(offset)
               .limit(limit),
         }) as unknown as Collection<Issue, number>,
       ),
     );
     const total = (): number | null => {
-      const c = counts(key, () =>
+      const server = serverTotal(key);
+      if (server !== undefined) return server;
+      const c = counts(`${tag}|${key}`, () =>
         createLiveQueryCollection({ query: (q) => filtered(view)(q).select(({ i }: any) => ({ n: count(i.id) })) }) as unknown as Collection<{ n: number }, string | number>,
       );
       if (c.status === 'ready') return c.toArray[0]?.n ?? 0;
@@ -453,9 +719,40 @@ function views(issues: Collection<Issue, number>, cpu: number) {
   const first = (state: View['state'], counted: () => void) =>
     query({ state, labels: [], assignees: [], q: '' }, 0, FIRST_PAGE, counted);
   const warm = async () => {
-    await first('open', () => setTimeout(() => void first('closed', () => {})));
+    await first('open', () => warmClosed() && setTimeout(() => void first('closed', () => {})));
   };
   return { query, warm };
+}
+
+// On-demand and progressive: until the collection is full, one live query per view and page,
+// straight on the collection, so TanStack DB passes its `where`, order and limit to `loadSubset`.
+// The sort key is compared lexically, in the query and in its index: TanStack DB only builds a
+// page cursor from a string it can compare that way, and otherwise loads every row of the view.
+// A view's total is the server's, from the first page it loaded.
+//
+// Once progressive's collection is full, new queries take eager's route (per-state derived
+// collections, counted locally). Straight on a full collection, a change that moves a row out of
+// a page's window cost 0.1–0.6 s to repair (TanStack DB's on-demand window loading); over a
+// derived collection it costs what it does in eager.
+function subsetViews(store: Store) {
+  const { issues } = store;
+  const cpu = store.cpuRate;
+  const lexical = { direction: 'desc', nulls: 'first', stringSort: 'lexical' } as const;
+  issues.createIndex((i) => i.k, { indexType: BTreeIndex, options: { compareOptions: { ...lexical, direction: 'asc' } } } as any);
+  const filtered = (view: View) => (q: any) => {
+    let b = q
+      .from({ i: issues })
+      .where(({ i }: any) => eq(i.pr, false))
+      .where(({ i }: any) => eq(i.open, view.state === 'open'));
+    for (const l of view.labels) b = b.where(({ i }: any) => inArray(l, i.labelNames));
+    for (const a of view.assignees) b = b.where(({ i }: any) => inArray(a, i.assignees));
+    if (view.q) b = b.where(({ i }: any) => ilike(i.title, `%${view.q}%`));
+    return b;
+  };
+  const direct: Route = { filtered, order: (q, f) => q.orderBy(f, lexical), serverTotal: (key) => store.totals.get(key) ?? null, tag: 'direct' };
+  let full: Route | undefined;
+  const route = () => (store.full ? (full ??= stateRoute(issues, cpu)) : direct);
+  return pagedViews(issues, cpu, route, () => store.full);
 }
 
 // --- IndexedDB -------------------------------------------------------------------------------

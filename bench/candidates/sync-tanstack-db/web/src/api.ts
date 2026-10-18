@@ -20,13 +20,15 @@ async function json<T>(r: Response): Promise<T> {
 
 export const getFacets = () => fetch('/api/facets').then(json<Facets>);
 
-export function getIssues(view: View, offset: number, limit: number) {
+export function issuesUrl(view: View, offset: number, limit: number) {
   const p = new URLSearchParams({ state: view.state, offset: String(offset), limit: String(limit) });
   for (const l of view.labels) p.append('label', l);
   for (const a of view.assignees) p.append('assignee', a);
   if (view.q) p.set('q', view.q);
-  return fetch(`/api/issues?${p}`).then(json<Page>);
+  return `/api/issues?${p}`;
 }
+
+export const getIssues = (view: View, offset: number, limit: number) => fetch(issuesUrl(view, offset, limit)).then(json<Page>);
 
 export const getIssue = (id: number) => fetch(`/api/issues/${id}`).then(json<IssueDetail>);
 

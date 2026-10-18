@@ -3,7 +3,7 @@ import solid from '@solidjs/vite-plugin';
 
 export default defineConfig({
   plugins: [solid()],
-  build: { outDir: '../server/public', emptyOutDir: true },
+  build: { outDir: '../server/public', emptyOutDir: true, rollupOptions: { input: ['index.html', 'on-demand.html', 'progressive.html'] } },
   worker: { format: 'es' },
   server: {
     // API_URL points the dev proxy at a server on another port.
