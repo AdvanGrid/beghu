@@ -29,7 +29,7 @@ Linux for the tab-memory reading.
 | `--net` | `near` (20 ms RTT, no cap), `far` (100 ms RTT, 10 Mbps down, 5 up), `all` | `far` |
 | `--scale` | `20k`, `50k`, `all` | `20k` |
 | `--iterations` | measured iterations per scenario | `20` |
-| `--scenarios` | comma list of `cold,warm,filter,scroll,detail,live,write` | all |
+| `--scenarios` | comma list of `cold,warm,filter,early,scroll,detail,live,write`, `reconnect,tabs,rollback,storage`; `all` (the first eight), `sync` (the last four) | `all` |
 | `--latency` | ms the candidate waits to stand in for a GitHub write (`GITHUB_LATENCY_MS`) | `300` |
 | `--no-video` | skip the video pass on the low profile | videos on |
 | `--headed` | show the browser | headless |
@@ -96,6 +96,22 @@ Notes on the scenarios:
 - **Write** also records the server round trip: from the click to the response of the first
   non-GET request to the candidate. It has no reference line.
 
+**Sync scenarios**, added for
+[Sync benchmark: hand-rolled baseline](https://github.com/tomsjansons/beghu/issues/22) and run
+with `--scenarios sync`. They aren't in `all`.
+
+| # | Scenario | Starts | Ends | Reference (p95, headline) |
+|---|---|---|---|---|
+| 9 | `reconnect`: a caught-up tab's sync connection drops for 5 s (`POST /bench/outage?ms=5000`) while 100 title-edit webhooks arrive | the end of the outage | the last edit's title is in a row | ≤ 2 s |
+| 10 | `tabs`: two tabs of one context; a webhook edit, then the syncing tab closes and another edit | each webhook POST | the title shows in every open tab | ≤ 2 s |
+| 11 | `rollback`: `POST /bench/fail-writes?n=1`, then add a label in the detail | click event | the chip shows (latency); then it disappears again (`rolled_back_ms`) | ≤ 100 ms |
+| 12 | `storage`: a fresh context loads, takes the 500-webhook feed, then a new tab loads | the new tab's navigation | its list is ready, as in warm; also IndexedDB usage before and after the feed and on that visit, and its cache ready (`cache_ready_ms`) | none |
+
+They also record `reconnect_ms` (outage end → `bench:sync-open`) and `catchup_ms` (→
+`bench:sync-caught-up`), `leader_ms`, `follower_ms` and `handoff_ms` (the edit after the syncing
+tab closed), and `roundtrip_ms` for the failed write. Every `*_ms` and `*_kb` value appears in the
+summary's notes.
+
 ## Metrics
 
 | Metric | How |
@@ -113,7 +129,9 @@ Notes on the scenarios:
 drives the server over plain HTTP, with no browser: every user cold-loads at once, then runs the
 filter scenario's request sequence, then holds `/events` open while one webhook a second arrives.
 `docker stats` is sampled in each phase. Users of a `client` or `worker` variant fetch the snapshot
-and deltas instead of filtered pages, and send nothing while filtering. See `harness/load.mjs`.
+and deltas instead of filtered pages, and send nothing while filtering. With `--sync`, every user
+holds the candidate's `/api/sync?since=<seq>` stream instead of `/events`, and live latency is from
+the webhook POST to its delta arriving on each stream. See `harness/load.mjs`.
 By default every user is their own account (`--accounts per-user`: the candidate gets
 `BENCH_ACCOUNTS=<users>` and each user sends `x-account`); `--accounts shared` puts every user on
 one mirror. `--conn pool|open` is passed as `BENCH_CONN`, `--cpus N` sets the container's CPU limit
@@ -187,6 +205,14 @@ and infinite loading are allowed.
 | `[data-bench=detail] [data-bench=label][data-value=<name>]` | a label chip on the open issue |
 | `[data-bench=detail] [data-bench=add-label][data-value=<name>]` | a control that adds that label |
 
+**Sync candidates** also need, for the sync scenarios: performance marks `bench:sync-open` when
+the sync connection is (re)established, `bench:sync-caught-up` once the cache holds everything the
+server had then, and `bench:sync-leader` in the tab that syncs (if only one does); and two
+controls, `POST /bench/outage?ms=<n>` (drop every sync connection and refuse new ones for n ms)
+and `POST /bench/fail-writes?n=<n>` (the next n writes fail after the GitHub latency). For
+`--sync` load runs, a `GET /api/sync?since=<seq>` server-sent-events stream that honours
+`x-account`.
+
 Candidates otherwise follow the rules in the scenarios decision: an idiomatic pass, then one
 optimisation session with a change log, any idiomatic library except sync engines, and the DX
 checklist.
@@ -251,6 +277,15 @@ write, the scroll long tasks and the filter tail.
 
 ## Running a candidate by hand (the feel check)
 
+```sh
+./bench/serve sync-baseline                 # http://127.0.0.1:8080, as the harness runs it
+./bench/serve sync-baseline --rtt 100 --replay   # behind ./bench/shape, with live webhooks
+```
+
+`./bench/serve <candidate>[:<variant>] [--scale 20k|50k] [--port 8080] [--replay] [--rtt ms]` does
+what the steps below do, on a fresh mirror copy. With `--rtt` the page is on the shaped port and
+the server on the next one up. By hand:
+
 The harness has no interactive mode, so start the container the way `harness/container.mjs` does,
 on a fresh copy of the mirror (candidates may add indexes to it), then use it in a normal browser.
 Run `./bench/run <candidate> --iterations 1 --scenarios cold --no-video` once first if the image or
@@ -278,6 +313,7 @@ DevTools is open. On the laptop, skip the CPU throttle, since the laptop is the 
 bench/
   run                 the launcher (bash → harness/run.mjs)
   load                server load under several users (bash → harness/load.mjs)
+  serve               starts one candidate for a feel session, optionally shaped and with replay
   replay              posts the webhook feed into a running candidate
   shape               a TCP proxy with real latency and bandwidth limits, sockets included
   fixture/            schema.sql, generate.mjs, github-shape.mjs (payload builder)

@@ -41,7 +41,10 @@ function parseArgs(argv) {
   opts.profiles = list(opts.profile, Object.keys(PROFILES));
   opts.nets = list(opts.net, Object.keys(NETS));
   opts.scales = list(opts.scale, SCALES);
-  opts.scenarioNames = list(opts.scenarios, scenarios.map((s) => s.name));
+  // `all` is the stack scenarios; `sync` the sync benchmarks' extra ones (see scenarios.mjs).
+  opts.scenarioNames = String(opts.scenarios)
+    .split(',')
+    .flatMap((v) => (v === 'all' ? scenarios.filter((s) => !s.sync).map((s) => s.name) : v === 'sync' ? scenarios.filter((s) => s.sync).map((s) => s.name) : [v]));
   opts.iterations = Number(opts.iterations);
   for (const p of opts.profiles) if (!PROFILES[p]) throw new Error(`unknown profile ${p}`);
   for (const n of opts.nets) if (!NETS[n]) throw new Error(`unknown net ${n}`);
@@ -114,13 +117,22 @@ async function runScenario(scenario, cell, opts, image, runDir) {
       };
     },
     async webhookTitleEdit(id, title, updatedAt) {
-      const { event, payload } = titleEdited(fixtureDb, id, title, updatedAt, 1000);
+      await h.webhook(titleEdited(fixtureDb, id, title, updatedAt, 1000));
+    },
+    async webhook({ event, payload }) {
       const r = await fetch(`${box.url}/webhook`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-github-event': event, 'x-github-delivery': crypto.randomUUID() },
         body: JSON.stringify(payload),
       });
       if (!r.ok) throw new Error(`webhook POST returned ${r.status}`);
+    },
+    // The fixture's webhook feed, as { event, payload } deliveries.
+    feed: () => readFileSync(join(root, 'data', `webhooks-${cell.scale}.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l)),
+    // A POST to one of the candidate's /bench controls (sync scenarios).
+    async post(path) {
+      const r = await fetch(`${box.url}${path}`, { method: 'POST' });
+      if (!r.ok) throw new Error(`POST ${path} returned ${r.status}`);
     },
   };
 
@@ -153,6 +165,9 @@ async function runScenario(scenario, cell, opts, image, runDir) {
       } catch (e) {
         errors.push(`iteration ${i}: ${e.message.split('\n')[0]}`);
         if (errors.length >= 3 && samples.length === 0) break;
+        // A failed iteration can leave its tabs open, and an open tab can hold the sync lock the
+        // next iteration's tab needs.
+        if (shared) for (const p of shared.pages()) await p.close().catch(() => {});
       } finally {
         if (!shared) await ctx.close();
       }
@@ -224,6 +239,11 @@ async function runScenario(scenario, cell, opts, image, runDir) {
     result.switched = { same: samples.filter((s) => s.switched === 'same').length, differs: samples.filter((s) => s.switched === 'differs').length };
   }
   if (scenario.name === 'write') result.roundtrip_ms = summarize(flat('roundtrip_ms'));
+  if (scenario.sync) {
+    // Every other number a sync scenario returned (`*_ms`, `*_kb`), summarised.
+    result.extra = {};
+    for (const key of [...new Set(samples.flatMap((x) => Object.keys(x)))].filter((k) => /_(ms|kb)$/.test(k))) result.extra[key] = summarize(flat(key));
+  }
   if (scenario.name === 'cold') {
     if (flat('cache_warm_ms').length) result.cache_warm_ms = summarize(flat('cache_warm_ms'));
     if (flat('cache_ready_ms').length) result.cache_ready_ms = summarize(flat('cache_ready_ms'));
@@ -240,6 +260,7 @@ function verdict(scenario, r) {
     if (!r.frame_ms?.n) return { ref: `≤ ${ref.frameMs} ms frames, no long task > ${ref.longTaskMs} ms`, ok: null };
     return { ref: `≤ ${ref.frameMs} ms frames, no long task > ${ref.longTaskMs} ms`, ok: r.frame_ms.p95 <= ref.frameMs && r.long_tasks.over_100ms === 0 };
   }
+  if (ref.ms === undefined) return { ref: '—', ok: null };
   return { ref: `≤ ${ref.ms} ms`, ok: r.latency_ms?.n ? r.latency_ms.p95 <= ref.ms : null };
 }
 
@@ -263,6 +284,7 @@ function markdown(run) {
       if (r.long_tasks) notes.push(`${r.long_tasks.count} long tasks, ${r.long_tasks.over_100ms} > 100 ms, max ${r.long_tasks.max_ms} ms; reached row 500 in p50 ${r.reach_ms.p50} ms`);
       if (r.roundtrip_ms) notes.push(`server round trip p50 ${r.roundtrip_ms.p50} / p95 ${r.roundtrip_ms.p95} ms`);
       if (r.steps) notes.push(Object.entries(r.steps).map(([k, v]) => `${k} p95 ${v.p95}`).join(', '));
+      for (const [k, v] of Object.entries(r.extra ?? {})) notes.push(`${k} p50 ${v.p50} / p95 ${v.p95}`);
       if (r.errors.length) notes.push(`**${r.errors.length - 1} errors**`);
       lines.push(
         `| ${s.title} | ${r.iterations} | ${m.p50 ?? '—'} | ${m.p95 ?? '—'} | ${mark} ${v.ref} | ${r.server.cpu_mean_pct ?? '—'}% / ${r.server.cpu_peak_pct ?? '—'}% | ${r.server.mem_peak_mb ?? '—'} MB | ${r.memory.js_heap_peak_mb} MB | ${r.memory.tab_pss_peak_mb} MB | ${notes.join('; ')} |`,

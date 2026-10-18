@@ -9,6 +9,12 @@
 const SEARCH_TERM = 'dark m';
 const FILTER_LABELS = ['bug', 'enhancement', 'frontend', 'backend', 'ux', 'p2', 'performance', 'p1'];
 const DETAIL_COMMENTS = 30;
+// The reconnect scenario: how long the sync connection is down, and how many webhooks land meanwhile.
+const OUTAGE_MS = 5000;
+const OUTAGE_EDITS = 100;
+
+// A sync scenario's n-th edit, later than every fixture timestamp and every earlier edit.
+const editTime = (h, n) => new Date(h.expect.fixtureNow() + 2 * 86_400_000 + n * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 async function waitResult(page, what, timeout = 30_000) {
   try {
@@ -264,4 +270,145 @@ export const scenarios = [
       return { latency: [ms], roundtrip_ms: [roundtrip] };
     },
   },
+
+  // --- sync scenarios ------------------------------------------------------------------------
+  // For the sync benchmarks. Not part of `all`; run them with `--scenarios sync` or by name. They
+  // need the candidate to mark `bench:sync-open` when its sync connection is (re)established and
+  // `bench:sync-caught-up` once its cache holds everything the server had then, to serve
+  // `POST /bench/outage?ms=<n>` (drop every sync connection and refuse new ones for n ms) and
+  // `POST /bench/fail-writes?n=<n>` (the next n writes fail after the GitHub latency), and to mark
+  // `bench:sync-leader` in the tab that syncs, if only one does.
+  {
+    // A tab whose sync connection drops for 5 s while 100 webhooks arrive, then comes back.
+    name: 'reconnect',
+    title: 'Catch-up after reconnecting',
+    sync: true,
+    reference: { ms: 2000 },
+    async iteration(h, ctx, i, state) {
+      const page = await open(h, ctx);
+      await cacheMark(page, 'cache-ready', 60_000);
+      await cacheMark(page, 'sync-caught-up', 30_000);
+      const ids = h.expect.ids({}, 300);
+      const t0 = Date.now();
+      await h.post(`/bench/outage?ms=${OUTAGE_MS}`);
+      let last;
+      for (let k = 0; k < OUTAGE_EDITS; k++) {
+        const n = (state.edits = (state.edits ?? 0) + 1);
+        last = `Offline edit ${n} ${Math.random().toString(36).slice(2, 8)}`;
+        await h.webhookTitleEdit(Number(ids[(n * 7) % ids.length]), last, editTime(h, n));
+      }
+      if (Date.now() - t0 > OUTAGE_MS - 500) throw new Error(`posting ${OUTAGE_EDITS} webhooks took longer than the outage`);
+      await arm(page, 'title', { text: last }, 'date');
+      const end = t0 + OUTAGE_MS;
+      const r = await waitResult(page, `title "${last}" after the outage`);
+      if (r.t < end) throw new Error('a change reached the page during the outage');
+      const m = await page.evaluate(() => {
+        const at = (n) => performance.getEntriesByName(`bench:${n}`).map((e) => e.startTime + performance.timeOrigin);
+        return { open: at('sync-open'), caught: at('sync-caught-up') };
+      });
+      const opened = m.open.filter((t) => t >= end - 50).at(0);
+      const caught = m.caught.filter((t) => t >= (opened ?? end)).at(0);
+      await page.close();
+      return { latency: [r.t - end], ...(opened ? { reconnect_ms: [opened - end] } : {}), ...(opened && caught ? { catchup_ms: [caught - opened] } : {}) };
+    },
+  },
+  {
+    // Two tabs: a webhook reaches both; then the syncing tab closes and the next webhook reaches
+    // the other.
+    name: 'tabs',
+    title: 'Live update in a second tab, and after the syncing tab closes',
+    sync: true,
+    reference: { ms: 2000 },
+    async iteration(h, ctx, i, state) {
+      const a = await open(h, ctx);
+      await cacheMark(a, 'cache-ready', 60_000);
+      const b = await open(h, ctx);
+      await cacheMark(b, 'cache-ready', 60_000);
+      const leads = (p) => p.evaluate(() => performance.getEntriesByName('bench:sync-leader').length > 0);
+      const ids = h.expect.ids({}, 20);
+      const edit = async (pages) => {
+        const n = (state.edits = (state.edits ?? 0) + 1);
+        const title = `Tab edit ${n} ${Math.random().toString(36).slice(2, 8)}`;
+        for (const p of pages) await arm(p, 'title', { text: title }, 'date');
+        const t0 = Date.now();
+        await h.webhookTitleEdit(Number(ids[n % ids.length]), title, editTime(h, n));
+        return Promise.all(pages.map((p) => waitResult(p, `title "${title}"`).then((r) => r.t - t0)));
+      };
+      const [la, lb] = [await leads(a), await leads(b)];
+      const [ta, tb] = await edit([a, b]);
+      const out = {};
+      if (la !== lb) {
+        out.leader_ms = [la ? ta : tb];
+        out.follower_ms = [la ? tb : ta];
+      }
+      // Close the syncing tab (or the first, if neither or both say they sync).
+      const [gone, kept] = lb && !la ? [b, a] : [a, b];
+      await gone.close();
+      const [th] = await edit([kept]);
+      await kept.close();
+      return { latency: out.follower_ms ?? [tb], ...out, ...(la !== lb ? { handoff_ms: [th] } : { after_close_ms: [th] }) };
+    },
+  },
+  {
+    // Add a label while GitHub fails the write: the label shows at once, then goes.
+    name: 'rollback',
+    title: 'Optimistic write that fails',
+    sync: true,
+    reference: { ms: 100 },
+    async iteration(h, ctx, i) {
+      const page = await open(h, ctx);
+      await cacheMark(page, 'cache-ready', 60_000);
+      const ids = await page.$$eval('[data-bench=row]', (rows) => rows.slice(0, 10).map((r) => r.dataset.id));
+      const id = ids[i % ids.length];
+      const name = h.expect.labelNames().find((l) => !h.expect.labelsOf(id).includes(l));
+      await arm(page, 'detail', { id, comments: 0 });
+      await page.click(`[data-bench=row][data-id="${id}"]`);
+      await waitResult(page, `detail of ${id}`);
+      await h.post('/bench/fail-writes?n=1');
+      await arm(page, 'label', { name });
+      const t0 = Date.now();
+      const responded = page
+        .waitForResponse((r) => r.request().method() !== 'GET' && r.url().startsWith(h.url), { timeout: 30_000 })
+        .then(() => Date.now());
+      await page.click(`[data-bench=detail] [data-bench=add-label][data-value="${name}"]`);
+      const shown = await waitResult(page, `label "${name}" on ${id}`);
+      await arm(page, 'labelGone', { name });
+      const gone = await waitResult(page, `label "${name}" to roll back`);
+      const roundtrip = (await responded) - t0;
+      await page.close();
+      return { latency: [shown.t - shown.input.t], rolled_back_ms: [gone.t - shown.input.t], roundtrip_ms: [roundtrip] };
+    },
+  },
+  {
+    // Storage after a first visit, and after the fixture's 500 webhooks; then a returning tab.
+    name: 'storage',
+    title: 'Browser storage, and a warm load after 500 changes',
+    sync: true,
+    fresh: true,
+    reference: {},
+    async iteration(h, ctx) {
+      const usage = (p) => p.evaluate(async () => {
+        const e = await navigator.storage.estimate();
+        return (e.usageDetails?.indexedDB ?? e.usage) / 1024;
+      });
+      const page = await open(h, ctx);
+      await cacheMark(page, 'cache-warm', 120_000);
+      await cacheMark(page, 'cache-ready', 60_000);
+      const first = await usage(page);
+      const feed = h.feed();
+      for (const e of feed) await h.webhook(e);
+      // The last delivery's issue, as a sign that the tab has applied the whole feed.
+      await page.waitForTimeout(3000);
+      const after = await usage(page);
+      await page.close();
+      const again = await h.newPage(ctx);
+      await again.goto(h.url, { waitUntil: 'commit' });
+      const r = await waitResult(again, 'the list to become ready');
+      const ready = await cacheMark(again, 'cache-ready', 60_000).catch(() => null);
+      const settled = await usage(again);
+      await again.close();
+      return { latency: [r.t], idb_kb: [first], idb_after_feed_kb: [after], idb_next_visit_kb: [settled], ...(ready !== null ? { cache_ready_ms: [ready] } : {}) };
+    },
+  },
 ];
+

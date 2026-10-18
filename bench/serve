@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Starts one candidate for a feel session, the way the harness does: its image, a fresh copy of
+# the mirror, --cpus=1 --memory=512m. Ctrl-C stops everything.
+#
+#   ./bench/serve <candidate>[:<variant>] [--scale 20k|50k] [--port 8080] [--replay] [--rtt ms]
+#
+# --replay  plays the webhook feed into it at its own pace (0.2–5 s gaps), for live changes
+# --rtt     puts ./shape in front: open http://127.0.0.1:<port> for the shaped link (that RTT,
+#           10 Mbps down, 5 up, every byte including SSE and WebSocket frames delayed); the
+#           unshaped server is on <port + 1>
+set -euo pipefail
+cd "$(dirname "$0")"
+candidate=${1:?usage: ./bench/serve <candidate>[:<variant>] [--scale 20k|50k] [--port 8080] [--replay] [--rtt ms]}
+shift
+scale=20k port=8080 replay= rtt=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --scale) scale=$2; shift 2 ;;
+    --port) port=$2; shift 2 ;;
+    --replay) replay=1; shift ;;
+    --rtt) rtt=$2; shift 2 ;;
+    *) echo "unknown flag $1" >&2; exit 2 ;;
+  esac
+done
+dir=${candidate%%:*}
+variant=${candidate#*:}
+[ "$variant" = "$candidate" ] && variant=
+[ -f "data/mirror-$scale.db" ] || { echo "no data/mirror-$scale.db: run ./bench/run $candidate --scale $scale --iterations 1 --scenarios cold --no-video once first" >&2; exit 1; }
+
+docker build -q -t "beghu-bench-$dir" "candidates/$dir" >/dev/null
+work=$(mktemp -d "/tmp/beghu-serve-$dir.XXXX")
+cp "data/mirror-$scale.db" "$work/mirror.db"
+server_port=$port
+[ -n "$rtt" ] && server_port=$((port + 1))
+name="beghu-serve-$dir-$$"
+docker run -d --rm --name "$name" --cpus=1 --memory=512m -p "127.0.0.1:$server_port:8080" -v "$work:/data" \
+  -e MIRROR_PATH=/data/mirror.db -e PORT=8080 -e GITHUB_LATENCY_MS=300 ${variant:+-e BENCH_VARIANT=$variant} \
+  "beghu-bench-$dir" >/dev/null
+pids=()
+cleanup() {
+  for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  docker kill "$name" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT INT TERM
+until curl -sf "http://127.0.0.1:$server_port/healthz" >/dev/null; do sleep 0.5; done
+if [ -n "$rtt" ]; then
+  ./shape "$port" "127.0.0.1:$server_port" --rtt "$rtt" --down 10000 --up 5000 &
+  pids+=($!)
+fi
+[ -n "$replay" ] && { ./replay "http://127.0.0.1:$server_port" --scale "$scale" --speed 1 & pids+=($!); }
+echo "$candidate ($scale) on http://127.0.0.1:$port${rtt:+ through a ${rtt} ms link}. Ctrl-C stops it."
+# In the background, so a TERM runs the trap at once (bash waits for a foreground child first).
+docker logs -f "$name" &
+pids+=($!)
+wait $!

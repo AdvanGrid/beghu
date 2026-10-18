@@ -58,6 +58,10 @@ export function probe(init) {
     label({ name }) {
       return !!document.querySelector(`[data-bench=detail] [data-bench=label][data-value="${CSS.escape(name)}"]`);
     },
+    // The open detail no longer shows the label (a failed write rolled back).
+    labelGone({ name }) {
+      return !!document.querySelector('[data-bench=detail]') && !document.querySelector(`[data-bench=detail] [data-bench=label][data-value="${CSS.escape(name)}"]`);
+    },
     visible({ id }) {
       const el = document.querySelector(`[data-bench=row][data-id="${id}"]`);
       if (!el) return false;

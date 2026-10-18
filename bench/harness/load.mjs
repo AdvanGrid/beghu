@@ -10,7 +10,9 @@
 //   filter  every user runs the filter scenario's sequence (3 toggles 1 s apart, then "dark m"
 //           typed 150 ms per key, then 3 more pages), 3 times; client variants send nothing here
 //   live    every user holds /events open while one webhook a second arrives, and refetches
-//           what the app would: its first page (server) or a delta since its cursor (client)
+//           what the app would: its first page (server) or a delta since its cursor (client).
+//           With `--sync`, every user holds `/api/sync` open instead and the delta arrives on it;
+//           the latency is from the webhook POST to the delta reaching the user
 //
 // `--client` (or a variant named client/worker) switches users to the client behaviour. A
 // `hybrid` variant's users also fetch the first page in the burst, then behave as client users.
@@ -38,7 +40,9 @@ if (!candidate) {
 }
 const [dir, variant] = candidate.split(':');
 // A hybrid user also loads its first page from the server, then behaves as a client user.
-const hybrid = variant === 'hybrid';
+// `--sync`: a hybrid user whose live updates arrive as deltas on `/api/sync` (the sync benchmarks).
+const sync = argv.includes('--sync');
+const hybrid = variant === 'hybrid' || sync;
 const client = argv.includes('--client') || variant === 'client' || variant === 'worker' || hybrid;
 const scales = flag('scale', '20k') === 'all' ? ['20k', '50k'] : flag('scale', '20k').split(',');
 const userCounts = flag('users', '1,5,20').split(',').map(Number);
@@ -138,9 +142,10 @@ async function filter(box, users) {
   });
 }
 
-// Holds /events open and calls `onEvent` for each message, until `signal` aborts.
-async function listen(url, signal, onEvent) {
-  const r = await fetch(`${url}/events`, { signal });
+// Holds an event stream open (`/events` by default) and calls `onEvent` with each message's data,
+// until `signal` aborts.
+async function listen(url, signal, onEvent, path = '/events', account = 0) {
+  const r = await fetch(`${url}${path}`, { signal, headers: { 'x-account': String(account) } });
   const decoder = new TextDecoder();
   let buf = '';
   try {
@@ -150,7 +155,8 @@ async function listen(url, signal, onEvent) {
       while ((i = buf.indexOf('\n\n')) >= 0) {
         const msg = buf.slice(0, i);
         buf = buf.slice(i + 2);
-        if (msg.split('\n').some((l) => l.startsWith('data:'))) onEvent();
+        const data = msg.split('\n').filter((l) => l.startsWith('data:'));
+        if (data.length) onEvent(data.map((l) => l.slice(5)).join('\n'));
       }
     }
   } catch {}
@@ -164,7 +170,23 @@ async function live(box, users, scale) {
     const inflight = [];
     // Each client user starts from the cursor a fresh snapshot would have.
     const seq0 = (await (await fetch(`${box.url}/api/snapshot?since=999999999`)).json()).seq;
-    for (let u = 0; u < users; u++) {
+    // `--sync`: each delta arrives on the stream itself; time it from the webhook POST.
+    let posted = 0;
+    for (let u = 0; sync && u < users; u++) {
+      let first = true;
+      void listen(
+        box.url,
+        abort.signal,
+        (data) => {
+          if (first) return void (first = false); // the catch-up delta on connect
+          times.push(performance.now() - posted);
+          bytes.push(data.length);
+        },
+        `/api/sync?since=${seq0}`,
+        u,
+      );
+    }
+    for (let u = 0; !sync && u < users; u++) {
       const view = { labels: [LABELS[u % LABELS.length]] };
       let seq = seq0;
       void listen(box.url, abort.signal, () => {
@@ -179,6 +201,7 @@ async function live(box, users, scale) {
     }
     await sleep(500);
     for (const e of feed) {
+      posted = performance.now();
       await fetch(`${box.url}/webhook`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-github-event': e.event, 'x-github-delivery': crypto.randomUUID() },
@@ -193,11 +216,11 @@ async function live(box, users, scale) {
   return result;
 }
 
-const results = { candidate, client, events, accounts, conn, cpus, sqlite: stock ? 'stock' : 'default', started: new Date().toISOString(), runs: [] };
+const results = { candidate, client, sync, events, accounts, conn, cpus, sqlite: stock ? 'stock' : 'default', started: new Date().toISOString(), runs: [] };
 const image = `beghu-bench-${dir}${stock ? '-stock' : ''}`;
 console.log(`building ${image}... (${accounts} accounts, conn ${conn}, ${cpus} CPU${stock ? ', stock SQLite' : ''})`);
 container.build(join(root, 'candidates', dir), image, stock ? { STOCK_SQLITE: 1 } : {});
-const outDir = join(root, 'results', `${results.started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-load-${candidate.replace(':', '-')}-${accounts}-${conn}-${cpus}cpu${stock ? '-stock' : ''}`);
+const outDir = join(root, 'results', `${results.started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-load-${candidate.replace(':', '-')}${sync ? '-sync' : ''}-${accounts}-${conn}-${cpus}cpu${stock ? '-stock' : ''}`);
 mkdirSync(outDir, { recursive: true });
 
 for (const scale of scales) {
