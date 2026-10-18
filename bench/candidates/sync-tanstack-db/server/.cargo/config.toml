@@ -1,0 +1,6 @@
+# rusqlite's bundled SQLite turns on SQLITE_ENABLE_MEMORY_MANAGEMENT, which puts every
+# connection's pages in one process-wide cache behind one mutex, and memory statistics, which take
+# another global mutex on every allocation. Together they serialise all connections in the
+# process, across separate database files too (see ../OPTIMISATION.md).
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

@@ -261,6 +261,8 @@ export const scenarios = [
       const responded = page
         .waitForResponse((r) => r.request().method() !== 'GET' && r.url().startsWith(h.url), { timeout: 30_000 })
         .then(() => Date.now());
+      // Awaited below; until then, a timeout must fail this iteration, not the whole run.
+      responded.catch(() => {});
       const ms = await inputToFrame(page, `label "${name}" on ${id}`, () =>
         page.click(`[data-bench=detail] [data-bench=add-label][data-value="${name}"]`),
       );
@@ -370,6 +372,8 @@ export const scenarios = [
       const responded = page
         .waitForResponse((r) => r.request().method() !== 'GET' && r.url().startsWith(h.url), { timeout: 30_000 })
         .then(() => Date.now());
+      // Awaited below; until then, a timeout must fail this iteration, not the whole run.
+      responded.catch(() => {});
       await page.click(`[data-bench=detail] [data-bench=add-label][data-value="${name}"]`);
       const shown = await waitResult(page, `label "${name}" on ${id}`);
       await arm(page, 'labelGone', { name });
