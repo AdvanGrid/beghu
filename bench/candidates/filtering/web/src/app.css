@@ -40,3 +40,6 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 pre { white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
 .comment { border-top: 1px solid var(--line); padding-top: 6px; }
 .count { color: var(--muted); margin-left: 8px; }
+/* Server variant only: a list request has been out for over 200 ms. Outline, so nothing moves. */
+:root[data-list-loading] .list { outline: 2px solid var(--accent); outline-offset: -2px; animation: list-pulse 1s ease-in-out infinite; }
+@keyframes list-pulse { 50% { outline-color: transparent; } }
