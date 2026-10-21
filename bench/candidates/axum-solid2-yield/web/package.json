@@ -1,0 +1,26 @@
+{
+  "name": "bench-axum-solid2-yield-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@solidjs/web": "2.0.0-rc.15",
+    "solid-js": "2.0.0-rc.15",
+    "solid-yield": "file:vendor/solid-yield-0.0.0.tgz",
+    "@tanstack/virtual-core": "^3.19.4"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.0-next.35",
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^10",
+    "eslint-plugin-solid-yield": "file:vendor/eslint-plugin-solid-yield-0.0.0.tgz",
+    "typescript": "~6.0",
+    "vite": "^8.3.4",
+    "vite-plugin-solid-yield": "file:vendor/vite-plugin-solid-yield-0.0.0.tgz"
+  }
+}
