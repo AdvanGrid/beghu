@@ -27,3 +27,7 @@ _Avoid_: Link, edge
 **Stub**:
 A placeholder for an issue in a repo that isn't synced, reached through a relationship. It has a title and a link out to GitHub.
 _Avoid_: Ghost, external issue
+
+**Pending write**:
+A change the user made in beghu that GitHub hasn't confirmed yet. It shows at once, lives only in the tab that made it, and reverts visibly if GitHub refuses it.
+_Avoid_: Outbox entry, queued write
