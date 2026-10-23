@@ -580,11 +580,10 @@ button.tiny:disabled { opacity: 0.3; }
 
 /* A: the title leads; every other cell sits in a fixed column on the right, number before owner.
    Blockers stack, so their column is one chip wide and labels get the room. */
-.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) var(--lab-w, 192px) var(--wait-w, 100px) 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
+.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) var(--w-lab) var(--w-wait) var(--w-hint) var(--w-ref) var(--w-asg) var(--w-when); grid-template-areas: 'main lab wait hint ref asg when'; }
 .cols-A .k-ref { text-align: right; }
 @container (max-width: 1000px) {
   .c-row.cols { gap: 0 8px; }
-  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) var(--lab-w, 96px) var(--wait-w, 100px) 40px 96px 40px 30px; }
 }
 
 /* B: the number leads, like an ID column; the rest as A. */
@@ -642,3 +641,18 @@ body.resizing .split-handle { pointer-events: auto; }
 .lab-card .c-ltext { display: block; padding: 2px 4px; font-size: 12.5px; }
 .wo-repo { min-width: 0; flex: 0 1 auto; }
 .wo-num { flex: none; }
+
+/* Round 5: a header row whose column edges drag to resize each column. */
+.list-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.list-col > .list { flex: 1; height: auto; min-height: 0; }
+.c-row.col-head { contain: none; height: 26px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding-right: calc(14px + var(--sbw, 0px)); background: var(--bg); flex: none; }
+.c-row.col-head:hover { background: var(--bg); }
+.col-head > * { overflow: visible; position: relative; white-space: nowrap; }
+.col-head .k-main { padding-left: 24px; }
+.col-head .k-ref, .col-head .k-when, .col-head .k-hint { text-align: right; justify-content: flex-end; }
+.col-h.set { color: var(--fg); }
+.col-grip { position: absolute; left: -8px; top: -4px; bottom: -5px; width: 9px; cursor: col-resize; z-index: 2; touch-action: none; }
+.col-grip::after { content: ''; position: absolute; left: 4px; top: 5px; bottom: 5px; width: 1px; background: var(--line); }
+.col-grip:hover::after, body.resizing .col-grip:active::after { background: var(--accent); width: 2px; left: 3px; top: 0; bottom: 0; }
+@container (max-width: 1000px) { .c-row.col-head { gap: 0 8px; } }
+.list-col { container-type: inline-size; }

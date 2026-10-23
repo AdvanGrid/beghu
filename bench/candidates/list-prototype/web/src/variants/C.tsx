@@ -51,35 +51,86 @@ export function VariantC(props: { ctx: Ctx }) {
     })(),
   );
   let mainEl!: HTMLElement;
-  // #55: how many stacked columns (two slots each) the labels and blockers get, from the list's
-  // width. Wider list, more of each before "+n".
+  // #55: column widths. Each fixed column has an automatic width from the list's width, unless it
+  // has been dragged in the header (remembered per browser; double-click resets). Labels and
+  // blockers fill stacked columns of two slots, as many as their width holds.
   const [listW, setListW] = createSignal(800);
+  const [sbw, setSbw] = createSignal(0);
+  let listCol!: HTMLDivElement;
   onSettled(() => {
     const measure = () => {
-      const l = mainEl.querySelector('.list') as HTMLElement | null;
-      if (l) setListW(l.clientWidth);
+      setListW(listCol.clientWidth);
+      const l = listCol.querySelector('.list') as HTMLElement | null;
+      if (l) setSbw(l.offsetWidth - l.clientWidth);
     };
     const ro = new ResizeObserver(measure);
-    ro.observe(mainEl);
-    const mo = new MutationObserver(() => {
-      const l = mainEl.querySelector('.list');
-      if (l) ro.observe(l);
-      measure();
-    });
-    mo.observe(mainEl, { childList: true });
-    const l = mainEl.querySelector('.list');
-    if (l) ro.observe(l);
+    ro.observe(listCol);
     measure();
-    return () => (ro.disconnect(), mo.disconnect());
+    return () => ro.disconnect();
   });
-  const LAB_COL = 96;
-  const CHIP_COL = 100;
-  const dens = createMemo(() => {
-    const w = listW();
-    const lc = w >= 1500 ? 3 : w >= 900 ? 2 : 1;
-    const bc = w >= 1800 ? 3 : w >= 1200 ? 2 : 1;
-    return { lc, bc };
-  });
+  const COLS = ['lab', 'wait', 'hint', 'ref', 'asg', 'when'] as const;
+  type Col = (typeof COLS)[number];
+  const MIN: Record<Col, number> = { lab: 60, wait: 70, hint: 30, ref: 56, asg: 24, when: 28 };
+  const [colW, setColW] = createSignal<Partial<Record<Col, number>>>(
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem('beghu.colW') ?? '{}');
+      } catch {
+        return {};
+      }
+    })(),
+  );
+  const saveColW = (v: Partial<Record<Col, number>>) => {
+    setColW(v);
+    try {
+      localStorage.setItem('beghu.colW', JSON.stringify(v));
+    } catch {}
+  };
+  const auto = (k: Col, w: number): number => {
+    const narrow = w < 1000;
+    switch (k) {
+      case 'lab':
+        return (w >= 1500 ? 3 : w >= 900 ? 2 : 1) * 96;
+      case 'wait':
+        return (w >= 1800 ? 3 : w >= 1200 ? 2 : 1) * 100;
+      case 'hint':
+        return narrow ? 40 : 52;
+      case 'ref':
+        return narrow ? 96 : 104;
+      case 'asg':
+        return narrow ? 40 : 46;
+      case 'when':
+        return narrow ? 30 : 32;
+    }
+  };
+  const width = (k: Col) => colW()[k] ?? auto(k, listW());
+  const dens = createMemo(() => ({
+    lc: Math.max(1, Math.floor((width('lab') + 8) / 96)),
+    bc: Math.max(1, Math.floor((width('wait') + 4) / 100)),
+  }));
+  const startCol = (k: Col, e: PointerEvent) => {
+    e.preventDefault();
+    const h = e.currentTarget as HTMLElement;
+    h.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const w0 = width(k);
+    document.body.classList.add('resizing');
+    const move = (ev: PointerEvent) => setColW({ ...colW(), [k]: Math.round(Math.min(640, Math.max(MIN[k], w0 - (ev.clientX - x0)))) });
+    const up = () => {
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      saveColW(colW());
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+  };
+  const resetCol = (k: Col) => {
+    const v = { ...colW() };
+    delete v[k];
+    saveColW(v);
+  };
+  const HEAD: Record<Col, string> = { lab: 'Labels', wait: 'Blocked by', hint: 'Subs', ref: 'Issue', asg: 'Who', when: 'Upd' };
   const startResize = (e: PointerEvent) => {
     e.preventDefault();
     const h = e.currentTarget as HTMLElement;
@@ -357,10 +408,29 @@ export function VariantC(props: { ctx: Ctx }) {
         class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}
         style={{
           ...(detailW() ? { '--detail-w': `${detailW()}px` } : {}),
-          '--lab-w': `${dens().lc * LAB_COL}px`,
-          '--wait-w': `${dens().bc * CHIP_COL}px`,
+          ...Object.fromEntries(COLS.map((k) => [`--w-${k}`, `${width(k)}px`])),
+          '--sbw': `${sbw()}px`,
         }}
       >
+        <div class="list-col" ref={listCol}>
+          <Show when={c.rel() === 'A'}>
+            <div class="c-row cols col-head">
+              <span class="k-main">Title</span>
+              <For each={COLS}>
+                {(k) => (
+                  <span class={`k-${k} col-h ${colW()[k] ? 'set' : ''}`}>
+                    <span
+                      class="col-grip"
+                      onPointerDown={(e) => startCol(k, e)}
+                      onDblClick={() => resetCol(k)}
+                      title="Drag to resize; double-click to reset"
+                    />
+                    {HEAD[k]}
+                  </span>
+                )}
+              </For>
+            </div>
+          </Show>
         <Loading fallback={<div class="list" />}>
           <Show when={c.tree()} fallback={
           <Rows
@@ -375,6 +445,7 @@ export function VariantC(props: { ctx: Ctx }) {
             <TreeRows ctx={c} rowHeight={34} row={(r, lead) => row(r, lead)} />
           </Show>
         </Loading>
+        </div>
         {/* A: always beside the list. B: over the list, which keeps its scroll underneath. C: a drawer
             over the list's right side; ?full=1 widens it. */}
         {/* #55: always the side panel. */}

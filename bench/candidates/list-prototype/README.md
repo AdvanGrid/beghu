@@ -7,6 +7,11 @@ side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
 
+**Round 5.** A header row over the list (A only): drag a column's left edge to resize it; the title
+takes what's left. Widths are remembered per browser and double-click resets one. Untouched columns
+keep their automatic width from the list's width, and labels and blockers fit as many stacked
+columns as their width holds.
+
 **Round 4.** Labels and blockers fill stacked columns of two, and the number of columns follows
 the list's width (labels: 1 column under 900px, 2 from 900, 3 from 1500; blockers: 1, 2 from 1200,
 3 from 1800). When there are more than the slots, the last slot says "+n" and hovering lists them
