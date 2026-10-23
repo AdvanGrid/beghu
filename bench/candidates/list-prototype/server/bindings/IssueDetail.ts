@@ -2,5 +2,12 @@
 import type { Comment } from "./Comment";
 import type { Label } from "./Label";
 import type { ParentRef } from "./ParentRef";
+import type { Rels } from "./Rels";
+import type { RepoMeta } from "./RepoMeta";
 
-export type IssueDetail = { body: string, repo_labels: Array<Label>, comments: Array<Comment>, id: number, number: number, repo: string, title: string, kind: string, state: string, state_reason: string | null, draft: boolean, author: string | null, created_at: string, updated_at: string, comments_count: number, labels: Array<Label>, assignees: Array<string>, milestone: string | null, parent: ParentRef | null, subs: number, subs_done: number, blocked_by: number, blocking: number, relates: number, };
+export type IssueDetail = { body: string, meta: RepoMeta, rels: Rels, 
+/**
+ * The first comment and as many of the newest as fit the byte budget; the ones between are
+ * `hidden` and load on demand from `/api/issues/{id}/comments?offset=1&limit=hidden`.
+ */
+comments: Array<Comment>, hidden: number, me: string, id: number, number: number, repo: string, title: string, kind: string, state: string, state_reason: string | null, draft: boolean, author: string | null, created_at: string, updated_at: string, comments_count: number, labels: Array<Label>, assignees: Array<string>, milestone: string | null, parent: ParentRef | null, subs: number, subs_done: number, blocked_by: number, blocking: number, relates: number, };

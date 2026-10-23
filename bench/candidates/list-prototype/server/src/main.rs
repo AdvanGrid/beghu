@@ -3,7 +3,13 @@
 // filter dimensions (repo, milestone, author, no:, is:blocked, kind, sort) and facets with counts
 // for the current view.
 
-use std::{convert::Infallible, env, time::Duration};
+use std::{
+    collections::HashSet,
+    convert::Infallible,
+    env,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -37,6 +43,8 @@ struct AppState {
     pool: Pool,
     events: broadcast::Sender<Changed>,
     latency: Duration,
+    /// op_ids already applied, so a resend is harmless. The real server forgets them after ~10 min.
+    seen: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Serialize, TS)]
@@ -128,14 +136,133 @@ pub struct Comment {
     pub created_at: String,
 }
 
+/// One end of a relationship, as the detail shows it. A stub has a title and a link out only.
+#[derive(Serialize, Deserialize, Clone, TS)]
+#[ts(export)]
+pub struct RelItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub repo: String,
+    #[ts(type = "number")]
+    pub number: i64,
+    pub title: String,
+    pub state: String,
+    pub state_reason: Option<String>,
+    pub stub: bool,
+    pub url: String,
+    #[ts(type = "number")]
+    pub subs: i64,
+    #[ts(type = "number")]
+    pub subs_done: i64,
+    pub assignees: Vec<String>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Rels {
+    pub parent: Option<RelItem>,
+    /// In GitHub's sub-issue order.
+    pub children: Vec<RelItem>,
+    pub blocked_by: Vec<RelItem>,
+    pub blocking: Vec<RelItem>,
+    pub relates: Vec<RelItem>,
+}
+
+/// What a repo offers the pickers: its labels, open milestones and who can be assigned.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct RepoMeta {
+    pub repo: String,
+    pub labels: Vec<Label>,
+    pub milestones: Vec<String>,
+    pub assignable: Vec<String>,
+}
+
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct IssueDetail {
     #[serde(flatten)]
     pub row: IssueRow,
     pub body: String,
-    pub repo_labels: Vec<Label>,
+    pub meta: RepoMeta,
+    pub rels: Rels,
+    /// The first comment and as many of the newest as fit the byte budget; the ones between are
+    /// `hidden` and load on demand from `/api/issues/{id}/comments?offset=1&limit=hidden`.
     pub comments: Vec<Comment>,
+    #[ts(type = "number")]
+    pub hidden: i64,
+    pub me: String,
+}
+
+/// One user change, sent while the request is open. `op_id` makes a resend harmless.
+#[derive(Deserialize, TS)]
+#[serde(tag = "op", rename_all = "snake_case")]
+#[ts(export)]
+pub enum Op {
+    Title { value: String },
+    /// `base` is the body the edit started from; a different body on GitHub is a 409.
+    Body { value: String, base: String },
+    Comment { body: String },
+    LabelAdd { name: String },
+    LabelRemove { name: String },
+    AssigneeAdd { login: String },
+    AssigneeRemove { login: String },
+    Milestone { title: Option<String> },
+    State { state: String, reason: Option<String> },
+    /// kind: parent, child, blocked_by, blocking, relates
+    RelAdd {
+        kind: String,
+        #[ts(type = "number")]
+        other: i64,
+    },
+    RelRemove {
+        kind: String,
+        #[ts(type = "number")]
+        other: i64,
+    },
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct OpReq {
+    pub op_id: String,
+    pub op: Op,
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct CreateReq {
+    pub op_id: String,
+    pub repo: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    pub milestone: Option<String>,
+    #[ts(type = "number | null")]
+    pub parent: Option<i64>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Created {
+    #[ts(type = "number")]
+    pub id: i64,
+    #[ts(type = "number")]
+    pub number: i64,
+}
+
+#[derive(Deserialize)]
+pub struct Paging {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct Lookup {
+    pub q: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -204,6 +331,7 @@ pub struct Changed {
 
 enum AppError {
     NotFound,
+    Conflict,
     Unprocessable(&'static str),
     Internal(String),
 }
@@ -218,6 +346,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found").into_response(),
+            AppError::Conflict => (StatusCode::CONFLICT, "The body changed on GitHub since you started editing").into_response(),
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m).into_response(),
             AppError::Internal(m) => {
                 eprintln!("{m}");
@@ -565,27 +694,333 @@ async fn list_issues(State(s): State<AppState>, Query(q): Query<ListQuery>) -> R
     .await
 }
 
+/// Raw JSON bytes of comments a detail response carries, so the whole response stays near the
+/// 14 KB budget once compressed. Long threads keep the first comment and the newest that fit.
+const COMMENT_BUDGET: usize = 12_000;
+
+const REL: &str = "SELECT i.id, r.name, i.number, i.title, i.state, i.state_reason, i.is_stub, r.owner,
+  (SELECT count(*) FROM relationships x WHERE x.kind = 'sub' AND x.src_id = i.id),
+  (SELECT count(*) FROM relationships x JOIN items c ON c.id = x.dst_id WHERE x.kind = 'sub' AND x.src_id = i.id AND c.state = 'closed'),
+  (SELECT json_group_array(u.login) FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = i.id)
+  FROM items i JOIN repos r ON r.id = i.repo_id";
+
+fn rel_item(r: &rusqlite::Row) -> rusqlite::Result<RelItem> {
+    let repo: String = r.get(1)?;
+    let owner: String = r.get(7)?;
+    let number: i64 = r.get(2)?;
+    let assignees: String = r.get(10)?;
+    Ok(RelItem {
+        id: r.get(0)?,
+        url: format!("https://github.com/{owner}/{repo}/issues/{number}"),
+        repo,
+        number,
+        title: r.get(3)?,
+        state: r.get(4)?,
+        state_reason: r.get(5)?,
+        stub: r.get::<_, i64>(6)? != 0,
+        subs: r.get(8)?,
+        subs_done: r.get(9)?,
+        assignees: serde_json::from_str(&assignees).unwrap_or_default(),
+    })
+}
+
+fn rels(c: &rusqlite::Connection, id: i64) -> Result<Rels, AppError> {
+    let list = |join: &str| -> Result<Vec<RelItem>, AppError> {
+        Ok(c.prepare_cached(&format!("{REL} {join}"))?.query_map([id], rel_item)?.collect::<Result<_, _>>()?)
+    };
+    Ok(Rels {
+        parent: list("JOIN relationships x ON x.src_id = i.id WHERE x.kind = 'sub' AND x.dst_id = ?1")?.pop(),
+        children: list("JOIN relationships x ON x.dst_id = i.id WHERE x.kind = 'sub' AND x.src_id = ?1 ORDER BY x.position")?,
+        blocked_by: list("JOIN relationships x ON x.src_id = i.id WHERE x.kind = 'blocks' AND x.dst_id = ?1 ORDER BY i.state DESC, i.number")?,
+        blocking: list("JOIN relationships x ON x.dst_id = i.id WHERE x.kind = 'blocks' AND x.src_id = ?1 ORDER BY i.state DESC, i.number")?,
+        relates: list(
+            "JOIN relationships x ON x.kind = 'relates' AND ((x.src_id = i.id AND x.dst_id = ?1) OR (x.dst_id = i.id AND x.src_id = ?1)) ORDER BY i.number",
+        )?,
+    })
+}
+
+fn repo_meta(c: &rusqlite::Connection, repo_id: i64) -> Result<RepoMeta, AppError> {
+    let repo: String = c.prepare_cached("SELECT name FROM repos WHERE id = ?")?.query_row([repo_id], |r| r.get(0))?;
+    let labels = c
+        .prepare_cached("SELECT name, color FROM labels WHERE repo_id = ? ORDER BY name")?
+        .query_map([repo_id], |r| Ok(Label { name: r.get(0)?, color: r.get(1)? }))?
+        .collect::<Result<_, _>>()?;
+    let milestones = c
+        .prepare_cached("SELECT title FROM milestones WHERE repo_id = ? AND state = 'open' ORDER BY due_on, title")?
+        .query_map([repo_id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let assignable = c
+        .prepare_cached(
+            "SELECT login FROM users WHERE login = ?2 UNION
+             SELECT DISTINCT u.login FROM item_assignees ia JOIN items i ON i.id = ia.item_id JOIN users u ON u.id = ia.user_id WHERE i.repo_id = ?1
+             ORDER BY 1 LIMIT 60",
+        )?
+        .query_map(params![repo_id, ME], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(RepoMeta { repo, labels, milestones, assignable })
+}
+
+fn comments(c: &rusqlite::Connection, id: i64, offset: i64, limit: i64) -> Result<Vec<Comment>, AppError> {
+    Ok(c
+        .prepare_cached(
+            "SELECT c.id, u.login, c.body, c.created_at FROM comments c LEFT JOIN users u ON u.id = c.author_id
+             WHERE c.item_id = ? ORDER BY c.created_at, c.id LIMIT ? OFFSET ?",
+        )?
+        .query_map(params![id, limit, offset], |r| Ok(Comment { id: r.get(0)?, author: r.get(1)?, body: r.get(2)?, created_at: r.get(3)? }))?
+        .collect::<Result<_, _>>()?)
+}
+
 async fn issue_detail(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<IssueDetail>, AppError> {
     with_db(&s.pool, move |c| {
-        let Some(row) = c.prepare_cached(&format!("{ROW} WHERE i.id = ?"))?.query_row([id], row).optional()? else {
+        let Some(row) = c.prepare_cached(&format!("{ROW} WHERE i.id = ? AND i.is_stub = 0"))?.query_row([id], row).optional()? else {
             return Err(AppError::NotFound);
         };
         let (body, repo_id): (Option<String>, i64) =
             c.prepare_cached("SELECT body, repo_id FROM items WHERE id = ?")?.query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let repo_labels = c
-            .prepare_cached("SELECT name, color FROM labels WHERE repo_id = ? ORDER BY name")?
-            .query_map([repo_id], |r| Ok(Label { name: r.get(0)?, color: r.get(1)? }))?
-            .collect::<Result<_, _>>()?;
-        let comments = c
-            .prepare_cached(
-                "SELECT c.id, u.login, c.body, c.created_at FROM comments c LEFT JOIN users u ON u.id = c.author_id
-                 WHERE c.item_id = ? ORDER BY c.created_at, c.id",
-            )?
-            .query_map([id], |r| Ok(Comment { id: r.get(0)?, author: r.get(1)?, body: r.get(2)?, created_at: r.get(3)? }))?
-            .collect::<Result<_, _>>()?;
-        Ok(Json(IssueDetail { row, body: body.unwrap_or_default(), repo_labels, comments }))
+        let mut all = comments(c, id, 0, -1)?;
+        let size = |c: &Comment| c.body.len() + c.author.as_ref().map_or(0, |a| a.len()) + 80;
+        let mut hidden = 0;
+        if all.iter().map(size).sum::<usize>() > COMMENT_BUDGET && all.len() > 2 {
+            let mut used = size(&all[0]);
+            let mut keep_from = all.len();
+            while keep_from > 2 && used + size(&all[keep_from - 1]) <= COMMENT_BUDGET {
+                keep_from -= 1;
+                used += size(&all[keep_from]);
+            }
+            hidden = (keep_from - 1) as i64;
+            all.drain(1..keep_from);
+        }
+        Ok(Json(IssueDetail {
+            row,
+            body: body.unwrap_or_default(),
+            meta: repo_meta(c, repo_id)?,
+            rels: rels(c, id)?,
+            comments: all,
+            hidden,
+            me: ME.into(),
+        }))
     })
     .await
+}
+
+async fn issue_comments(State(s): State<AppState>, Path(id): Path<i64>, Query(p): Query<Paging>) -> Result<Json<Vec<Comment>>, AppError> {
+    with_db(&s.pool, move |c| Ok(Json(comments(c, id, p.offset.unwrap_or(0), p.limit.unwrap_or(100))?))).await
+}
+
+async fn repos(State(s): State<AppState>) -> Result<Json<Vec<RepoMeta>>, AppError> {
+    with_db(&s.pool, move |c| {
+        let ids: Vec<i64> = c.prepare_cached("SELECT id FROM repos WHERE synced = 1 ORDER BY name")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(Json(ids.into_iter().map(|id| repo_meta(c, id)).collect::<Result<_, _>>()?))
+    })
+    .await
+}
+
+/// Issues to link a relationship to: `repo#12`, `#12` or `12` by number, anything else by title.
+async fn lookup(State(s): State<AppState>, Query(l): Query<Lookup>) -> Result<Json<Vec<RelItem>>, AppError> {
+    with_db(&s.pool, move |c| {
+        let q = l.q.unwrap_or_default();
+        let q = q.trim().to_owned();
+        let (repo, num) = match q.rsplit_once('#') {
+            Some((r, n)) => (r.trim().to_owned(), n.to_owned()),
+            None => (String::new(), q.clone()),
+        };
+        let items = if let Ok(n) = num.parse::<i64>() {
+            c.prepare_cached(&format!("{REL} WHERE i.number = ?1 AND (?2 = '' OR r.name = ?2) AND i.kind = 'issue' ORDER BY r.name LIMIT 10"))?
+                .query_map(params![n, repo], rel_item)?
+                .collect::<Result<_, _>>()?
+        } else {
+            c.prepare_cached(&format!(
+                "{REL} WHERE instr(lower(i.title), lower(?1)) > 0 AND i.kind = 'issue' ORDER BY i.state DESC, i.updated_at DESC LIMIT 10"
+            ))?
+            .query_map([q], rel_item)?
+            .collect::<Result<_, _>>()?
+        };
+        Ok(Json(items))
+    })
+    .await
+}
+
+fn me_id(c: &rusqlite::Connection) -> rusqlite::Result<i64> {
+    c.prepare_cached("SELECT id FROM users WHERE login = ?")?.query_row([ME], |r| r.get(0))
+}
+
+/// The prototype's stand-in for GitHub refusing a write: `x-proto-fail: 422 | 409 | down`.
+fn injected_failure(h: &HeaderMap, is_body: bool) -> Option<Response> {
+    match h.get("x-proto-fail").and_then(|v| v.to_str().ok()) {
+        Some("422") => Some((StatusCode::UNPROCESSABLE_ENTITY, "GitHub refused the change (422)").into_response()),
+        Some("409") if is_body => Some((StatusCode::CONFLICT, "The body changed on GitHub since you started editing").into_response()),
+        Some("down") => Some((StatusCode::SERVICE_UNAVAILABLE, "GitHub is unreachable").into_response()),
+        _ => None,
+    }
+}
+
+/// (kind, src, dst) as stored: `sub` is parent → child, `blocks` is blocker → blocked.
+fn rel_edge(kind: &str, id: i64, other: i64) -> Result<(&'static str, i64, i64), AppError> {
+    Ok(match kind {
+        "parent" => ("sub", other, id),
+        "child" => ("sub", id, other),
+        "blocked_by" => ("blocks", other, id),
+        "blocking" => ("blocks", id, other),
+        "relates" => ("relates", id.min(other), id.max(other)),
+        _ => return Err(AppError::Unprocessable("unknown relationship")),
+    })
+}
+
+async fn apply_op(State(s): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, Json(req): Json<OpReq>) -> Result<Response, AppError> {
+    if !s.seen.lock().unwrap().insert(req.op_id.clone()) {
+        return Ok(StatusCode::OK.into_response()); // a resend of an op already applied
+    }
+    tokio::time::sleep(s.latency).await; // stands in for the GitHub API call
+    if let Some(fail) = injected_failure(&headers, matches!(req.op, Op::Body { .. })) {
+        s.seen.lock().unwrap().remove(&req.op_id);
+        return Ok(fail);
+    }
+    let op_id = req.op_id.clone();
+    let res = with_db(&s.pool, move |c| {
+        let tx = c.transaction()?;
+        let mut ids = vec![id];
+        let repo_id: i64 = tx
+            .prepare_cached("SELECT repo_id FROM items WHERE id = ?")?
+            .query_row([id], |r| r.get(0))
+            .optional()?
+            .ok_or(AppError::NotFound)?;
+        let user = |login: &str| -> Result<i64, AppError> {
+            let login = if login == "me" { ME } else { login };
+            tx.prepare_cached("SELECT id FROM users WHERE login = ?")?
+                .query_row([login], |r| r.get(0))
+                .optional()?
+                .ok_or(AppError::Unprocessable("no such user"))
+        };
+        match req.op {
+            Op::Title { value } => {
+                tx.execute("UPDATE items SET title = ? WHERE id = ?", params![value, id])?;
+            }
+            Op::Body { value, base } => {
+                let cur: Option<String> = tx.query_row("SELECT body FROM items WHERE id = ?", [id], |r| r.get(0))?;
+                if cur.unwrap_or_default() != base {
+                    return Err(AppError::Conflict);
+                }
+                tx.execute("UPDATE items SET body = ? WHERE id = ?", params![value, id])?;
+            }
+            Op::Comment { body } => {
+                let me = me_id(&tx)?;
+                tx.execute(
+                    "INSERT INTO comments VALUES ((SELECT max(id) + 1 FROM comments), 'proto', ?, ?, ?, ?, ?, 0)",
+                    params![id, me, body, now(), now()],
+                )?;
+                tx.execute("UPDATE items SET comments_count = comments_count + 1 WHERE id = ?", [id])?;
+            }
+            Op::LabelAdd { name } => {
+                let label: i64 = tx
+                    .query_row("SELECT id FROM labels WHERE repo_id = ? AND name = ?", params![repo_id, name], |r| r.get(0))
+                    .optional()?
+                    .ok_or(AppError::Unprocessable("no such label"))?;
+                tx.execute("INSERT OR IGNORE INTO item_labels VALUES (?, ?, 0)", params![id, label])?;
+            }
+            Op::LabelRemove { name } => {
+                tx.execute(
+                    "DELETE FROM item_labels WHERE item_id = ? AND label_id IN (SELECT id FROM labels WHERE repo_id = ? AND name = ?)",
+                    params![id, repo_id, name],
+                )?;
+            }
+            Op::AssigneeAdd { login } => {
+                tx.execute("INSERT OR IGNORE INTO item_assignees VALUES (?, ?, 0)", params![id, user(&login)?])?;
+            }
+            Op::AssigneeRemove { login } => {
+                tx.execute("DELETE FROM item_assignees WHERE item_id = ? AND user_id = ?", params![id, user(&login)?])?;
+            }
+            Op::Milestone { title } => {
+                let m: Option<i64> = match title {
+                    None => None,
+                    Some(t) => Some(
+                        tx.query_row("SELECT id FROM milestones WHERE repo_id = ? AND title = ?", params![repo_id, t], |r| r.get(0))
+                            .optional()?
+                            .ok_or(AppError::Unprocessable("no such milestone"))?,
+                    ),
+                };
+                tx.execute("UPDATE items SET milestone_id = ? WHERE id = ?", params![m, id])?;
+            }
+            Op::State { state, reason } => {
+                let closed_at = (state == "closed").then(now);
+                tx.execute("UPDATE items SET state = ?, state_reason = ?, closed_at = ? WHERE id = ?", params![state, reason, closed_at, id])?;
+            }
+            Op::RelAdd { kind, other } => {
+                let (k, src, dst) = rel_edge(&kind, id, other)?;
+                // A sub-issue has one parent: adding moves it.
+                if k == "sub" {
+                    tx.execute("DELETE FROM relationships WHERE kind = 'sub' AND dst_id = ?", [dst])?;
+                }
+                tx.execute(
+                    "INSERT OR IGNORE INTO relationships VALUES (?1, ?2, ?3, (SELECT coalesce(max(position), 0) + 1 FROM relationships WHERE kind = ?1 AND src_id = ?2), 0)",
+                    params![k, src, dst],
+                )?;
+                ids.push(other);
+            }
+            Op::RelRemove { kind, other } => {
+                let (k, src, dst) = rel_edge(&kind, id, other)?;
+                tx.execute("DELETE FROM relationships WHERE kind = ? AND src_id = ? AND dst_id = ?", params![k, src, dst])?;
+                ids.push(other);
+            }
+        }
+        tx.execute("UPDATE items SET updated_at = ? WHERE id = ?", params![now(), id])?;
+        tx.commit()?;
+        Ok(ids)
+    })
+    .await;
+    let ids = match res {
+        Ok(ids) => ids,
+        Err(e) => {
+            s.seen.lock().unwrap().remove(&op_id);
+            return Err(e);
+        }
+    };
+    let _ = s.events.send(Changed { ids });
+    Ok(StatusCode::OK.into_response())
+}
+
+async fn create_issue(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<CreateReq>) -> Result<Response, AppError> {
+    tokio::time::sleep(s.latency).await;
+    if let Some(fail) = injected_failure(&headers, false) {
+        return Ok(fail);
+    }
+    let (created, ids) = with_db(&s.pool, move |c| {
+        let tx = c.transaction()?;
+        let repo_id: i64 = tx
+            .query_row("SELECT id FROM repos WHERE name = ? AND synced = 1", [&req.repo], |r| r.get(0))
+            .optional()?
+            .ok_or(AppError::Unprocessable("no such repo"))?;
+        let id: i64 = tx.query_row("SELECT max(id) + 1 FROM items", [], |r| r.get(0))?;
+        let number: i64 = tx.query_row("SELECT coalesce(max(number), 0) + 1 FROM items WHERE repo_id = ?", [repo_id], |r| r.get(0))?;
+        let milestone: Option<i64> = match &req.milestone {
+            Some(t) => tx.query_row("SELECT id FROM milestones WHERE repo_id = ? AND title = ?", params![repo_id, t], |r| r.get(0)).optional()?,
+            None => None,
+        };
+        tx.execute(
+            "INSERT INTO items (id, node_id, repo_id, number, kind, title, body, state, author_id, milestone_id, comments_count, created_at, updated_at, seq)
+             VALUES (?, ?, ?, ?, 'issue', ?, ?, 'open', ?, ?, 0, ?, ?, 0)",
+            params![id, format!("proto-{}", req.op_id), repo_id, number, req.title, req.body, me_id(&tx)?, milestone, now(), now()],
+        )?;
+        for l in &req.labels {
+            tx.execute("INSERT OR IGNORE INTO item_labels SELECT ?, id, 0 FROM labels WHERE repo_id = ? AND name = ?", params![id, repo_id, l])?;
+        }
+        for a in &req.assignees {
+            let a = if a == "me" { ME } else { a.as_str() };
+            tx.execute("INSERT OR IGNORE INTO item_assignees SELECT ?, id, 0 FROM users WHERE login = ?", params![id, a])?;
+        }
+        let mut ids = vec![id];
+        if let Some(p) = req.parent {
+            tx.execute(
+                "INSERT INTO relationships VALUES ('sub', ?1, ?2, (SELECT coalesce(max(position), 0) + 1 FROM relationships WHERE kind = 'sub' AND src_id = ?1), 0)",
+                params![p, id],
+            )?;
+            ids.push(p);
+        }
+        tx.commit()?;
+        Ok((Created { id, number }, ids))
+    })
+    .await?;
+    let _ = s.events.send(Changed { ids });
+    Ok(Json(created).into_response())
 }
 
 fn now() -> String {
@@ -823,15 +1258,19 @@ async fn main() {
         )
         .expect("create indexes");
     let (events, _) = broadcast::channel(256);
-    let state = AppState { pool, events, latency };
+    let state = AppState { pool, events, latency, seen: Default::default() };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/facets", get(facets))
-        .route("/api/issues", get(list_issues))
         .route("/api/tree", get(tree))
         .route("/api/issues/{id}", get(issue_detail))
+        .route("/api/issues", get(list_issues).post(create_issue))
         .route("/api/issues/{id}/labels", post(add_label))
+        .route("/api/issues/{id}/ops", post(apply_op))
+        .route("/api/issues/{id}/comments", get(issue_comments))
+        .route("/api/repos", get(repos))
+        .route("/api/lookup", get(lookup))
         .route("/webhook", post(webhook))
         .route("/events", get(sse))
         // Client-side routes (/issues/:id) get the SPA shell.

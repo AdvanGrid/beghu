@@ -1,4 +1,5 @@
-// PROTOTYPE (beghu #52), variant C: a token bar. Filters live as removable tokens inside one input;
+// PROTOTYPE (beghu #52), variant C, the list that won; #54 hosts the detail layouts in it.
+// A token bar. Filters live as removable tokens inside one input;
 // typing suggests keys and values (with counts) from the facets; plain words search titles. A row
 // of preset views sits under it. Rows are a single line, title first.
 import { createMemo, createSignal, For, Show, onSettled, Loading, Errored } from 'solid-js';
@@ -10,6 +11,8 @@ import type { IssueRow, TreeNode } from '../api';
 import type { Element } from 'solid-js';
 import { Avatars, RelHints, StateIcon, describeEmpty, href } from '../bits';
 import { ago, sameView, toggle, EMPTY, MULTI, type Multi, type View } from '../view';
+import { useNewIssue } from '../detail/layouts';
+import { useSearchParams } from '@solidjs/router';
 
 type Suggestion = { label: string; hint?: string; color?: string | null; count?: number; apply: () => void };
 
@@ -39,6 +42,18 @@ export function VariantC(props: { ctx: Ctx }) {
   const [text, setText] = createSignal(c.view().q);
   const [focused, setFocused] = createSignal(false);
   const [hi, setHi] = createSignal(0);
+
+  const newIssue = useNewIssue();
+  const [sp] = useSearchParams();
+  // c starts a new issue from anywhere outside a text field.
+  onSettled(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey) return;
+      if (e.key === 'c') (e.preventDefault(), newIssue());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   onSettled(() => {
     const onPop = () => {
@@ -251,12 +266,15 @@ export function VariantC(props: { ctx: Ctx }) {
             )}
           </For>
           <ListTreeToggle ctx={c} />
+          <button class="primary small new-btn" onClick={() => newIssue()} title="New issue (c)">
+            New issue
+          </button>
           <span class="c-count muted">
             {c.view().state === 'open' ? `${c.facets()?.open?.toLocaleString('en') ?? '…'} open` : c.view().state === 'closed' ? `${c.facets()?.closed?.toLocaleString('en') ?? '…'} closed` : ''}
           </span>
         </div>
       </header>
-      <main class="c-main">
+      <main class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}>
         <Loading fallback={<div class="list" />}>
           <Show when={c.tree()} fallback={
           <Rows
@@ -271,11 +289,19 @@ export function VariantC(props: { ctx: Ctx }) {
             <TreeRows ctx={c} rowHeight={34} row={(r, lead) => row(r, lead)} />
           </Show>
         </Loading>
-        <aside class="detail">
-          <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
-            <Loading>{c.detail}</Loading>
-          </Errored>
-        </aside>
+        {/* A: always beside the list. B: over the list, which keeps its scroll underneath. C: a drawer
+            over the list's right side; ?full=1 widens it. */}
+        <Show when={c.layout() === 'A' || c.openId() || (c.creating() && c.layout() === 'B')}>
+          <aside class={`detail detail-${c.layout()} ${sp.full ? 'full' : ''}`}>
+            <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
+              <Loading>{c.detail}</Loading>
+            </Errored>
+          </aside>
+        </Show>
+        {/* C's new-issue form is a modal, outside the drawer. */}
+        <Show when={c.creating() && c.layout() === 'C'}>
+          <Loading>{c.detail}</Loading>
+        </Show>
       </main>
     </div>
   );
