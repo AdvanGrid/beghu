@@ -139,7 +139,7 @@ export function TreeRows(props: { ctx: Ctx; rowHeight: number; row: (r: TreeNode
   }
 
   // ---------- #55, variant B: editing ----------
-  const edit = () => c.rel() === 'B';
+  const edit = () => true;
   const [pend, setPend] = createSignal<ReadonlySet<number>>(new Set());
   const [drag, setDrag] = createSignal<{ id: number; over?: number; zone?: 'before' | 'after' | 'into'; bad?: boolean }>();
   const newIssue = useNewIssue();

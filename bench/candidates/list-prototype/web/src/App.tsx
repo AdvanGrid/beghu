@@ -43,9 +43,9 @@ export type Ctx = {
 };
 
 export const VARIANTS = [
-  { key: 'A', name: 'Panel: edit links in the detail, drag to reorder' },
-  { key: 'B', name: 'Outliner: edit the tree in place' },
-  { key: 'C', name: 'Dependency lens: what each issue waits on' },
+  { key: 'A', name: 'Waits on: the blocker\'s title' },
+  { key: 'B', name: 'Waits on: who has it, and is it moving' },
+  { key: 'C', name: 'Waits on: every blocker as a chip' },
 ] as const;
 
 export type RelVariant = (typeof VARIANTS)[number]['key'];

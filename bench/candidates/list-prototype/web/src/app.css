@@ -489,3 +489,73 @@ button.tiny:disabled { opacity: 0.3; }
 .map-relates .map-node { margin: 0; max-width: 260px; }
 .map-foot { display: flex; align-items: center; gap: 12px; margin-top: 4px; font-size: 12px; }
 .map-foot .muted { display: inline-flex; gap: 4px; align-items: center; }
+
+/* ===================== PROTOTYPE (beghu #55) round 2: waits-on notes, Blocks section ===================== */
+.waits-on { display: inline-flex; align-items: center; gap: 4px; min-width: 0; text-decoration: none !important; padding: 1px 4px; }
+.waits-on .wo-k { color: var(--blocked); flex: none; }
+.wo-lead { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.wo-lead:hover .wo-title, .wo-lead:hover .wo-who { text-decoration: underline; }
+.wo-more { color: var(--muted); flex: none; font-size: 11.5px; }
+/* A: the blocker's title takes what room the row has, up to a cap. */
+.waits-on.wo-A { flex: 0 1 300px; }
+.wo-A .wo-title { color: var(--fg); min-width: 0; }
+/* B: who has it; the status words carry the colour. */
+.wo-who { color: var(--fg); white-space: nowrap; }
+.wo-why { color: var(--muted); }
+.s-nobody .wo-why, .s-quiet .wo-why { color: var(--chain); }
+.s-chain .wo-why { color: var(--blocked); }
+/* C: one chip per blocker. */
+.wo-chip { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--line); border-radius: 999px; padding: 0 6px 0 2px; height: 18px; color: var(--fg); font-size: 11.5px; background: var(--bg); }
+.wo-chip:hover { border-color: var(--muted); }
+.wo-chip.s-nobody { border-color: var(--chain); border-style: dashed; }
+.wo-chip.s-chain { border-color: var(--blocked); }
+.wo-noone { width: 14px; height: 14px; border-radius: 50%; border: 1px dashed var(--muted); flex: none; display: inline-block; }
+/* The card every variant opens on hover. */
+.wo-card { position: fixed; z-index: 50; width: 390px; background: var(--pop); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 8px; color: var(--fg); white-space: normal; font-size: 12.5px; }
+.wo-card .rel-h { padding: 0 4px 4px; }
+.wo-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 0 8px; align-items: center; width: 100%; text-align: left; border: 0; background: none; color: inherit; padding: 4px; border-radius: 6px; cursor: pointer; font: inherit; }
+.wo-item:hover { background: var(--hover); }
+.wo-item > :first-child { grid-row: span 2; align-self: start; margin-top: 1px; }
+.wo-item .wo-noone { width: 18px; height: 18px; }
+.wo-t { font-weight: 500; }
+.wo-ref { font-size: 11.5px; }
+.wo-s { grid-column: 2 / 4; color: var(--muted); font-size: 12px; }
+.wo-item.s-nobody .wo-s, .wo-item.s-quiet .wo-s { color: var(--chain); }
+.wo-item.s-chain .wo-s { color: var(--blocked); }
+
+/* The Blocks section: blocked by on the left, blocking mirrored on the right. */
+.blk { display: grid; grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); margin: 6px 0 2px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 6px; }
+.blk-mid { position: relative; display: grid; place-items: center; }
+.blk-mid::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; border-left: 1px solid var(--line); }
+.blk-mid span { position: relative; background: var(--bg); color: var(--muted); font-size: 12px; line-height: 1; padding: 3px 0; }
+.blk-side { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.blk-side header { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 4px; }
+.blk-r header { flex-direction: row-reverse; }
+.blk-count { font-size: 11.5px; color: var(--muted); }
+.blk-count.hot { color: var(--blocked); font-weight: 600; }
+.blk-side header .add { padding: 0 6px; }
+.blk-empty { font-size: 12px; margin: 2px 4px; }
+.blk-r .blk-empty { text-align: right; }
+.blk-item { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 1px 6px; padding: 4px; border-radius: 6px; align-items: center; }
+.blk-item:hover { background: var(--hover); }
+.blk-icon { display: inline-grid; }
+.blk-title { color: inherit; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 13px; }
+.blk-title:hover { text-decoration: underline; }
+.blk-meta { grid-column: 2; display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); min-width: 0; }
+.blk-who { display: inline-flex; align-items: center; gap: 4px; }
+.blk-nobody { color: var(--chain); }
+.blk-chain { color: var(--blocked); }
+.blk-item.closed { opacity: 0.55; }
+.blk-item.closed .blk-title { text-decoration: line-through; }
+.blk-item.stub .blk-title { font-style: italic; color: var(--muted); }
+/* Mirrored: icon on the outer (right) edge, everything right-aligned. */
+.blk-r .blk-item { grid-template-columns: minmax(0, 1fr) 16px; text-align: right; }
+.blk-r .blk-icon { grid-column: 2; grid-row: 1; }
+.blk-r .blk-title { grid-column: 1; grid-row: 1; }
+.blk-r .blk-meta { grid-column: 1; flex-direction: row-reverse; }
+.blk-r .blk-who { flex-direction: row-reverse; }
+/* × sits on the inner edge, toward the divider, over the row. */
+.blk-x { position: absolute; top: 3px; background: var(--hover); border-radius: 4px; }
+.blk-l .blk-x { right: 2px; }
+.blk-r .blk-x { left: 2px; }
+.blk-item:hover .blk-x { visibility: visible; }

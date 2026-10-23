@@ -31,8 +31,7 @@ import {
 } from './parts';
 import { shell } from '../shell';
 import { SubIssues } from '../rel/SubIssues';
-import { LinkAny } from '../rel/LinkAny';
-import { RelMap } from '../rel/RelMap';
+import { Blocks } from '../rel/Blocks';
 
 const ghUrl = (m: IssueModel) => `https://github.com/acme/${m.d().repo}/issues/${m.d().number}`;
 
@@ -116,9 +115,6 @@ export function DetailA(props: { m: IssueModel }) {
   const m = props.m;
   const d = () => m.d();
   const newIssue = useNewIssue();
-  // #55: ?variant= is the relationship design.
-  const [sp, setSp] = useSearchParams();
-  const rv = () => (sp.variant as 'A' | 'B' | 'C' | undefined) ?? 'A';
   return (
     <article class="da" data-bench="detail" data-id={d().id}>
       {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
@@ -166,43 +162,18 @@ export function DetailA(props: { m: IssueModel }) {
             </button>
           )}
         />
-        <Show when={rv() !== 'C'}>
-          <span class="da-key">Links</span>
-          <span class="da-links">
-            <Show
-              when={rv() === 'A'}
-              fallback={
-                <>
-                  <AddRel m={m} kind="blocked_by" label={<span class="muted">+ Blocked by</span>} />
-                  <AddRel m={m} kind="blocking" label={<span class="muted">+ Blocking</span>} />
-                  <AddRel m={m} kind="relates" label={<span class="muted">+ Relates to</span>} />
-                </>
-              }
-            >
-              <LinkAny m={m} />
-            </Show>
-          </span>
-        </Show>
+        <span class="da-key">Links</span>
+        <span class="da-links">
+          <AddRel m={m} kind="blocked_by" label={<span class="muted">+ Blocked by</span>} />
+          <AddRel m={m} kind="blocking" label={<span class="muted">+ Blocking</span>} />
+          <AddRel m={m} kind="relates" label={<span class="muted">+ Relates to</span>} />
+        </span>
       </div>
-      <Show when={rv() === 'C'} fallback={
-        <>
-          <RelSection m={m} kind="blocked_by" hideEmpty />
-          <RelSection m={m} kind="blocking" hideEmpty />
-        </>
-      }>
-        <RelMap m={m} />
-      </Show>
+      <Blocks m={m} />
+      <RelSection m={m} kind="relates" hideEmpty />
       <Opened m={m} />
       <Body m={m} />
-      <SubIssues m={m} mode={rv() === 'A' ? 'drag' : rv() === 'C' ? 'keys' : 'plain'} onNew={() => newIssue(d().id)} />
-      <Show when={rv() === 'B' && (d().rels.children.length || d().rels.parent)}>
-        <button class="ghost small tree-link" onClick={() => setSp({ tree: '1' })}>
-          Reorder and nest in the tree →
-        </button>
-      </Show>
-      <Show when={rv() !== 'C'}>
-        <RelSection m={m} kind="relates" hideEmpty />
-      </Show>
+      <SubIssues m={m} mode="drag" onNew={() => newIssue(d().id)} />
       <h3 class="section-h">Comments</h3>
       <Thread m={m} variant="flat" />
       <div class="da-compose">

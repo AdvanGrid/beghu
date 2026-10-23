@@ -1,87 +1,149 @@
-// PROTOTYPE (beghu #55). How a blocked issue is marked in the list, one way per variant:
+// PROTOTYPE (beghu #55), round 2. A blocked row gets a red edge and a "waits on" note; the variants
+// try what the note says, since the issue number alone told you nothing:
 //
-// - A: the "blocked" chip next to the progress (as #52 had it).
-// - B: the state icon itself turns into a blocked icon, so the row gains no width. Hovering it shows
-//   the open blockers, read from /api/issues/:id/rels once and cached per row.
-// - C: a red edge on the row and "waits on repo#n" in place of the chip; clicking that opens the
-//   blocker in the panel.
+// - A, what: the first blocker's title.
+// - B, who and how: who the first blocker is with, or that nobody is on it, or that it is itself
+//   blocked, or that it has gone quiet.
+// - C, every blocker: a chip per open blocker (avatar and number), coloured by the same status.
+//
+// Every variant opens the same card on hover: each open blocker with its title, owner and status.
+// Clicking a blocker opens it in the panel. The row carries up to three blockers, so none of this
+// fetches.
 import { createSignal, For, Show } from 'solid-js';
+import { Portal } from '@solidjs/web';
 import { useNavigate, useLocation } from '@solidjs/router';
-import type { IssueRow, Rels } from '../api';
-import { StateIcon } from '../bits';
-import { IssueStateIcon } from '../detail/parts';
-
-const cache = new Map<number, Promise<Rels>>();
-const rels = (id: number) => {
-  if (!cache.has(id)) cache.set(id, fetch(`/api/issues/${id}/rels`).then((r) => r.json()));
-  return cache.get(id)!;
-};
-window.addEventListener('issues-changed', () => cache.clear());
+import type { IssueRow } from '../api';
+import type { BlockerRef } from '../../../server/bindings/BlockerRef';
+import { Avatar } from '../bits';
+import { ago } from '../view';
+import type { RelVariant } from '../App';
 
 export const isBlocked = (r: IssueRow) => r.state === 'open' && r.blocked_by > 0;
 
-export function BlockedStateIcon(props: { r: IssueRow }) {
-  const [list, setList] = createSignal<Rels['blocked_by']>();
-  const [show, setShow] = createSignal(false);
-  let t: ReturnType<typeof setTimeout> | undefined;
+// The fixture is months old, so "quiet" is 180 days here; on live data it would be more like 14.
+const QUIET_DAYS = 180;
+type Status = 'chain' | 'nobody' | 'quiet' | 'moving';
+const status = (b: BlockerRef): Status =>
+  b.open_blockers > 0 ? 'chain' : !b.assignee && !b.stub ? 'nobody' : b.updated_at && Date.now() - Date.parse(b.updated_at) > QUIET_DAYS * 864e5 ? 'quiet' : 'moving';
+const say = (b: BlockerRef) =>
+  ({
+    chain: `itself blocked by ${b.open_blockers}`,
+    nobody: 'nobody on it',
+    quiet: `quiet for ${ago(b.updated_at ?? '')}`,
+    moving: b.stub ? 'not synced' : `updated ${ago(b.updated_at ?? '')} ago`,
+  })[status(b)];
+
+function useOpen() {
+  const nav = useNavigate();
+  const loc = useLocation();
+  return (e: MouseEvent, b: BlockerRef) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.stub) window.open(`https://github.com/acme/${b.repo}/issues/${b.number}`, '_blank');
+    else nav(`/issues/${b.id}${loc.search}`, { scroll: false });
+  };
+}
+
+function Card(props: { r: IssueRow; at: DOMRect; keep: () => void; hide: () => void }) {
+  const open = useOpen();
+  const more = () => props.r.blocked_by - props.r.blockers.length;
+  const left = () => Math.max(8, Math.min(props.at.left, innerWidth - 400));
   return (
-    <Show when={isBlocked(props.r)} fallback={<StateIcon r={props.r} />}>
-      <span
-        class="blocked-icon"
-        onPointerEnter={() => {
-          t = setTimeout(() => {
-            setShow(true);
-            rels(props.r.id).then((x) => setList(x.blocked_by.filter((b) => b.state === 'open')));
-          }, 250);
-        }}
-        onPointerLeave={() => (clearTimeout(t), setShow(false))}
-      >
-        <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label={`Open, blocked by ${props.r.blocked_by}`}>
-          <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
-          <path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        </svg>
-        <Show when={show()}>
-          <div class="blocked-pop" onClick={(e) => e.preventDefault()}>
-            <div class="rel-h">Blocked by</div>
-            <Show when={list()} fallback={<p class="muted">…</p>}>
-              <For each={list()}>
-                {(b) => (
-                  <div class="blocked-item">
-                    <IssueStateIcon state={b.state} reason={b.state_reason} size={13} />
-                    <span class="ellip">{b.title}</span>
-                    <span class="mono muted">
-                      {b.repo}#{b.number}
-                    </span>
-                    <Show when={b.stub}>
-                      <span class="stub-tag">not synced</span>
-                    </Show>
-                  </div>
-                )}
-              </For>
+    <div
+      class="wo-card"
+      style={{ left: `${left()}px`, top: `${props.at.bottom + 4}px` }}
+      onPointerEnter={props.keep}
+      onPointerLeave={props.hide}
+      onClick={(e) => (e.preventDefault(), e.stopPropagation())}
+    >
+      <div class="rel-h">
+        Waits on {props.r.blocked_by} open issue{props.r.blocked_by > 1 ? 's' : ''}
+      </div>
+      <For each={props.r.blockers}>
+        {(b) => (
+          <button class={`wo-item s-${status(b)}`} onClick={(e) => open(e, b)}>
+            <Show when={b.assignee} fallback={<span class="wo-noone" title="Nobody assigned" />}>
+              <Avatar login={b.assignee!} size={18} />
             </Show>
-          </div>
-        </Show>
-      </span>
-    </Show>
+            <span class="wo-t ellip">{b.title}</span>
+            <span class="mono muted wo-ref">
+              {b.repo}#{b.number}
+            </span>
+            <span class="wo-s">
+              {b.assignee ? `${b.assignee} · ` : ''}
+              {say(b)}
+            </span>
+          </button>
+        )}
+      </For>
+      <Show when={more() > 0}>
+        <p class="muted small">and {more()} more, in the issue</p>
+      </Show>
+    </div>
   );
 }
 
-export function WaitsOn(props: { r: IssueRow }) {
-  const nav = useNavigate();
-  const loc = useLocation();
+export function WaitsOn(props: { r: IssueRow; v: RelVariant }) {
+  const open = useOpen();
+  const [at, setAt] = createSignal<DOMRect>();
+  let t: ReturnType<typeof setTimeout> | undefined;
+  let el!: HTMLSpanElement;
+  const keep = () => clearTimeout(t);
+  const hide = () => (clearTimeout(t), (t = setTimeout(() => setAt(undefined), 150)));
+  const first = () => props.r.blockers[0];
+  const ref = (b: BlockerRef) => `${b.repo === props.r.repo ? '' : b.repo}#${b.number}`;
+  const more = () => (props.r.blocked_by > 1 ? <span class="wo-more">+{props.r.blocked_by - 1}</span> : null);
   return (
-    <Show when={isBlocked(props.r) && props.r.first_blocker}>
+    <Show when={isBlocked(props.r) && first()}>
       <span
-        class="waits-on"
-        title={`Waits on ${props.r.blocked_by} open issue${props.r.blocked_by > 1 ? 's' : ''}; click to open ${props.r.first_blocker}`}
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          nav(`/issues/${props.r.first_blocker_id}${loc.search}`, { scroll: false });
-        }}
+        ref={el}
+        class={`waits-on wo-${props.v}`}
+        onPointerEnter={() => (clearTimeout(t), (t = setTimeout(() => setAt(el.getBoundingClientRect()), 300)))}
+        onPointerLeave={hide}
       >
-        waits on <span class="mono">{props.r.first_blocker}</span>
-        {props.r.blocked_by > 1 ? ` +${props.r.blocked_by - 1}` : ''}
+        <Show when={props.v === 'A'}>
+          <span class="wo-lead" onClick={(e) => open(e, first()!)}>
+            <span class="wo-k">waits on</span>
+            <span class="ellip wo-title">{first()!.title}</span>
+            {more()}
+          </span>
+        </Show>
+        <Show when={props.v === 'B'}>
+          <span class={`wo-lead s-${status(first()!)}`} onClick={(e) => open(e, first()!)}>
+            <span class="wo-k">waits on</span>
+            <Show when={first()!.assignee}>
+              <Avatar login={first()!.assignee!} size={14} />
+            </Show>
+            <span class="wo-who">
+              {first()!.assignee ?? <span class="mono">{ref(first()!)}</span>}
+              <Show when={status(first()!) !== 'moving'}>
+                <span class="wo-why">{{ chain: ', itself blocked', nobody: ', nobody on it', quiet: `, quiet ${ago(first()!.updated_at ?? '')}`, moving: '' }[status(first()!)]}</span>
+              </Show>
+            </span>
+            {more()}
+          </span>
+        </Show>
+        <Show when={props.v === 'C'}>
+          <span class="wo-k">waits on</span>
+          <For each={props.r.blockers}>
+            {(b) => (
+              <span class={`wo-chip s-${status(b)}`} onClick={(e) => open(e, b)}>
+                <Show when={b.assignee} fallback={<span class="wo-noone" />}>
+                  <Avatar login={b.assignee!} size={14} />
+                </Show>
+                <span class="mono">{ref(b)}</span>
+              </span>
+            )}
+          </For>
+          <Show when={props.r.blocked_by > props.r.blockers.length}>
+            <span class="wo-more">+{props.r.blocked_by - props.r.blockers.length}</span>
+          </Show>
+        </Show>
+        <Show when={at()}>
+          <Portal>
+            <Card r={props.r} at={at()!} keep={keep} hide={hide} />
+          </Portal>
+        </Show>
       </span>
     </Show>
   );

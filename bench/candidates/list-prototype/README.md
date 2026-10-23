@@ -2,26 +2,26 @@
 
 Throwaway, for [Prototype the relationship tree](https://github.com/tomsjansons/beghu/issues/55), on
 top of the list (#52, variant C) and detail (#54, side panel) prototypes. `?variant=` and the
-floating bar (← / →) now switch **where relationships are shown and edited**; the detail is always
-the side panel.
+floating bar (← / →) switch what the list's "waits on" note says (round 2; round 1 switched where
+relationships are edited). The detail is always the side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
 
-- **A: Panel.** The list and tree are read-only. Blocked rows carry the red "blocked" chip.
-  In the detail, one **+ Link issue** picker covers every kind (Sub-issue, Parent, Blocked by,
-  Blocking, Relates to), with results grouped by repo, this repo first. Sub-issues have a grip
-  to drag them into a new order, and a ⋯ menu with Move to top/up/down/bottom, Move to another
-  parent… and Remove.
-- **B: Outliner.** The **tree** is where you edit. Grab a row's grip and drop it on the top or bottom
-  edge of another row to put it beside that row, or on the middle to nest it. On a focused row,
-  Alt+↑/↓ moves it, Tab nests it under the row above, and Shift+Tab lifts it out. "+ sub-issue" on
-  hover links an issue or creates one. Blocked rows swap their state icon for a red ⊖, which adds
-  no width; hover it to see the blockers. In the detail, #54's lists stay as they are, plus a
-  "Reorder and nest in the tree →" link.
-- **C: Dependency lens.** Blocked rows get a red edge and say "waits on api#12 +1"; click it to
-  open that blocker. The detail has a map: Waits on → this issue → Holds up, where each node shows
-  whether it is itself blocked (⊘ n). A node opens in the panel, so you can walk a chain. Relates-to
-  shows as chips. Sub-issues reorder with Alt+↑/↓ on a focused row or ↑ ↓ on hover, with no drag.
+**Round 2.** Owner feedback on round 1 kept: drag to reorder and re-parent (sub-issues in the
+panel, and the tree, both in every variant), separate **+ Blocked by / + Blocking / + Relates to**
+buttons, and the "waits on" note on blocked rows. The detail now has a **Blocks** section above the
+body: Blocked by on the left, Blocking mirrored on the right (icon on the outer edge, two lines per
+item: title, then number and owner, plus "itself blocked by n" / "also waits on n more").
+**Relates to** sits under it. The variants now try what the list's note says. Every one opens the
+same hover card with each open blocker's title, owner and status, and the row's red edge stays:
+
+- **A: what.** "waits on <first blocker's title> +n".
+- **B: who and how.** "waits on (avatar) owner", or "#123, nobody on it", "…, itself blocked",
+  "…, quiet 8mo" (no update for 180 days, since the fixture is old; 14 on live data).
+- **C: every blocker.** A chip per open blocker: avatar and number (repo only when it differs).
+  Amber dashed means nobody is on it, and red means it is itself blocked.
+
+Round 1 (panel / outliner / dependency lens) is commit 75386b8 on this branch.
 
 Shared by all three: every edit is a pending write (blinks until GitHub answers) and reverts with
 a toast if refused (use the bar's `writes` knob). Reorders are one `sub_move` op on the parent

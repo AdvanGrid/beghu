@@ -86,6 +86,23 @@ pub struct Label {
 
 #[derive(Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct BlockerRef {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub repo: String,
+    #[ts(type = "number")]
+    pub number: i64,
+    pub title: String,
+    pub assignee: Option<String>,
+    pub stub: bool,
+    /// Its own open blockers, so the note can say the wait is a chain.
+    #[ts(type = "number")]
+    pub open_blockers: i64,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ParentRef {
     #[ts(type = "number")]
     pub id: i64,
@@ -127,10 +144,8 @@ pub struct IssueRow {
     pub blocking: i64,
     #[ts(type = "number")]
     pub relates: i64,
-    /// The first open blocker as `repo#number`, for rows that say what they wait on.
-    pub first_blocker: Option<String>,
-    #[ts(type = "number | null")]
-    pub first_blocker_id: Option<i64>,
+    /// Up to three open blockers, for rows that say what they wait on (#55).
+    pub blockers: Vec<BlockerRef>,
 }
 
 #[derive(Serialize, TS)]
@@ -395,10 +410,13 @@ const ROW: &str = "SELECT i.id, i.number, r.name, i.title, i.state, i.updated_at
   (SELECT count(*) FROM relationships x JOIN items b ON b.id = x.src_id WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open'),
   (SELECT count(*) FROM relationships x WHERE x.kind = 'blocks' AND x.src_id = i.id),
   (SELECT count(*) FROM relationships x WHERE x.kind = 'relates' AND (x.src_id = i.id OR x.dst_id = i.id)),
-  (SELECT br.name || '#' || b.number FROM relationships x JOIN items b ON b.id = x.src_id JOIN repos br ON br.id = b.repo_id
-     WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open' ORDER BY b.is_stub, b.number LIMIT 1),
-  (SELECT b.id FROM relationships x JOIN items b ON b.id = x.src_id
-     WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open' ORDER BY b.is_stub, b.number LIMIT 1)
+  (SELECT json_group_array(json(o)) FROM (SELECT json_object('id', b.id, 'repo', br.name, 'number', b.number, 'title', b.title,
+       'assignee', (SELECT u.login FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = b.id LIMIT 1),
+       'stub', json(CASE WHEN b.is_stub THEN 'true' ELSE 'false' END),
+       'open_blockers', (SELECT count(*) FROM relationships y JOIN items bb ON bb.id = y.src_id WHERE y.kind = 'blocks' AND y.dst_id = b.id AND bb.state = 'open'),
+       'updated_at', b.updated_at) o
+     FROM relationships x JOIN items b ON b.id = x.src_id JOIN repos br ON br.id = b.repo_id
+     WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open' ORDER BY b.is_stub, b.number LIMIT 3))
   FROM items i JOIN repos r ON r.id = i.repo_id";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<IssueRow> {
@@ -427,8 +445,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<IssueRow> {
         blocked_by: r.get(18)?,
         blocking: r.get(19)?,
         relates: r.get(20)?,
-        first_blocker: r.get(21)?,
-        first_blocker_id: r.get(22)?,
+        blockers: serde_json::from_str(&r.get::<_, String>(21)?).unwrap_or_default(),
     })
 }
 

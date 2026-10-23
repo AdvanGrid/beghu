@@ -13,7 +13,7 @@ import { Avatars, RelHints, StateIcon, describeEmpty, href } from '../bits';
 import { ago, sameView, toggle, EMPTY, MULTI, type Multi, type View } from '../view';
 import { useNewIssue } from '../detail/layouts';
 import { useSearchParams } from '@solidjs/router';
-import { BlockedStateIcon, WaitsOn, isBlocked } from '../rel/Blocked';
+import { WaitsOn, isBlocked } from '../rel/Blocked';
 
 type Suggestion = { label: string; hint?: string; color?: string | null; count?: number; apply: () => void };
 
@@ -159,22 +159,20 @@ export function VariantC(props: { ctx: Ctx }) {
 
   const row = (r: IssueRow | TreeNode, lead?: Element) => (
               <a
-                class={`c-row ${c.rel() === 'C' && isBlocked(r) ? 'edge-blocked' : ''}`}
+                class={`c-row ${isBlocked(r) ? 'edge-blocked' : ''}`}
                 href={href(r, c.search())}
                 noscroll
                 aria-current={c.openId() === r.id ? 'page' : undefined}
               >
 {lead}
-                {c.rel() === 'B' ? <BlockedStateIcon r={r} /> : <StateIcon r={r} />}
+                <StateIcon r={r} />
                 <span class="c-title">{r.title}</span>
                 <span class="c-labels">
                   <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
                 </span>
                 <span class="c-spacer" />
-                <Show when={c.rel() === 'C'}>
-                  <WaitsOn r={r} />
-                </Show>
-                <RelHints r={r} noBlocked={c.rel() !== 'A'} />
+                <WaitsOn r={r as IssueRow} v={c.rel()} />
+                <RelHints r={r} noBlocked />
                 <span class="muted mono c-ref">
                   {r.repo}#{r.number}
                 </span>
