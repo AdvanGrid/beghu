@@ -580,11 +580,11 @@ button.tiny:disabled { opacity: 0.3; }
 
 /* A: the title leads; every other cell sits in a fixed column on the right, number before owner.
    Blockers stack, so their column is one chip wide and labels get the room. */
-.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 220px 112px 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
+.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) var(--lab-w, 192px) var(--wait-w, 100px) 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
 .cols-A .k-ref { text-align: right; }
 @container (max-width: 1000px) {
   .c-row.cols { gap: 0 8px; }
-  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 150px 96px 40px 96px 40px 30px; }
+  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) var(--lab-w, 96px) var(--wait-w, 100px) 40px 96px 40px 30px; }
 }
 
 /* B: the number leads, like an ID column; the rest as A. */
@@ -629,3 +629,16 @@ body.resizing .split-handle { pointer-events: auto; }
   .c-main.layout-A { grid-template-columns: minmax(0, 1fr); }
   .c-main.layout-A > .detail-A { grid-column: 1; grid-row: 2; }
 }
+
+/* Round 4: labels and blockers fill stacked columns of two; the column count comes from the list's
+   width (--lab-w, --wait-w). Each slot has a fixed width so columns line up across rows. */
+.waits-on.stack.two { display: grid; grid-template-rows: 15px 15px; grid-auto-flow: column; grid-auto-columns: 96px; gap: 1px 4px; align-content: center; justify-content: start; }
+.waits-on.stack.two .wo-chip { width: max-content; max-width: 94px; }
+.waits-on.stack.two .wo-more { align-self: center; }
+.k-lab.stack { grid-auto-columns: 88px; gap: 0 8px; }
+.k-lab.stack .c-ltext { display: block; }
+.k-lab .wo-more { font-size: 11px; }
+.lab-card { width: 240px; }
+.lab-card .c-ltext { display: block; padding: 2px 4px; font-size: 12.5px; }
+.wo-repo { min-width: 0; flex: 0 1 auto; }
+.wo-num { flex: none; }

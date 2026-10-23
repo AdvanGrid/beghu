@@ -13,6 +13,6 @@ export type IssueDetail = { body: string, meta: RepoMeta, rels: Rels,
  */
 comments: Array<Comment>, hidden: number, me: string, id: number, number: number, repo: string, title: string, kind: string, state: string, state_reason: string | null, draft: boolean, author: string | null, created_at: string, updated_at: string, comments_count: number, labels: Array<Label>, assignees: Array<string>, milestone: string | null, parent: ParentRef | null, subs: number, subs_done: number, blocked_by: number, blocking: number, relates: number, 
 /**
- * Up to three open blockers, for rows that say what they wait on (#55).
+ * Up to eight open blockers, for rows that say what they wait on (#55).
  */
 blockers: Array<BlockerRef>, };

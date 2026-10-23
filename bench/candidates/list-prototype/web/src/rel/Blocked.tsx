@@ -78,47 +78,87 @@ function Card(props: { r: IssueRow; at: DOMRect; keep: () => void; hide: () => v
   );
 }
 
-/** The chips for a blocked row, stacked one above the other so the column is one chip wide: at most
- * two, and the second carries "+n" when there are more. */
-export function WaitsOn(props: { r: IssueRow; word?: boolean }) {
-  const open = useOpen();
+/** Hover with a delay, kept open while the pointer is on the card. */
+export function useHoverCard() {
   const [at, setAt] = createSignal<DOMRect>();
   let t: ReturnType<typeof setTimeout> | undefined;
-  let el!: HTMLSpanElement;
   const keep = () => clearTimeout(t);
   const hide = () => (clearTimeout(t), (t = setTimeout(() => setAt(undefined), 150)));
-  const ref = (b: BlockerRef) => `${b.repo === props.r.repo ? '' : b.repo}#${b.number}`;
-  const shown = () => props.r.blockers.slice(0, 2);
+  const enter = (el: HTMLElement) => (clearTimeout(t), (t = setTimeout(() => setAt(el.getBoundingClientRect()), 300)));
+  return { at, keep, hide, enter };
+}
+
+/** The chips for a blocked row, in stacked columns of two. `cap` is how many slots the column has
+ * at the list's current width; with more blockers than that, the last slot says "+n". */
+export function WaitsOn(props: { r: IssueRow; cap: number }) {
+  const open = useOpen();
+  const h = useHoverCard();
+  let el!: HTMLSpanElement;
+  const over = () => props.r.blocked_by > props.cap;
+  const shown = () => props.r.blockers.slice(0, over() ? props.cap - 1 : props.cap);
+  const slots = () => shown().length + (over() ? 1 : 0);
   return (
     <Show when={isBlocked(props.r) && props.r.blockers.length}>
       <span
         ref={el}
-        class={`waits-on stack ${shown().length > 1 ? 'two' : ''}`}
-        onPointerEnter={() => (clearTimeout(t), (t = setTimeout(() => setAt(el.getBoundingClientRect()), 300)))}
-        onPointerLeave={hide}
+        class={`waits-on stack ${slots() > 1 ? 'two' : ''}`}
+        onPointerEnter={() => h.enter(el)}
+        onPointerLeave={h.hide}
       >
-        <Show when={props.word}>
-          <span class="wo-k">waits on</span>
-        </Show>
         <For each={shown()}>
-          {(b, i) => (
+          {(b) => (
             <span class={`wo-chip s-${status(b)}`} onClick={(e) => open(e, b)}>
               <Show when={b.assignee} fallback={<span class="wo-noone" />}>
-                <Avatar login={b.assignee!} size={shown().length > 1 ? 11 : 14} />
+                <Avatar login={b.assignee!} size={slots() > 1 ? 11 : 14} />
               </Show>
-              <span class="mono ellip">{ref(b)}</span>
-              <Show when={i() === 1 && props.r.blocked_by > 2}>
-                <span class="wo-more">+{props.r.blocked_by - 2}</span>
+              <Show when={b.repo !== props.r.repo}>
+                <span class="mono ellip wo-repo">{b.repo}</span>
               </Show>
+              <span class="mono wo-num">#{b.number}</span>
             </span>
           )}
         </For>
-        <Show when={at()}>
+        <Show when={over()}>
+          <span class="wo-more">+{props.r.blocked_by - shown().length}</span>
+        </Show>
+        <Show when={h.at()}>
           <Portal>
-            <Card r={props.r} at={at()!} keep={keep} hide={hide} />
+            <Card r={props.r} at={h.at()!} keep={h.keep} hide={h.hide} />
           </Portal>
         </Show>
       </span>
     </Show>
+  );
+}
+
+/** A row's labels in stacked columns of two, `cap` slots; past that the last slot says "+n" and
+ * hovering lists them all. */
+export function LabelCell(props: { r: IssueRow; cap: number }) {
+  const h = useHoverCard();
+  let el!: HTMLSpanElement;
+  const n = () => props.r.labels.length;
+  const over = () => n() > props.cap;
+  const shown = () => props.r.labels.slice(0, over() ? props.cap - 1 : props.cap);
+  const slots = () => shown().length + (over() ? 1 : 0);
+  return (
+    <span ref={el} class={`k-lab c-labels ${slots() > 1 ? 'stack' : ''}`} onPointerEnter={() => over() && h.enter(el)} onPointerLeave={h.hide}>
+      <For each={shown()}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext ellip">{l.name}</span>}</For>
+      <Show when={over()}>
+        <span class="wo-more">+{n() - shown().length}</span>
+      </Show>
+      <Show when={h.at()}>
+        <Portal>
+          <div
+            class="wo-card lab-card"
+            style={{ left: `${Math.max(8, Math.min(h.at()!.left, innerWidth - 260))}px`, top: `${h.at()!.bottom + 4}px` }}
+            onPointerEnter={h.keep}
+            onPointerLeave={h.hide}
+          >
+            <div class="rel-h">{n()} labels</div>
+            <For each={props.r.labels}>{(l) => <div style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</div>}</For>
+          </div>
+        </Portal>
+      </Show>
+    </span>
   );
 }

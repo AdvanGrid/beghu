@@ -13,7 +13,7 @@ import { Avatars, RelHints, StateIcon, describeEmpty, href } from '../bits';
 import { ago, sameView, toggle, EMPTY, MULTI, type Multi, type View } from '../view';
 import { useNewIssue } from '../detail/layouts';
 import { useSearchParams } from '@solidjs/router';
-import { WaitsOn, isBlocked } from '../rel/Blocked';
+import { LabelCell, WaitsOn, isBlocked } from '../rel/Blocked';
 
 type Suggestion = { label: string; hint?: string; color?: string | null; count?: number; apply: () => void };
 
@@ -51,6 +51,35 @@ export function VariantC(props: { ctx: Ctx }) {
     })(),
   );
   let mainEl!: HTMLElement;
+  // #55: how many stacked columns (two slots each) the labels and blockers get, from the list's
+  // width. Wider list, more of each before "+n".
+  const [listW, setListW] = createSignal(800);
+  onSettled(() => {
+    const measure = () => {
+      const l = mainEl.querySelector('.list') as HTMLElement | null;
+      if (l) setListW(l.clientWidth);
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(mainEl);
+    const mo = new MutationObserver(() => {
+      const l = mainEl.querySelector('.list');
+      if (l) ro.observe(l);
+      measure();
+    });
+    mo.observe(mainEl, { childList: true });
+    const l = mainEl.querySelector('.list');
+    if (l) ro.observe(l);
+    measure();
+    return () => (ro.disconnect(), mo.disconnect());
+  });
+  const LAB_COL = 96;
+  const CHIP_COL = 100;
+  const dens = createMemo(() => {
+    const w = listW();
+    const lc = w >= 1500 ? 3 : w >= 900 ? 2 : 1;
+    const bc = w >= 1800 ? 3 : w >= 1200 ? 2 : 1;
+    return { lc, bc };
+  });
   const startResize = (e: PointerEvent) => {
     e.preventDefault();
     const h = e.currentTarget as HTMLElement;
@@ -206,11 +235,9 @@ export function VariantC(props: { ctx: Ctx }) {
                   <StateIcon r={r} />
                   <span class="c-title">{r.title}</span>
                 </span>
-                <span class={`k-lab c-labels ${r.labels.length > 1 ? 'stack' : ''}`}>
-                  <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
-                </span>
+                <LabelCell r={r as IssueRow} cap={dens().lc * 2} />
                 <span class="k-wait">
-                  <WaitsOn r={r as IssueRow} />
+                  <WaitsOn r={r as IssueRow} cap={dens().bc * 2} />
                 </span>
                 <span class="k-hint">
                   <RelHints r={r} noBlocked />
@@ -328,7 +355,11 @@ export function VariantC(props: { ctx: Ctx }) {
       <main
         ref={mainEl}
         class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}
-        style={detailW() ? { '--detail-w': `${detailW()}px` } : {}}
+        style={{
+          ...(detailW() ? { '--detail-w': `${detailW()}px` } : {}),
+          '--lab-w': `${dens().lc * LAB_COL}px`,
+          '--wait-w': `${dens().bc * CHIP_COL}px`,
+        }}
       >
         <Loading fallback={<div class="list" />}>
           <Show when={c.tree()} fallback={

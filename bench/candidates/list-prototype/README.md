@@ -7,6 +7,11 @@ side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
 
+**Round 4.** Labels and blockers fill stacked columns of two, and the number of columns follows
+the list's width (labels: 1 column under 900px, 2 from 900, 3 from 1500; blockers: 1, 2 from 1200,
+3 from 1800). When there are more than the slots, the last slot says "+n" and hovering lists them
+all. Rows carry up to 8 open blockers. A cross-repo chip truncates the repo, never the number.
+
 **Round 3c.** The divider between the list and the detail drags to resize (360px minimum each side),
 is remembered per browser, and resets on double-click. Hidden on narrow screens, where the detail
 sits under the list.
