@@ -372,3 +372,13 @@ label.prop select { border: 0; padding: 0; }
 .toast { display: flex; gap: 8px; align-items: center; background: var(--pop); border: 1px solid var(--err); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow); max-width: 420px; }
 .toast button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 1px 8px; }
 .toast .toast-x { border: 0; color: var(--muted); }
+
+/* A on a narrow screen: the open issue goes under the list instead of beside it. With nothing
+   open, the list takes the whole height. */
+@media (max-width: 900px) {
+  .c-main.layout-A { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); }
+  .c-main.layout-A:not(.has-detail) { grid-template-rows: minmax(0, 1fr); }
+  .c-main.layout-A:not(.has-detail) .detail-A { display: none; }
+  .detail-A { border-left: 0; border-top: 1px solid var(--line); box-shadow: 0 -6px 16px rgb(0 0 0 / 0.08); }
+  .switcher .sw-label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
