@@ -169,7 +169,7 @@ export function VariantC(props: { ctx: Ctx }) {
                   <StateIcon r={r} />
                   <span class="c-title">{r.title}</span>
                 </span>
-                <span class="k-lab c-labels">
+                <span class={`k-lab c-labels ${r.labels.length > 1 ? 'stack' : ''}`}>
                   <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
                 </span>
                 <span class="k-wait">

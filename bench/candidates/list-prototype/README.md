@@ -7,6 +7,11 @@ side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
 
+**Round 3b.** The owner picked A. Blockers are rarely more than one but labels are often several,
+so both now **stack** in two 15px lines inside the 34px row: blocker chips one above the other
+(the second carries "+n"), and labels filling column by column. A single blocker or label stays one
+normal-size line. That lets the blocker column shrink to one chip (112px) and labels take 220px.
+
 **Round 3.** The owner picked chips (round 2's C) and asked for strict columns, since the blocker
 chips, number, assignees and labels shifted from row to row. Every row is now one CSS grid with
 fixed cells, so each sits at the same x on every row, in the list and the tree. Below 1000px of

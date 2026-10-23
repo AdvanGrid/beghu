@@ -78,7 +78,8 @@ function Card(props: { r: IssueRow; at: DOMRect; keep: () => void; hide: () => v
   );
 }
 
-/** The chips for a blocked row: at most two, then "+n", so the column never overflows. */
+/** The chips for a blocked row, stacked one above the other so the column is one chip wide: at most
+ * two, and the second carries "+n" when there are more. */
 export function WaitsOn(props: { r: IssueRow; word?: boolean }) {
   const open = useOpen();
   const [at, setAt] = createSignal<DOMRect>();
@@ -92,7 +93,7 @@ export function WaitsOn(props: { r: IssueRow; word?: boolean }) {
     <Show when={isBlocked(props.r) && props.r.blockers.length}>
       <span
         ref={el}
-        class="waits-on"
+        class={`waits-on stack ${shown().length > 1 ? 'two' : ''}`}
         onPointerEnter={() => (clearTimeout(t), (t = setTimeout(() => setAt(el.getBoundingClientRect()), 300)))}
         onPointerLeave={hide}
       >
@@ -100,18 +101,18 @@ export function WaitsOn(props: { r: IssueRow; word?: boolean }) {
           <span class="wo-k">waits on</span>
         </Show>
         <For each={shown()}>
-          {(b) => (
+          {(b, i) => (
             <span class={`wo-chip s-${status(b)}`} onClick={(e) => open(e, b)}>
               <Show when={b.assignee} fallback={<span class="wo-noone" />}>
-                <Avatar login={b.assignee!} size={14} />
+                <Avatar login={b.assignee!} size={shown().length > 1 ? 11 : 14} />
               </Show>
               <span class="mono ellip">{ref(b)}</span>
+              <Show when={i() === 1 && props.r.blocked_by > 2}>
+                <span class="wo-more">+{props.r.blocked_by - 2}</span>
+              </Show>
             </span>
           )}
         </For>
-        <Show when={props.r.blocked_by > shown().length}>
-          <span class="wo-more">+{props.r.blocked_by - shown().length}</span>
-        </Show>
         <Show when={at()}>
           <Portal>
             <Card r={props.r} at={at()!} keep={keep} hide={hide} />

@@ -578,12 +578,13 @@ button.tiny:disabled { opacity: 0.3; }
 .wo-chip { min-width: 0; flex: 0 1 auto; }
 .wo-chip .ellip { min-width: 0; }
 
-/* A: the title leads; every other cell sits in a fixed column on the right, number before owner. */
-.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 150px 196px 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
+/* A: the title leads; every other cell sits in a fixed column on the right, number before owner.
+   Blockers stack, so their column is one chip wide and labels get the room. */
+.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 220px 112px 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
 .cols-A .k-ref { text-align: right; }
 @container (max-width: 1000px) {
   .c-row.cols { gap: 0 8px; }
-  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 96px 156px 40px 96px 40px 30px; }
+  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 150px 96px 40px 96px 40px 30px; }
 }
 
 /* B: the number leads, like an ID column; the rest as A. */
@@ -599,3 +600,15 @@ button.tiny:disabled { opacity: 0.3; }
 @container (max-width: 1000px) {
   .cols-C .c-row.cols { grid-template-columns: 92px 40px minmax(0, 1fr) 40px 156px 90px 30px; }
 }
+
+/* Stacked blocker chips: one per line, two lines fit the 34px row. */
+.waits-on.stack { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; width: 100%; }
+.waits-on.stack .wo-chip { max-width: 100%; }
+.waits-on.stack.two .wo-chip { height: 15px; font-size: 10.5px; gap: 2px; padding: 0 5px 0 1px; }
+.waits-on.stack.two .wo-noone { width: 11px; height: 11px; }
+.waits-on.stack .wo-more { font-size: 10.5px; margin-left: 2px; }
+
+/* Stacked labels: two lines, filled column by column, so several labels fit without a taller row.
+   One label stays on a single line at the normal size. */
+.k-lab.stack { display: grid; grid-template-rows: 15px 15px; grid-auto-flow: column; grid-auto-columns: max-content; gap: 0 10px; align-content: center; line-height: 15px; }
+.k-lab.stack .c-ltext { font-size: 11px; }
