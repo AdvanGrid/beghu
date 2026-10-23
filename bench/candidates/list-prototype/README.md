@@ -1,3 +1,39 @@
+# PROTOTYPE: relationships (sub-issues, dependencies, relates-to)
+
+Throwaway, for [Prototype the relationship tree](https://github.com/tomsjansons/beghu/issues/55), on
+top of the list (#52, variant C) and detail (#54, side panel) prototypes. `?variant=` and the
+floating bar (← / →) now switch **where relationships are shown and edited**; the detail is always
+the side panel.
+
+    ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
+
+- **A: Panel.** The list and tree are read-only. Blocked rows carry the red "blocked" chip.
+  In the detail, one **+ Link issue** picker covers every kind (Sub-issue, Parent, Blocked by,
+  Blocking, Relates to), with results grouped by repo, this repo first. Sub-issues have a grip
+  to drag them into a new order, and a ⋯ menu with Move to top/up/down/bottom, Move to another
+  parent… and Remove.
+- **B: Outliner.** The **tree** is where you edit. Grab a row's grip and drop it on the top or bottom
+  edge of another row to put it beside that row, or on the middle to nest it. On a focused row,
+  Alt+↑/↓ moves it, Tab nests it under the row above, and Shift+Tab lifts it out. "+ sub-issue" on
+  hover links an issue or creates one. Blocked rows swap their state icon for a red ⊖, which adds
+  no width; hover it to see the blockers. In the detail, #54's lists stay as they are, plus a
+  "Reorder and nest in the tree →" link.
+- **C: Dependency lens.** Blocked rows get a red edge and say "waits on api#12 +1"; click it to
+  open that blocker. The detail has a map: Waits on → this issue → Holds up, where each node shows
+  whether it is itself blocked (⊘ n). A node opens in the panel, so you can walk a chain. Relates-to
+  shows as chips. Sub-issues reorder with Alt+↑/↓ on a focused row or ↑ ↓ on hover, with no drag.
+
+Shared by all three: every edit is a pending write (blinks until GitHub answers) and reverts with
+a toast if refused (use the bar's `writes` knob). Reorders are one `sub_move` op on the parent
+(GitHub's reprioritize: `after_id`, or first). A move to another parent is GitHub's add with
+`replace_parent`, plus a reorder when it doesn't land last. The server refuses a loop, more than
+8 levels, or a 101st child with 422. Pasting `https://github.com/acme/partner-sdk/issues/N` (or
+`partner-sdk#N`) links a **stub**; the real server would read its title from GitHub once.
+Cross-repo sub-issues already show in the tree (812 in the fixture). Moves that arrive by live
+push would follow #53's held changes; the prototype doesn't redo them.
+
+---
+
 # PROTOTYPE: issue detail (on top of the issue list)
 
 Throwaway, for [Prototype the issue detail](https://github.com/tomsjansons/beghu/issues/54). The

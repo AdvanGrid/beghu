@@ -22,11 +22,8 @@ export function IssueRoute(props: RouteProps<'/issues/:id'>) {
     return () => window.removeEventListener('issues-changed', onChange);
   });
 
-  const Layout = () => {
-    const L = DETAILS[(search.variant as keyof typeof DETAILS) ?? 'A'] ?? DETAILS.A;
-    return <L m={m} />;
-  };
-  return <Layout />;
+  // #55: the detail is always the side panel; ?variant= picks the relationship design inside it.
+  return <DETAILS.A m={m} />;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -39,7 +36,7 @@ export function NewIssue() {
   const loc = useLocation();
   const nav = useNavigate();
   const [repos] = createSignal<RepoMeta[]>(() => getRepos());
-  const variant = () => (search.variant as string) ?? 'A';
+  const variant = () => 'A' as string; // #55: the form always takes the side panel's shape
   const parent = () => (search.parent ? Number(search.parent) : undefined);
 
   // Default repo: the view's repo filter, else the last one used.

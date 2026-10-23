@@ -73,13 +73,13 @@ export function Avatars(props: { logins: string[]; size?: number }) {
 }
 
 /** Sub-issue progress, open blockers, blocking and relates-to, as compact glyphs. */
-export function RelHints(props: { r: IssueRow; verbose?: boolean }) {
+export function RelHints(props: { r: IssueRow; verbose?: boolean; noBlocked?: boolean }) {
   const r = () => props.r;
   // In the tree, progress counts every descendant, not only direct children.
   const roll = () => ('total' in props.r ? { done: (props.r as any).done as number, total: (props.r as any).total as number } : { done: r().subs_done, total: r().subs });
   return (
     <span class="rel">
-      <Show when={r().blocked_by > 0}>
+      <Show when={r().blocked_by > 0 && !props.noBlocked}>
         <span class="rel-blocked" title={`Blocked by ${r().blocked_by} open issue${r().blocked_by > 1 ? 's' : ''}`}>
           <svg viewBox="0 0 16 16" width="12" height="12">
             <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" />

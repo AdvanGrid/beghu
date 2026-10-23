@@ -13,6 +13,7 @@ import { Avatars, RelHints, StateIcon, describeEmpty, href } from '../bits';
 import { ago, sameView, toggle, EMPTY, MULTI, type Multi, type View } from '../view';
 import { useNewIssue } from '../detail/layouts';
 import { useSearchParams } from '@solidjs/router';
+import { BlockedStateIcon, WaitsOn, isBlocked } from '../rel/Blocked';
 
 type Suggestion = { label: string; hint?: string; color?: string | null; count?: number; apply: () => void };
 
@@ -157,15 +158,23 @@ export function VariantC(props: { ctx: Ctx }) {
   const showPop = () => focused() && suggestions().length > 0;
 
   const row = (r: IssueRow | TreeNode, lead?: Element) => (
-              <a class="c-row" href={href(r, c.search())} noscroll aria-current={c.openId() === r.id ? 'page' : undefined}>
+              <a
+                class={`c-row ${c.rel() === 'C' && isBlocked(r) ? 'edge-blocked' : ''}`}
+                href={href(r, c.search())}
+                noscroll
+                aria-current={c.openId() === r.id ? 'page' : undefined}
+              >
 {lead}
-                <StateIcon r={r} />
+                {c.rel() === 'B' ? <BlockedStateIcon r={r} /> : <StateIcon r={r} />}
                 <span class="c-title">{r.title}</span>
                 <span class="c-labels">
                   <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
                 </span>
                 <span class="c-spacer" />
-                <RelHints r={r} />
+                <Show when={c.rel() === 'C'}>
+                  <WaitsOn r={r} />
+                </Show>
+                <RelHints r={r} noBlocked={c.rel() !== 'A'} />
                 <span class="muted mono c-ref">
                   {r.repo}#{r.number}
                 </span>
@@ -291,16 +300,13 @@ export function VariantC(props: { ctx: Ctx }) {
         </Loading>
         {/* A: always beside the list. B: over the list, which keeps its scroll underneath. C: a drawer
             over the list's right side; ?full=1 widens it. */}
-        <Show when={c.layout() === 'A' || c.openId() || (c.creating() && c.layout() === 'B')}>
+        {/* #55: always the side panel. */}
+        <Show when={true}>
           <aside class={`detail detail-${c.layout()} ${sp.full ? 'full' : ''}`}>
             <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
               <Loading>{c.detail}</Loading>
             </Errored>
           </aside>
-        </Show>
-        {/* C's new-issue form is a modal, outside the drawer. */}
-        <Show when={c.creating() && c.layout() === 'C'}>
-          <Loading>{c.detail}</Loading>
         </Show>
       </main>
     </div>

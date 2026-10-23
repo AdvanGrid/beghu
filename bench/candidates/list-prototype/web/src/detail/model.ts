@@ -44,6 +44,8 @@ export function opKey(op: Op): string {
     case 'rel_add':
     case 'rel_remove':
       return `rel:${op.kind}:${op.other}`;
+    case 'sub_move':
+      return `move:${op.child}`;
     default:
       return op.op;
   }
@@ -73,6 +75,8 @@ const describe = (op: Op): string => {
       return `link ${op.kind.replace('_', ' ')}`;
     case 'rel_remove':
       return `unlink ${op.kind.replace('_', ' ')}`;
+    case 'sub_move':
+      return 'move the sub-issue';
   }
 };
 
@@ -124,6 +128,15 @@ function apply(server: Detail, list: Pending[]): Detail & { pendingComments: (Co
         if (!p.item || relList(d, kind).some((x) => x.id === op.other)) break;
         if (kind === 'parent') d.rels.parent = p.item;
         else relList(d, kind).push(p.item);
+        break;
+      }
+      case 'sub_move': {
+        const list = d.rels.children;
+        const from = list.findIndex((x) => x.id === op.child);
+        if (from < 0) break;
+        const [it] = list.splice(from, 1);
+        const at = op.after === null ? 0 : list.findIndex((x) => x.id === op.after) + 1;
+        list.splice(at, 0, it);
         break;
       }
       case 'rel_remove': {
@@ -189,6 +202,8 @@ export function issueModel(server: () => Detail, setServer: (d: Detail) => void)
     me: () => server().me,
     /** The server's own copy, for the body edit's conflict base. */
     server,
+    /** Any op still on its way, so a list can mark what's moving. */
+    sending: () => mine().filter((p) => p.status === 'sending'),
     pending: (key: string) => mine().some((p) => p.status === 'sending' && opKey(p.op) === key),
     send,
     retryComment: (op_id: string) => {

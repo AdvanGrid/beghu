@@ -1,4 +1,7 @@
 // PROTOTYPE for "Prototype the issue list and filter bar" (beghu #52). Throwaway.
+// Extended for "Prototype the relationship tree" (beghu #55): sub-issue moves (GitHub's
+// reprioritize: after another child, or first), loop and depth checks, linking a stub by URL, the
+// first open blocker on each row, and a light /api/issues/{id}/rels.
 // The axum-solid2-router server, with richer rows (author, milestone, relationship hints), more
 // filter dimensions (repo, milestone, author, no:, is:blocked, kind, sort) and facets with counts
 // for the current view.
@@ -124,6 +127,10 @@ pub struct IssueRow {
     pub blocking: i64,
     #[ts(type = "number")]
     pub relates: i64,
+    /// The first open blocker as `repo#number`, for rows that say what they wait on.
+    pub first_blocker: Option<String>,
+    #[ts(type = "number | null")]
+    pub first_blocker_id: Option<i64>,
 }
 
 #[derive(Serialize, TS)]
@@ -155,6 +162,9 @@ pub struct RelItem {
     #[ts(type = "number")]
     pub subs_done: i64,
     pub assignees: Vec<String>,
+    /// Its own open blockers, so a chain shows (#55).
+    #[ts(type = "number")]
+    pub open_blockers: i64,
 }
 
 #[derive(Serialize, TS)]
@@ -219,6 +229,14 @@ pub enum Op {
         kind: String,
         #[ts(type = "number")]
         other: i64,
+    },
+    /// On the parent: put `child` right after `after`, or first when null. GitHub's
+    /// reprioritize takes `after_id` or `before_id`; one is enough.
+    SubMove {
+        #[ts(type = "number")]
+        child: i64,
+        #[ts(type = "number | null")]
+        after: Option<i64>,
     },
 }
 
@@ -376,7 +394,11 @@ const ROW: &str = "SELECT i.id, i.number, r.name, i.title, i.state, i.updated_at
   (SELECT count(*) FROM relationships x JOIN items c ON c.id = x.dst_id WHERE x.kind = 'sub' AND x.src_id = i.id AND c.state = 'closed'),
   (SELECT count(*) FROM relationships x JOIN items b ON b.id = x.src_id WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open'),
   (SELECT count(*) FROM relationships x WHERE x.kind = 'blocks' AND x.src_id = i.id),
-  (SELECT count(*) FROM relationships x WHERE x.kind = 'relates' AND (x.src_id = i.id OR x.dst_id = i.id))
+  (SELECT count(*) FROM relationships x WHERE x.kind = 'relates' AND (x.src_id = i.id OR x.dst_id = i.id)),
+  (SELECT br.name || '#' || b.number FROM relationships x JOIN items b ON b.id = x.src_id JOIN repos br ON br.id = b.repo_id
+     WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open' ORDER BY b.is_stub, b.number LIMIT 1),
+  (SELECT b.id FROM relationships x JOIN items b ON b.id = x.src_id
+     WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open' ORDER BY b.is_stub, b.number LIMIT 1)
   FROM items i JOIN repos r ON r.id = i.repo_id";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<IssueRow> {
@@ -405,6 +427,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<IssueRow> {
         blocked_by: r.get(18)?,
         blocking: r.get(19)?,
         relates: r.get(20)?,
+        first_blocker: r.get(21)?,
+        first_blocker_id: r.get(22)?,
     })
 }
 
@@ -701,7 +725,8 @@ const COMMENT_BUDGET: usize = 12_000;
 const REL: &str = "SELECT i.id, r.name, i.number, i.title, i.state, i.state_reason, i.is_stub, r.owner,
   (SELECT count(*) FROM relationships x WHERE x.kind = 'sub' AND x.src_id = i.id),
   (SELECT count(*) FROM relationships x JOIN items c ON c.id = x.dst_id WHERE x.kind = 'sub' AND x.src_id = i.id AND c.state = 'closed'),
-  (SELECT json_group_array(u.login) FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = i.id)
+  (SELECT json_group_array(u.login) FROM item_assignees ia JOIN users u ON u.id = ia.user_id WHERE ia.item_id = i.id),
+  (SELECT count(*) FROM relationships x JOIN items b ON b.id = x.src_id WHERE x.kind = 'blocks' AND x.dst_id = i.id AND b.state = 'open')
   FROM items i JOIN repos r ON r.id = i.repo_id";
 
 fn rel_item(r: &rusqlite::Row) -> rusqlite::Result<RelItem> {
@@ -721,6 +746,7 @@ fn rel_item(r: &rusqlite::Row) -> rusqlite::Result<RelItem> {
         subs: r.get(8)?,
         subs_done: r.get(9)?,
         assignees: serde_json::from_str(&assignees).unwrap_or_default(),
+        open_blockers: r.get(11)?,
     })
 }
 
@@ -819,18 +845,41 @@ async fn repos(State(s): State<AppState>) -> Result<Json<Vec<RepoMeta>>, AppErro
 async fn lookup(State(s): State<AppState>, Query(l): Query<Lookup>) -> Result<Json<Vec<RelItem>>, AppError> {
     with_db(&s.pool, move |c| {
         let q = l.q.unwrap_or_default();
-        let q = q.trim().to_owned();
+        let mut q = q.trim().to_owned();
+        // A GitHub URL becomes `repo#n`. In a repo beghu doesn't sync, the real server would read
+        // the issue's title from GitHub once and store a stub; the prototype makes one up.
+        if let Some(rest) = q.strip_prefix("https://github.com/") {
+            let parts: Vec<&str> = rest.split('/').collect();
+            if parts.len() >= 4 && parts[2] == "issues" {
+                q = format!("{}#{}", parts[1], parts[3]);
+            }
+        }
+        if let Some((repo, n)) = q.rsplit_once('#') {
+            if let (Ok(n), Some(repo_id)) = (
+                n.parse::<i64>(),
+                c.query_row("SELECT id FROM repos WHERE name = ? AND synced = 0", [repo.trim()], |r| r.get::<_, i64>(0)).optional()?,
+            ) {
+                let have: Option<i64> = c.query_row("SELECT id FROM items WHERE repo_id = ? AND number = ?", params![repo_id, n], |r| r.get(0)).optional()?;
+                if have.is_none() {
+                    c.execute(
+                        "INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, state, seq)
+                         VALUES ((SELECT max(id) + 1 FROM items), 'proto-stub', ?, ?, 'issue', 1, ?, 'open', 0)",
+                        params![repo_id, n, format!("Partner SDK issue {n} (title read from GitHub)")],
+                    )?;
+                }
+            }
+        }
         let (repo, num) = match q.rsplit_once('#') {
             Some((r, n)) => (r.trim().to_owned(), n.to_owned()),
             None => (String::new(), q.clone()),
         };
         let items = if let Ok(n) = num.parse::<i64>() {
-            c.prepare_cached(&format!("{REL} WHERE i.number = ?1 AND (?2 = '' OR r.name = ?2) AND i.kind = 'issue' ORDER BY r.name LIMIT 10"))?
+            c.prepare_cached(&format!("{REL} WHERE i.number = ?1 AND (?2 = '' OR r.name = ?2) AND i.kind = 'issue' ORDER BY r.name LIMIT 20"))?
                 .query_map(params![n, repo], rel_item)?
                 .collect::<Result<_, _>>()?
         } else {
             c.prepare_cached(&format!(
-                "{REL} WHERE instr(lower(i.title), lower(?1)) > 0 AND i.kind = 'issue' ORDER BY i.state DESC, i.updated_at DESC LIMIT 10"
+                "{REL} WHERE instr(lower(i.title), lower(?1)) > 0 AND i.kind = 'issue' ORDER BY i.state DESC, i.updated_at DESC LIMIT 20"
             ))?
             .query_map([q], rel_item)?
             .collect::<Result<_, _>>()?
@@ -864,6 +913,41 @@ fn rel_edge(kind: &str, id: i64, other: i64) -> Result<(&'static str, i64, i64),
         "relates" => ("relates", id.min(other), id.max(other)),
         _ => return Err(AppError::Unprocessable("unknown relationship")),
     })
+}
+
+/// GitHub refuses a sub-issue that would make a loop, more than 8 levels, or a 101st child.
+fn sub_checks(c: &rusqlite::Connection, parent: i64, child: i64) -> Result<(), AppError> {
+    let loops: bool = c.query_row(
+        "WITH RECURSIVE up(id) AS (SELECT ?1 UNION SELECT x.src_id FROM up JOIN relationships x ON x.kind = 'sub' AND x.dst_id = up.id)
+         SELECT EXISTS (SELECT 1 FROM up WHERE id = ?2)",
+        params![parent, child],
+        |r| r.get(0),
+    )?;
+    if loops {
+        return Err(AppError::Unprocessable("That would put an issue inside its own sub-issues"));
+    }
+    let above: i64 = c.query_row(
+        "WITH RECURSIVE up(id, d) AS (SELECT ?1, 1 UNION SELECT x.src_id, d + 1 FROM up JOIN relationships x ON x.kind = 'sub' AND x.dst_id = up.id) SELECT max(d) FROM up",
+        [parent],
+        |r| r.get(0),
+    )?;
+    let below: i64 = c.query_row(
+        "WITH RECURSIVE dn(id, d) AS (SELECT ?1, 1 UNION SELECT x.dst_id, d + 1 FROM dn JOIN relationships x ON x.kind = 'sub' AND x.src_id = dn.id) SELECT max(d) FROM dn",
+        [child],
+        |r| r.get(0),
+    )?;
+    if above + below > 8 {
+        return Err(AppError::Unprocessable("GitHub allows 8 levels of sub-issues"));
+    }
+    let n: i64 = c.query_row("SELECT count(*) FROM relationships WHERE kind = 'sub' AND src_id = ? AND dst_id <> ?", params![parent, child], |r| r.get(0))?;
+    if n >= 100 {
+        return Err(AppError::Unprocessable("GitHub allows 100 sub-issues per issue"));
+    }
+    Ok(())
+}
+
+async fn issue_rels(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<Rels>, AppError> {
+    with_db(&s.pool, move |c| Ok(Json(rels(c, id)?))).await
 }
 
 async fn apply_op(State(s): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, Json(req): Json<OpReq>) -> Result<Response, AppError> {
@@ -948,7 +1032,14 @@ async fn apply_op(State(s): State<AppState>, Path(id): Path<i64>, headers: Heade
                 let (k, src, dst) = rel_edge(&kind, id, other)?;
                 // A sub-issue has one parent: adding moves it.
                 if k == "sub" {
+                    sub_checks(&tx, src, dst)?;
+                    if let Some(old) = tx.query_row("SELECT src_id FROM relationships WHERE kind = 'sub' AND dst_id = ?", [dst], |r| r.get::<_, i64>(0)).optional()? {
+                        ids.push(old);
+                    }
                     tx.execute("DELETE FROM relationships WHERE kind = 'sub' AND dst_id = ?", [dst])?;
+                }
+                if src == dst {
+                    return Err(AppError::Unprocessable("An issue can't link to itself"));
                 }
                 tx.execute(
                     "INSERT OR IGNORE INTO relationships VALUES (?1, ?2, ?3, (SELECT coalesce(max(position), 0) + 1 FROM relationships WHERE kind = ?1 AND src_id = ?2), 0)",
@@ -960,6 +1051,30 @@ async fn apply_op(State(s): State<AppState>, Path(id): Path<i64>, headers: Heade
                 let (k, src, dst) = rel_edge(&kind, id, other)?;
                 tx.execute("DELETE FROM relationships WHERE kind = ? AND src_id = ? AND dst_id = ?", params![k, src, dst])?;
                 ids.push(other);
+            }
+            Op::SubMove { child, after } => {
+                let pos = |c: i64| -> Result<f64, AppError> {
+                    tx.query_row("SELECT position FROM relationships WHERE kind = 'sub' AND src_id = ? AND dst_id = ?", params![id, c], |r| r.get(0))
+                        .optional()?
+                        .ok_or(AppError::Unprocessable("Not a sub-issue of this issue"))
+                };
+                pos(child)?;
+                let lo = match after {
+                    Some(a) => pos(a)?,
+                    None => tx.query_row("SELECT coalesce(min(position), 1) - 1 FROM relationships WHERE kind = 'sub' AND src_id = ?", [id], |r| r.get(0))?,
+                };
+                let hi: Option<f64> = tx.query_row(
+                    "SELECT min(position) FROM relationships WHERE kind = 'sub' AND src_id = ? AND position > ? AND dst_id <> ?",
+                    params![id, lo, child],
+                    |r| r.get(0),
+                )?;
+                let p = match (after, hi) {
+                    (None, _) => lo,
+                    (Some(_), Some(h)) => (lo + h) / 2.0,
+                    (Some(_), None) => lo + 1.0,
+                };
+                tx.execute("UPDATE relationships SET position = ? WHERE kind = 'sub' AND src_id = ? AND dst_id = ?", params![p, id, child])?;
+                ids.push(child);
             }
         }
         tx.execute("UPDATE items SET updated_at = ? WHERE id = ?", params![now(), id])?;
@@ -1271,6 +1386,7 @@ async fn main() {
         .route("/api/issues/{id}/comments", get(issue_comments))
         .route("/api/repos", get(repos))
         .route("/api/lookup", get(lookup))
+        .route("/api/issues/{id}/rels", get(issue_rels))
         .route("/webhook", post(webhook))
         .route("/events", get(sse))
         // Client-side routes (/issues/:id) get the SPA shell.

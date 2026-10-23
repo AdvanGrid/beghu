@@ -38,7 +38,7 @@ export function StateBadge(props: { state: string; reason?: string | null; pendi
   );
 }
 
-const ExternalIcon = () => (
+export const ExternalIcon = () => (
   <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
     <path d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9" fill="none" stroke="currentColor" stroke-width="1.4" />
   </svg>
@@ -525,45 +525,71 @@ export function RelRow(props: { item: RelItem; pending?: boolean; onRemove?: () 
   );
 }
 
-/** Search box to link another issue: `repo#12`, `#12`, or words from the title. */
-export function LinkSearch(props: { onPick: (item: RelItem) => void; exclude: number[]; placeholder?: string; close?: () => void }) {
+/** Search box to link another issue: `repo#12`, `#12`, words from the title, or a GitHub link.
+ * #55: results are grouped by repo, this issue's repo first; a link into a repo beghu doesn't sync
+ * links a stub. */
+export function LinkSearch(props: { onPick: (item: RelItem) => void; exclude: number[]; placeholder?: string; close?: () => void; repo?: string }) {
   const [items, setItems] = createSignal<RelItem[]>([]);
   const [hi, setHi] = createSignal(0);
+  const [q, setQ] = createSignal('');
   let t: ReturnType<typeof setTimeout> | undefined;
   let seq = 0;
   const pick = (it: RelItem) => (props.onPick(it), props.close?.());
+  // Grouped, then flattened, so the arrow keys walk the groups in order.
+  const groups = createMemo(() => {
+    const by = new Map<string, RelItem[]>();
+    for (const it of items()) by.set(it.repo, [...(by.get(it.repo) ?? []), it]);
+    return [...by.entries()].sort(([a], [b]) => (a === props.repo ? -1 : b === props.repo ? 1 : 0));
+  });
+  const flat = createMemo(() => groups().flatMap(([, list]) => list));
   return (
     <div class="choices link-search">
       <input
-        placeholder={props.placeholder ?? 'repo#123 or words from the title'}
+        placeholder={props.placeholder ?? 'repo#123, words from the title, or a GitHub link'}
         ref={(el) => queueMicrotask(() => el.focus())}
         onInput={(e) => {
-          const q = e.currentTarget.value;
+          const v = e.currentTarget.value;
+          setQ(v);
           clearTimeout(t);
           t = setTimeout(async () => {
             const n = ++seq;
-            const r = q.trim() ? await lookup(q) : [];
+            const r = v.trim() ? await lookup(v) : [];
             if (n === seq) (setItems(r.filter((x) => !props.exclude.includes(x.id))), setHi(0));
           }, 120);
         }}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') (e.preventDefault(), setHi(Math.min(hi() + 1, items().length - 1)));
+          if (e.key === 'ArrowDown') (e.preventDefault(), setHi(Math.min(hi() + 1, flat().length - 1)));
           if (e.key === 'ArrowUp') (e.preventDefault(), setHi(Math.max(hi() - 1, 0)));
-          if (e.key === 'Enter' && items()[hi()]) pick(items()[hi()]);
+          if (e.key === 'Enter' && flat()[hi()]) pick(flat()[hi()]);
         }}
       />
       <div class="choice-items">
-        <For each={items()}>
-          {(it, i) => (
-            <button class={`choice ${i() === hi() ? 'hi' : ''}`} onPointerMove={() => setHi(i())} onClick={() => pick(it)}>
-              <IssueStateIcon state={it.state} reason={it.state_reason} size={14} />
-              <span class="ellip">{it.title}</span>
-              <span class="mono muted">
-                {it.repo}#{it.number}
-              </span>
-            </button>
+        <For each={groups()}>
+          {([repo, list]) => (
+            <>
+              <div class="choice-group">
+                {repo}
+                {list[0].stub ? ' · not synced' : repo === props.repo ? ' · this repo' : ''}
+              </div>
+              <For each={list}>
+                {(it) => (
+                  <button
+                    class={`choice ${flat()[hi()]?.id === it.id ? 'hi' : ''} ${it.stub ? 'stub' : ''}`}
+                    onPointerMove={() => setHi(flat().indexOf(it))}
+                    onClick={() => pick(it)}
+                  >
+                    <IssueStateIcon state={it.state} reason={it.state_reason} size={14} />
+                    <span class="ellip">{it.title}</span>
+                    <span class="mono muted">#{it.number}</span>
+                  </button>
+                )}
+              </For>
+            </>
           )}
         </For>
+        <Show when={q().trim() && !items().length}>
+          <p class="muted choice-hint">No synced issue matches. For a repo beghu doesn't sync, paste its GitHub link (try partner-sdk#12).</p>
+        </Show>
       </div>
     </div>
   );
@@ -596,7 +622,7 @@ export function AddRel(props: { m: IssueModel; kind: RelKind; label?: Element; a
     >
       {(close) => (
         <>
-          <LinkSearch close={close} exclude={exclude()} onPick={(item) => props.m.send({ op: 'rel_add', kind: props.kind, other: item.id }, { item })} />
+          <LinkSearch close={close} repo={props.m.d().repo} exclude={exclude()} onPick={(item) => props.m.send({ op: 'rel_add', kind: props.kind, other: item.id }, { item })} />
           <Show when={props.onNew}>
             <button class="choice new-sub" onClick={() => (close(), props.onNew!())}>
               + Create a new sub-issue

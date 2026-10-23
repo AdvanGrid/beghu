@@ -14,4 +14,8 @@ children: number,
 /**
  * Every descendant at any depth, and how many are closed, ignoring the view.
  */
-total: number, done: number, id: number, number: number, repo: string, title: string, kind: string, state: string, state_reason: string | null, draft: boolean, author: string | null, created_at: string, updated_at: string, comments_count: number, labels: Array<Label>, assignees: Array<string>, milestone: string | null, parent: ParentRef | null, subs: number, subs_done: number, blocked_by: number, blocking: number, relates: number, };
+total: number, done: number, id: number, number: number, repo: string, title: string, kind: string, state: string, state_reason: string | null, draft: boolean, author: string | null, created_at: string, updated_at: string, comments_count: number, labels: Array<Label>, assignees: Array<string>, milestone: string | null, parent: ParentRef | null, subs: number, subs_done: number, blocked_by: number, blocking: number, relates: number, 
+/**
+ * The first open blocker as `repo#number`, for rows that say what they wait on.
+ */
+first_blocker: string | null, first_blocker_id: number | null, };

@@ -28,7 +28,10 @@ export type Ctx = {
   openId: () => number | undefined;
   /** The new-issue form is open. */
   creating: () => boolean;
-  layout: () => 'A' | 'B' | 'C';
+  /** The detail is always #54's side panel. */
+  layout: () => 'A';
+  /** Which relationship design ?variant= picks. */
+  rel: () => RelVariant;
   detail: Element;
   /** List or tree (?tree=1). */
   tree: () => boolean;
@@ -40,10 +43,12 @@ export type Ctx = {
 };
 
 export const VARIANTS = [
-  { key: 'A', name: 'Side panel: list and detail side by side' },
-  { key: 'B', name: 'Full page: the detail replaces the list' },
-  { key: 'C', name: 'Drawer over the list, expands to a page' },
+  { key: 'A', name: 'Panel: edit links in the detail, drag to reorder' },
+  { key: 'B', name: 'Outliner: edit the tree in place' },
+  { key: 'C', name: 'Dependency lens: what each issue waits on' },
 ] as const;
+
+export type RelVariant = (typeof VARIANTS)[number]['key'];
 
 /** The view in the address bar right now, for refilling a search box on back/forward (the router's
  * copy can lag a popstate). */
@@ -151,7 +156,8 @@ export function App(props: { children?: Element }) {
     search: () => location.search,
     openId: () => (open() ? Number(open()!.params.id) : undefined),
     creating: () => !!creating(),
-    layout: () => variant().key,
+    layout: () => 'A',
+    rel: () => variant().key,
     tree: () => search.tree === '1',
     setTree: (on) => setSearch({ tree: on ? '1' : undefined }),
     settle,

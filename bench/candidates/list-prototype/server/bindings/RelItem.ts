@@ -3,4 +3,8 @@
 /**
  * One end of a relationship, as the detail shows it. A stub has a title and a link out only.
  */
-export type RelItem = { id: number, repo: string, number: number, title: string, state: string, state_reason: string | null, stub: boolean, url: string, subs: number, subs_done: number, assignees: Array<string>, };
+export type RelItem = { id: number, repo: string, number: number, title: string, state: string, state_reason: string | null, stub: boolean, url: string, subs: number, subs_done: number, assignees: Array<string>, 
+/**
+ * Its own open blockers, so a chain shows (#55).
+ */
+open_blockers: number, };

@@ -23,7 +23,7 @@ export function Switcher() {
   onSettled(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest('input, textarea, select, [contenteditable]')) return;
+      if (t.closest('input, textarea, select, [contenteditable]') || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
       if (e.key === 'ArrowLeft') step(-1);
       if (e.key === 'ArrowRight') step(1);
     };
