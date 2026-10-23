@@ -159,30 +159,37 @@ export function VariantC(props: { ctx: Ctx }) {
 
   const row = (r: IssueRow | TreeNode, lead?: Element) => (
               <a
-                class={`c-row ${isBlocked(r) ? 'edge-blocked' : ''}`}
+                class={`c-row cols ${isBlocked(r) ? 'edge-blocked' : ''}`}
                 href={href(r, c.search())}
                 noscroll
                 aria-current={c.openId() === r.id ? 'page' : undefined}
               >
-{lead}
-                <StateIcon r={r} />
-                <span class="c-title">{r.title}</span>
-                <span class="c-labels">
+                <span class="k-main">
+                  {lead}
+                  <StateIcon r={r} />
+                  <span class="c-title">{r.title}</span>
+                </span>
+                <span class="k-lab c-labels">
                   <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
                 </span>
-                <span class="c-spacer" />
-                <WaitsOn r={r as IssueRow} v={c.rel()} />
-                <RelHints r={r} noBlocked />
-                <span class="muted mono c-ref">
+                <span class="k-wait">
+                  <WaitsOn r={r as IssueRow} />
+                </span>
+                <span class="k-hint">
+                  <RelHints r={r} noBlocked />
+                </span>
+                <span class="k-ref muted mono">
                   {r.repo}#{r.number}
                 </span>
-                <Avatars logins={r.assignees} size={18} />
-                <span class="muted c-when">{ago(r.updated_at)}</span>
+                <span class="k-asg">
+                  <Avatars logins={r.assignees} size={18} />
+                </span>
+                <span class="k-when muted">{ago(r.updated_at)}</span>
               </a>
   );
 
   return (
-    <div class="app c">
+    <div class={`app c cols-${c.rel()}`}>
       <header class="c-head">
         <div class="c-bar" onClick={() => box.focus()}>
           <For each={tokens()}>

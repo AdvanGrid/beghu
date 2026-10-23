@@ -43,9 +43,9 @@ export type Ctx = {
 };
 
 export const VARIANTS = [
-  { key: 'A', name: 'Waits on: the blocker\'s title' },
-  { key: 'B', name: 'Waits on: who has it, and is it moving' },
-  { key: 'C', name: 'Waits on: every blocker as a chip' },
+  { key: 'A', name: 'Title first, meta on the right' },
+  { key: 'B', name: 'Number first, meta on the right' },
+  { key: 'C', name: 'Number and owner first' },
 ] as const;
 
 export type RelVariant = (typeof VARIANTS)[number]['key'];

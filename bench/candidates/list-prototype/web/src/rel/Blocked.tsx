@@ -1,12 +1,8 @@
-// PROTOTYPE (beghu #55), round 2. A blocked row gets a red edge and a "waits on" note; the variants
-// try what the note says, since the issue number alone told you nothing:
+// PROTOTYPE (beghu #55). A blocked row gets a red edge and a chip per open blocker (avatar and
+// number), coloured by status: amber dashed when nobody is on it, red when it is itself blocked.
+// (Round 2 also tried the first blocker's title, and who has it in words; the owner picked chips.)
 //
-// - A, what: the first blocker's title.
-// - B, who and how: who the first blocker is with, or that nobody is on it, or that it is itself
-//   blocked, or that it has gone quiet.
-// - C, every blocker: a chip per open blocker (avatar and number), coloured by the same status.
-//
-// Every variant opens the same card on hover: each open blocker with its title, owner and status.
+// The chips open a card on hover: each open blocker with its title, owner and status.
 // Clicking a blocker opens it in the panel. The row carries up to three blockers, so none of this
 // fetches.
 import { createSignal, For, Show } from 'solid-js';
@@ -16,7 +12,6 @@ import type { IssueRow } from '../api';
 import type { BlockerRef } from '../../../server/bindings/BlockerRef';
 import { Avatar } from '../bits';
 import { ago } from '../view';
-import type { RelVariant } from '../App';
 
 export const isBlocked = (r: IssueRow) => r.state === 'open' && r.blocked_by > 0;
 
@@ -83,61 +78,39 @@ function Card(props: { r: IssueRow; at: DOMRect; keep: () => void; hide: () => v
   );
 }
 
-export function WaitsOn(props: { r: IssueRow; v: RelVariant }) {
+/** The chips for a blocked row: at most two, then "+n", so the column never overflows. */
+export function WaitsOn(props: { r: IssueRow; word?: boolean }) {
   const open = useOpen();
   const [at, setAt] = createSignal<DOMRect>();
   let t: ReturnType<typeof setTimeout> | undefined;
   let el!: HTMLSpanElement;
   const keep = () => clearTimeout(t);
   const hide = () => (clearTimeout(t), (t = setTimeout(() => setAt(undefined), 150)));
-  const first = () => props.r.blockers[0];
   const ref = (b: BlockerRef) => `${b.repo === props.r.repo ? '' : b.repo}#${b.number}`;
-  const more = () => (props.r.blocked_by > 1 ? <span class="wo-more">+{props.r.blocked_by - 1}</span> : null);
+  const shown = () => props.r.blockers.slice(0, 2);
   return (
-    <Show when={isBlocked(props.r) && first()}>
+    <Show when={isBlocked(props.r) && props.r.blockers.length}>
       <span
         ref={el}
-        class={`waits-on wo-${props.v}`}
+        class="waits-on"
         onPointerEnter={() => (clearTimeout(t), (t = setTimeout(() => setAt(el.getBoundingClientRect()), 300)))}
         onPointerLeave={hide}
       >
-        <Show when={props.v === 'A'}>
-          <span class="wo-lead" onClick={(e) => open(e, first()!)}>
-            <span class="wo-k">waits on</span>
-            <span class="ellip wo-title">{first()!.title}</span>
-            {more()}
-          </span>
-        </Show>
-        <Show when={props.v === 'B'}>
-          <span class={`wo-lead s-${status(first()!)}`} onClick={(e) => open(e, first()!)}>
-            <span class="wo-k">waits on</span>
-            <Show when={first()!.assignee}>
-              <Avatar login={first()!.assignee!} size={14} />
-            </Show>
-            <span class="wo-who">
-              {first()!.assignee ?? <span class="mono">{ref(first()!)}</span>}
-              <Show when={status(first()!) !== 'moving'}>
-                <span class="wo-why">{{ chain: ', itself blocked', nobody: ', nobody on it', quiet: `, quiet ${ago(first()!.updated_at ?? '')}`, moving: '' }[status(first()!)]}</span>
-              </Show>
-            </span>
-            {more()}
-          </span>
-        </Show>
-        <Show when={props.v === 'C'}>
+        <Show when={props.word}>
           <span class="wo-k">waits on</span>
-          <For each={props.r.blockers}>
-            {(b) => (
-              <span class={`wo-chip s-${status(b)}`} onClick={(e) => open(e, b)}>
-                <Show when={b.assignee} fallback={<span class="wo-noone" />}>
-                  <Avatar login={b.assignee!} size={14} />
-                </Show>
-                <span class="mono">{ref(b)}</span>
-              </span>
-            )}
-          </For>
-          <Show when={props.r.blocked_by > props.r.blockers.length}>
-            <span class="wo-more">+{props.r.blocked_by - props.r.blockers.length}</span>
-          </Show>
+        </Show>
+        <For each={shown()}>
+          {(b) => (
+            <span class={`wo-chip s-${status(b)}`} onClick={(e) => open(e, b)}>
+              <Show when={b.assignee} fallback={<span class="wo-noone" />}>
+                <Avatar login={b.assignee!} size={14} />
+              </Show>
+              <span class="mono ellip">{ref(b)}</span>
+            </span>
+          )}
+        </For>
+        <Show when={props.r.blocked_by > shown().length}>
+          <span class="wo-more">+{props.r.blocked_by - shown().length}</span>
         </Show>
         <Show when={at()}>
           <Portal>

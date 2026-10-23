@@ -559,3 +559,43 @@ button.tiny:disabled { opacity: 0.3; }
 .blk-l .blk-x { right: 2px; }
 .blk-r .blk-x { left: 2px; }
 .blk-item:hover .blk-x { visibility: visible; }
+
+/* ===================== PROTOTYPE (beghu #55) round 3: strict list columns ===================== */
+/* Every row is the same grid, so nothing moves sideways from row to row. The variants only change
+   the order and widths of the cells. Narrow lists (the panel open) shrink labels and blockers. */
+.list { container-type: inline-size; }
+.c-row.cols { display: grid; gap: 0 12px; align-items: center; }
+.cols > * { min-width: 0; overflow: hidden; }
+.k-main { grid-area: main; display: flex; align-items: center; gap: 8px; }
+.k-main .c-title { flex: 0 1 auto; min-width: 0; }
+.k-lab { grid-area: lab; display: flex; gap: 8px; }
+.k-wait { grid-area: wait; display: flex; }
+.k-hint { grid-area: hint; display: flex; justify-content: flex-end; }
+.k-ref { grid-area: ref; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.k-asg { grid-area: asg; display: flex; }
+.k-when { grid-area: when; text-align: right; font-variant-numeric: tabular-nums; }
+.waits-on { overflow: hidden; padding: 0; }
+.wo-chip { min-width: 0; flex: 0 1 auto; }
+.wo-chip .ellip { min-width: 0; }
+
+/* A: the title leads; every other cell sits in a fixed column on the right, number before owner. */
+.cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 150px 196px 52px 104px 46px 32px; grid-template-areas: 'main lab wait hint ref asg when'; }
+.cols-A .k-ref { text-align: right; }
+@container (max-width: 1000px) {
+  .c-row.cols { gap: 0 8px; }
+  .cols-A .c-row.cols { grid-template-columns: minmax(0, 1fr) 96px 156px 40px 96px 40px 30px; }
+}
+
+/* B: the number leads, like an ID column; the rest as A. */
+.cols-B .c-row.cols { grid-template-columns: 100px minmax(0, 1fr) 150px 180px 52px 46px 32px; grid-template-areas: 'ref main lab wait hint asg when'; }
+@container (max-width: 1000px) {
+  .cols-B .c-row.cols { grid-template-columns: 92px minmax(0, 1fr) 96px 156px 40px 40px 30px; }
+}
+
+/* C: who and which up front (number, owner), then the title; on the right the signals: progress,
+   blockers, labels last since they are the least scanned. */
+.cols-C .c-row.cols { grid-template-columns: 100px 46px minmax(0, 1fr) 52px 180px 140px 32px; grid-template-areas: 'ref asg main hint wait lab when'; }
+.cols-C .k-hint { justify-content: flex-start; }
+@container (max-width: 1000px) {
+  .cols-C .c-row.cols { grid-template-columns: 92px 40px minmax(0, 1fr) 40px 156px 90px 30px; }
+}

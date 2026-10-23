@@ -2,10 +2,20 @@
 
 Throwaway, for [Prototype the relationship tree](https://github.com/tomsjansons/beghu/issues/55), on
 top of the list (#52, variant C) and detail (#54, side panel) prototypes. `?variant=` and the
-floating bar (← / →) switch what the list's "waits on" note says (round 2; round 1 switched where
-relationships are edited). The detail is always the side panel.
+floating bar (← / →) switch the list's **column arrangement** (round 3). The detail is always the
+side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
+
+**Round 3.** The owner picked chips (round 2's C) and asked for strict columns, since the blocker
+chips, number, assignees and labels shifted from row to row. Every row is now one CSS grid with
+fixed cells, so each sits at the same x on every row, in the list and the tree. Below 1000px of
+list width (panel open) labels and blockers narrow and the gaps tighten. At most two blocker chips
+show, then "+n"; the hover card lists all of them.
+
+- **A: title first.** Title | labels | blockers | progress | number | assignees | updated.
+- **B: number first.** Number | title | labels | blockers | progress | assignees | updated.
+- **C: number and owner first.** Number | assignees | title | progress | blockers | labels | updated.
 
 **Round 2.** Owner feedback on round 1 kept: drag to reorder and re-parent (sub-issues in the
 panel, and the tree, both in every variant), separate **+ Blocked by / + Blocking / + Relates to**
