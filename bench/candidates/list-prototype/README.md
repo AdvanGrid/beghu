@@ -7,6 +7,10 @@ side panel.
 
     ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
 
+**Round 3c.** The divider between the list and the detail drags to resize (360px minimum each side),
+is remembered per browser, and resets on double-click. Hidden on narrow screens, where the detail
+sits under the list.
+
 **Round 3b.** The owner picked A. Blockers are rarely more than one but labels are often several,
 so both now **stack** in two 15px lines inside the 34px row: blocker chips one above the other
 (the second carries "+n"), and labels filling column by column. A single blocker or label stays one

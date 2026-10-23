@@ -40,6 +40,43 @@ const PRESETS: { name: string; view: View }[] = [
 export function VariantC(props: { ctx: Ctx }) {
   const c = props.ctx;
   let box!: HTMLInputElement;
+  // #55: the divider between the list and the detail drags; the width is remembered per browser.
+  const [detailW, setDetailW] = createSignal<number | undefined>(
+    (() => {
+      try {
+        return Number(localStorage.getItem('beghu.detailW')) || undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  let mainEl!: HTMLElement;
+  const startResize = (e: PointerEvent) => {
+    e.preventDefault();
+    const h = e.currentTarget as HTMLElement;
+    h.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev: PointerEvent) => {
+      const r = mainEl.getBoundingClientRect();
+      setDetailW(Math.round(Math.min(r.width - 360, Math.max(360, r.right - ev.clientX))));
+    };
+    const up = () => {
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      try {
+        localStorage.setItem('beghu.detailW', String(detailW() ?? ''));
+      } catch {}
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+  };
+  const resetResize = () => {
+    setDetailW(undefined);
+    try {
+      localStorage.removeItem('beghu.detailW');
+    } catch {}
+  };
   const [text, setText] = createSignal(c.view().q);
   const [focused, setFocused] = createSignal(false);
   const [hi, setHi] = createSignal(0);
@@ -288,7 +325,11 @@ export function VariantC(props: { ctx: Ctx }) {
           </span>
         </div>
       </header>
-      <main class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}>
+      <main
+        ref={mainEl}
+        class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}
+        style={detailW() ? { '--detail-w': `${detailW()}px` } : {}}
+      >
         <Loading fallback={<div class="list" />}>
           <Show when={c.tree()} fallback={
           <Rows
@@ -306,6 +347,7 @@ export function VariantC(props: { ctx: Ctx }) {
         {/* A: always beside the list. B: over the list, which keeps its scroll underneath. C: a drawer
             over the list's right side; ?full=1 widens it. */}
         {/* #55: always the side panel. */}
+        <div class="split-handle" onPointerDown={startResize} onDblClick={resetResize} title="Drag to resize; double-click to reset" />
         <Show when={true}>
           <aside class={`detail detail-${c.layout()} ${sp.full ? 'full' : ''}`}>
             <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
