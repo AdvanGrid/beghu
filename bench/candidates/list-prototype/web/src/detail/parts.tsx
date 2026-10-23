@@ -7,6 +7,7 @@ import { lookup, type Label, type RelItem } from '../api';
 import { Avatar, LabelPill, Progress } from '../bits';
 import { ago } from '../view';
 import type { IssueModel, RelKind } from './model';
+import { highlight, segments } from './code';
 
 // ---------- small things ----------
 
@@ -87,9 +88,28 @@ export function Title(props: { m: IssueModel; class?: string }) {
 
 // ---------- body ----------
 
-/** Plain pre-wrapped text: markdown rendering is its own ticket. */
+/** Pre-wrapped text with ``` fenced blocks coloured by language. The rest of markdown is its own
+ * ticket. */
 export function Text(props: { text: string; class?: string }) {
-  return <div class={`text ${props.class ?? ''}`}>{props.text || <span class="muted">No description.</span>}</div>;
+  return (
+    <div class={`text ${props.class ?? ''}`}>
+      <Show when={props.text} fallback={<span class="muted">No description.</span>}>
+        <For each={segments(props.text)}>
+          {(s) =>
+            'code' in s ? (
+              <pre class="code" data-lang={s.lang || undefined}>
+                <Show when={highlight(s.code, s.lang)} fallback={<code>{s.code}</code>}>
+                  {(html) => <code class="hljs" innerHTML={html()} />}
+                </Show>
+              </pre>
+            ) : (
+              <div>{s.text}</div>
+            )
+          }
+        </For>
+      </Show>
+    </div>
+  );
 }
 
 export function Body(props: { m: IssueModel; card?: boolean }) {
