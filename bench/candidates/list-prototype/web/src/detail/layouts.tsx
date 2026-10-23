@@ -115,11 +115,15 @@ export function DetailA(props: { m: IssueModel }) {
   const newIssue = useNewIssue();
   return (
     <article class="da" data-bench="detail" data-id={d().id}>
+      {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
+          first, and each property has its own row, so more labels only grow their own row. */}
       <div class="da-top">
+        <span class="da-badge">
+          <StateBadge state={d().state} reason={d().state_reason} pending={m.pending('state')} />
+        </span>
         <span class="mono muted">
           {d().repo}#{d().number}
         </span>
-        <StateBadge state={d().state} reason={d().state_reason} pending={m.pending('state')} />
         <span class="flex" />
         <StateControl m={m} compact />
         <a class="ghost small" href={ghUrl(m)} target="_blank" rel="noreferrer" title="Open on GitHub">
@@ -129,6 +133,16 @@ export function DetailA(props: { m: IssueModel }) {
       <ParentCrumb m={m} />
       <Title m={m} />
       <div class="da-props">
+        <span class="da-key">Assignees</span>
+        <AssigneesPicker
+          m={m}
+          trigger={(t) => (
+            <button class="prop" onClick={t} title="Assignees">
+              <Assignees m={m} names empty="+ Assign" />
+            </button>
+          )}
+        />
+        <span class="da-key">Labels</span>
         <LabelsPicker
           m={m}
           trigger={(t) => (
@@ -137,24 +151,21 @@ export function DetailA(props: { m: IssueModel }) {
             </button>
           )}
         />
-        <AssigneesPicker
-          m={m}
-          trigger={(t) => (
-            <button class="prop" onClick={t} title="Assignees">
-              <Assignees m={m} names empty="+ Assignee" />
-            </button>
-          )}
-        />
+        <span class="da-key">Milestone</span>
         <MilestonePicker
           m={m}
           trigger={(t) => (
             <button class={`prop ${m.pending('milestone') ? 'pending' : ''}`} onClick={t} title="Milestone">
-              ⚑ {d().milestone ?? <span class="muted">Milestone</span>}
+              {d().milestone ?? <span class="muted">+ Milestone</span>}
             </button>
           )}
         />
-        <AddRel m={m} kind="blocked_by" label={<span class="muted">+ Blocked by</span>} />
-        <AddRel m={m} kind="relates" label={<span class="muted">+ Relates to</span>} />
+        <span class="da-key">Links</span>
+        <span class="da-links">
+          <AddRel m={m} kind="blocked_by" label={<span class="muted">+ Blocked by</span>} />
+          <AddRel m={m} kind="blocking" label={<span class="muted">+ Blocking</span>} />
+          <AddRel m={m} kind="relates" label={<span class="muted">+ Relates to</span>} />
+        </span>
       </div>
       <RelSection m={m} kind="blocked_by" hideEmpty />
       <RelSection m={m} kind="blocking" hideEmpty />

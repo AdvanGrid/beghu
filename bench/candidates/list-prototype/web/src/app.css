@@ -318,7 +318,12 @@ label.prop select { border: 0; padding: 0; }
 /* A: side panel */
 .da { padding: 12px 18px 0; display: flex; flex-direction: column; gap: 8px; min-height: 100%; }
 .da-top { display: flex; align-items: center; gap: 8px; }
-.da-props { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.da-badge { width: 104px; flex: none; display: inline-flex; }
+.da-props { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 2px 8px; align-items: center; }
+.da-props > .popover-root > .prop { border-color: transparent; background: none; padding-left: 0; max-width: 100%; }
+.da-props > .popover-root > .prop:hover { border-color: var(--line); padding-left: 8px; margin-left: -8px; }
+.da-key { font-size: 12px; color: var(--muted); }
+.da-links { display: flex; gap: 2px; margin-left: -6px; }
 .da .rel-section { margin: 4px 0; }
 .da-compose { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 10px; border-top: 1px solid var(--line); margin-top: auto; }
 
