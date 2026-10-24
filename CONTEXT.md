@@ -41,7 +41,7 @@ A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fix
 _Avoid_: Mock GitHub, GitHub stub, stand-in
 
 **Held change**:
-A layout change from a live update that waits while the user is in intent mode, so nothing moves under the pointer: a list's order changing (an issue moving, arriving or leaving), or the detail growing or shrinking (new comments, a body edit). It applies in reading mode, behind a shift cue and then animated. Changes to contents that don't move layout are never held.
+A layout change from a live update that waits while the user is in intent mode, so nothing moves under the pointer: a list's order changing (an issue moving, arriving or leaving), or the detail growing or shrinking (new comments, a body edit). It applies in reading mode, behind a shift cue and then animated. Changes to contents that don't move layout are never held, and neither is a change wholly off-screen: it applies at once and the reading position is kept.
 _Avoid_: Frozen order, pending reorder
 
 **Intent mode**:
@@ -53,7 +53,7 @@ The pointer has been still for 5 s or more, with no keys or presses. Held change
 _Avoid_: Idle
 
 **Shift cue**:
-A brief visual sign, shown just before a held change applies, of what is about to move and where (new comments arriving, a body growing or shrinking), so the user can follow the animated change that comes next.
+A still mark at the exact spot of a held change, shown for a moment before it applies: a line where something will open (a comment, a paragraph, a row, a first blocker) and an outline on what will go. It marks only the part that changes, such as one property line, never a whole section around it.
 _Avoid_: Warning, toast, transition indicator
 
 **Match mode**:
