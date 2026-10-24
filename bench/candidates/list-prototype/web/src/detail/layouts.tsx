@@ -33,6 +33,7 @@ import { shell } from '../shell';
 import { SubIssues } from '../rel/SubIssues';
 import { Blocks } from '../rel/Blocks';
 import { Gutter, LivePanel } from './livepanel';
+import type { Part } from './live';
 
 const ghUrl = (m: IssueModel) => `https://github.com/acme/${m.d().repo}/issues/${m.d().number}`;
 
@@ -100,6 +101,11 @@ function useStep(m: IssueModel) {
   return { step, pos };
 }
 
+/** #66 round 2: one property unit for the held layer (outline in the cue, FLIP on its height,
+ * afterglow), apart from its neighbours. */
+const lv = (m: IssueModel, part: Part) => (m.plan()?.props.includes(part) ? 'props' : undefined);
+const glow = (m: IssueModel, part: Part) => (m.held.glow().has(`p:${part}`) ? 'lv-glow' : '');
+
 function Opened(props: { m: IssueModel }) {
   const d = () => props.m.d();
   return (
@@ -137,21 +143,16 @@ export function DetailA(props: { m: IssueModel }) {
           GitHub ↗
         </a>
       </div>
-      <ParentCrumb m={m} />
+      <div data-k="p:parent" data-live={lv(m, 'parent')} class={glow(m, 'parent')}>
+        <ParentCrumb m={m} />
+      </div>
       <Title m={m} />
-      {/* #66: everything a props change can grow sits in one box, so a held change can mark it
-          and animate its height. */}
-      <div
-        class={`da-propsbox ${m.held.glow().has('props') ? 'lv-glow' : ''}`}
-        data-k="props"
-        data-live={m.plan()?.props ? 'props' : undefined}
-      >
       <div class="da-props">
         <span class="da-key">Assignees</span>
         <AssigneesPicker
           m={m}
           trigger={(t) => (
-            <button class="prop" onClick={t} title="Assignees">
+            <button class={`prop ${glow(m, 'assignees')}`} onClick={t} title="Assignees" data-k="p:assignees" data-live={lv(m, 'assignees')}>
               <Assignees m={m} names empty="+ Assign" />
             </button>
           )}
@@ -160,7 +161,7 @@ export function DetailA(props: { m: IssueModel }) {
         <LabelsPicker
           m={m}
           trigger={(t) => (
-            <button class="prop" onClick={t} title="Labels">
+            <button class={`prop ${glow(m, 'labels')}`} onClick={t} title="Labels" data-k="p:labels" data-live={lv(m, 'labels')}>
               <Labels m={m} empty="+ Label" />
             </button>
           )}
@@ -169,7 +170,7 @@ export function DetailA(props: { m: IssueModel }) {
         <MilestonePicker
           m={m}
           trigger={(t) => (
-            <button class={`prop ${m.pending('milestone') ? 'pending' : ''}`} onClick={t} title="Milestone">
+            <button class={`prop ${m.pending('milestone') ? 'pending' : ''} ${glow(m, 'milestone')}`} onClick={t} title="Milestone" data-k="p:milestone" data-live={lv(m, 'milestone')}>
               {d().milestone ?? <span class="muted">+ Milestone</span>}
             </button>
           )}
@@ -181,12 +182,18 @@ export function DetailA(props: { m: IssueModel }) {
           <AddRel m={m} kind="relates" label={<span class="muted">+ Relates to</span>} />
         </span>
       </div>
-      <Blocks m={m} />
-      <RelSection m={m} kind="relates" hideEmpty />
+      {/* #66 round 2: Blocks and Relates to are units of their own, apart from the property rows. */}
+      <div data-k="p:blocks" data-live={lv(m, 'blocks')} class={glow(m, 'blocks')}>
+        <Blocks m={m} />
+      </div>
+      <div data-k="p:relates" data-live={lv(m, 'relates')} class={glow(m, 'relates')}>
+        <RelSection m={m} kind="relates" hideEmpty />
       </div>
       <Opened m={m} />
       <Body m={m} />
-      <SubIssues m={m} mode="drag" onNew={() => newIssue(d().id)} />
+      <div data-k="p:subs" data-live={lv(m, 'subs')} class={glow(m, 'subs')}>
+        <SubIssues m={m} mode="drag" onNew={() => newIssue(d().id)} />
+      </div>
       <h3 class="section-h">Comments</h3>
       <Thread m={m} variant="flat" />
       <div class="da-compose">

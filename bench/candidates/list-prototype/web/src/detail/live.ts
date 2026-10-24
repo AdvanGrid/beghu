@@ -98,7 +98,8 @@ export type Plan = {
   addComments: Comment[];
   delComments: number[];
   body: Block[] | null;
-  props: boolean;
+  /** The property parts that change, each marked and animated on its own (#66 round 2). */
+  props: Part[];
   /** What the cue says, for the B gutter and the live panel. */
   summary: string;
 };
@@ -139,17 +140,19 @@ export function diffBody(a: string, b: string): Block[] {
   return out;
 }
 
-const propsKey = (d: Detail) =>
-  JSON.stringify([
-    d.labels.map((l) => l.name),
-    d.assignees,
-    d.milestone,
-    d.rels.parent?.id ?? null,
-    d.rels.blocked_by.map((r) => r.id),
-    d.rels.blocking.map((r) => r.id),
-    d.rels.relates.map((r) => r.id),
-    d.rels.children.map((r) => r.id),
-  ]);
+/** Round 2: each property row and each relationship section is its own unit, so a change marks
+ * and animates only that line or section, never the whole header. */
+export type Part = 'assignees' | 'labels' | 'milestone' | 'parent' | 'blocks' | 'relates' | 'subs';
+const PARTS: Record<Part, (d: Detail) => unknown> = {
+  assignees: (d) => d.assignees,
+  labels: (d) => d.labels.map((l) => l.name),
+  milestone: (d) => d.milestone,
+  parent: (d) => d.rels.parent?.id ?? null,
+  blocks: (d) => [d.rels.blocked_by.map((r) => r.id), d.rels.blocking.map((r) => r.id)],
+  relates: (d) => d.rels.relates.map((r) => r.id),
+  subs: (d) => d.rels.children.map((r) => r.id),
+};
+const changedParts = (a: Detail, b: Detail) => (Object.keys(PARTS) as Part[]).filter((k) => JSON.stringify(PARTS[k](a)) !== JSON.stringify(PARTS[k](b)));
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
@@ -162,8 +165,8 @@ function planFor(cur: Detail, nxt: Detail, me: string): Plan | null {
   const body = cur.body === nxt.body ? null : diffBody(cur.body, nxt.body);
   // Same blocks in the same order (a typo fix inside a paragraph) still re-flows that paragraph;
   // only a change that leaves every block's text alone would be layout-free, which can't happen.
-  const props = knobs.props[0]() === 'held' && propsKey(cur) !== propsKey(nxt);
-  if (!addComments.length && !delComments.length && !body && !props) return null;
+  const props = knobs.props[0]() === 'held' ? changedParts(cur, nxt) : [];
+  if (!addComments.length && !delComments.length && !body && !props.length) return null;
   const parts: string[] = [];
   if (addComments.length) parts.push(addComments.length === 1 ? `${addComments[0].author} commented` : plural(addComments.length, 'new comment'));
   if (delComments.length) parts.push(plural(delComments.length, 'comment') + ' removed');
@@ -172,7 +175,7 @@ function planFor(cur: Detail, nxt: Detail, me: string): Plan | null {
     const del = body.filter((b) => b.state === 'del').length;
     parts.push(add && del ? 'description edited' : add ? 'description grew' : del ? 'description shrank' : 'description edited');
   }
-  if (props) parts.push('properties changed');
+  if (props.length) parts.push(props.join(', ') + ' changed');
   return { addComments, delComments, body, props, summary: parts.join(' · ') };
 }
 
@@ -219,16 +222,19 @@ function restore(sc: HTMLElement, a: ReturnType<typeof anchor>) {
 
 /** Run the plan's height animations: adds open, dels close, over `ms`. Elements that grow upward
  * (`where` = up) are compensated by scrolling, in one loop so several don't fight. */
-function animatePlan(sc: HTMLElement, ms: number) {
+function animatePlan(sc: HTMLElement, ms: number): number {
   const els = [...sc.querySelectorAll<HTMLElement>('[data-live="add"], [data-live="del"]')];
   const ups = els.filter((el) => where(sc, el) === 'up').map((el) => ({ el, h0: el.getBoundingClientRect().height }));
+  let longest = 0;
   for (const el of els) {
     const h = el.scrollHeight;
     const add = el.dataset.live === 'add';
+    const d = duration(ms, h);
+    longest = Math.max(longest, d);
     el.getAnimations().forEach((a) => a.cancel());
-    el.animate([{ height: `${add ? 0 : h}px` }, { height: `${add ? h : 0}px` }], { duration: ms, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' });
+    el.animate([{ height: `${add ? 0 : h}px` }, { height: `${add ? h : 0}px` }], { duration: d, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' });
   }
-  if (!ups.length) return;
+  if (!ups.length) return longest;
   const base = sc.scrollTop;
   const step = () => {
     // Stop once the commit has swapped the animated copies for the real ones.
@@ -237,7 +243,12 @@ function animatePlan(sc: HTMLElement, ms: number) {
     if (ups.some((u) => u.el.getAnimations().some((a) => a.playState === 'running'))) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+  return longest;
 }
+
+/** Round 2: a long block opens and closes slower, so its growth stays followable: the base time
+ * for up to ~3 lines, then about +1 ms per px, capped at 1.2 s (an agent comment takes ~0.8 s). */
+export const duration = (ms: number, h: number) => Math.round(Math.min(1200, ms + Math.max(0, h - 60)));
 
 /** Props rows change by FLIP on their height: old height → new, over `ms`. */
 function flipProps(sc: HTMLElement, before: Map<Element, number>, ms: number) {
@@ -265,7 +276,7 @@ export function createHeld(o: {
 }) {
   const [phase, setPhase] = createSignal<Phase>('idle');
   const [plan, setPlan] = createSignal<Plan | null>(null);
-  /** Keys of what just changed (`c:<id>`, `b:<text>`, `props`), for the afterglow. */
+  /** Keys of what just changed (`c:<id>`, `b:<text>`, `p:<part>`), for the afterglow. */
   const [glow, setGlow] = createSignal<Set<string>>(new Set());
   let pending: { fresh: Detail; started: number } | undefined;
   let next: { fresh: Detail; started: number } | undefined;
@@ -340,7 +351,7 @@ export function createHeld(o: {
       const keys = new Set<string>();
       p?.addComments.forEach((c) => keys.add(`c:${c.id}`));
       p?.body?.forEach((b) => b.state === 'add' && keys.add(`b:${b.text}`));
-      if (p?.props) keys.add('props');
+      p?.props.forEach((k) => keys.add(`p:${k}`));
       const an = animate && sc ? anchor(sc) : a;
       setPlan(null);
       setPhase('idle');
@@ -363,7 +374,7 @@ export function createHeld(o: {
     };
     if (!animate || !sc) return done();
     // Props first, by FLIP, since they have no copies to animate.
-    if (p?.props) {
+    if (p?.props.length) {
       const before = new Map([...sc.querySelectorAll('[data-live="props"]')].map((el) => [el, el.getBoundingClientRect().height]));
       o.set({ ...o.get(), labels: fresh.labels, assignees: fresh.assignees, milestone: fresh.milestone, rels: fresh.rels });
       flush();
@@ -371,8 +382,8 @@ export function createHeld(o: {
     }
     setPhase('anim');
     flush();
-    if (variant() !== 'C' && animMs()) animatePlan(sc, animMs());
-    timer = setTimeout(done, animMs() + (variant() === 'C' ? 120 : 30));
+    const took = variant() !== 'C' && animMs() ? animatePlan(sc, animMs()) : animMs();
+    timer = setTimeout(done, Math.max(took, animMs()) + (variant() === 'C' ? 120 : 30));
   }
 
   onMode((m) => {

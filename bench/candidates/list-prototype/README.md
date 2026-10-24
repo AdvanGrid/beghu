@@ -23,6 +23,13 @@ reading), the phase (idle → held → cue → anim) and what's held.
   incoming height over the whole cue, then the content fades in. What goes dims, dashes and
   closes over the cue.
 
+**Round 2.** The owner picked A, with three changes:
+- Long blocks open and close slower: the base time up to ~3 lines, then about +1 ms per px,
+  capped at 1.2 s (an agent comment takes ~0.75 s, a one-line comment ~0.3 s).
+- A label, assignee or milestone change marks only its own line, not the whole header.
+- Blocks, Relates to, Sub-issues and the parent crumb are units of their own, each marked,
+  animated and glowing on its own.
+
 Shared: what doesn't move layout (title, state, counts, your own comment) updates at once. What
 does is held in intent mode and applied in reading mode, cue first, then animation, then a short
 afterglow on what arrived. A change landing mid-cue joins it and restarts it; one landing
