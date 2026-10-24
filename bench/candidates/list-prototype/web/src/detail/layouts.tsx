@@ -106,6 +106,25 @@ function useStep(m: IssueModel) {
 const lv = (m: IssueModel, part: Part) => (m.plan()?.props.includes(part) ? 'props' : undefined);
 const glow = (m: IssueModel, part: Part) => (m.held.glow().has(`p:${part}`) ? 'lv-glow' : '');
 
+/** #66 round 3: a section that can be empty (Blocks, Relates to). Empty, it takes no room and
+ * cancels the column's gap; its own gap sits inside it, so opening it animates gap and all. While
+ * empty, A's cue shows an insertion line here, so a first blocker doesn't just appear. */
+function Unit(props: { m: IssueModel; part: Part; empty: boolean; mark: string; children: Element }) {
+  return (
+    <div class={`p-unit ${glow(props.m, props.part)}`} data-k={`p:${props.part}`} data-live={lv(props.m, props.part)}>
+      <Show when={props.empty && props.m.held.phase() === 'cue' && lv(props.m, props.part)}>
+        <div class="lv-mark" aria-hidden="true">
+          <span>{props.mark}</span>
+        </div>
+      </Show>
+      <Show when={!props.empty}>
+        <div class="p-gap" />
+        {props.children}
+      </Show>
+    </div>
+  );
+}
+
 function Opened(props: { m: IssueModel }) {
   const d = () => props.m.d();
   return (
@@ -183,12 +202,12 @@ export function DetailA(props: { m: IssueModel }) {
         </span>
       </div>
       {/* #66 round 2: Blocks and Relates to are units of their own, apart from the property rows. */}
-      <div data-k="p:blocks" data-live={lv(m, 'blocks')} class={glow(m, 'blocks')}>
+      <Unit m={m} part="blocks" empty={!d().rels.blocked_by.length && !d().rels.blocking.length} mark="blocker added">
         <Blocks m={m} />
-      </div>
-      <div data-k="p:relates" data-live={lv(m, 'relates')} class={glow(m, 'relates')}>
+      </Unit>
+      <Unit m={m} part="relates" empty={!d().rels.relates.length} mark="link added">
         <RelSection m={m} kind="relates" hideEmpty />
-      </div>
+      </Unit>
       <Opened m={m} />
       <Body m={m} />
       <div data-k="p:subs" data-live={lv(m, 'subs')} class={glow(m, 'subs')}>

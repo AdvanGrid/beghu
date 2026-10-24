@@ -30,6 +30,11 @@ reading), the phase (idle → held → cue → anim) and what's held.
 - Blocks, Relates to, Sub-issues and the parent crumb are units of their own, each marked,
   animated and glowing on its own.
 
+**Round 3.** A first blocker (or first relates-to link) used to just appear: the empty section
+had no box to mark. Empty sections now keep a zero-height spot that shows the insertion line
+("blocker added", "link added") during the cue, and carry their gap inside, so opening animates
+the gap with the section.
+
 Shared: what doesn't move layout (title, state, counts, your own comment) updates at once. What
 does is held in intent mode and applied in reading mode, cue first, then animation, then a short
 afterglow on what arrived. A change landing mid-cue joins it and restarts it; one landing
