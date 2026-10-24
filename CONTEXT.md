@@ -24,6 +24,10 @@ _Avoid_: Link, edge
 A placeholder for an issue in a repo that isn't synced, reached through a relationship. It has a title and a link out to GitHub.
 _Avoid_: Ghost, external issue
 
+**Linked PR**:
+A PR that will close an issue when it merges, through a closing keyword in its body ("closes #12") or a manual link in GitHub's Development sidebar. Read-only in beghu, and not a relationship.
+_Avoid_: Closing reference, development link, PR relationship
+
 **Pending write**:
 A change the user made in beghu that GitHub hasn't confirmed yet. It shows at once, lives only in the tab that made it, and reverts visibly if GitHub refuses it.
 _Avoid_: Outbox entry, queued write
