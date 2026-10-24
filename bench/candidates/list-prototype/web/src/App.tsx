@@ -42,13 +42,15 @@ export type Ctx = {
   live: () => number;
 };
 
+// #66: ?variant= now picks the shift cue for live changes in the detail. The list's columns are
+// fixed to round 3's A.
 export const VARIANTS = [
-  { key: 'A', name: 'Title first, meta on the right' },
-  { key: 'B', name: 'Number first, meta on the right' },
-  { key: 'C', name: 'Number and owner first' },
+  { key: 'A', name: 'Mark the spot' },
+  { key: 'B', name: 'Show what moves' },
+  { key: 'C', name: 'Ghost that grows' },
 ] as const;
 
-export type RelVariant = (typeof VARIANTS)[number]['key'];
+export type RelVariant = 'A' | 'B' | 'C';
 
 /** The view in the address bar right now, for refilling a search box on back/forward (the router's
  * copy can lag a popstate). */
@@ -157,7 +159,7 @@ export function App(props: { children?: Element }) {
     openId: () => (open() ? Number(open()!.params.id) : undefined),
     creating: () => !!creating(),
     layout: () => 'A',
-    rel: () => variant().key,
+    rel: () => 'A',
     tree: () => search.tree === '1',
     setTree: (on) => setSearch({ tree: on ? '1' : undefined }),
     settle,

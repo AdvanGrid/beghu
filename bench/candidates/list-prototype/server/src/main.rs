@@ -963,6 +963,110 @@ fn sub_checks(c: &rusqlite::Connection, parent: i64, child: i64) -> Result<(), A
     Ok(())
 }
 
+// PROTOTYPE (beghu #66). A teammate edits the open issue from somewhere else: the change lands in
+// the mirror and goes out as an ordinary SSE push, so the detail sees it the way it would see a
+// webhook. Kinds: comment, agent (a long bot comment), body_add, body_remove, body_rewrite,
+// body_typo, label, unlabel, assign, blocker.
+#[derive(Deserialize)]
+struct Teammate {
+    kind: String,
+}
+
+const AGENT_COMMENT: &str = "## Summary\n\nI looked into this and traced the failure to the retry loop in the sync worker: when the\nremote answers `429`, the worker sleeps for the `retry-after` value but never resets its\nbackoff counter, so the next transient error waits far longer than it should.\n\n### Changes\n\n- Reset the backoff counter after any successful response\n- Cap the backoff at 30 s instead of growing without bound\n- Log the `retry-after` value at debug level\n\n```rust\nif resp.status().is_success() {\n    backoff.reset();\n}\nlet wait = backoff.next().min(Duration::from_secs(30));\n```\n\n### Testing\n\nAdded a test that replays a `429` followed by two `503`s and checks the waits are\n1 s, 2 s and 4 s. All existing tests pass.\n\nLet me know if you want the cap configurable.";
+
+async fn teammate(State(s): State<AppState>, Path(id): Path<i64>, Json(req): Json<Teammate>) -> Result<Response, AppError> {
+    let ids = with_db(&s.pool, move |c| {
+        let tx = c.transaction()?;
+        let mut ids = vec![id];
+        let (repo_id, body): (i64, Option<String>) = tx
+            .query_row("SELECT repo_id, body FROM items WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .ok_or(AppError::NotFound)?;
+        let body = body.unwrap_or_default();
+        let mate: i64 = tx.query_row("SELECT id FROM users WHERE login <> ? ORDER BY id LIMIT 1 OFFSET 3", [ME], |r| r.get(0))?;
+        let paras: Vec<&str> = body.split("\n\n").filter(|p| !p.trim().is_empty()).collect();
+        let n = paras.len();
+        let tick = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as usize;
+        let set_body = |b: String| tx.execute("UPDATE items SET body = ? WHERE id = ?", params![b, id]);
+        match req.kind.as_str() {
+            "comment" | "agent" => {
+                let text = if req.kind == "agent" {
+                    AGENT_COMMENT.to_string()
+                } else {
+                    ["Can reproduce on my side too, same steps.", "I'll take a look at this tomorrow morning.", "This might be related to the cache change from last week. Checking now.", "Confirmed fixed on staging 👍"][tick % 4].to_string()
+                };
+                tx.execute(
+                    "INSERT INTO comments VALUES ((SELECT max(id) + 1 FROM comments), 'proto', ?, ?, ?, ?, ?, 0)",
+                    params![id, mate, text, now(), now()],
+                )?;
+                tx.execute("UPDATE items SET comments_count = comments_count + 1 WHERE id = ?", [id])?;
+            }
+            "body_add" => {
+                let at = if n < 2 { n } else { 1 + tick % (n - 1) };
+                let mut v: Vec<String> = paras.iter().map(|p| p.to_string()).collect();
+                v.insert(at, format!("**Update {}:** this also happens when the window loses focus during the save, so it isn't only the slow-network case. Steps added below.", &now()[11..19]));
+                set_body(v.join("\n\n"))?;
+            }
+            "body_remove" if n > 0 => {
+                let at = if n < 2 { 0 } else { tick % (n - 1) };
+                let mut v: Vec<&str> = paras.clone();
+                v.remove(at);
+                set_body(v.join("\n\n"))?;
+            }
+            "body_rewrite" if n > 0 => {
+                let at = tick % n;
+                let mut v: Vec<String> = paras.iter().map(|p| p.to_string()).collect();
+                v[at] = format!("{} (Edited: narrowed down to the retry path; the first attempt is fine, only retries lose the header.)", v[at]);
+                set_body(v.join("\n\n"))?;
+            }
+            "body_typo" if n > 0 => {
+                // Same length, so nothing should move: swap the case of the first letter.
+                let mut b = body.clone();
+                if let Some(ch) = b.chars().next() {
+                    let flipped: String = if ch.is_uppercase() { ch.to_lowercase().collect() } else { ch.to_uppercase().collect() };
+                    b.replace_range(..ch.len_utf8(), &flipped);
+                }
+                set_body(b)?;
+            }
+            "label" => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO item_labels SELECT ?1, id, 0 FROM labels WHERE repo_id = ?2 AND id NOT IN (SELECT label_id FROM item_labels WHERE item_id = ?1) ORDER BY id LIMIT 1",
+                    params![id, repo_id],
+                )?;
+            }
+            "unlabel" => {
+                tx.execute("DELETE FROM item_labels WHERE item_id = ?1 AND label_id = (SELECT max(label_id) FROM item_labels WHERE item_id = ?1)", [id])?;
+            }
+            "assign" => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO item_assignees SELECT ?1, id, 0 FROM users WHERE id NOT IN (SELECT user_id FROM item_assignees WHERE item_id = ?1) ORDER BY id LIMIT 1 OFFSET 5",
+                    [id],
+                )?;
+            }
+            "blocker" => {
+                let other: i64 = tx.query_row(
+                    "SELECT id FROM items WHERE repo_id = ? AND state = 'open' AND id <> ? AND id NOT IN (SELECT src_id FROM relationships WHERE kind = 'blocks' AND dst_id = ?) ORDER BY id DESC LIMIT 1 OFFSET ?",
+                    params![repo_id, id, id, (tick % 50) as i64],
+                    |r| r.get(0),
+                )?;
+                let (k, src, dst) = rel_edge("blocked_by", id, other)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO relationships VALUES (?1, ?2, ?3, (SELECT coalesce(max(position), 0) + 1 FROM relationships WHERE kind = ?1 AND src_id = ?2), 0)",
+                    params![k, src, dst],
+                )?;
+                ids.push(other);
+            }
+            _ => return Err(AppError::Unprocessable("unknown teammate change")),
+        }
+        tx.execute("UPDATE items SET updated_at = ? WHERE id = ?", params![now(), id])?;
+        tx.commit()?;
+        Ok(ids)
+    })
+    .await?;
+    let _ = s.events.send(Changed { ids });
+    Ok(StatusCode::OK.into_response())
+}
+
 async fn issue_rels(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<Rels>, AppError> {
     with_db(&s.pool, move |c| Ok(Json(rels(c, id)?))).await
 }
@@ -1404,6 +1508,7 @@ async fn main() {
         .route("/api/repos", get(repos))
         .route("/api/lookup", get(lookup))
         .route("/api/issues/{id}/rels", get(issue_rels))
+        .route("/api/proto/teammate/{id}", post(teammate))
         .route("/webhook", post(webhook))
         .route("/events", get(sse))
         // Client-side routes (/issues/:id) get the SPA shell.

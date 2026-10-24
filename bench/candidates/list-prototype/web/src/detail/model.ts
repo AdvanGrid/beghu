@@ -11,6 +11,7 @@
 import { createMemo, createSignal } from 'solid-js';
 import { fetchComments, fetchIssue, getIssue, sendOp, WriteError, type Comment, type Detail, type Op, type RelItem } from '../api';
 import { toast } from './toasts';
+import { createHeld } from './live';
 
 export type RelKind = 'parent' | 'child' | 'blocked_by' | 'blocking' | 'relates';
 
@@ -99,8 +100,9 @@ function apply(server: Detail, list: Pending[]): Detail & { pendingComments: (Co
         d.body = op.value;
         break;
       case 'comment':
-        // Once the server lists it, the confirmed op is only waiting to be dropped.
-        if (p.status !== 'confirmed') pendingComments.push({ id: -1, author: d.me, body: op.body, created_at: p.at, p });
+        // Once the copy on screen lists it, the confirmed op is only waiting to be dropped. (#66: the
+        // copy on screen can be an older, held one, so check it rather than the op's status.)
+        if (p.status !== 'confirmed' || !d.comments.some((c) => c.author === d.me && c.body === op.body)) pendingComments.push({ id: -1, author: d.me, body: op.body, created_at: p.at, p });
         break;
       case 'label_add': {
         const l = d.meta.labels.find((x) => x.name === op.name);
@@ -164,13 +166,24 @@ export function issueModel(server: () => Detail, setServer: (d: Detail) => void)
   // Comments the server folded away, once the user asks for them.
   const [extra, setExtra] = createSignal<{ id: number; comments: Comment[] } | undefined>(undefined);
 
+  // #66: a refetch goes through the held layer, which shows what doesn't move layout at once and
+  // holds the rest. Confirmed ops are dropped only once their refetch is the one on screen.
+  const held = createHeld({
+    get: server,
+    set: setServer,
+    view: (x) => apply(x, mine().filter((p) => p.status !== 'failed' || p.op.op === 'comment')),
+    committed: (started) => setOps((all) => all.filter((p) => !(p.status === 'confirmed' && p.confirmedGen! < started))),
+    scroller: () => document.querySelector<HTMLElement>('.detail') ?? undefined,
+  });
+  let heldFor = -1;
+
   async function refresh() {
     const id = server().id;
     const started = ++gen;
     const fresh = await fetchIssue(id);
     if (fresh.id !== server().id) return;
-    setServer(fresh);
-    setOps((all) => all.filter((p) => !(p.status === 'confirmed' && p.confirmedGen! < started)));
+    if (heldFor !== id) (held.reset(), (heldFor = id));
+    held.offer(fresh, started);
   }
 
   function send(op: Op, extras?: { item?: RelItem; onConflict?: (msg: string) => void; quiet?: boolean }) {
@@ -199,6 +212,9 @@ export function issueModel(server: () => Detail, setServer: (d: Detail) => void)
 
   return {
     d,
+    held,
+    /** The held plan, only while it belongs to the issue on screen. */
+    plan: () => (heldFor === server().id ? held.plan() : null),
     me: () => server().me,
     /** The server's own copy, for the body edit's conflict base. */
     server,

@@ -32,6 +32,7 @@ import {
 import { shell } from '../shell';
 import { SubIssues } from '../rel/SubIssues';
 import { Blocks } from '../rel/Blocks';
+import { Gutter, LivePanel } from './livepanel';
 
 const ghUrl = (m: IssueModel) => `https://github.com/acme/${m.d().repo}/issues/${m.d().number}`;
 
@@ -115,8 +116,12 @@ export function DetailA(props: { m: IssueModel }) {
   const m = props.m;
   const d = () => m.d();
   const newIssue = useNewIssue();
+  const [search] = useSearchParams();
+  // #66: ?variant= picks the shift cue; the phase drives the cue's CSS.
   return (
-    <article class="da" data-bench="detail" data-id={d().id}>
+    <article class={`da v-${search.variant ?? 'A'} ph-${m.held.phase()}`} data-bench="detail" data-id={d().id}>
+      <Gutter m={m} />
+      <LivePanel m={m} />
       {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
           first, and each property has its own row, so more labels only grow their own row. */}
       <div class="da-top">
@@ -134,6 +139,13 @@ export function DetailA(props: { m: IssueModel }) {
       </div>
       <ParentCrumb m={m} />
       <Title m={m} />
+      {/* #66: everything a props change can grow sits in one box, so a held change can mark it
+          and animate its height. */}
+      <div
+        class={`da-propsbox ${m.held.glow().has('props') ? 'lv-glow' : ''}`}
+        data-k="props"
+        data-live={m.plan()?.props ? 'props' : undefined}
+      >
       <div class="da-props">
         <span class="da-key">Assignees</span>
         <AssigneesPicker
@@ -171,6 +183,7 @@ export function DetailA(props: { m: IssueModel }) {
       </div>
       <Blocks m={m} />
       <RelSection m={m} kind="relates" hideEmpty />
+      </div>
       <Opened m={m} />
       <Body m={m} />
       <SubIssues m={m} mode="drag" onNew={() => newIssue(d().id)} />

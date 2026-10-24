@@ -263,7 +263,9 @@ label.prop { cursor: default; }
 label.prop select { border: 0; padding: 0; }
 
 /* thread */
-.thread { display: flex; flex-direction: column; gap: 10px; }
+/* #66: margins, not gap, so a closed (zero-height) arrival or marker takes no room. */
+.thread { display: flex; flex-direction: column; }
+.thread .comment { margin-bottom: 10px; }
 .comment.flat { padding: 8px 0; border-top: 1px solid var(--line); }
 .comment-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; font-size: 12.5px; }
 .comment.pending { opacity: 0.55; }
@@ -656,3 +658,71 @@ body.resizing .split-handle { pointer-events: auto; }
 .col-grip:hover::after, body.resizing .col-grip:active::after { background: var(--accent); width: 2px; left: 3px; top: 0; bottom: 0; }
 @container (max-width: 1000px) { .c-row.col-head { gap: 0 8px; } }
 .list-col { container-type: inline-size; }
+
+/* ---------- #66: live changes in the detail ---------- */
+:root { --cue: #2563eb; --cue-bg: rgb(37 99 235 / 0.07); --cue-del: #cf222e; --cue-del-bg: rgb(207 34 46 / 0.07); --glow: rgb(37 99 235 / 0.12); }
+:root.dark { --cue: #60a5fa; --cue-bg: rgb(96 165 250 / 0.10); --cue-del: #f87171; --cue-del-bg: rgb(248 113 113 / 0.10); --glow: rgb(96 165 250 / 0.16); }
+/* The detail keeps its own reading position (live.ts), so the browser's anchoring stays out. */
+.detail { overflow-anchor: none; }
+.da { position: relative; }
+.da-propsbox { display: flex; flex-direction: column; gap: 8px; border-radius: 6px; }
+
+/* Body as blocks: spacing inside each block, so a closed block takes no room. */
+.text-blocks .bblk { border-radius: 4px; }
+.text-blocks .bblk > .text { padding-bottom: 0.7em; }
+.text-blocks .bblk:last-child > .text { padding-bottom: 0; }
+[data-live='add'] { overflow: hidden; }
+
+/* Afterglow: what just changed stays tinted for a moment, then fades. */
+.lv-glow { animation: lv-glow 1.6s ease-out; }
+@keyframes lv-glow { from { background: var(--glow); } to { background: transparent; } }
+
+/* A: mark the spot. A zero-height line where something opens; an outline on what goes. */
+.lv-mark { display: none; }
+.v-A .lv-mark { display: block; position: relative; height: 0; }
+.v-A .lv-mark::before { content: ''; position: absolute; left: -6px; right: -6px; top: -1px; height: 2px; background: var(--cue); border-radius: 1px; animation: lv-in 0.12s ease-out; }
+.v-A .lv-mark > span { position: absolute; right: 0; top: -9px; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 8px; background: var(--cue); color: var(--accent-fg); animation: lv-in 0.12s ease-out; }
+.v-A.ph-cue [data-live='del'] { outline: 2px solid var(--cue-del); outline-offset: 2px; background: var(--cue-del-bg); }
+.v-A.ph-cue [data-live='props'] { outline: 2px solid var(--cue); outline-offset: 3px; background: var(--cue-bg); }
+.v-A.ph-anim [data-live='del'] { background: var(--cue-del-bg); }
+@keyframes lv-in { from { opacity: 0; } }
+
+/* B: show what moves. A band from the change to the edge that will move. */
+.lv-gutter { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.lv-band { position: absolute; left: 0; right: 0; background: var(--cue-bg); border-left: 3px solid var(--cue); animation: lv-in 0.15s ease-out; }
+.lv-band.down { border-top: 1px dashed var(--cue); }
+.lv-band.up { border-bottom: 1px dashed var(--cue); }
+.lv-band.edge { background: none; border-left-width: 0; }
+.lv-band > span { position: sticky; top: 4px; float: right; margin: 4px 6px; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 8px; background: var(--cue); color: var(--accent-fg); }
+.lv-band.up > span { position: absolute; bottom: 4px; right: 0; }
+.v-B.ph-cue [data-live='del'] { background: var(--cue-del-bg); text-decoration: line-through; text-decoration-color: var(--cue-del); }
+
+/* C: ghost that grows. Arrivals open as an empty dashed box over the whole cue, then fill;
+   what goes dims, dashes and closes over the cue. */
+.lv-ghost-label { display: none; }
+.v-C [data-live='add'] { position: relative; }
+.v-C.ph-held [data-live='add'], .v-C.ph-cue [data-live='add'] { outline: 1.5px dashed var(--cue); outline-offset: -1.5px; border-radius: 6px; background: var(--cue-bg); }
+.v-C.ph-held [data-live='add'] > :not(.lv-ghost-label), .v-C.ph-cue [data-live='add'] > :not(.lv-ghost-label) { opacity: 0; }
+.v-C.ph-cue .lv-ghost-label { display: block; position: absolute; left: 10px; top: 8px; font-size: 12px; color: var(--cue); }
+.v-C.ph-anim [data-live='add'] > * { opacity: 1; transition: opacity 0.25s ease-out; }
+.v-C.ph-cue [data-live='del'] { outline: 1.5px dashed var(--cue-del); outline-offset: -1.5px; border-radius: 6px; opacity: 0.45; }
+.v-C.ph-cue [data-live='props'] { outline: 1.5px dashed var(--cue); outline-offset: 3px; }
+.v-C.ph-anim [data-live='del'] { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) { .lv-glow, .lv-band, .lv-mark::before, .lv-mark > span { animation: none; } }
+
+/* The live panel: prototype controls, not part of any design. */
+.live-panel { position: fixed; left: 12px; bottom: 12px; z-index: 50; width: 330px; font-size: 12px; background: #18181b; color: #f4f4f5; border-radius: 10px; padding: 8px 10px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.3); }
+.live-panel header { display: flex; gap: 8px; align-items: center; }
+.live-panel .ghost { color: inherit; }
+.live-panel .muted { color: #a1a1aa; }
+.lp-mode { padding: 0 6px; border-radius: 8px; background: #3f3f46; font-variant-numeric: tabular-nums; }
+.lp-mode.reading { background: #166534; }
+.lp-phase { color: #a1a1aa; }
+.lp-held { margin: 6px 0; min-height: 16px; }
+.lp-kinds { display: flex; flex-wrap: wrap; gap: 4px; }
+.lp-kinds button { font-size: 11.5px; padding: 2px 7px; border-radius: 6px; border: 1px solid #3f3f46; background: #27272a; color: inherit; cursor: pointer; }
+.lp-kinds button:hover { background: #3f3f46; }
+.lp-row { display: flex; gap: 10px; align-items: center; margin: 6px 0; }
+.lp-knobs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; }
+.live-panel select { font-size: 11.5px; background: #27272a; color: inherit; border: 1px solid #3f3f46; border-radius: 4px; }

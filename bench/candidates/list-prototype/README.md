@@ -1,3 +1,50 @@
+# PROTOTYPE: live changes in the issue detail
+
+Throwaway, for [Prototype live changes in the issue detail](https://github.com/tomsjansons/beghu/issues/66),
+on top of the relationship prototype below. `?variant=`, the floating bar or ← / → switch the
+**shift cue**. The list's columns are fixed to round 3's A.
+
+    ./bench/serve list-prototype --scale 50k            # http://127.0.0.1:8080
+
+Open an issue, then use the **Live changes** panel (bottom left) to have a teammate change it:
+a short or an agent comment, a paragraph added, removed or rewritten, a typo, a label, an
+assignee, a blocker. Each change goes into the mirror and out as an ordinary SSE push, so the
+detail refetches it as it would a webhook. `after` delays the change so you can scroll or rest
+first, and `auto` makes one every 8–20 s. The panel shows the mode (intent with a countdown, or
+reading), the phase (idle → held → cue → anim) and what's held.
+
+- **A: mark the spot.** A still marker at the exact place, an accent line with "added" or
+  "roberts commented" where something will open and a red outline on what will go, then a quick
+  open/close.
+- **B: show what moves.** A tinted band from the change to the edge that will move (down to the
+  viewport's bottom, or up to its top), labelled "↓ +3 lines", then the same quick animation.
+  Off-screen changes (with `off-screen: hold`) show as an arrow at the edge.
+- **C: ghost that grows.** The cue is the motion: an empty dashed box opens slowly to the
+  incoming height over the whole cue, then the content fades in. What goes dims, dashes and
+  closes over the cue.
+
+Shared: what doesn't move layout (title, state, counts, your own comment) updates at once. What
+does is held in intent mode and applied in reading mode, cue first, then animation, then a short
+afterglow on what arrived. A change landing mid-cue joins it and restarts it; one landing
+mid-animation waits for the next round. The knobs:
+
+| knob | options | what it changes |
+|---|---|---|
+| rest | 5 / 3 / 2 s | stillness before reading mode (5 is decided; shorter only to test faster) |
+| cue | 400 / 700 / 1200 ms | how long the cue shows (in C, how slowly the ghost opens) |
+| anim | 150 / 250 / 400 ms | the open/close animation |
+| on intent | cancel / finish | intent during a cue: cancel it and hold again, or finish |
+| props | held / in place | whether property rows and Blocks follow the cue |
+| off-screen | now / hold | a change wholly above or below the viewport applies at once, keeping the reading position, or waits like the rest |
+| visible | push / nearer edge | a visible change pushes what's below, or (like the list) grows upward when it's in the viewport's top half |
+| order | newest / oldest | comment order: arrivals at the thread's top, or at its loaded end |
+| motion | os / reduce | force `prefers-reduced-motion`: the cue stays (as a still mark, 900 ms) and the change swaps in without animation |
+
+Try `/issues/3000040375` (short thread, sub-issues, a blocker) and `/issues/3000041809` (long
+thread: scroll into it to see off-screen arrivals keep your place).
+
+---
+
 # PROTOTYPE: relationships (sub-issues, dependencies, relates-to)
 
 Throwaway, for [Prototype the relationship tree](https://github.com/tomsjansons/beghu/issues/55), on

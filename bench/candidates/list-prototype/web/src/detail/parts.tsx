@@ -8,6 +8,7 @@ import { Avatar, LabelPill, Progress } from '../bits';
 import { ago } from '../view';
 import type { IssueModel, RelKind } from './model';
 import { highlight, segments } from './code';
+import { blocks, knobs, type Block } from './live';
 
 // ---------- small things ----------
 
@@ -145,7 +146,7 @@ export function Body(props: { m: IssueModel; card?: boolean }) {
         when={editing()}
         fallback={
           <>
-            <Text text={props.m.d().body} />
+            <BodyBlocks m={props.m} />
             <button class="ghost small edit-body" onClick={start}>
               Edit
             </button>
@@ -188,16 +189,73 @@ export function Body(props: { m: IssueModel; card?: boolean }) {
 
 // ---------- thread ----------
 
+/** #66: the body as blocks (paragraphs, code fences), so a held change can mark, open and close
+ * exactly the blocks it adds and removes. Spacing is padding inside each block, so a closed block
+ * takes no room at all. */
+function BodyBlocks(props: { m: IssueModel }) {
+  const list = createMemo(() => {
+    const raw: Block[] = props.m.plan()?.body ?? blocks(props.m.d().body).map((text) => ({ text, state: 'same' as const }));
+    const seen = new Map<string, number>();
+    return raw.map((b) => {
+      const n = (seen.get(b.text) ?? 0) + 1;
+      seen.set(b.text, n);
+      return { ...b, k: `b:${b.text.slice(0, 60)}:${n}` };
+    });
+  });
+  return (
+    <div class="text-blocks">
+      <Show when={list().length} fallback={<span class="muted">No description.</span>}>
+        <For each={list()}>
+          {(b) => (
+            <>
+              <Show when={b.state === 'add'}>
+                <Mark m={props.m} text="added" />
+              </Show>
+              <div
+                class={`bblk ${props.m.held.glow().has(`b:${b.text}`) ? 'lv-glow' : ''}`}
+                data-k={b.k}
+                data-live={b.state === 'same' ? undefined : b.state}
+                style={b.state === 'add' ? { height: '0px' } : undefined}
+              >
+                <Text text={b.text} />
+              </div>
+            </>
+          )}
+        </For>
+      </Show>
+    </div>
+  );
+}
+
+/** A: a still marker at the exact spot something will open, shown only during the cue. Zero
+ * height, so it moves nothing itself. */
+function Mark(props: { m: IssueModel; text: string }) {
+  return (
+    <Show when={props.m.held.phase() === 'cue'}>
+      <div class="lv-mark" aria-hidden="true">
+        <span>{props.text}</span>
+      </div>
+    </Show>
+  );
+}
+
 export function Thread(props: { m: IssueModel; variant?: 'cards' | 'flat' }) {
   const d = () => props.m.d();
+  const newest = () => knobs.order[0]() === 'newest';
   const shown = createMemo(() => {
     const extra = props.m.extra();
     if (!extra || !d().hidden) return { head: d().comments.slice(0, d().hidden ? 1 : d().comments.length), gap: d().hidden, tail: d().hidden ? d().comments.slice(1) : [] };
     return { head: [d().comments[0], ...extra, ...d().comments.slice(1)], gap: 0, tail: [] };
   });
+  const ordered = <T,>(xs: T[]) => (newest() ? [...xs].reverse() : xs);
   const [loading, setLoading] = createSignal(false);
-  const one = (c: { author: string | null; body: string; created_at: string }, extra?: Element, cls = '') => (
-    <div class={`comment ${props.variant === 'flat' ? 'flat' : 'card'} ${cls}`}>
+  const dels = () => new Set(props.m.plan()?.delComments ?? []);
+  const one = (c: { id?: number; author: string | null; body: string; created_at: string }, extra?: Element, cls = '') => (
+    <div
+      class={`comment ${props.variant === 'flat' ? 'flat' : 'card'} ${cls} ${c.id && props.m.held.glow().has(`c:${c.id}`) ? 'lv-glow' : ''}`}
+      data-k={c.id && c.id > 0 ? `c:${c.id}` : undefined}
+      data-live={c.id && dels().has(c.id) ? 'del' : undefined}
+    >
       <div class="comment-meta">
         <Avatar login={c.author ?? '?'} size={20} />
         <b>{c.author ?? 'ghost'}</b>
@@ -207,42 +265,73 @@ export function Thread(props: { m: IssueModel; variant?: 'cards' | 'flat' }) {
       <Text text={c.body} />
     </div>
   );
+  const incoming = () => (
+    <Show when={props.m.plan()?.addComments.length}>
+      <Mark m={props.m} text={props.m.plan()!.addComments.length === 1 ? `${props.m.plan()!.addComments[0].author} commented` : `${props.m.plan()!.addComments.length} new comments`} />
+      <div class="lv-add-comments" data-live="add" style={{ height: '0px' }}>
+        <span class="lv-ghost-label">{props.m.plan()!.addComments.map((c) => c.author).join(', ')} commented</span>
+        <For each={ordered(props.m.plan()!.addComments)}>{(c) => one(c)}</For>
+      </div>
+    </Show>
+  );
+  const pending = () => (
+    <For each={ordered(d().pendingComments)}>
+      {(c) =>
+        one(
+          c,
+          c.p.status === 'failed' ? (
+            <span class="failed-actions">
+              <span class="err">Not sent: {c.p.error}</span>
+              <button class="ghost small" onClick={() => props.m.retryComment(c.p.op_id)}>
+                Retry
+              </button>
+              <button class="ghost small" onClick={() => props.m.discardComment(c.p.op_id)}>
+                Discard
+              </button>
+            </span>
+          ) : (
+            <span class="muted">sending…</span>
+          ),
+          c.p.status === 'failed' ? 'failed' : 'pending',
+        )
+      }
+    </For>
+  );
+  const gap = () => (
+    <Show when={shown().gap}>
+      <button
+        class="gap"
+        onClick={async () => {
+          setLoading(true);
+          await props.m.loadHidden().finally(() => setLoading(false));
+        }}
+      >
+        {loading() ? 'Loading…' : `${shown().gap} more comments`}
+      </button>
+    </Show>
+  );
+  // #66: newest first (the default from #61) puts arrivals at the top of the thread, under the
+  // body; oldest first puts them at the loaded end.
   return (
     <div class="thread">
-      <For each={shown().head}>{(c) => one(c)}</For>
-      <Show when={shown().gap}>
-        <button
-          class="gap"
-          onClick={async () => {
-            setLoading(true);
-            await props.m.loadHidden().finally(() => setLoading(false));
-          }}
-        >
-          {loading() ? 'Loading…' : `${shown().gap} more comments`}
-        </button>
-      </Show>
-      <For each={shown().tail}>{(c) => one(c)}</For>
-      <For each={d().pendingComments}>
-        {(c) =>
-          one(
-            c,
-            c.p.status === 'failed' ? (
-              <span class="failed-actions">
-                <span class="err">Not sent: {c.p.error}</span>
-                <button class="ghost small" onClick={() => props.m.retryComment(c.p.op_id)}>
-                  Retry
-                </button>
-                <button class="ghost small" onClick={() => props.m.discardComment(c.p.op_id)}>
-                  Discard
-                </button>
-              </span>
-            ) : (
-              <span class="muted">sending…</span>
-            ),
-            c.p.status === 'failed' ? 'failed' : 'pending',
-          )
+      <Show
+        when={newest()}
+        fallback={
+          <>
+            <For each={shown().head}>{(c) => one(c)}</For>
+            {gap()}
+            <For each={shown().tail}>{(c) => one(c)}</For>
+            {incoming()}
+            {pending()}
+          </>
         }
-      </For>
+      >
+        {incoming()}
+        {pending()}
+        <For each={ordered(shown().tail)}>{(c) => one(c)}</For>
+        {gap()}
+        <For each={ordered(shown().head)}>{(c) => one(c)}</For>
+      </Show>
     </div>
   );
 }
