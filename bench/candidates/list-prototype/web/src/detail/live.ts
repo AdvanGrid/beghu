@@ -203,7 +203,8 @@ export function where(scroller: HTMLElement, el: Element): Where {
   return top < scroller.clientHeight / 2 ? 'up' : 'down';
 }
 
-export const variant = () => new URLSearchParams(location.search).get('variant') ?? 'A';
+// #68: ?variant= now picks the Markdown style; the cue is #66's winner, A.
+export const variant = () => 'A' as string;
 
 /** The first keyed element at the viewport's top, and its offset, to put back after a commit. */
 function anchor(sc: HTMLElement) {

@@ -1,3 +1,38 @@
+# PROTOTYPE: Markdown styling for bodies and comments
+
+Throwaway, for [Prototype Markdown styling for bodies and comments](https://github.com/tomsjansons/beghu/issues/68),
+on top of the issue detail below (side panel, #66's cue A fixed). `?variant=A|B|C`, the floating
+bar or ← / → switch how Markdown in bodies and comments is styled:
+
+- **A: Editor bands.** render-markdown.nvim close to literal: one text size, each heading a tinted
+  full-width band with a circled level number in its colour, indented by level; alerts as a
+  coloured bar with icon and title; ● ○ ◆ ◇ bullets in orange; code with a header (language dot
+  and name); a leading icon on every link (globe, GitHub); tables boxed with a coloured header
+  rule and alignment ticks.
+- **B: Document.** GitHub's sized heading hierarchy with level colours, h1/h2 underlined; alerts as
+  tinted callout boxes; plain coloured bullets; code with a header bar; no link icons, ↗ after
+  off-GitHub links; tables with rules and zebra rows; mentions as pills.
+- **C: Outline rails.** Each heading opens a section with a coloured rail down its length, nested,
+  and an `H1`…`H6` badge in a gutter, so a long agent comment reads as an outline; alert icons sit
+  in the gutter; code labels in the corner; GitHub-only link icons; rounded grid tables.
+
+Shared: the server's compact AST (comrak → ammonia, from the markdown probe) walked straight to DOM
+(`web/src/md/render.ts`); `#n`, `owner/repo#n` and bare GitHub issue URLs become references (in your
+mirror: state icon, hover title, opens in-app; otherwise ↗ to GitHub); `@user` and `@org/team`
+link to GitHub; read-only task checkboxes; footnotes; `<details>`; images click into a lightbox;
+highlight.js colours code after first paint. Colours are `light-dark()` tokens in `md/md.css`.
+
+The bar adds `md` (which real thread replaces the fixture's lorem: `auto` by issue id, `kitchen`
+for every element, six GitHub issues, five agent threads, or `off`), `icons` (`svg` sprite or
+`unicode glyphs`) and the walker time for the last frame (before layout).
+`node md-corpus/build.mjs` rebuilds `web/public/md-corpus.json`.
+
+    ./bench/serve list-prototype --scale 50k --port 8095
+    (cd bench/candidates/list-prototype/web && API_URL=http://127.0.0.1:8095 npx vite --port 5180)
+    # http://localhost:5180/issues/3000040375?md=kitchen&variant=A
+
+---
+
 # PROTOTYPE: live changes in the issue detail
 
 Throwaway, for [Prototype live changes in the issue detail](https://github.com/tomsjansons/beghu/issues/66),

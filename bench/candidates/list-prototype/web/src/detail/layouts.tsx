@@ -144,7 +144,7 @@ export function DetailA(props: { m: IssueModel }) {
   const [search] = useSearchParams();
   // #66: ?variant= picks the shift cue; the phase drives the cue's CSS.
   return (
-    <article class={`da v-${search.variant ?? 'A'} ph-${m.held.phase()}`} data-bench="detail" data-id={d().id}>
+    <article class={`da v-A ph-${m.held.phase()}`} data-bench="detail" data-id={d().id}>
       <Gutter m={m} />
       <LivePanel m={m} />
       {/* Nothing here moves when a value changes length: the badge has a fixed width and comes

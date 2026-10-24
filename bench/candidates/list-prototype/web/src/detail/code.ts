@@ -23,9 +23,11 @@ function load() {
     import('highlight.js/lib/languages/xml'),
     import('highlight.js/lib/languages/yaml'),
     import('highlight.js/lib/languages/diff'),
-  ]).then(([core, ts, js, rust, json, bash, sql, css, xml, yaml, diff]) => {
+    import('highlight.js/lib/languages/python'),
+    import('highlight.js/lib/languages/lua'),
+  ]).then(([core, ts, js, rust, json, bash, sql, css, xml, yaml, diff, python, lua]) => {
     const h = core.default;
-    for (const [name, lang] of [['typescript', ts], ['javascript', js], ['rust', rust], ['json', json], ['bash', bash], ['sql', sql], ['css', css], ['xml', xml], ['yaml', yaml], ['diff', diff]] as const)
+    for (const [name, lang] of [['typescript', ts], ['javascript', js], ['rust', rust], ['json', json], ['bash', bash], ['sql', sql], ['css', css], ['xml', xml], ['yaml', yaml], ['diff', diff], ['python', python], ['lua', lua]] as const)
       h.registerLanguage(name, lang.default);
     h.registerAliases(['ts', 'tsx'], { languageName: 'typescript' });
     h.registerAliases(['js', 'jsx'], { languageName: 'javascript' });
@@ -33,8 +35,19 @@ function load() {
     h.registerAliases(['sh', 'shell', 'zsh'], { languageName: 'bash' });
     h.registerAliases(['html'], { languageName: 'xml' });
     h.registerAliases(['yml'], { languageName: 'yaml' });
+    h.registerAliases(['py'], { languageName: 'python' });
     setHljs(h);
+    for (const f of waiting.splice(0)) f(h);
   });
+}
+
+const waiting: ((h: HLJSApi) => void)[] = [];
+/** #68: for the non-reactive Markdown walker: runs `f` once highlight.js is loaded. */
+export function withHljs(f: (h: HLJSApi) => void) {
+  const h = hljs();
+  if (h) return f(h);
+  waiting.push(f);
+  load();
 }
 
 export type Segment = { text: string } | { code: string; lang: string };

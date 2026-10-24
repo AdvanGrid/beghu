@@ -4,6 +4,7 @@ import { createSignal, For, onSettled } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
 import { VARIANTS } from './App';
 import { fail, lag, setFail, setLag, type Fail } from './api';
+import { corpus, walk } from './md/Md';
 
 const LAGS = [0, 150, 400, 1000, 2500];
 type Theme = 'light' | 'dark' | 'system';
@@ -42,6 +43,26 @@ export function Switcher() {
       <button onClick={() => step(1)} title="Next variant (→)">
         ›
       </button>
+      <span class="sw-sep" />
+      {/* #68: which real thread stands in for the fixture's text, the icon approach, walk time */}
+      <label>
+        md{' '}
+        <select value={(search.md as string) ?? 'auto'} onChange={(e) => setSearch({ md: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="auto">auto (by issue)</option>
+          <option value="off">off (fixture text)</option>
+          <For each={corpus() ?? []}>{(t) => <option value={t.key}>{t.key.replace('agent:', '🤖 ')}</option>}</For>
+        </select>
+      </label>
+      <label>
+        icons{' '}
+        <select value={(search.icons as string) ?? 'svg'} onChange={(e) => setSearch({ icons: e.currentTarget.value === 'svg' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="svg">svg sprite</option>
+          <option value="glyph">unicode glyphs</option>
+        </select>
+      </label>
+      <span class="sw-walk" title="Walker time for the last frame's Markdown (body + comments), before layout">
+        walk {walk().ms.toFixed(1)} ms · {walk().docs} docs · {walk().nodes} nodes
+      </span>
       <span class="sw-sep" />
       <label>
         lag{' '}

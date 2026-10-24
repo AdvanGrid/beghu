@@ -42,12 +42,12 @@ export type Ctx = {
   live: () => number;
 };
 
-// #66: ?variant= now picks the shift cue for live changes in the detail. The list's columns are
-// fixed to round 3's A.
+// #68: ?variant= now picks how Markdown in bodies and comments is styled (see md/). The shift
+// cue is fixed to #66's A.
 export const VARIANTS = [
-  { key: 'A', name: 'Mark the spot' },
-  { key: 'B', name: 'Show what moves' },
-  { key: 'C', name: 'Ghost that grows' },
+  { key: 'A', name: 'Editor bands' },
+  { key: 'B', name: 'Document' },
+  { key: 'C', name: 'Outline rails' },
 ] as const;
 
 export type RelVariant = 'A' | 'B' | 'C';

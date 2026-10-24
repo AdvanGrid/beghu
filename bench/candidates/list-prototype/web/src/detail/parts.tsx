@@ -9,6 +9,7 @@ import { ago } from '../view';
 import type { IssueModel, RelKind } from './model';
 import { highlight, segments } from './code';
 import { blocks, knobs, type Block } from './live';
+import { Md, useThread } from '../md/Md';
 
 // ---------- small things ----------
 
@@ -114,6 +115,7 @@ export function Text(props: { text: string; class?: string }) {
 }
 
 export function Body(props: { m: IssueModel; card?: boolean }) {
+  const thread = useThread(() => props.m.d().id);
   const [editing, setEditing] = createSignal(false);
   const [conflict, setConflict] = createSignal<string | undefined>(undefined);
   let base = '';
@@ -146,7 +148,10 @@ export function Body(props: { m: IssueModel; card?: boolean }) {
         when={editing()}
         fallback={
           <>
-            <BodyBlocks m={props.m} />
+            {/* #68: a real GitHub thread's body, rendered from the server's AST */}
+            <Show when={thread()} fallback={<BodyBlocks m={props.m} />}>
+              {(t) => <Md ast={t().body} repo={t().repo} />}
+            </Show>
             <button class="ghost small edit-body" onClick={start}>
               Edit
             </button>
@@ -310,8 +315,35 @@ export function Thread(props: { m: IssueModel; variant?: 'cards' | 'flat' }) {
       </button>
     </Show>
   );
+  // #68: with a corpus thread, its first page of comments replaces the fixture's (pending ones the
+  // user writes still show, as plain text).
+  const thread = useThread(() => props.m.d().id);
+  const corpusComment = (c: { author: string; created_at: string; ast: any[] }, repo: string) => (
+    <div class={`comment ${props.variant === 'flat' ? 'flat' : 'card'}`}>
+      <div class="comment-meta">
+        <Avatar login={c.author} size={20} />
+        <b>{c.author}</b>
+        <span class="muted">{ago(c.created_at)} ago</span>
+      </div>
+      <Md ast={c.ast} repo={repo} />
+    </div>
+  );
   // #66: newest first (the default from #61) puts arrivals at the top of the thread, under the
   // body; oldest first puts them at the loaded end.
+  return (
+    <Show
+      when={thread()}
+      fallback={<FixtureThread />}
+    >
+      {(t) => (
+        <div class="thread">
+          {pending()}
+          <For each={ordered(t().comments)}>{(c) => corpusComment(c, t().repo)}</For>
+        </div>
+      )}
+    </Show>
+  );
+  function FixtureThread() {
   return (
     <div class="thread">
       <Show
@@ -334,6 +366,7 @@ export function Thread(props: { m: IssueModel; variant?: 'cards' | 'flat' }) {
       </Show>
     </div>
   );
+  }
 }
 
 export function CommentBox(props: { m: IssueModel; withClose?: boolean; compact?: boolean }) {
