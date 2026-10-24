@@ -16,10 +16,6 @@ _Avoid_: Tracked repo, watched repo
 The server-side copy of a connected account's GitHub data. It is disposable and can always be rebuilt from GitHub.
 _Avoid_: Database, replica, backend store
 
-**Cache**:
-The browser-side copy of data from the mirror. It exists only to make the app faster, not to work offline.
-_Avoid_: Local store, offline store
-
 **Relationship**:
 A link between two issues: a sub-issue (parent/child), a dependency (blocked by / blocking), or "relates to" (symmetric, no direction).
 _Avoid_: Link, edge
@@ -31,3 +27,15 @@ _Avoid_: Ghost, external issue
 **Pending write**:
 A change the user made in beghu that GitHub hasn't confirmed yet. It shows at once, lives only in the tab that made it, and reverts visibly if GitHub refuses it.
 _Avoid_: Outbox entry, queued write
+
+**Failed write**:
+A pending write that GitHub refused, or that never reached GitHub. Its change is reverted, but it stays visible with Retry until the user retries or dismisses it, or reloads the tab.
+_Avoid_: Error, rejected op
+
+**Fake GitHub**:
+A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fixture, answers the API calls beghu makes, signs in fixture users and sends webhooks back, with latency and failures set at runtime. Never used in production.
+_Avoid_: Mock GitHub, GitHub stub, stand-in
+
+**Held change**:
+A change to a list's order from a live update (an issue moving, arriving or leaving) that waits until the user isn't about to click, so nothing moves under the pointer. Changes to a row's contents are never held.
+_Avoid_: Frozen order, pending reorder
