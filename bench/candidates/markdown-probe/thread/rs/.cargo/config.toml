@@ -1,0 +1,4 @@
+# ammonia's Document::to_dom_node is behind this cfg; it lets us walk the sanitised tree into the
+# compact AST without serialising to HTML and parsing again.
+[build]
+rustflags = ["--cfg", "ammonia_unstable"]

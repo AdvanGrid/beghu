@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>thread probe</title>
+<style>
+/* Stands in for the StyleX output: one class string per tag, realistic type and spacing so layout
+   costs something. Colours are light-dark() like the app's tokens. */
+:root { color-scheme: light dark; --fg: light-dark(#18181b, #e4e4e7); --bg: light-dark(#fff, #09090b); --mute: light-dark(#71717a, #a1a1aa); --line: light-dark(#e4e4e7, #27272a); --code: light-dark(#f4f4f5, #18181b); }
+body { margin: 0; font: 14px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+#app { max-width: 880px; margin: 0 auto; padding: 16px; }
+.comment { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 16px; padding: 0 16px 8px; overflow-wrap: anywhere; }
+.meta { color: var(--mute); font-size: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.x1 { margin: 0 0 8px; } .x3 { color: light-dark(#2563eb, #60a5fa); }
+.x4 { font: 12px/1.45 ui-monospace, monospace; background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.x6 { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; } .x6 .x4 { padding: 0; }
+.x9 { margin: 2px 0; } .x10 { padding-left: 24px; margin: 0 0 8px; }
+.x11 { border-left: 3px solid var(--line); color: var(--mute); margin: 0 0 8px; padding: 0 12px; }
+.x13 { border-collapse: collapse; margin: 0 0 8px; display: block; overflow-x: auto; } .x14 { border: 1px solid var(--line); padding: 4px 10px; } .x15 { font-weight: 600; }
+.x16 { max-width: 100%; } .x17 { font-weight: 600; margin: 16px 0 8px; line-height: 1.25; }
+.more { padding: 12px; text-align: center; color: var(--mute); border: 1px dashed var(--line); border-radius: 6px; margin: 0 0 16px; }
+</style></head>
+<body><div id="app"></div><script type="module" src="/src/main.tsx"></script></body></html>

@@ -37,5 +37,21 @@ A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fix
 _Avoid_: Mock GitHub, GitHub stub, stand-in
 
 **Held change**:
-A change to a list's order from a live update (an issue moving, arriving or leaving) that waits until the user isn't about to click, so nothing moves under the pointer. Changes to a row's contents are never held.
+A layout change from a live update that waits while the user is in intent mode, so nothing moves under the pointer: a list's order changing (an issue moving, arriving or leaving), or the detail growing or shrinking (new comments, a body edit). It applies in reading mode, behind a shift cue and then animated. Changes to contents that don't move layout are never held.
 _Avoid_: Frozen order, pending reorder
+
+**Intent mode**:
+The user may be about to act: the pointer is moving or has rested under 5 s, a press or selection is in progress, or a key was pressed in the last 5 s. Held changes wait.
+_Avoid_: Busy, active
+
+**Reading mode**:
+The pointer has been still for 5 s or more, with no keys or presses. Held changes apply, each behind a shift cue.
+_Avoid_: Idle
+
+**Shift cue**:
+A brief visual sign, shown just before a held change applies, of what is about to move and where (new comments arriving, a body growing or shrinking), so the user can follow the animated change that comes next.
+_Avoid_: Warning, toast, transition indicator
+
+**Match mode**:
+How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters).
+_Avoid_: Relevance, search ranking

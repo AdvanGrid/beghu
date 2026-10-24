@@ -1,0 +1,13 @@
+[package]
+name = "thread-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+comrak = { version = "=0.57.0", default-features = false }
+ammonia = "=4.2.4"
+serde_json = "1"
+
+[profile.release]
+debug = false

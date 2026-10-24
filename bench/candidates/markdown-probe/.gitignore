@@ -3,3 +3,9 @@ rs/target/
 web/dist/
 js/out/
 github/openapi.json
+thread/rs/target/
+thread/web/dist/
+thread/web/node_modules
+thread/data/raw/
+thread/data/threads/
+thread/data/pool-md.json
