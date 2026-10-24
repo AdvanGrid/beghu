@@ -1,0 +1,840 @@
+<p dir="auto">I have also run into chrome spontaneously crashing (well just the tab) seemingly due to HMR but there was nothing useful that came out of verbose logging or anywhere else. When you say it stops working/hangs, what does it show in the browser?</p>
+<blockquote>
+<p dir="auto">When you say it stops working/hangs, what does it show in the browser?</p>
+</blockquote>
+<p dir="auto">Nothing at all. Just a pending request and a spinner. The hanging only happens on requests to this 'route'/page, the vite process/server still accepts other requests even after the hanging happened. And handles them just fine without requiring a restart.</p>
+<p dir="auto"><a target="_blank" rel="noopener noreferrer nofollow" href="https://user-images.githubusercontent.com/91126835/209300471-237c5f61-be6f-4989-ba40-c4c95e295985.png"><img src="https://user-images.githubusercontent.com/91126835/209300471-237c5f61-be6f-4989-ba40-c4c95e295985.png" alt="image" style="max-width: 100%;"></a></p>
+<p dir="auto">I have no idea where to even start to 'debug' this problem.</p>
+<p dir="auto">It does not seem chrome related, it happens in Firefox and Safari as well.</p>
+<p dir="auto">I found a (consistent) way to temporary fix a hanging route.</p>
+<ul dir="auto">
+<li>I delete a bunch of imports (and the code using them) in the file.</li>
+<li>Restart the server.</li>
+<li>Reload the hanging page (it loads).</li>
+<li>Paste imports back in the file. Save.</li>
+<li>HMR does it's thing.</li>
+<li>Route can be reloaded and works fine.</li>
+</ul>
+<p dir="auto">Changing anything in one of the imported files (something as simple as adding a console log) can result in the HMR making the page hang again.</p>
+<p dir="auto">I've run into infinite pending requests and other issues but here are a few thoughts that maybe will help you although what you describe doesn't sound exactly the same as what I ran into...</p>
+<p dir="auto">Untrusted SSL/cache issues -  for SSL we needed to have a trusted SSL certificate - it doesn't look like you're using SSL based on your screenshot but mentioning it just in case because there were equally frustrating and baffling issues with that.  Using an untrusted SSL could lead to unexpected behavior since it wouldn't correctly cache anything.  I see that 'Disable cache' is checked in your screenshot, and I wonder if that is maybe causing problems (or just a coincidence).</p>
+<p dir="auto">Infinite pending requests - the infinite pending request problem that we had was caused by a bug in <code class="notranslate">http</code> that we could never fully root cause (<code class="notranslate">http</code> is used under the hood by the vite proxy).  To workaround this, we setup a proxy that doesn't use node at all that would act as a reverse proxy to all requests to vite, e.g., <code class="notranslate">localhost:9000</code> would proxy all the requests to <code class="notranslate">localhost:5173</code>.  We also had to remove to the <code class="notranslate">server.proxy</code> settings from our vite config.<br>
+There is a GitHub issue that says this may be a problem with a file descriptor limit although increasing the file descriptor limit didn't seem to resolve it for us.</p>
+<p dir="auto">I have seen this as well, with SvelteKit. In my case I get a log that ssr compilation starts, but it never finishes. It is non-deterministic and only happens in dev. If you figure out what's causing it, I'd love to know— it's driving me crazy.</p>
+<p dir="auto">Same problem here, but with a preact app that uses web workers with very large TS files (a parser). HMR is not my problem, though. I can run the app once. Have to wait a couple of seconds until everything is loaded. Then I go to the page that requires parsing and get a couple of these messages:</p>
+<blockquote>
+<p dir="auto">[BABEL] Note: The code generator has deoptimised the styling of undefined as it exceeds the max of 500KB.</p>
+</blockquote>
+<p dir="auto">Once the last of the message is through I can actually use the page and the worker (pool) works. Then I try to restart the app and nothing works anymore. It just hangs and after a while I get a timeout error.</p>
+<p dir="auto">When I now try to stop the dev server (by pressing q in the VS Code terminal) nothing happens. Same for ctrl+c. I have to kill the process and start the dev server again before I can continue. This is so annoying. If I only had a log that would tell me what's going wrong...</p>
+<p dir="auto">Following the advice from <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> I disabled https and that seems to help with my issues. I used <code class="notranslate">"@vitejs/plugin-basic-ssl"</code> to provide a self signed certificate.</p>
+<p dir="auto">I then checked also HMR and the updates are instant! So https seems definitely to be an issue with the dev server/browser.</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/mike-lischke/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/mike-lischke">@mike-lischke</a> if you do need/want https, you need to trust the ssl by manually setting it to be trusted in Keychain Access on macOS.</p>
+<p dir="auto">I had submitted a PR that added instructions/info about this on the troubleshooting page.</p>
+<p dir="auto"><a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1468909605" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/11126" data-hovercard-type="pull_request" data-hovercard-url="/vitejs/vite/pull/11126/hovercard" href="https://github.com/vitejs/vite/pull/11126">#11126</a></p>
+<p dir="auto">Yes, I know. We do this automatically in our VS Code extension. But for the dev builds I hoped I could get away with that plugin and didn't expect such troubles once the browser accepted the connection. Thanks a bunch for your help <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a>!</p>
+<p dir="auto">Update: I removed the basic-ssl plugin and set up the dev server to use our (self signed) server cert. Everything connects and the page looks good at first look. But as soon as I start using the web workers I'm back to square one: after reloading the page or restarting the browser entirely, the web workers don't do anything anymore and the dev server just hangs.</p>
+<p dir="auto">In fact it looks as if the dev server doesn't serve anything from this moment on. When I do yet another page refresh in the browser I only get a timeout error.</p>
+<p dir="auto">I am also having the same issue. The dev server hangs seemingly randomly and the site is not accessible on subsequent restarts. The built version works fine but I'm unable to work on the project locally which is very annoying.</p>
+<p dir="auto">I'm also using Sveltekit on a relatively big project so I cannot reproduce it.<br>
+I've tried using the older versions of Vite, going back to 4.0.0, and the issue happens on all versions.</p>
+<p dir="auto">This leads me to believe that this might be a Sveltekit issue.</p>
+<p dir="auto">Might not be related at all but I noticed that the site hangs each time after this message:<br>
+<code class="notranslate">✨ optimized dependencies changed. reloading</code></p>
+<p dir="auto">I don't use Sveltekit and had to switch to non-secure connections (http) during debugging (which is not a big deal, just a bit annoying, having this working for such a long time, before I switched to vite).</p>
+<p dir="auto">Based on this comment - has anyone tried using an older version of node  (16.15 instead 18.x) -  this could be a possible solution for the infinite pending requests in the network tab:<br>
+<a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="3988578" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/discussions/7620" data-hovercard-type="discussion" data-hovercard-url="/vitejs/vite/discussions/7620/hovercard?comment_id=3108701" href="https://github.com/vitejs/vite/discussions/7620#discussioncomment-3108701">#7620 (comment)</a></p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> I am using v16.18.0. I tried 16.15.0 and the same thing still happens. I've been using the same version of Node all along and this issue started happening recently.</p>
+<p dir="auto">I have exactly the same problem, and I've managed to solve it for my case, but I'm not sure if this the solution to every other case in this thread. So my problem was:</p>
+<ul dir="auto">
+<li>Running in dev mode <a href="http://localhost:5173" rel="nofollow">http://localhost:5173</a></li>
+<li>Complex React page with lot of components in TS</li>
+<li>Vite dev hangs indefinitely without errors randomly after a while</li>
+</ul>
+<p dir="auto">I'm developing on WSL on windows, and the localhost is routed to WSL.<br>
+Instead of running vite on localhost, I do <strong>vite --host 0.0.0.0</strong> and access it with the WSL network in my case <a href="http://172.20.102.240:5173/" rel="nofollow">http://172.20.102.240:5173/</a><br>
+With this setup vite runs fine, but I'm not sure this is a WSL problem, because I have node servers on WSL and they run fine with localhost.</p>
+<p dir="auto">Hope this helps somebody !</p>
+<p dir="auto">I think I am having the same issue, ie. specifically when running the vite dev server the browser tab will hang on the initial load.</p>
+<p dir="auto">However for me it is not just that the vite dev server is not responding, it seems like the browser tab is frozen, ie. when I press the close or back button on the tab in chrome it will not respond, and I need to press close many times to force close the tab from chrome. Is anyone else experiencing the same behavior in Chrome?</p>
+<p dir="auto">Should also note that in my team I am the only non-Mac user, and none of the Mac users seems to be having issues.<br>
+(I am on Linux)</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/roligheten/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/roligheten">@roligheten</a> That sounds like you have an infinite loop somewhere in your app.</p>
+<p dir="auto">In this particular issue, the dev server fails to respond during server-side rendering. I am using SvelteKit and In my case, the <code class="notranslate">fetch</code> requests made from <code class="notranslate">+layout.ts</code> never resolve. Those requests are made to the SvelteKit endpoints like <code class="notranslate">/account/me.json</code> and those endpoints never receive the requests.<br>
+This causes the <code class="notranslate">load</code> function to never finish since it's stuck awaiting the requests to resolve, thus hanging the app indefinitely.</p>
+<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="// +layout.ts
+// This runs but never resolves
+const accountRes = await fetch(`/account/me.json`).then((res) =&gt; res.json()).catch(console.error);
+
+// routes/account/me.json/+server.ts
+export const GET: RequestHandler = async ({ request }) =&gt; {
+// This function never gets called
+})"><pre class="notranslate"><span class="pl-c">// +layout.ts</span>
+<span class="pl-c">// This runs but never resolves</span>
+<span class="pl-k">const</span> <span class="pl-s1">accountRes</span> <span class="pl-c1">=</span> <span class="pl-k">await</span> <span class="pl-en">fetch</span><span class="pl-kos">(</span><span class="pl-s">`/account/me.json`</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">then</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-s1">res</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">res</span><span class="pl-kos">.</span><span class="pl-en">json</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">catch</span><span class="pl-kos">(</span><span class="pl-smi">console</span><span class="pl-kos">.</span><span class="pl-c1">error</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+
+<span class="pl-c">// routes/account/me.json/+server.ts</span>
+<span class="pl-k">export</span> <span class="pl-k">const</span> <span class="pl-c1">GET</span>: <span class="pl-smi">RequestHandler</span> <span class="pl-c1">=</span> <span class="pl-k">async</span> <span class="pl-kos">(</span><span class="pl-kos">{</span> request <span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">{</span>
+<span class="pl-c">// This function never gets called</span>
+<span class="pl-kos">}</span><span class="pl-kos">)</span></pre></div>
+<p dir="auto">The same here but on Chrome 109 for Linux. Firefox works, though Chrome 109 on MacOS also works fine. That's pretty annoying :)</p>
+<p dir="auto">The project is quite large.</p>
+<p dir="auto">Runing with <code class="notranslate">--debug</code> option doesn't show any errors, it just goes sequentially across multiple project files and then just stops at some time.</p>
+<p dir="auto">Upd. Just tried Chrome 110 Beta on Linux with the same results.</p>
+<blockquote>
+<p dir="auto">Based on this comment - has anyone tried using an older version of node (16.15 instead 18.x) - this could be a possible solution for the infinite pending requests in the network tab: <a href="https://github.com/vitejs/vite/discussions/7620#discussioncomment-3108701" data-hovercard-type="discussion" data-hovercard-url="/vitejs/vite/discussions/7620/hovercard?comment_id=3108701">#7620 (comment)</a></p>
+</blockquote>
+<p dir="auto">I tried versions 14, 16 and 18. It looks like Chrome problem, not the Node problem because it works on FF on all Node versions but hangs in Chrome only.</p>
+<p dir="auto">So I found the fix (at least to my problem). This problem is similar to this one:<br>
+<a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1027324755" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/5310" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/5310/hovercard" href="https://github.com/vitejs/vite/issues/5310">#5310</a></p>
+<p dir="auto">In case you have a big project with plenty of files Chrome demands more file descriptors than system allows (1000 by default). I have Ubuntu Linux, so using <code class="notranslate">ulimit -Sn</code> didn't work for me. Like, it updates the amount of descriptors but that has to be done permanently as Chrome doesn't use it.</p>
+<p dir="auto">so, for Ubuntu Linux you have to add line <code class="notranslate">* - nofile 65536</code> (or whatever amount of opened files you need) to the file <code class="notranslate">/etc/security/limits.conf</code> and reboot.</p>
+<p dir="auto">For Arch Linux they say to add <code class="notranslate">DefaultLimitNOFILE=65536</code> line to both <code class="notranslate">/etc/systemd/system.conf </code> and <code class="notranslate">/etc/systemd/user.conf</code> file. Didn't check that.</p>
+<p dir="auto">Upd. LOL. Just figured out that <code class="notranslate">DefaultLimitNOFILE</code> can be applied to Ubuntu as also but it simply doesn't work, so <code class="notranslate">limits.conf</code> is the only working solution there. Will provde PR.</p>
+<p dir="auto">Weird stuff. Using SvelteKit as well.</p>
+<ul dir="auto">
+<li><code class="notranslate">vite dev</code> then request from Chrome =&gt; <strong>hangs</strong></li>
+<li><code class="notranslate">vite dev</code> then request from Firefox =&gt; <strong>works</strong>, subsequent request from Chrome =&gt; <strong>works</strong></li>
+</ul>
+<p dir="auto"><code class="notranslate">wtfnode</code> shows that the socket from chrome is never closed, just hangs. But there are no node hooks waiting except for the vite connect app server.</p>
+<p dir="auto">I can see the commit where this behaviour begins in my codebase. But nothing stands out. <a href="https://gist.github.com/ximus/4cd643dcffa202eb95e16d96e1373bfb">Here's the patch</a> if anyone is curious, but it's just business logic changes relevant to my app (warning: large commit) (ignore the ruby code).</p>
+<p dir="auto">I'll have to keep looking.</p>
+<p dir="auto">UPDATE: just showed up again randomly. This time firefox requests don't help.<br>
+UPDATE 2: Now the firefox request thing works again</p>
+<blockquote>
+<p dir="auto">I'll have to keep looking.</p>
+</blockquote>
+<p dir="auto">Did you try what I suggested? Seems like that's a known issue but proposed fix doesn't work.</p>
+<blockquote>
+<p dir="auto">so, for Ubuntu Linux you have to add line <code class="notranslate">* - nofile 65536</code> (or whatever amount of opened files you need) to the file <code class="notranslate">/etc/security/limits.conf</code> and reboot.</p>
+</blockquote>
+<p dir="auto">Thank you <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/ximus/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/ximus">@ximus</a> This solved the issue for me 🥇</p>
+<p dir="auto">I am not on Linux, but on a Mac and Firefox has the same issue. In what way does <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1573395181" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/11959" data-hovercard-type="pull_request" data-hovercard-url="/vitejs/vite/pull/11959/hovercard" href="https://github.com/vitejs/vite/pull/11959">#11959</a> close this?</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/hanszoons/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/hanszoons">@hanszoons</a> did you try something like this - <a href="https://superuser.com/questions/302754/increase-the-maximum-number-of-open-file-descriptors-in-snow-leopard" rel="nofollow">https://superuser.com/questions/302754/increase-the-maximum-number-of-open-file-descriptors-in-snow-leopard</a> ?</p>
+<p dir="auto">The reasons look pretty same, hanging requests on big projects with huge amount of files and seems like caused by not enough amount of descriptors on different browsers (though FF and Chrome seems like treating it differently).</p>
+<p dir="auto">Yes I tried that before opening the issue (as it already was in the vite docs). I have many imports, but from only a few files (about 20-30). That's not a big project in terms of file descriptors.</p>
+<p dir="auto">Just tried it again, same predictable hang when I edit an imported function.</p>
+<p dir="auto">I am also not on Linux, and seeing this same issue as recently as yesterday on SvelteKit 1.5.6 and vite 4.1.1. Please re-open this issue.</p>
+<p dir="auto">I found what looks like a solution that works for me but it would be good to get validation or improvements from this approach. My previous looking into the root cause of this it seemed like it was an issue with node's <code class="notranslate">http</code>.  Well, someone wrote <a href="https://github.com/nodejs/undici">undici</a> which is an HTTP client written from scratch.  <code class="notranslate">@fastify/http-proxy</code> is a module that uses <code class="notranslate">undici</code> under the hood.  <code class="notranslate">server.proxy</code> settings remain in vite.config and nothing special is really required.</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="const fs = require(&quot;fs&quot;);
+const path = require(&quot;path&quot;);
+const proxy = require(&quot;@fastify/http-proxy&quot;);
+
+const serverDirectory = &quot;/path/to/ssl&quot;;
+const fastify = require(&quot;fastify&quot;)({
+  logger: false,
+  http2: true,
+ /* enable if you need it
+  https: {
+    key: fs.readFileSync(path.join(serverDirectory, &quot;proxy.key&quot;)),
+    cert: fs.readFileSync(path.join(serverDirectory, &quot;proxy.cer&quot;)),
+  }, */
+});
+
+fastify.register(proxy, {
+   // change to https if you need it
+  upstream: &quot;http://localhost:3000&quot;,
+  prefix: &quot;/&quot;,
+  // enables vite's HMR, might also need to update server.clientPort in vite config
+  // https://vitejs.dev/config/server-options.html#server-hmr
+  websocket: true, 
+});
+
+fastify.server.on(&quot;secureConnection&quot;, (sock) =&gt; {
+  sock.on(&quot;error&quot;, (err) =&gt; {
+    console.log(&quot;Socket error&quot;, err);
+  });
+});
+
+fastify.listen({ port: 3001 }, (err, address) =&gt; {
+  if (err) {
+    console.log(&quot;ERR:&quot;, err);
+  }
+});"><pre class="notranslate"><code class="notranslate">const fs = require("fs");
+const path = require("path");
+const proxy = require("@fastify/http-proxy");
+
+const serverDirectory = "/path/to/ssl";
+const fastify = require("fastify")({
+  logger: false,
+  http2: true,
+ /* enable if you need it
+  https: {
+    key: fs.readFileSync(path.join(serverDirectory, "proxy.key")),
+    cert: fs.readFileSync(path.join(serverDirectory, "proxy.cer")),
+  }, */
+});
+
+fastify.register(proxy, {
+   // change to https if you need it
+  upstream: "http://localhost:3000",
+  prefix: "/",
+  // enables vite's HMR, might also need to update server.clientPort in vite config
+  // https://vitejs.dev/config/server-options.html#server-hmr
+  websocket: true, 
+});
+
+fastify.server.on("secureConnection", (sock) =&gt; {
+  sock.on("error", (err) =&gt; {
+    console.log("Socket error", err);
+  });
+});
+
+fastify.listen({ port: 3001 }, (err, address) =&gt; {
+  if (err) {
+    console.log("ERR:", err);
+  }
+});
+</code></pre></div>
+<p dir="auto">Feel like there must be some <code class="notranslate">http</code> setting that would work but no idea what that would be as things I tried didn't work.<br>
+If you google around, you'll find people who run into the issue with pending requests it could be related to a request that is hanging open and not closed.  Could there be a <code class="notranslate">catch</code> or error event handler that is swallowing what would normally be an error and silently failing? Could there be a middleware that is encountering an unexpected situation and just returning early?</p>
+<p dir="auto">I had the same problem (pretty frustrating), and as I figured out, the issue was that I mistakenly nested a React component inside itself, which probably resulted in infinite recursion. (I'm not implying that other people's problems are caused by their own bugs! just my experience).</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> can you explain more how to set up the fastify proxy to replace the default vite one?</p>
+<blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> can you explain more how to set up the fastify proxy to replace the default vite one?</p>
+</blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/maxsalven/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/maxsalven">@maxsalven</a>:<br>
+1 - add dependencies <code class="notranslate">yarn add -D @fastify/http-proxy fastify</code><br>
+2 - copy and the paste the code in my previous post into a file at the root of project called <code class="notranslate">proxy.js</code><br>
+3 - start vite <code class="notranslate">yarn dev</code><br>
+4 - from the CLI run <code class="notranslate">node proxy.js</code><br>
+5 - go to <code class="notranslate">http://localhost:3001</code> in your browser</p>
+<p dir="auto">You could add a <code class="notranslate">scripts</code> command with <code class="notranslate">node proxy.js</code> in your <code class="notranslate">package.json</code> to make it easier to run in the future.</p>
+<p dir="auto">You could also turn this into a vite plugin to be a far more seamless DX.</p>
+<p dir="auto">This will specifically solve the issue where network requests get stuck in <code class="notranslate">pending</code>.</p>
+<p dir="auto">I'm having the same issue, It's a small React project with only 20-30 components. It takes <strong>a few minutes</strong> for it to load.. it's very weird.<br>
+The thing that's even weirder is that it only happens on <strong>Windows</strong>.. (both 10 and 11).</p>
+<p dir="auto">I don't think this issue is created by having too many components.</p>
+<p dir="auto">I'm having the same issue with a React project, in the debug log I see the following message</p>
+<p dir="auto">vite:html-fallback Not rewriting GET /__webpack_hmr because the client does not accept HTML.</p>
+<p dir="auto">This started for me suddenly yesterday and was finally able to find the root cause for my case.</p>
+<p dir="auto">I use vscode and launch Edge through the vscode for integrated debugging. The weird thing is, the page only hung when I opened the app in the Edge launched via vscode. Firefox was fine, Edge outside the vscode was fine.</p>
+<p dir="auto">The only thing I can see is the following in the vscode Debug Output:</p>
+<div class="highlight highlight-source-js notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="[vite] server connection lost. polling for restart...
+client.ts:103
+[vite] connecting...
+client.ts:19
+[vite] connected.
+client.ts:134
+[vite] server connection lost. polling for restart...
+client.ts:103
+[vite] connecting...
+client.ts:19
+[vite] connected."><pre class="notranslate"><span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">server</span> <span class="pl-s1">connection</span> <span class="pl-s1">lost</span><span class="pl-kos">.</span> <span class="pl-c1">polling</span> <span class="pl-s1">for</span> <span class="pl-s1">restart</span><span class="pl-kos">.</span><span class="pl-kos">.</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">103</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connecting</span>...
+<span class="pl-s1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">19</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connected</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">134</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">server</span> <span class="pl-s1">connection</span> <span class="pl-s1">lost</span><span class="pl-kos">.</span> <span class="pl-c1">polling</span> <span class="pl-s1">for</span> <span class="pl-s1">restart</span><span class="pl-kos">.</span><span class="pl-kos">.</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">103</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connecting</span>...
+<span class="pl-s1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">19</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connected</span><span class="pl-kos">.</span></pre></div>
+<p dir="auto">After digging around, I found I have a breakpoint set in the vscode. I've noticed this in the past - when I have a breakpoint set in the vscode, the page will load extremely slowly. The Edge will pause temporarily after <em>every</em> <em>single</em> <em>script</em> is loaded and check if the breakpoint was hit or something. Since there are hundreds of files, this ends up looking as if the page hangs. It only happens during a full page reload (or the initial load).</p>
+<p dir="auto">This also happens if the breakpoint is set in a python file which has nothing to do with either vitejs nor Edge. I suppose it's just how the vscode/Edge integration works.</p>
+<p dir="auto">This definitely appears to be related to TLS. Disabling TLS in vite and setting up Caddy as a TLS termination dev proxy fixed the issue for me.</p>
+<p dir="auto">This is my Caddyfile, with Caddy running on port 3030 and vite running on port 3031:</p>
+<div class="highlight highlight-source-Caddyfile notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content=":3030
+
+reverse_proxy :3031
+
+tls ./.ssl/localhost.crt ./.ssl/localhost.key"><pre class="notranslate"><span class="pl-k">:3030</span>
+
+<span class="pl-en">reverse_proxy</span> <span class="pl-k">:3031</span>
+
+<span class="pl-en">tls</span> .<span class="pl-k">/.ssl/localhost.crt</span> .<span class="pl-k">/.ssl/localhost.key</span></pre></div>
+<p dir="auto">This was my old TLS configuration from <code class="notranslate">vite.config.ts</code>:</p>
+<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="server: {
+    https: isDev
+      ? {
+          key: readFileSync(resolve('.ssl', 'localhost.key'), 'utf8'),
+          cert: readFileSync(resolve('.ssl', 'localhost.crt'), 'utf8'),
+        }
+      : undefined,
+},"><pre class="notranslate"><span class="pl-s1">server</span>: <span class="pl-kos">{</span>
+    <span class="pl-c1">https</span>: <span class="pl-s1">isDev</span>
+      ? <span class="pl-kos">{</span>
+          <span class="pl-c1">key</span>: <span class="pl-en">readFileSync</span><span class="pl-kos">(</span><span class="pl-en">resolve</span><span class="pl-kos">(</span><span class="pl-s">'.ssl'</span><span class="pl-kos">,</span> <span class="pl-s">'localhost.key'</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s">'utf8'</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+          <span class="pl-c1">cert</span>: <span class="pl-en">readFileSync</span><span class="pl-kos">(</span><span class="pl-en">resolve</span><span class="pl-kos">(</span><span class="pl-s">'.ssl'</span><span class="pl-kos">,</span> <span class="pl-s">'localhost.crt'</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s">'utf8'</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+        <span class="pl-kos">}</span>
+      : <span class="pl-c1">undefined</span><span class="pl-kos">,</span>
+<span class="pl-kos">}</span><span class="pl-kos">,</span></pre></div>
+<p dir="auto">Fixed this by deleting imports on the route that hangs, or the root level .svelte, .tsx file depending on your framework, saving the file, and adding the files back in. :)</p>
+<p dir="auto">That's just a temporary fix, I promise :-)</p>
+<blockquote>
+<p dir="auto">This started for me suddenly yesterday and was finally able to find the root cause for my case.</p>
+<p dir="auto">I use vscode and launch Edge through the vscode for integrated debugging. The weird thing is, the page only hung when I opened the app in the Edge launched via vscode. Firefox was fine, Edge outside the vscode was fine.</p>
+<p dir="auto">The only thing I can see is the following in the vscode Debug Output:</p>
+<div class="highlight highlight-source-js notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="[vite] server connection lost. polling for restart...
+client.ts:103
+[vite] connecting...
+client.ts:19
+[vite] connected.
+client.ts:134
+[vite] server connection lost. polling for restart...
+client.ts:103
+[vite] connecting...
+client.ts:19
+[vite] connected."><pre class="notranslate"><span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">server</span> <span class="pl-s1">connection</span> <span class="pl-s1">lost</span><span class="pl-kos">.</span> <span class="pl-c1">polling</span> <span class="pl-s1">for</span> <span class="pl-s1">restart</span><span class="pl-kos">.</span><span class="pl-kos">.</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">103</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connecting</span>...
+<span class="pl-s1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">19</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connected</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">134</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">server</span> <span class="pl-s1">connection</span> <span class="pl-s1">lost</span><span class="pl-kos">.</span> <span class="pl-c1">polling</span> <span class="pl-s1">for</span> <span class="pl-s1">restart</span><span class="pl-kos">.</span><span class="pl-kos">.</span><span class="pl-kos">.</span>
+<span class="pl-c1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">103</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connecting</span>...
+<span class="pl-s1">client</span><span class="pl-kos">.</span><span class="pl-c1">ts</span>:<span class="pl-c1">19</span>
+<span class="pl-kos">[</span><span class="pl-s1">vite</span><span class="pl-kos">]</span> <span class="pl-s1">connected</span><span class="pl-kos">.</span></pre></div>
+<p dir="auto">After digging around, I found I have a breakpoint set in the vscode. I've noticed this in the past - when I have a breakpoint set in the vscode, the page will load extremely slowly. The Edge will pause temporarily after <em>every</em> <em>single</em> <em>script</em> is loaded and check if the breakpoint was hit or something. Since there are hundreds of files, this ends up looking as if the page hangs. It only happens during a full page reload (or the initial load).</p>
+<p dir="auto">This also happens if the breakpoint is set in a python file which has nothing to do with either vitejs nor Edge. I suppose it's just how the vscode/Edge integration works.</p>
+</blockquote>
+<p dir="auto">I've reported the vscode performance issue to Microsoft and the conclusion is it's working as expected:<br>
+<a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1645302546" data-permission-text="Title is private" data-url="https://github.com/microsoft/vscode/issues/178556" data-hovercard-type="issue" data-hovercard-url="/microsoft/vscode/issues/178556/hovercard" href="https://github.com/microsoft/vscode/issues/178556">microsoft/vscode#178556</a></p>
+<p dir="auto">This particular performance issue is only with vscode + Chromium (Edge/Chrome) when using breakpoints in vscode.</p>
+<blockquote>
+<p dir="auto">So I found the fix (at least to my problem). This problem is similar to this one: <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1027324755" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/5310" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/5310/hovercard" href="https://github.com/vitejs/vite/issues/5310">#5310</a></p>
+<p dir="auto">In case you have a big project with plenty of files Chrome demands more file descriptors than system allows (1000 by default). I have Ubuntu Linux, so using <code class="notranslate">ulimit -Sn</code> didn't work for me. Like, it updates the amount of descriptors but that has to be done permanently as Chrome doesn't use it.</p>
+<p dir="auto">so, for Ubuntu Linux you have to add line <code class="notranslate">* - nofile 65536</code> (or whatever amount of opened files you need) to the file <code class="notranslate">/etc/security/limits.conf</code> and reboot.</p>
+<p dir="auto">For Arch Linux they say to add <code class="notranslate">DefaultLimitNOFILE=65536</code> line to both <code class="notranslate">/etc/systemd/system.conf </code> and <code class="notranslate">/etc/systemd/user.conf</code> file. Didn't check that.</p>
+<p dir="auto">Upd. LOL. Just figured out that <code class="notranslate">DefaultLimitNOFILE</code> can be applied to Ubuntu as also but it simply doesn't work, so <code class="notranslate">limits.conf</code> is the only working solution there. Will provde PR.</p>
+</blockquote>
+<p dir="auto">Hello <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/rkurbatov/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/rkurbatov">@rkurbatov</a>! Your solution for Ubuntu Linux seems to make sense, but I've run it and it doesn't apply to the 22.04 version I'm using.</p>
+<p dir="auto">Loading the page for the first time actually brings the data back to Chrome, but reloading the page brings up the loop and requests get stuck in Chrome's Element inspector network tab</p>
+<p dir="auto">firefox still working</p>
+<p dir="auto">I put exactly <code class="notranslate">* - nofile 65536</code> in the last line of the /etc/security/limits.conf file</p>
+<p dir="auto">Do I need to put anything else?</p>
+<p dir="auto">I was able to reproduce this issue with a few components is Nuxt 3: <a href="https://stackblitz.com/edit/nuxt-starter-azudzq?file=pages%2Findex.vue" rel="nofollow">https://stackblitz.com/edit/nuxt-starter-azudzq?file=pages%2Findex.vue</a></p>
+<p dir="auto">At this point I am not sure if this is not a seperate Nuxt-only issue, because it only happens when I import already auto-imported components from the <code class="notranslate">#components</code>  alias. See: <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1667936913" data-permission-text="Title is private" data-url="https://github.com/nuxt/nuxt/issues/20272" data-hovercard-type="issue" data-hovercard-url="/nuxt/nuxt/issues/20272/hovercard" href="https://github.com/nuxt/nuxt/issues/20272">nuxt/nuxt#20272</a></p>
+<p dir="auto">Hello !<br>
+We experienced a similar issue on MacOS &amp; Chrome, with Vite and dev server in https mode. (No Nuxt here)</p>
+<p dir="auto">This is a webgl experience website and we need to preload lots of texture images.<br>
+The issue happens almost every time when loading a lot of png in parallel, using a standard <code class="notranslate">img.onload</code> method.</p>
+<ul dir="auto">
+<li>Using a valid certificate with mkcert instead of a self-signed didn't do anything for us for the first visit and when the chrome cache is disabled via the inspector.</li>
+<li>Switching to http instead of https fixes the issue</li>
+<li>Limiting the number of file preloaded in parallel manually in JS also fixes the issue</li>
+<li>We did not experience the issue when proxying the devserver through cloudflare tunnel or ngrok.</li>
+</ul>
+<p dir="auto">Update: The issue seems to only appear with http/2. Maybe because the protocol can open a lot of stream in parallel?</p>
+<p dir="auto">If you need https and don't mind the limitations of http/1.1, a simple fix is to add <code class="notranslate">proxy: {}</code> to the vite config (in the <code class="notranslate">server</code> options object).</p>
+<p dir="auto">With <code class="notranslate">https</code> enabled and <code class="notranslate">proxy</code> setup to <code class="notranslate">{}</code>, vite will switch to TLS only (http/1.1) and the issue will disappear</p>
+<p dir="auto">I wonder if this is related, but at least on our huge project, vite would collapse under all the fsevents from fsevent, so many being sent that events of the type 'we dropped some of your fsevents' were being sent, and those in turn were handled incorrectly (on macos m1, macbook pro, firefox, cold boot of vite having deleted the vite cache before run).</p>
+<p dir="auto">I made this patch which seems to have solved the issue for our huge project, <a href="https://github.com/fsevents/fsevents/pull/384/files">https://github.com/fsevents/fsevents/pull/384/files</a>, so that vite / chokidar / fsevents instead rescans the relevant subdirectory where some fsevents were lost.</p>
+<p dir="auto">I ran into what seems to be the same as here described. Out of the blue, my React app doesn't load anymore in my default browser (FireFox). Any other browser still works. No idea what may have caused it, because even an older version of the app which before worked flawlessly is now showing the same behavior. I'd suspect some caching etc., but to be honest I have no clue what's going on.</p>
+<p dir="auto">I have the same problem with Windows. is there some known solution to fix it?</p>
+<p dir="auto">This is a really weird behavior/bug, we had to quit vite at work because of that 😔</p>
+<p dir="auto">We use windi.css，and windi.css stuck vite.</p>
+<p dir="auto">code below SHOULD be configured in windi.config.js:</p>
+<div class="highlight highlight-source-js notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="  extract: {
+    include: ['./src/**/*.{vue,html,jsx,tsx}'],
+    exclude: ['node_modules', '.git'],
+  },"><pre class="notranslate">  <span class="pl-s1">extract</span>: <span class="pl-kos">{</span>
+    <span class="pl-c1">include</span>: <span class="pl-kos">[</span><span class="pl-s">'./src/**/*.{vue,html,jsx,tsx}'</span><span class="pl-kos">]</span><span class="pl-kos">,</span>
+    <span class="pl-c1">exclude</span>: <span class="pl-kos">[</span><span class="pl-s">'node_modules'</span><span class="pl-kos">,</span> <span class="pl-s">'.git'</span><span class="pl-kos">]</span><span class="pl-kos">,</span>
+  <span class="pl-kos">}</span><span class="pl-kos">,</span></pre></div>
+<p dir="auto">I've just encountered this issue on Linux (Ubuntu 20.04) and Chrome. No errors, just infinite loading. <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/aspnetde/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/aspnetde">@aspnetde</a> mentioned that for him it's browser related, so I went on and tried and - yes, it loads just fine in Firefox. I thought it should be some invalid Chrome env, so I loaded it in incognito mode. Same infinite loading.</p>
+<p dir="auto">There got to be some issue in communications protocol in Chrome, or something along the lines.</p>
+<blockquote>
+<p dir="auto">I found what looks like a solution that works for me but it would be good to get validation or improvements from this approach. My previous looking into the root cause of this it seemed like it was an issue with node's <code class="notranslate">http</code>. Well, someone wrote <a href="https://github.com/nodejs/undici">undici</a> which is an HTTP client written from scratch. <code class="notranslate">@fastify/http-proxy</code> is a module that uses <code class="notranslate">undici</code> under the hood. <code class="notranslate">server.proxy</code> settings remain in vite.config and nothing special is really required.</p>
+</blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a>  do you know if <a href="https://github.com/fastify/fastify-vite/tree/dev/packages/fastify-vite"><code class="notranslate">fastify-vite</code></a> can achieve similar results?</p>
+<blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> do you know if <a href="https://github.com/fastify/fastify-vite/tree/dev/packages/fastify-vite"><code class="notranslate">fastify-vite</code></a> can achieve similar results?</p>
+</blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/benatshippabo/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/benatshippabo">@benatshippabo</a>, I do not know and am unable to test that so easily. We had to customize the fastify config beyond what I posted since we have a number of dynamic routes that needed to be forwarded.</p>
+<p dir="auto">I was pretty curious about <a href="https://github.com/vitejs/vite/issues/11468#issuecomment-1518081711" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/11468/hovercard">this comment</a> since I had never tried that but we had migrated over to fastify and haven't needed revisit the problem since then.</p>
+<blockquote>
+<p dir="auto">I've just encountered this issue on Linux (Ubuntu 20.04) and Chrome. No errors, just infinite loading. <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/aspnetde/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/aspnetde">@aspnetde</a> mentioned that for him it's browser related, so I went on and tried and - yes, it loads just fine in Firefox. I thought it should be some invalid Chrome env, so I loaded it in incognito mode. Same infinite loading.</p>
+<p dir="auto">There got to be some issue in communications protocol in Chrome, or something along the lines.</p>
+</blockquote>
+<p dir="auto">Did you try any of the suggested suggested Linux fixes?<br>
+<a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1508527882" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/11468" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/11468/hovercard?comment_id=1419820986&amp;comment_type=issue_comment" href="https://github.com/vitejs/vite/issues/11468#issuecomment-1419820986">#11468 (comment)</a><br>
+<a href="https://vitejs.dev/guide/troubleshooting.html#dev-server" rel="nofollow">https://vitejs.dev/guide/troubleshooting.html#dev-server</a></p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/fc/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/fc">@fc</a> yes, but it still hangs indefinitely. Here's the output from mentioned utilities:</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="$ ulimit -Sn
+10000
+
+$ sysctl fs.inotify
+fs.inotify.max_queued_events = 16384
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+
+$systemctl show --property=DefaultLimitNOFILE
+DefaultLimitNOFILE=524288
+"><pre class="notranslate"><code class="notranslate">$ ulimit -Sn
+10000
+
+$ sysctl fs.inotify
+fs.inotify.max_queued_events = 16384
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+
+$systemctl show --property=DefaultLimitNOFILE
+DefaultLimitNOFILE=524288
+
+</code></pre></div>
+<p dir="auto">UPDATE:<br>
+Actually it worked, after additional restart. I'm saying additional, 'cause first two didn't have an effect somehow. And I know that it sounds stupid.</p>
+<p dir="auto">Are there any recommendations on how to decrease requirement in so many open handles? It feels like it is the problem in first place.</p>
+<p dir="auto">Here to +1 a few things in this issue related to file descriptor limits (TypeScript 5.0.4, Sveltekit 1.16.3, Vite 4.3.5, Node 18.14.0, mac OS 13.3.1, Chrome 113.0.5672.92).</p>
+<ul dir="auto">
+<li>The hang I experience is similar to the OP: the browser tab does not load, and <code class="notranslate">vite dev --debug</code> just stops resolving imports before it's finished on a <code class="notranslate">vite:transform</code>, with no errors. It tends to halt on different imports each time. Killing <code class="notranslate">vite dev</code> shows <code class="notranslate">ssr compile done</code>.</li>
+<li>This only happens on routes with a large number of transitive imports, and only when files are first imported. On my smaller projects (&lt;100 <code class="notranslate">.ts</code>, <code class="notranslate">.svelte</code> files), I never see this hang. On my larger projects and on routes with a large number of transitive imports (&gt;500 <code class="notranslate">.ts</code>, <code class="notranslate">.svelte</code> files), it happens consistently on particular high volume routes.</li>
+<li>Setting <code class="notranslate">ulimit -n 12288</code> and <code class="notranslate">sudo launchctl limit maxfiles 65536 200000</code> in mac OS on a fresh boot prior to <code class="notranslate">vite dev</code>, mirroring the advice on the <a href="https://vitejs.dev/guide/troubleshooting.html" rel="nofollow">troubleshooting page</a>, does not prevent the hang.</li>
+<li>While I'm primarily working in Chrome, the same hang consistently occurs in Firefox, 109.0.1, and Safari 16.</li>
+<li>All of this is entirely unrelated to the parallel issues described in this thread about TLS requests, since I'm not doing any TLS.</li>
+<li>Any intermittent behavior is largely due to the issue being caused on first load, before any imports are cached, and there is a large number of files. Edits that cause a large lumber of reimports</li>
+</ul>
+<p dir="auto">The only workaround I've found is temporarily commenting out high volume transitive imports, loading, then uncommenting the import to finish loading the remaining imports, similar to others' workarounds. It's possible that my mac OS file descriptor increases aren't being applied in the right way or on the right process; I don't know how to confirm that.</p>
+<p dir="auto">This could be either Vite, Sveltekit, or TypeScript, depending on which is getting hung up.</p>
+<p dir="auto">same problem，How to solve it in Windows system</p>
+<p dir="auto">We were experiencing this just on our Linux machines. Tried all of the above and downgrading to vite@3.2.5 worked for us.</p>
+<p dir="auto">Edit: Downgrading to vite@3.2.5 worked for some of us.</p>
+<p dir="auto">It's important to mention that this problem accrues even if you don't have "many components and imports"</p>
+<p dir="auto">i have a extra questions in my project. running "vite build" is very slow compared to other projects and hangs on  " ✅ 3988 modules transformed". This process usually takes a long time. Are you like me too？ Could this be caused by the same problem as "dev hangs indefinitely"?🤔</p>
+<blockquote>
+<p dir="auto">Here to +1 a few things in this issue related to file descriptor limits (TypeScript 5.0.4, Sveltekit 1.16.3, Vite 4.3.5, Node 18.14.0, mac OS 13.3.1, Chrome 113.0.5672.92).</p>
+<ul dir="auto">
+<li>The hang I experience is similar to the OP: the browser tab does not load, and <code class="notranslate">vite dev --debug</code> just stops resolving imports before it's finished on a <code class="notranslate">vite:transform</code>, with no errors. It tends to halt on different imports each time. Killing <code class="notranslate">vite dev</code> shows <code class="notranslate">ssr compile done</code>.</li>
+<li>This only happens on routes with a large number of transitive imports, and only when files are first imported. On my smaller projects (&lt;100 <code class="notranslate">.ts</code>, <code class="notranslate">.svelte</code> files), I never see this hang. On my larger projects and on routes with a large number of transitive imports (&gt;500 <code class="notranslate">.ts</code>, <code class="notranslate">.svelte</code> files), it happens consistently on particular high volume routes.</li>
+<li>Setting <code class="notranslate">ulimit -n 12288</code> and <code class="notranslate">sudo launchctl limit maxfiles 65536 200000</code> in mac OS on a fresh boot prior to <code class="notranslate">vite dev</code>, mirroring the advice on the <a href="https://vitejs.dev/guide/troubleshooting.html" rel="nofollow">troubleshooting page</a>, does not prevent the hang.</li>
+<li>While I'm primarily working in Chrome, the same hang consistently occurs in Firefox, 109.0.1, and Safari 16.</li>
+<li>All of this is entirely unrelated to the parallel issues described in this thread about TLS requests, since I'm not doing any TLS.</li>
+<li>Any intermittent behavior is largely due to the issue being caused on first load, before any imports are cached, and there is a large number of files. Edits that cause a large lumber of reimports</li>
+</ul>
+<p dir="auto">The only workaround I've found is temporarily commenting out high volume transitive imports, loading, then uncommenting the import to finish loading the remaining imports, similar to others' workarounds. It's possible that my mac OS file descriptor increases aren't being applied in the right way or on the right process; I don't know how to confirm that.</p>
+<p dir="auto">This could be either Vite, Sveltekit, or TypeScript, depending on which is getting hung up.</p>
+</blockquote>
+<p dir="auto">+1 to seeing this behavior when a component or file is edited that imports or is imported by several other files.</p>
+<p dir="auto">Is there anyway to surface further debug messages to try and dig into this further?</p>
+<p dir="auto">Facing this problem as well in my project with &gt;1000 React files... Seems to happen only on Chrome most of the time, but sometimes FireFox hangs as well. Am on Ubuntu and the fixes above (<code class="notranslate">* - nofile 65536</code>) work somewhat inconsistently. Is there any way to optimize the way vite loads the files so they aren't requested all at once...? Or some other way to fix this issue so it does not take forever to load?</p>
+<p dir="auto">Having the problem on windows too</p>
+<p dir="auto">Additional note : even adding a character in a comment strings makes the tab completely freeze</p>
+<p dir="auto">Yet, stopping yarn and restaring it works everytime. But it is very unpractical as for every modifications you would have to do it</p>
+<p dir="auto">Same issue here, on MacOS.</p>
+<p dir="auto">It's not just the amount of files, as I'm only serving a few files The biggest file is a 4mb WASM file.</p>
+<p dir="auto">And it's not just the dev server but <code class="notranslate">vite preview</code> one as well.</p>
+<p dir="auto">I am using custom server options, and <code class="notranslate">vite-plugin-mkcert</code></p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="const serverOptions: ServerOptions = {
+  port: 3000,
+  https: true,
+  headers: {
+    &quot;Cross-Origin-Embedder-Policy&quot;: &quot;require-corp&quot;,
+    &quot;Cross-Origin-Opener-Policy&quot;: &quot;same-origin&quot;,
+  },
+  host: true,
+};"><pre class="notranslate"><code class="notranslate">const serverOptions: ServerOptions = {
+  port: 3000,
+  https: true,
+  headers: {
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Opener-Policy": "same-origin",
+  },
+  host: true,
+};
+</code></pre></div>
+<p dir="auto">Previewing on a local IP address on a different device seems to crash it more often, opening the Chrome devtools inspector even more so.</p>
+<p dir="auto">Firefox remote debugging also seems to freeze the server but a bit less than Chrome which can survive only a single reload.</p>
+<blockquote>
+<blockquote>
+<p dir="auto">so, for Ubuntu Linux you have to add line <code class="notranslate">* - nofile 65536</code> (or whatever amount of opened files you need) to the file <code class="notranslate">/etc/security/limits.conf</code> and reboot.</p>
+</blockquote>
+<p dir="auto">Thank you <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/ximus/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/ximus">@ximus</a> This solved the issue for me 1st_place_medal</p>
+</blockquote>
+<p dir="auto">FYI I wrote that this fixed the issue for me, but it is back it seems 🤷</p>
+<p dir="auto">This drives me crazy.<br>
+I'm using both mac and windows and both occur.</p>
+<p dir="auto">Update:</p>
+<p dir="auto">It seems to be entirely related to accessing the dev server on an external ip when using <code class="notranslate">host: true</code>. The first access will work, but any subsequent access will freeze the server, requiring the user to terminate the terminal as even <code class="notranslate">cmd+c/d</code> doesn't work.</p>
+<p dir="auto">This happens for me on macOS even for a very minimal project with only a few changes from the empty <code class="notranslate">npm init vue</code>. I don't have a lot of transitive imports or anything like that.</p>
+<p dir="auto">Same as the other posters; Ubuntu 23.04, Chrome 114.0.5735.90 (64-bit), Top-end Ryzen with 64GB RAM.</p>
+<p dir="auto">Now, some additional things I've not seen anyone else mention, but MIGHT be diagnostically significant: We're also, perforce, running docker in the background. Ours is a massive WebApp AI project (1,478 requests being made on initial hit) that communicates with Rust and C SO's. "Resource intensive" is not overstating it.</p>
+<p dir="auto">Behavior is similar to that described above: the issues are, hands-down, most prevalent in Linux, though manifest in MacOS and WSL as well. There appears to be some threshold of accumulation, too. That is to say, something will abruptly knock it into functioning again, temporarily, and then, after an indeterminate amount of - time? Uptime? Requests? Throughput? Cache/page file availability? SOMETHING - the behavior resumes.</p>
+<p dir="auto">I have a strong suspicion this is a faulty caching mechanism of some flavor, either precipitating an infinite recursion or causing some form of overflow and the errors aren't bubbling. No reason to assert this other many, many years as a front-end dev and recollected parallels of other, vague, similarly-enraging, intermittent issues.</p>
+<blockquote>
+<p dir="auto">Same as the other posters; Ubuntu 23.04, Chrome 114.0.5735.90 (64-bit), Top-end Ryzen with 64GB RAM.</p>
+<p dir="auto">Now, some additional things I've not seen anyone else mention, but MIGHT be diagnostically significant: We're also, perforce, running docker in the background. Ours is a massive WebApp AI project (1,478 requests being made on initial hit) that communicates with Rust and C SO's. "Resource intensive" is not overstating it.</p>
+<p dir="auto">Behavior is similar to that described above: the issues are, hands-down, most prevalent in Linux, though manifest in MacOS and WSL as well. There appears to be some threshold of accumulation, too. That is to say, something will abruptly knock it into functioning again, temporarily, and then, after an indeterminate amount of - time? Uptime? Requests? Throughput? Cache/page file availability? SOMETHING - the behavior resumes.</p>
+<p dir="auto">I have a strong suspicion this is a faulty caching mechanism of some flavor, either precipitating an infinite recursion or causing some form of overflow and the errors aren't bubbling. No reason to assert this other many, many years as a front-end dev and recollected parallels of other, vague, similarly-enraging, intermittent issues.</p>
+</blockquote>
+<p dir="auto">great call out on docker usage, we also have docker running our whole db set up.  Not sure if this is the same behavior your experiencing, but our vite server <strong>only seems to hang when certain components are edited but not others</strong> it also does not hang if code is directly edited in a <code class="notranslate">+page.svelte</code> file.  I don't have enough low-level knowledge of what might be going on under the hood but not sure why that would be the case regardless of whether or not docker (or a similarly memory / resource intensive service) is running on the same machine.</p>
+<blockquote>
+<p dir="auto">great call out on docker usage, we also have docker running our whole db set up.  Not sure if this is the same behavior your experiencing, but our vite server <strong>only seems to hang when certain components are edited but not others</strong> it also does not hang if code is directly edited in a <code class="notranslate">+page.svelte</code> file.  I don't have enough low-level knowledge of what might be going on under the hood but not sure why that would be the case regardless of whether or not docker (or a similarly memory / resource intensive service) is running on the same machine.</p>
+</blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/cchyung/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/cchyung">@cchyung</a></p>
+<p dir="auto">Now that's interesting, and something I'd not noticed, but that does ring true now you mention it. Do you happen to be using something for hot reloading/watching for changes? Likewise, are you using a build assist (grunt/gulp/webpack/et al)?</p>
+<blockquote>
+<blockquote>
+<p dir="auto">great call out on docker usage, we also have docker running our whole db set up.  Not sure if this is the same behavior your experiencing, but our vite server <strong>only seems to hang when certain components are edited but not others</strong> it also does not hang if code is directly edited in a <code class="notranslate">+page.svelte</code> file.  I don't have enough low-level knowledge of what might be going on under the hood but not sure why that would be the case regardless of whether or not docker (or a similarly memory / resource intensive service) is running on the same machine.</p>
+</blockquote>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/cchyung/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/cchyung">@cchyung</a></p>
+<p dir="auto">Now that's interesting, and something I'd not noticed, but that does ring true now you mention it. Do you happen to be using something for hot reloading/watching for changes? Likewise, are you using a build assist (grunt/gulp/webpack/et al)?</p>
+</blockquote>
+<p dir="auto">We are using svelte-kit which has it's own <code class="notranslate">hmr</code> module.  But the server hangs happens regardless of if we have that turned on or not.  When it's off, it just hangs when I refresh the page.  We don't use a build assist locally but <code class="notranslate">rollup</code> builds our app when we deploy.</p>
+<p dir="auto">Further investigation suggests that the <code class="notranslate">* - nofile 65536</code> proposal, above, may indeed be at the heart of this, though I'm disinclined to think the presented diagnosis is accurate.</p>
+<p dir="auto">The etc/security/limits.conf dictates the max number of concurrent file descriptors a given process may have open, not the OS.</p>
+<p dir="auto">In support of this: <a href="https://docs.confluent.io/platform/current/kafka/deployment.html#file-descriptors-and-mmap" rel="nofollow">Kafka has an interesting notation on the topic</a>, specifically:</p>
+<blockquote>
+<p dir="auto">Many modern Linux distributions ship with only 1,024 file descriptors allowed per process. This is too low for Kafka.</p>
+</blockquote>
+<blockquote>
+<p dir="auto">You should increase your file descriptor count to at least 100,000, and possibly much more. This process can be difficult and is highly dependent on your particular OS and distribution. Consult the documentation for your OS to determine how best to change the allowed file descriptor count.</p>
+</blockquote>
+<p dir="auto">Chrome can be fairly demanding as far as processes go, but, more relevantly (to Vite, anyway), is a quote from <a href="https://serverfault.com/users/91987/david-schwartz" rel="nofollow">David Schwartz</a>:</p>
+<blockquote>
+<p dir="auto">If the number is growing because they're legitimately using more network connections or files, then you can keep raising it, at least until you hit the limit of what the software can handle. <strong><em>But if it's a file descriptor leak, that should be investigated and fixed</em></strong> (emphasis added by me).</p>
+</blockquote>
+<p dir="auto">I suspect, strongly, that there's something bleeding folk up over this line. More prevalent in large file-count, high resource applications, and more noticeable on Linux, which still ships with a comically-low preset max, evidently. And I'll just bet that, when taken with a secondary process - yanno, like the one that ships with React? - that precipitates the forceful reloading of a huge number of itty bitty files - possibly if two such events overlap? Like saving twice in rapid succession? - that such a bleed would prove nearly inevitable.</p>
+<h2 dir="auto">UPDATE (Ubuntu fix, for us, at least; YMMV):</h2>
+<p dir="auto">For me/us at least, upping the max in <code class="notranslate">limits.conf</code> appears to have done the trick. For those who want a nice and easy way to accomplish same... paste the following command into your terminal (doesn't matter, your starting folder, although <strong>you must have <code class="notranslate">sudo</code> rights for this command to work</strong>):</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="LIMCONF=/etc/security/limits.conf;  [ ! -f $LIMCONF ] &amp;&amp; sudo touch $LIMCONF;  sudo chown $(whoami) $LIMCONF;  sudo chmod 666 $LIMCONF;  sudo echo &quot;* - nofile 262144&quot; &gt;&gt; $LIMCONF;  sudo chmod 644 $LIMCONF;  sudo chown root $LIMCONF;  unset LIMCONF"><pre class="notranslate"><code class="notranslate">LIMCONF=/etc/security/limits.conf;  [ ! -f $LIMCONF ] &amp;&amp; sudo touch $LIMCONF;  sudo chown $(whoami) $LIMCONF;  sudo chmod 666 $LIMCONF;  sudo echo "* - nofile 262144" &gt;&gt; $LIMCONF;  sudo chmod 644 $LIMCONF;  sudo chown root $LIMCONF;  unset LIMCONF
+</code></pre></div>
+<p dir="auto">...and since you should NEVER run shell code without understanding precisely what it's doing (you can totally run the below block instead, if you feel better about it):</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="LIMCONF=/etc/security/limits.conf;                  # Create shorthand variable to file path
+[ ! -f $LIMCONF ] &amp;&amp; sudo touch $LIMCONF;           # If a file at this path doesn't exist, create it.
+sudo chown $(whoami) $LIMCONF;                      # Set the currently-active user as the file's owner
+sudo chmod 666 $LIMCONF;                            # Set its perms to Write/Write/Write (make it editable)
+sudo echo &quot;* - nofile 262144&quot; &gt;&gt; $LIMCONF;          # For the default (all) domains: set max open file 
+                                                    # descriptors to 512^2 (2^18), &amp; APPEND command to file
+sudo chmod 644 $LIMCONF;                            # Reset file to original perms (Write/Read/Read)
+sudo chown root $LIMCONF;                           # Reset file to original owner (root)
+unset LIMCONF                                       # Remove shorthand variable path"><pre class="notranslate"><code class="notranslate">LIMCONF=/etc/security/limits.conf;                  # Create shorthand variable to file path
+[ ! -f $LIMCONF ] &amp;&amp; sudo touch $LIMCONF;           # If a file at this path doesn't exist, create it.
+sudo chown $(whoami) $LIMCONF;                      # Set the currently-active user as the file's owner
+sudo chmod 666 $LIMCONF;                            # Set its perms to Write/Write/Write (make it editable)
+sudo echo "* - nofile 262144" &gt;&gt; $LIMCONF;          # For the default (all) domains: set max open file 
+                                                    # descriptors to 512^2 (2^18), &amp; APPEND command to file
+sudo chmod 644 $LIMCONF;                            # Reset file to original perms (Write/Read/Read)
+sudo chown root $LIMCONF;                           # Reset file to original owner (root)
+unset LIMCONF                                       # Remove shorthand variable path
+</code></pre></div>
+<p dir="auto">...hope this helps!</p>
+<p dir="auto">(Note: you must REBOOT your machine after this alteration for it to take effect. Not restart your shell. Not log out and log back in. Reboot. Off, then on again).</p>
+<p dir="auto">I've frequently had a similar issue as the OP, where many pages of my SvelteKit app will hang forever in the Vite dev server, while a small number of simple pages still work.</p>
+<p dir="auto">Here's my environment:</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="OS: Windows 10 10.0.22621
+Node: 18.16.0
+Browser: Chrome 114.0.5735.134
+
+Vite: 4.3.9
+SvelteKit: 1.16.2"><pre class="notranslate"><code class="notranslate">OS: Windows 10 10.0.22621
+Node: 18.16.0
+Browser: Chrome 114.0.5735.134
+
+Vite: 4.3.9
+SvelteKit: 1.16.2
+</code></pre></div>
+<p dir="auto">I've tried countless things to get more details on what's going on and I finally got something today by adding debugger breakpoints into the guts of Vite (I started out with a breakpoint on the first line of <code class="notranslate">ssrLoadModule</code> which in my case was in node_modules/vite/dist/node/chunks/dep-e8f070e8.js).</p>
+<p dir="auto">With the debugger, I was able to determine that for the pages that were hanging, Vite had several promises in <code class="notranslate">pendingModules</code> (see <a href="https://github.com/vitejs/vite/blob/v4.3.9/packages/vite/src/node/ssr/ssrModuleLoader.ts#L57">here</a>) that never resolved, even after the dev server had been in this state for hours.</p>
+<p dir="auto">Here's the function from Vite:</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="export async function ssrLoadModule(
+  url: string,
+  server: ViteDevServer,
+  context: SSRContext = { global },
+  urlStack: string[] = [],
+  fixStacktrace?: boolean,
+): Promise&lt;SSRModule&gt; {
+  url = unwrapId(url)
+
+  // when we instantiate multiple dependency modules in parallel, they may
+  // point to shared modules. We need to avoid duplicate instantiation attempts
+  // by register every module as pending synchronously so that all subsequent
+  // request to that module are simply waiting on the same promise.
+  const pending = pendingModules.get(url)
+  if (pending) {
+    return pending
+  }
+
+  const modulePromise = instantiateModule(
+    url,
+    server,
+    context,
+    urlStack,
+    fixStacktrace,
+  )
+  pendingModules.set(url, modulePromise)
+  modulePromise
+    .catch(() =&gt; {
+      pendingImports.delete(url)
+    })
+    .finally(() =&gt; {
+      pendingModules.delete(url)
+    })
+  return modulePromise
+}"><pre class="notranslate"><code class="notranslate">export async function ssrLoadModule(
+  url: string,
+  server: ViteDevServer,
+  context: SSRContext = { global },
+  urlStack: string[] = [],
+  fixStacktrace?: boolean,
+): Promise&lt;SSRModule&gt; {
+  url = unwrapId(url)
+
+  // when we instantiate multiple dependency modules in parallel, they may
+  // point to shared modules. We need to avoid duplicate instantiation attempts
+  // by register every module as pending synchronously so that all subsequent
+  // request to that module are simply waiting on the same promise.
+  const pending = pendingModules.get(url)
+  if (pending) {
+    return pending
+  }
+
+  const modulePromise = instantiateModule(
+    url,
+    server,
+    context,
+    urlStack,
+    fixStacktrace,
+  )
+  pendingModules.set(url, modulePromise)
+  modulePromise
+    .catch(() =&gt; {
+      pendingImports.delete(url)
+    })
+    .finally(() =&gt; {
+      pendingModules.delete(url)
+    })
+  return modulePromise
+}
+</code></pre></div>
+<p dir="auto">See this screenshot from the debugger for more info:<br>
+<a target="_blank" rel="noopener noreferrer" href="https://private-user-images.githubusercontent.com/1127038/247694179-62721ce5-59c5-4faa-b78d-6d4d6c81154f.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3OTI4MzE4NjIsIm5iZiI6MTc5MjgzMTU2MiwicGF0aCI6Ii8xMTI3MDM4LzI0NzY5NDE3OS02MjcyMWNlNS01OWM1LTRmYWEtYjc4ZC02ZDRkNmM4MTE1NGYucG5nP1gtQW16LUFsZ29yaXRobT1BV1M0LUhNQUMtU0hBMjU2JlgtQW16LUNyZWRlbnRpYWw9QUtJQVZDT0RZTFNBNTNQUUs0WkElMkYyMDI2MTAyNCUyRnVzLWVhc3QtMSUyRnMzJTJGYXdzNF9yZXF1ZXN0JlgtQW16LURhdGU9MjAyNjEwMjRUMDg0NjAyWiZYLUFtei1FeHBpcmVzPTMwMCZYLUFtei1TaWduYXR1cmU9MWU3OGNmYzJhNzU3NjhjNGRlYmFkMDY4YTNiZTUwOGU5ZTg1NjIyYTg1ODBkZGI2MmFiOTllMzE1NmE2YTdkOCZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QmcmVzcG9uc2UtY29udGVudC10eXBlPWltYWdlJTJGcG5nIn0.c96E5SsHu-dZnsrWeiMEem-srjt4z3FqCggVtP5bxys"><img src="https://private-user-images.githubusercontent.com/1127038/247694179-62721ce5-59c5-4faa-b78d-6d4d6c81154f.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3OTI4MzE4NjIsIm5iZiI6MTc5MjgzMTU2MiwicGF0aCI6Ii8xMTI3MDM4LzI0NzY5NDE3OS02MjcyMWNlNS01OWM1LTRmYWEtYjc4ZC02ZDRkNmM4MTE1NGYucG5nP1gtQW16LUFsZ29yaXRobT1BV1M0LUhNQUMtU0hBMjU2JlgtQW16LUNyZWRlbnRpYWw9QUtJQVZDT0RZTFNBNTNQUUs0WkElMkYyMDI2MTAyNCUyRnVzLWVhc3QtMSUyRnMzJTJGYXdzNF9yZXF1ZXN0JlgtQW16LURhdGU9MjAyNjEwMjRUMDg0NjAyWiZYLUFtei1FeHBpcmVzPTMwMCZYLUFtei1TaWduYXR1cmU9MWU3OGNmYzJhNzU3NjhjNGRlYmFkMDY4YTNiZTUwOGU5ZTg1NjIyYTg1ODBkZGI2MmFiOTllMzE1NmE2YTdkOCZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QmcmVzcG9uc2UtY29udGVudC10eXBlPWltYWdlJTJGcG5nIn0.c96E5SsHu-dZnsrWeiMEem-srjt4z3FqCggVtP5bxys" alt="image" style="max-width: 100%;"></a></p>
+<p dir="auto">It's worth noting that some of the modules that are pending in this screenshot have circular dependencies among them. I'm not sure if that is relevant here, but it seems suspicious.</p>
+<p dir="auto">I've found some endpoints in my application that don't rely on any of these modules, and Vite will continue to serve those without any issue.</p>
+<p dir="auto">My hypothesis is that there's something wrong with the error handling in here somewhere. Is it possible that <code class="notranslate">pendingImports.delete</code> in the <code class="notranslate">.catch</code> should be <code class="notranslate">pendingModules.delete</code>?</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/dennisjlee/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/dennisjlee">@dennisjlee</a> FWIW that logic was added and discussed in <a href="https://github.com/vitejs/vite/pull/3950/files#r681153240">https://github.com/vitejs/vite/pull/3950/files#r681153240</a></p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/rtsao/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/rtsao">@rtsao</a> thanks - I didn't understand the purpose of <code class="notranslate">pendingImports.delete</code> but I could definitely be wrong there.</p>
+<p dir="auto">I'm speculating quite a bit here, but I wonder if there is something in this general area of the code that can leave a pending Promise around if there's an error reading a module from the filesystem? That would correlate with the reports in this issue that raising OS file-related limits can mitigate this problem.</p>
+<p dir="auto">If increasing the max number of file descriptors doesn't work, disable SSR altogether.<br>
+On SveteKit this can be done globally. <a href="https://kit.svelte.dev/docs/page-options#ssr" rel="nofollow">See the docs</a>.</p>
+<p dir="auto">My solution is to disable SSR on dev mode.<br>
+<code class="notranslate">src/routes/+layout.ts</code></p>
+<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="import { dev } from '$app/environment';
+// Disable SSR when running the dev server
+export const ssr = !dev;"><pre class="notranslate"><span class="pl-k">import</span> <span class="pl-kos">{</span> <span class="pl-s1">dev</span> <span class="pl-kos">}</span> <span class="pl-k">from</span> <span class="pl-s">'$app/environment'</span><span class="pl-kos">;</span>
+<span class="pl-c">// Disable SSR when running the dev server</span>
+<span class="pl-k">export</span> <span class="pl-k">const</span> <span class="pl-s1">ssr</span> <span class="pl-c1">=</span> <span class="pl-c1">!</span><span class="pl-s1">dev</span><span class="pl-kos">;</span></pre></div>
+<p dir="auto">I have exactly the same problem:<br>
+React app with many components, chrome only crash everytime, everything is correct on Firefox.<br>
+Commenting huge parts of my project fix chrome, but we can't use that to collaborate with other persons.</p>
+<p dir="auto">tested on 3.2.5 and on 4.0.4, and on 4.3.9 and get the same result.</p>
+<p dir="auto">Everything works fine when building.<br>
+Couldn't do anything with vite config options :/</p>
+<blockquote>
+<p dir="auto">I've frequently had a similar issue as the OP, where many pages of my SvelteKit app will hang forever in the Vite dev server, while a small number of simple pages still work.</p>
+<p dir="auto">Here's my environment:</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="OS: Windows 10 10.0.22621
+Node: 18.16.0
+Browser: Chrome 114.0.5735.134
+
+Vite: 4.3.9
+SvelteKit: 1.16.2"><pre class="notranslate"><code class="notranslate">OS: Windows 10 10.0.22621
+Node: 18.16.0
+Browser: Chrome 114.0.5735.134
+
+Vite: 4.3.9
+SvelteKit: 1.16.2
+</code></pre></div>
+<p dir="auto">I've tried countless things to get more details on what's going on and I finally got something today by adding debugger breakpoints into the guts of Vite (I started out with a breakpoint on the first line of <code class="notranslate">ssrLoadModule</code> which in my case was in node_modules/vite/dist/node/chunks/dep-e8f070e8.js).</p>
+<p dir="auto">With the debugger, I was able to determine that for the pages that were hanging, Vite had several promises in <code class="notranslate">pendingModules</code> (see <a href="https://github.com/vitejs/vite/blob/v4.3.9/packages/vite/src/node/ssr/ssrModuleLoader.ts#L57">here</a>) that never resolved, even after the dev server had been in this state for hours.</p>
+<p dir="auto">Here's the function from Vite:</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="export async function ssrLoadModule(
+  url: string,
+  server: ViteDevServer,
+  context: SSRContext = { global },
+  urlStack: string[] = [],
+  fixStacktrace?: boolean,
+): Promise&lt;SSRModule&gt; {
+  url = unwrapId(url)
+
+  // when we instantiate multiple dependency modules in parallel, they may
+  // point to shared modules. We need to avoid duplicate instantiation attempts
+  // by register every module as pending synchronously so that all subsequent
+  // request to that module are simply waiting on the same promise.
+  const pending = pendingModules.get(url)
+  if (pending) {
+    return pending
+  }
+
+  const modulePromise = instantiateModule(
+    url,
+    server,
+    context,
+    urlStack,
+    fixStacktrace,
+  )
+  pendingModules.set(url, modulePromise)
+  modulePromise
+    .catch(() =&gt; {
+      pendingImports.delete(url)
+    })
+    .finally(() =&gt; {
+      pendingModules.delete(url)
+    })
+  return modulePromise
+}"><pre class="notranslate"><code class="notranslate">export async function ssrLoadModule(
+  url: string,
+  server: ViteDevServer,
+  context: SSRContext = { global },
+  urlStack: string[] = [],
+  fixStacktrace?: boolean,
+): Promise&lt;SSRModule&gt; {
+  url = unwrapId(url)
+
+  // when we instantiate multiple dependency modules in parallel, they may
+  // point to shared modules. We need to avoid duplicate instantiation attempts
+  // by register every module as pending synchronously so that all subsequent
+  // request to that module are simply waiting on the same promise.
+  const pending = pendingModules.get(url)
+  if (pending) {
+    return pending
+  }
+
+  const modulePromise = instantiateModule(
+    url,
+    server,
+    context,
+    urlStack,
+    fixStacktrace,
+  )
+  pendingModules.set(url, modulePromise)
+  modulePromise
+    .catch(() =&gt; {
+      pendingImports.delete(url)
+    })
+    .finally(() =&gt; {
+      pendingModules.delete(url)
+    })
+  return modulePromise
+}
+</code></pre></div>
+<p dir="auto">See this screenshot from the debugger for more info: <a target="_blank" rel="noopener noreferrer nofollow" href="https://user-images.githubusercontent.com/1127038/247694179-62721ce5-59c5-4faa-b78d-6d4d6c81154f.png"><img src="https://user-images.githubusercontent.com/1127038/247694179-62721ce5-59c5-4faa-b78d-6d4d6c81154f.png" alt="image" style="max-width: 100%;"></a></p>
+<p dir="auto">It's worth noting that some of the modules that are pending in this screenshot have circular dependencies among them. I'm not sure if that is relevant here, but it seems suspicious.</p>
+<p dir="auto">I've found some endpoints in my application that don't rely on any of these modules, and Vite will continue to serve those without any issue.</p>
+<p dir="auto">My hypothesis is that there's something wrong with the error handling in here somewhere. Is it possible that <code class="notranslate">pendingImports.delete</code> in the <code class="notranslate">.catch</code> should be <code class="notranslate">pendingModules.delete</code>?</p>
+</blockquote>
+<p dir="auto">Hello - coworker of <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/dennisjlee/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/dennisjlee">@dennisjlee</a> here!</p>
+<p dir="auto">Part of the difficulty in debugging this issue has been its intermittent nature, so I'm hesitant to declare victory here. That said, we resolved the circular dependencies last week and have (seemed to!) had substantially greater stability. My vote is to increase visibility to the developer when those Promises are perpetually hanging, so that these issues can be diagnosed more quickly.</p>
+<p dir="auto">We are currently experiencing this on one machine (<a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/bmcdaniel11/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/bmcdaniel11">@bmcdaniel11</a>), but not another (mine) with <code class="notranslate">vite 4.4.1</code>.  Same codebase, same <code class="notranslate">macos M1 Ventura 13.4.1 (22F82)</code> machines, same versions of <code class="notranslate">node 18.10.0</code>.  Using <code class="notranslate">yarn 3.5.1</code> with <code class="notranslate">nodeLinker: node-modules</code>.  Both machines have the same sysctl/ulimit parameters and both have the same xcode-select version, and brew fully updated.  Always after any of these changes we have cleanly rebuilt node_modules due to the suspicion of a native cause.  Issue is reproducible with multiple browsers.</p>
+<p dir="auto">This appears to be a <em>native</em> issue since the same codebase works on one machine and not another with all the rest being equal.  We have not however been able to find the difference between the two machines.</p>
+<p dir="auto">I'm wondering if we can help debug further, since one machine works and the other hangs on the 2-6th refresh.  If there are any pointers to information we could provide that could be helpful, please let us know.</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/Creskendoll/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/Creskendoll">@Creskendoll</a>'s workaround of disabling Svelte SSR in dev also worked for me: I went from consistent hangs on a fresh load to no hangs.</p>
+<blockquote>
+<p dir="auto">So I found the fix (at least to my problem). This problem is similar to this one: <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1027324755" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/5310" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/5310/hovercard" href="https://github.com/vitejs/vite/issues/5310">#5310</a></p>
+<p dir="auto">In case you have a big project with plenty of files Chrome demands more file descriptors than system allows (1000 by default). I have Ubuntu Linux, so using <code class="notranslate">ulimit -Sn</code> didn't work for me. Like, it updates the amount of descriptors but that has to be done permanently as Chrome doesn't use it.</p>
+<p dir="auto">so, for Ubuntu Linux you have to add line <code class="notranslate">* - nofile 65536</code> (or whatever amount of opened files you need) to the file <code class="notranslate">/etc/security/limits.conf</code> and reboot.</p>
+<p dir="auto">For Arch Linux they say to add <code class="notranslate">DefaultLimitNOFILE=65536</code> line to both <code class="notranslate">/etc/systemd/system.conf </code> and <code class="notranslate">/etc/systemd/user.conf</code> file. Didn't check that.</p>
+<p dir="auto">Upd. LOL. Just figured out that <code class="notranslate">DefaultLimitNOFILE</code> can be applied to Ubuntu as also but it simply doesn't work, so <code class="notranslate">limits.conf</code> is the only working solution there. Will provde PR.</p>
+</blockquote>
+<p dir="auto">The same behavior on my side.<br>
+Using <code class="notranslate">* - nofile 65536</code> in <code class="notranslate">/etc/security/limits.conf</code> and reboot fixed the issue.</p>
+<p dir="auto"><a target="_blank" rel="noopener noreferrer" href="https://private-user-images.githubusercontent.com/11082863/252938451-8993ac4d-f585-4f6e-a062-f210c6089bba.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3OTI4MzE4NjIsIm5iZiI6MTc5MjgzMTU2MiwicGF0aCI6Ii8xMTA4Mjg2My8yNTI5Mzg0NTEtODk5M2FjNGQtZjU4NS00ZjZlLWEwNjItZjIxMGM2MDg5YmJhLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjEwMjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYxMDI0VDA4NDYwMlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTAxMWVlNGM3NjQxYTY5OGU2ZTdmODBhZjc4NTI4NjIyMDIyMDQ3MDFkNTc1OGZlNjY1MWNjNmRjNWNlZTkwY2ImWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnBuZyJ9.CcrAL7STDIk-q3A8c_6BlUIj6dptFCsnlrGgdZW3BI8"><img src="https://private-user-images.githubusercontent.com/11082863/252938451-8993ac4d-f585-4f6e-a062-f210c6089bba.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3OTI4MzE4NjIsIm5iZiI6MTc5MjgzMTU2MiwicGF0aCI6Ii8xMTA4Mjg2My8yNTI5Mzg0NTEtODk5M2FjNGQtZjU4NS00ZjZlLWEwNjItZjIxMGM2MDg5YmJhLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjEwMjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYxMDI0VDA4NDYwMlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTAxMWVlNGM3NjQxYTY5OGU2ZTdmODBhZjc4NTI4NjIyMDIyMDQ3MDFkNTc1OGZlNjY1MWNjNmRjNWNlZTkwY2ImWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnBuZyJ9.CcrAL7STDIk-q3A8c_6BlUIj6dptFCsnlrGgdZW3BI8" alt="Screenshot from 2023-07-12 13-23-43" style="max-width: 100%;"></a></p>
+<p dir="auto">Hi <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/CiprianDraghici/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/CiprianDraghici">@CiprianDraghici</a>, can your project run on Windows?<br>
+This problem doesn't occur only on Linux.</p>
+<blockquote>
+<p dir="auto">Hi <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/CiprianDraghici/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/CiprianDraghici">@CiprianDraghici</a>, can your project run on Windows? This problem doesn't only occur on Linux.</p>
+</blockquote>
+<p dir="auto">Unfortunately I don't have Windows to test :(</p>
+<p dir="auto">To confirm, I just tested the nofile solution (on ubuntu 20.04) and still get the same result (chrome crash)<br>
+tested on vite 4.4.3 this time</p>
+<blockquote>
+<p dir="auto">To confirm, I just tested the nofile solution (on ubuntu 20.04) and still get the same result (chrome crash) tested on vite 4.4.3 this time</p>
+</blockquote>
+<p dir="auto">Did you try to reboot your system ? On my side is working on Ubuntu 22.04</p>
+<p dir="auto">yep, rebooted</p>
+<blockquote>
+<p dir="auto">If increasing the max number of file descriptors doesn't work, disable SSR altogether. On SveteKit this can be done globally. <a href="https://kit.svelte.dev/docs/page-options#ssr" rel="nofollow">See the docs</a>.</p>
+<p dir="auto">My solution is to disable SSR on dev mode. <code class="notranslate">src/routes/+layout.ts</code></p>
+<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="import { dev } from '$app/environment';
+// Disable SSR when running the dev server
+export const ssr = !dev;"><pre class="notranslate"><span class="pl-k">import</span> <span class="pl-kos">{</span> <span class="pl-s1">dev</span> <span class="pl-kos">}</span> <span class="pl-k">from</span> <span class="pl-s">'$app/environment'</span><span class="pl-kos">;</span>
+<span class="pl-c">// Disable SSR when running the dev server</span>
+<span class="pl-k">export</span> <span class="pl-k">const</span> <span class="pl-s1">ssr</span> <span class="pl-c1">=</span> <span class="pl-c1">!</span><span class="pl-s1">dev</span><span class="pl-kos">;</span></pre></div>
+</blockquote>
+<p dir="auto">This comment saved my day. Thx <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/Creskendoll/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/Creskendoll">@Creskendoll</a>!</p>
+<p dir="auto">Any solution to this issue for windows yet?</p>
+<blockquote>
+<p dir="auto">Any solution to this issue for windows yet?</p>
+</blockquote>
+<p dir="auto">I'm having the same/similar issue on Windows. Network shows all requests as pending, and it's taken about 18+ minutes before it actually loads. Things are ok, unless you refresh, then the whole issue starts over again.</p>
+<p dir="auto">I'm running a Vue 3/Vite/Pinia/TS/Router4 configuration on Windows 10.</p>
+<p dir="auto">Edit: We're trying to migrate from Vue 2 to Vue 3 before the end of the year, but this is severely hampering our progress.</p>
+<p dir="auto">I tried anything mentioned here Linux Mint 20 and nothing helped, still crashes randomly... At this point I basically need to restart Vite every bigger change i do to the project, which is close to unusable :/</p>
+<p dir="auto">For Ubuntu 22.10 I needed to modify three files to get things to apply:</p>
+<p dir="auto">In the /etc/security/limits.conf</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="* soft nproc 65535
+* hard nproc 65535
+* soft nofile 65535
+* hard nofile 65535"><pre class="notranslate"><code class="notranslate">* soft nproc 65535
+* hard nproc 65535
+* soft nofile 65535
+* hard nofile 65535
+</code></pre></div>
+<p dir="auto">in /etc/systemd/system.conf</p>
+<p dir="auto"><code class="notranslate">DefaultLimitNOFILE=65535:524288</code></p>
+<p dir="auto">in /etc/systemd/user.conf</p>
+<p dir="auto"><code class="notranslate">DefaultLimitNOFILE=65535:524288</code></p>
+<p dir="auto"><strong>reboot</strong></p>
+<p dir="auto">Once you are logged in you can use this command:</p>
+<p dir="auto"><code class="notranslate">ulimit -a |grep open</code></p>
+<p dir="auto">This should confirm that the limit has taken effect.</p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="delmendo@cu:~$ ulimit -a |grep open
+open files                          (-n) 65535"><pre class="notranslate"><code class="notranslate">delmendo@cu:~$ ulimit -a |grep open
+open files                          (-n) 65535
+</code></pre></div>
+<p dir="auto">Having the same issue on MacOS running Chrome.</p>
+<p dir="auto">I'll have no problems for a day or two, then it will just lockup.  Many times I can restart dev mode and it will work, other times it just hangs again.  Today I shut down and restarted and it fired right back up again.  The suggested fixes listed here don't address running on the MacOS platform.</p>
+<p dir="auto">I am also experiencing this sometimes, which leads to this issue also <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="1819854145" data-permission-text="Title is private" data-url="https://github.com/vitejs/vite/issues/13946" data-hovercard-type="issue" data-hovercard-url="/vitejs/vite/issues/13946/hovercard" href="https://github.com/vitejs/vite/issues/13946">#13946</a></p>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="System:
+    OS: Linux 5.15 Ubuntu 22.04.1 LTS 22.04.1 LTS (Jammy Jellyfish)
+    CPU: (2) x64 DO-Regular
+    Memory: 2.55 GB / 3.83 GB
+    Container: Yes
+    Shell: 5.1.16 - /bin/bash
+  Binaries:
+    Node: 18.13.0 - /usr/bin/node
+    Yarn: 1.22.19 - /usr/bin/yarn
+    npm: 8.19.3 - /usr/bin/npm
+    pnpm: 8.6.10 - /usr/bin/pnpm
+  npmPackages:
+    vite: ^4.0.0 =&gt; 4.3.9"><pre class="notranslate"><code class="notranslate">System:
+    OS: Linux 5.15 Ubuntu 22.04.1 LTS 22.04.1 LTS (Jammy Jellyfish)
+    CPU: (2) x64 DO-Regular
+    Memory: 2.55 GB / 3.83 GB
+    Container: Yes
+    Shell: 5.1.16 - /bin/bash
+  Binaries:
+    Node: 18.13.0 - /usr/bin/node
+    Yarn: 1.22.19 - /usr/bin/yarn
+    npm: 8.19.3 - /usr/bin/npm
+    pnpm: 8.6.10 - /usr/bin/pnpm
+  npmPackages:
+    vite: ^4.0.0 =&gt; 4.3.9
+</code></pre></div>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/delmendo/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/delmendo">@delmendo</a> Your solution worked for me when everything else failed! So thanks a lot!!! Can you explain how you came up with it? And why did you pick the value <code class="notranslate">65535</code>  when most other advices recommend <code class="notranslate">65536</code>?<br>
+Thank you again</p>
+<p dir="auto">The number is probably an artifact from me testing. I set a different number in each setting to make confirm which settings where winning and just forgot to go back to the original value.</p>
+<p dir="auto">It looks like you have to both set the limit and adjust the security to allow you to set the limit. If you just set the limit ( but no security changes) the security settings prevent the change. If you adjust the security but not the limit - then you have permission to make the change but there is no change to apply. When you do them both you make a change that you have a permission to make.</p>
+<p dir="auto">This is my understanding from my experiments</p>
+<blockquote>
+<p dir="auto">Check it : <a href="https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever" rel="nofollow">https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever</a></p>
+</blockquote>
+<p dir="auto">A lot of us have tried bumping file descriptor limits, but have not had success with it fixing the issue</p>
+<p dir="auto"><a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/benatshippabo/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/benatshippabo">@benatshippabo</a> have you tried <a class="user-mention notranslate" data-hovercard-type="user" data-hovercard-url="/users/delmendo/hovercard" data-octo-click="hovercard-link-click" data-octo-dimensions="link_type:self" href="https://github.com/delmendo">@delmendo</a> 's suggestion?</p>
+<blockquote>
+<blockquote>
+<p dir="auto">Check it : <a href="https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever" rel="nofollow">https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever</a></p>
+</blockquote>
+<p dir="auto">A lot of us have tried bumping file descriptor limits, but have not had success with it fixing the issue</p>
+</blockquote>
+<p dir="auto">yeah, i retried to set it all, i used all suggestions mentioned in this thread and freezing is still happening... It freezes completely randomly, but quite often (in average only 5 file changes) without any errors, cant be killed even by ctrl+c/d, whole terminal process needs to be killed... and it takes up constant 8.3% cpu (12 core cpu - so 100% of one core)</p>
+<p dir="auto">same project works for windows guys in our team... i had to setup esbuild for me, it doesnt have HMR but its still better than having to restart vite all the time and much faster than webpack...</p>
+<p dir="auto">I'll extend our assistance again as we have a verifiable situation with a control that works, see my comment earlier.</p>
+<p dir="auto">We have two identical hardware Mac M1s, same codebase, we have verified all limits/settings are the same (as far as we can tell), we have been through the troubleshooting, all the comments in this thread, and we still have the problem on on Mac but not the other.</p>
+<p dir="auto">If there is a script we can run to provided detailed diagnostics on each for comparison, please point us towards it and we will provide the information.</p>
+<blockquote>
+<p dir="auto">Check it : <a href="https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever" rel="nofollow">https://vitejs.dev/guide/troubleshooting.html#requests-are-stalled-forever</a></p>
+</blockquote>
+<p dir="auto">I'm on MacOS and using the vite-plugin-mkcert library for local development and https.  If there's a different procedure I should be using instead (like a self-signed certificate) this should be documented by vite as the only way I know is by using vite-plugin-mkcert.</p>

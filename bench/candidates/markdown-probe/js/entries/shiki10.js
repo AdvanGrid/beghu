@@ -1,0 +1,15 @@
+import { createHighlighterCoreSync } from '@shikijs/core';
+import { createJavaScriptRegexEngine } from '@shikijs/engine-javascript';
+import ts from '@shikijs/langs/typescript';
+import js from '@shikijs/langs/javascript';
+import rust from '@shikijs/langs/rust';
+import json from '@shikijs/langs/json';
+import bash from '@shikijs/langs/bash';
+import sql from '@shikijs/langs/sql';
+import css from '@shikijs/langs/css';
+import html from '@shikijs/langs/html';
+import yaml from '@shikijs/langs/yaml';
+import diff from '@shikijs/langs/diff';
+import theme from '@shikijs/themes/github-light';
+const h = createHighlighterCoreSync({ themes: [theme], langs: [ts, js, rust, json, bash, sql, css, html, yaml, diff], engine: createJavaScriptRegexEngine() });
+export const hl = (c, lang) => h.codeToTokens(c, { lang, theme: 'github-light' });

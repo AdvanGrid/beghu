@@ -1,0 +1,13 @@
+import h from 'highlight.js/lib/core';
+import ts from 'highlight.js/lib/languages/typescript';
+import js from 'highlight.js/lib/languages/javascript';
+import rust from 'highlight.js/lib/languages/rust';
+import json from 'highlight.js/lib/languages/json';
+import bash from 'highlight.js/lib/languages/bash';
+import sql from 'highlight.js/lib/languages/sql';
+import css from 'highlight.js/lib/languages/css';
+import xml from 'highlight.js/lib/languages/xml';
+import yaml from 'highlight.js/lib/languages/yaml';
+import diff from 'highlight.js/lib/languages/diff';
+for (const [n, l] of Object.entries({ typescript: ts, javascript: js, rust, json, bash, sql, css, xml, yaml, diff })) h.registerLanguage(n, l);
+export const hl = (c, language) => h.highlight(c, { language, ignoreIllegals: true }).value;

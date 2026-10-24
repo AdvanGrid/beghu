@@ -1,0 +1,5 @@
+node_modules/
+rs/target/
+web/dist/
+js/out/
+github/openapi.json

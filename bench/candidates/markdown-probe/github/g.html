@@ -1,0 +1,55 @@
+<h3 dir="auto">Describe the bug</h3>
+<p dir="auto">I use SvelteKit. I have a somewhat complex page that contains quite a lot of components and imported functions. I had sporadic problems with this page hanging in the browser (both Firefox and Chrome). However, no error or notification in the vite cli. I was usually able to fix this by restarting the dev server several times whether or not in combination with restarting the browser. Other, simpler pages, always just kept working. Restarting my computer always works.</p>
+<p dir="auto">In recent days, I have been adding extra functionality, and the more I added, the more often the page kept hanging and the harder I got it to work again. When I get the page online (after frequently restarting everything I get restarted), everything just works. Until I make an adjustment in the code and because of the HMR the thing hangs again. I don't see any other pattern to it.</p>
+<p dir="auto">The problem does not occur when I build and preview the page, the production code always works.</p>
+<p dir="auto">It's driving me crazy, I can hardly get anything developed.</p>
+<h3 dir="auto">Reproduction</h3>
+<p dir="auto">I can't build a reproduction, there is no pattern.</p>
+<h3 dir="auto">Steps to reproduce</h3>
+<p dir="auto">It happens only on the dev server. I can find no pattern, cannot pinpoint a cause and thus cannot foresee any reproduction. There is nothing wrong with the code itself, the production build works perfectly.</p>
+<p dir="auto">The debug logs below are what I get when browsing to /leerlijn/54159.<br>
+It starts doing it's thing, and then just randomly stops at some point.</p>
+<h3 dir="auto">System Info</h3>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="System:
+    OS: macOS 13.0.1
+    CPU: (10) arm64 Apple M1 Pro
+    Memory: 12.20 GB / 32.00 GB
+    Shell: 5.8.1 - /bin/zsh
+  Binaries:
+    Node: 18.12.1 - ~/.nvm/versions/node/v18.12.1/bin/node
+    npm: 8.19.2 - ~/.nvm/versions/node/v18.12.1/bin/npm
+  Browsers:
+    Chrome: 108.0.5359.124
+    Firefox: 108.0.1
+    Safari: 16.1
+  npmPackages:
+    vite: ^4.0.3 =&gt; 4.0.3"><pre class="notranslate">System:
+    OS: macOS 13.0.1
+    CPU: (10) arm64 Apple M1 Pro
+    Memory: 12.20 GB / 32.00 GB
+    Shell: 5.8.1 - /bin/zsh
+  Binaries:
+    Node: 18.12.1 - <span class="pl-k">~</span>/.nvm/versions/node/v18.12.1/bin/node
+    npm: 8.19.2 - <span class="pl-k">~</span>/.nvm/versions/node/v18.12.1/bin/npm
+  Browsers:
+    Chrome: 108.0.5359.124
+    Firefox: 108.0.1
+    Safari: 16.1
+  npmPackages:
+    vite: ^4.0.3 =<span class="pl-k">&gt;</span> 4.0.3</pre></div>
+<h3 dir="auto">Used Package Manager</h3>
+<p dir="auto">npm</p>
+<h3 dir="auto">Logs</h3>
+<p dir="auto">Posted here: <a href="https://gist.github.com/hanszoons/2c511fa66ad76bd5181f84f7f7115eb5">https://gist.github.com/hanszoons/2c511fa66ad76bd5181f84f7f7115eb5</a> because of the maximum 65536 characters.</p>
+<p dir="auto">These are the logs when requesting the page /leerlijn/54159, after wich it simply hangs indefinitely.</p>
+<p dir="auto">The second file are the logs when the page is rendered successfully. Same exact code, same config, same everything. Just some dev server restarts and good luck. 1 code change with HMR and the thing  hang again.</p>
+<h3 dir="auto">Validations</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Follow our <a href="https://github.com/vitejs/vite/blob/main/CODE_OF_CONDUCT.md">Code of Conduct</a></li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Read the <a href="https://github.com/vitejs/vite/blob/main/CONTRIBUTING.md">Contributing Guidelines</a>.</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Read the <a href="https://vitejs.dev/guide" rel="nofollow">docs</a>.</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Check that there isn't <a href="https://github.com/vitejs/vite/issues">already an issue</a> that reports the same bug to avoid creating a duplicate.</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Make sure this is a Vite issue and not a framework-specific issue. For example, if it's a Vue SFC related bug, it should likely be reported to <a href="https://github.com/vuejs/core">vuejs/core</a> instead.</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> Check that this is a concrete bug. For Q&amp;A open a <a href="https://github.com/vitejs/vite/discussions">GitHub Discussion</a> or join our <a href="https://chat.vitejs.dev/" rel="nofollow">Discord Chat Server</a>.</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> The provided reproduction is a <a href="https://stackoverflow.com/help/minimal-reproducible-example" rel="nofollow">minimal reproducible example</a> of the bug.</li>
+</ul>

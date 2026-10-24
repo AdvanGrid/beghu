@@ -1,0 +1,16 @@
+[package]
+name = "markdown-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+comrak = { version = "*", default-features = false }
+pulldown-cmark = { version = "*", default-features = false, features = ["html"] }
+markdown = "1.0.0"
+ammonia = "*"
+serde_json = "1"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+
+[profile.release]
+debug = false

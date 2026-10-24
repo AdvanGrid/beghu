@@ -1,0 +1,1 @@
+{ "compilerOptions": { "jsx": "preserve", "jsxImportSource": "solid-js", "module": "esnext", "target": "esnext", "moduleResolution": "bundler", "strict": false, "noEmit": true } }
