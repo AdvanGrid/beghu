@@ -54,6 +54,16 @@ export function Switcher() {
         </select>
       </label>
       <label>
+        frame{' '}
+        <select value={(search.frame as string) ?? 'card'} onChange={(e) => setSearch({ frame: e.currentTarget.value === 'card' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="card">card</option>
+          <option value="sheet">sheet</option>
+          <option value="timeline">timeline</option>
+          <option value="tint">tint</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+      <label>
         icons{' '}
         <select value={(search.icons as string) ?? 'svg'} onChange={(e) => setSearch({ icons: e.currentTarget.value === 'svg' ? undefined : e.currentTarget.value }, { replace: true })}>
           <option value="svg">svg sprite</option>

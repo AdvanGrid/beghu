@@ -7,6 +7,7 @@ import { useSearchParams } from '@solidjs/router';
 import { render, type Opts } from './render';
 import type { IconMode } from './icons';
 import './md.css';
+import './frames.css';
 
 export type CorpusComment = { author: string; created_at: string; ast: any[] };
 export type CorpusThread = { key: string; title: string; repo: string; body: any[]; comments: CorpusComment[] };

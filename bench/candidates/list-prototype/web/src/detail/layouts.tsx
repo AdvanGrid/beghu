@@ -144,7 +144,7 @@ export function DetailA(props: { m: IssueModel }) {
   const [search] = useSearchParams();
   // #66: ?variant= picks the shift cue; the phase drives the cue's CSS.
   return (
-    <article class={`da v-A ph-${m.held.phase()}`} data-bench="detail" data-id={d().id}>
+    <article class={`da v-A ph-${m.held.phase()} fr-${(search.frame as string) ?? 'card'}`} data-bench="detail" data-id={d().id}>
       <Gutter m={m} />
       <LivePanel m={m} />
       {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
@@ -208,8 +208,14 @@ export function DetailA(props: { m: IssueModel }) {
       <Unit m={m} part="relates" empty={!d().rels.relates.length} mark="link added">
         <RelSection m={m} kind="relates" hideEmpty />
       </Unit>
-      <Opened m={m} />
-      <Body m={m} />
+      {/* #68: the body and its byline are one post, framed like a comment (?frame=) */}
+      <div class="post">
+        <div class="post-meta">
+          <Avatar login={d().author ?? 'ghost'} size={20} />
+          <Opened m={m} />
+        </div>
+        <Body m={m} />
+      </div>
       <div data-k="p:subs" data-live={lv(m, 'subs')} class={glow(m, 'subs')}>
         <SubIssues m={m} mode="drag" onNew={() => newIssue(d().id)} />
       </div>

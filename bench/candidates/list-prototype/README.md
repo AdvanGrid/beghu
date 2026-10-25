@@ -25,6 +25,7 @@ highlight.js colours code after first paint. Colours are `light-dark()` tokens i
 The bar adds `md` (which real thread replaces the fixture's lorem: `auto` by issue id, `kitchen`
 for every element, six GitHub issues, five agent threads, or `off`), `icons` (`svg` sprite or
 `unicode glyphs`) and the walker time for the last frame (before layout).
+`?frame=card|sheet|timeline|tint|none` (round 2, also on the bar) frames each body and comment so it's clear where the text starts and ends; see `md/frames.css`.
 `node md-corpus/build.mjs` rebuilds `web/public/md-corpus.json`.
 
     ./bench/serve list-prototype --scale 50k --port 8095
