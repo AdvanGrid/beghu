@@ -32,6 +32,20 @@ for every element, six GitHub issues, five agent threads, or `off`), `icons` (`s
     (cd bench/candidates/list-prototype/web && API_URL=http://127.0.0.1:8095 npx vite --port 5180)
     # http://localhost:5180/issues/3000040375?md=kitchen&variant=A
 
+## Verdict
+
+- **Style: B (Document).** GitHub's sized headings in level colours; alerts as tinted callout boxes
+  with icon and title; coloured bullets; code with a header bar (code icon, language dot, name);
+  no link icons, a ↗ after off-GitHub links unless the author wrote one; tables with rules and zebra
+  rows; mentions as pills.
+- **Frame: tint.** Each body and comment sits on a faint tinted surface with its byline inside, no
+  border; code blocks turn white on it.
+- **Heading levels: E (split line).** A fixed-width line before each heading, cut into as many
+  segments as the level, in the level's colour: h1 solid, h6 six dots.
+- **Icons: SVG sprite.** One inline `<symbol>` sprite, `<use>` per icon, `currentColor`; no font.
+- **Images:** authored `width`/`height` win over the stylesheet and `align` floats, as on GitHub
+  (bots size and place their badges this way).
+
 ---
 
 # PROTOTYPE: live changes in the issue detail
