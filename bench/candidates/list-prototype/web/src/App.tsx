@@ -51,6 +51,7 @@ export const VARIANTS = [
   { key: 'D', name: 'Dots' },
   { key: 'G', name: 'Pips in the gutter' },
   { key: 'M', name: 'One-colour pips' },
+  { key: 'E', name: 'Split line' },
 ] as const;
 
 export type RelVariant = 'A' | 'B' | 'C';

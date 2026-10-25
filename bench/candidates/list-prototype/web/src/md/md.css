@@ -233,9 +233,15 @@
  *   S  signal steps: ticks rise left to right, so a deeper level is a taller, longer mark.
  *   D  dots instead of ticks.
  *   G  the pips hang in a gutter left of the text, so headings line up with the paragraphs.
+ *   E  split line: a fixed-width line cut into level-many segments (h1 solid, h6 = D's dots).
  *   M  one colour: pips in the accent, heading text in the text colour; the pips alone carry
  *      the level. */
 .hv-Q .md-pips i:not(.on) { display: none; }
+/* E: one fixed-width line split into as many segments as the level: h1 a solid line, h6 the six
+ * dots of D (same width as D's row). */
+.hv-E .md-pips { width: 42.5px; gap: 2.5px; }
+.hv-E .md-pips i { flex: 1; height: 5px; border-radius: 2.5px; }
+.hv-E .md-pips i:not(.on) { display: none; }
 .hv-S .md-pips { align-items: flex-end; gap: 1.5px; height: 14px; }
 .hv-S .md-pips i { width: 3px; }
 .hv-S .md-pips i:nth-child(1) { height: 4px; } .hv-S .md-pips i:nth-child(2) { height: 6px; } .hv-S .md-pips i:nth-child(3) { height: 8px; }

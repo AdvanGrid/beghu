@@ -84,7 +84,7 @@ export function render(ast: any[], o: Opts): DocumentFragment {
 }
 
 /** Round 4: every pip variant renders the same six ticks; CSS shapes them. */
-export const PIPS = new Set(['P', 'Q', 'S', 'D', 'G', 'M']);
+export const PIPS = new Set(['P', 'Q', 'S', 'D', 'G', 'M', 'E']);
 
 type Ctx = { o: Opts; listDepth: number; inLink: boolean; inCode: boolean; top: number; num: number[] };
 
