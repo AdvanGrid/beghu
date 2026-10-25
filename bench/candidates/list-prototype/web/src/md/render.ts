@@ -89,7 +89,13 @@ export const PIPS = new Set(['P', 'Q', 'S', 'D', 'G', 'M', 'E']);
 type Ctx = { o: Opts; listDepth: number; inLink: boolean; inCode: boolean; top: number; num: number[] };
 
 function kids(e: Node, n: any[], ctx: Ctx, from = 2) {
-  for (let i = from; i < n.length; i++) e.appendChild(node(n[i], ctx));
+  for (let i = from; i < n.length; i++) {
+    const c = n[i];
+    const out = node(c, ctx);
+    // A link the author already followed with ↗ doesn't get a second one from the style.
+    if (Array.isArray(c) && c[0] === 'a' && typeof n[i + 1] === 'string' && /^\s?[↗↪➚]/.test(n[i + 1]) && out instanceof HTMLElement) out.dataset.arrow = 'authored';
+    e.appendChild(out);
+  }
 }
 
 function node(n: any, ctx: Ctx): Node {
@@ -198,8 +204,13 @@ function node(n: any, ctx: Ctx): Node {
       img.loading = 'lazy';
       img.src = a.src ?? '';
       img.alt = a.alt ?? '';
-      if (a.width) img.width = +a.width;
-      if (a.height) img.height = +a.height;
+      // Authored sizes win over the stylesheet's height: auto, as on GitHub (bots size their badges
+      // this way), and align="left|right" floats like GitHub's.
+      if (a.width) img.style.width = /%$/.test(a.width) ? a.width : `${parseInt(a.width)}px`;
+      if (a.height) img.style.height = /%$/.test(a.height) ? a.height : `${parseInt(a.height)}px`;
+      if (a.width && !a.height) img.style.height = 'auto';
+      if (a.height && !a.width) img.style.width = 'auto';
+      if (a.align === 'right' || a.align === 'left') img.classList.add(`md-float-${a.align}`);
       if (!ctx.inLink) img.addEventListener('click', () => lightbox(img.src, img.alt));
       img.addEventListener('error', () => img.replaceWith(el('a', 'md-img-fail', [icon('image', ctx.o.icons), img.alt || 'Image failed to load'])), { once: true });
       return img;

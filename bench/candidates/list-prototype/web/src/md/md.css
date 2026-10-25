@@ -66,6 +66,9 @@
 .md .md-task.done > span { color: var(--md-muted); }
 .md .md-img { max-width: 100%; max-height: 480px; height: auto; border-radius: 4px; cursor: zoom-in; vertical-align: middle; }
 .md a .md-img { cursor: pointer; }
+.md .md-float-right { float: right; margin: 0 0 4px 8px; }
+.md .md-float-left { float: left; margin: 0 8px 4px 0; }
+.md .md-h .md-ht { display: flow-root; flex: 1; min-width: 0; }
 .md .md-img-fail { display: inline-flex; gap: 6px; align-items: center; padding: 8px 10px; border: 1px dashed var(--md-line); border-radius: 6px; color: var(--md-muted); }
 .md .md-table { overflow-x: auto; margin: 0 0 0.8em; }
 .md table { border-collapse: collapse; font-size: 0.95em; }
@@ -158,7 +161,7 @@
 .md-B .md-code { border: 1px solid var(--md-line); }
 .md-B .md-code-head { padding: 3px 10px; background: var(--md-code-head); border-bottom: 1px solid var(--md-line); }
 .md-B .md-a .md-li { display: none; }
-.md-B .md-a[data-kind='globe']::after { content: '↗'; font-size: 0.8em; margin-left: 1px; color: var(--md-muted); }
+.md-B .md-a[data-kind='globe']:not([data-arrow])::after { content: '↗'; font-size: 0.8em; margin-left: 1px; color: var(--md-muted); }
 .md-B table { border-top: 1px solid var(--md-table-line); }
 .md-B th { text-align: left; font-weight: 600; border-bottom: 2px solid var(--md-table-line); }
 .md-B td { border-bottom: 1px solid var(--md-line); }

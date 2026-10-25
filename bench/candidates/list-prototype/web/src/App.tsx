@@ -45,13 +45,13 @@ export type Ctx = {
 // #68 round 4: Markdown is style B, framed by tint, with SVG icons, and heading levels show as
 // pips; ?variant= picks the pip variation.
 export const VARIANTS = [
+  { key: 'E', name: 'Split line (picked)' },
   { key: 'P', name: 'Pips (round 3)' },
   { key: 'Q', name: 'Lit pips only' },
   { key: 'S', name: 'Signal steps' },
   { key: 'D', name: 'Dots' },
   { key: 'G', name: 'Pips in the gutter' },
   { key: 'M', name: 'One-colour pips' },
-  { key: 'E', name: 'Split line' },
 ] as const;
 
 export type RelVariant = 'A' | 'B' | 'C';

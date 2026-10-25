@@ -54,7 +54,7 @@ export function Md(props: { ast: any[]; repo: string }) {
   // Round 3: the style is B; ?variant= picks the heading treatment.
   const opts = (): Opts => ({
     variant: 'B',
-    heads: (search.variant as string) ?? 'P',
+    heads: (search.variant as string) ?? 'E',
     icons: (search.icons === 'glyph' ? 'glyph' : 'svg') as IconMode,
     repo: props.repo,
   });
