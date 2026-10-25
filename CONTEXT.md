@@ -59,3 +59,7 @@ _Avoid_: Warning, toast, transition indicator
 **Match mode**:
 How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters).
 _Avoid_: Relevance, search ranking
+
+**Preference**:
+A choice a user makes about how beghu looks or behaves for them. A device preference (theme, divider and column widths, tree expand state) stays in the browser where it was set. An account preference (comment order, key bindings) is stored per connected account on the server and follows that account to every browser.
+_Avoid_: Setting, user config
