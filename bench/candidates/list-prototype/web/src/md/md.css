@@ -202,3 +202,41 @@
 .md-C td { border-top: 1px solid var(--md-line); }
 .md-C tr:first-child td { border-top: 0; }
 .md-C th + th, .md-C td + td { border-left: 1px solid var(--md-line); }
+
+/* ---------- round 3: heading levels on B (?variant=) ----------
+ *   T  Level tag     an H1…H6 chip in the level's colour before each heading.
+ *   N  Numbered      outline numbers (2, 2.1, 2.1.1) counted from the doc's top heading.
+ *   P  Level pips    six ticks, as many lit as the level.
+ *   R  One-colour    no rainbow: size, weight and case alone, a wider ramp.
+ *   L  Ladder        each heading's section indented under its parent, on a guide line.
+ *   B  round 1's B, unchanged. */
+.hv-T .md-hi { display: inline-flex; order: -1; align-self: center; font: 600 10px/1 ui-monospace, monospace; padding: 3px 5px; border-radius: 4px; letter-spacing: 0.02em; }
+.hv-T .md-hi::before { content: 'H'; }
+.hv-T .md-h1 .md-hi { color: var(--md-h1); background: var(--md-h1-bg); }
+.hv-T .md-h2 .md-hi { color: var(--md-h2); background: var(--md-h2-bg); }
+.hv-T .md-h3 .md-hi { color: var(--md-h3); background: var(--md-h3-bg); }
+.hv-T .md-h4 .md-hi { color: var(--md-h4); background: var(--md-h4-bg); }
+.hv-T .md-h5 .md-hi { color: var(--md-h5); background: var(--md-h5-bg); }
+.hv-T .md-h6 .md-hi { color: var(--md-h6); background: var(--md-h6-bg); }
+
+.hv-N .md-hn { order: -1; font: 600 0.85em/1 ui-monospace, monospace; color: var(--md-muted); font-variant-numeric: tabular-nums; min-width: 1.6em; }
+
+.hv-P .md-pips { order: -1; align-self: center; display: inline-flex; gap: 2px; }
+.hv-P .md-pips i { width: 3px; height: 11px; border-radius: 1px; background: var(--md-line); }
+.hv-P .md-h1 .md-pips i.on { background: var(--md-h1); } .hv-P .md-h2 .md-pips i.on { background: var(--md-h2); }
+.hv-P .md-h3 .md-pips i.on { background: var(--md-h3); } .hv-P .md-h4 .md-pips i.on { background: var(--md-h4); }
+.hv-P .md-h5 .md-pips i.on { background: var(--md-h5); } .hv-P .md-h6 .md-pips i.on { background: var(--md-h6); }
+
+.hv-R .md-h, .hv-R .md-h .md-ht { color: var(--fg); }
+.hv-R .md-h1 { font-size: 1.55em; font-weight: 700; border-bottom: 2px solid var(--md-line); }
+.hv-R .md-h2 { font-size: 1.3em; font-weight: 650; border-bottom: 1px solid var(--md-line); }
+.hv-R .md-h3 { font-size: 1.14em; font-weight: 650; }
+.hv-R .md-h4 { font-size: 1em; font-weight: 650; }
+.hv-R .md-h5 { font-size: 0.92em; font-weight: 600; color: var(--md-muted); }
+.hv-R .md-h5 .md-ht { color: var(--md-muted); }
+.hv-R .md-h6 { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.hv-R .md-h6 .md-ht { color: var(--md-muted); }
+
+.hv-L .md-sec .md-sec { margin-left: 4px; padding-left: 14px; border-left: 2px solid var(--md-line); }
+.hv-L .md-sec > .md-h { margin-top: 0.9em; }
+.hv-L .md-sec:first-child > .md-h { margin-top: 0; }

@@ -15,6 +15,7 @@ const bin = join(probe, 'thread/rs/target/release/thread-probe');
 const PAGE = 15;
 
 const threads = [];
+threads.push({ key: 'headings', title: 'Headings: down and back up', repo: 'tomsjansons/beghu', body: readFileSync(join(here, 'headings.md'), 'utf8'), comments: [] });
 threads.push({ key: 'kitchen', title: 'Kitchen sink: every element', repo: 'tomsjansons/beghu', body: readFileSync(join(here, 'kitchen-sink.md'), 'utf8'), comments: [] });
 
 for (const name of ['vitejs_vite-11468', 'tokio-rs_tokio-1879', 'rust-lang_rust-38356', 'nodejs_node-37061', 'oven-sh_bun-15087', 'microsoft_vscode-336320']) {

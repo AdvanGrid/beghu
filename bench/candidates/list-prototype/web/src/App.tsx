@@ -42,12 +42,15 @@ export type Ctx = {
   live: () => number;
 };
 
-// #68: ?variant= now picks how Markdown in bodies and comments is styled (see md/). The shift
-// cue is fixed to #66's A.
+// #68 round 3: Markdown is style B, framed by tint, with SVG icons; ?variant= now picks how
+// heading levels read.
 export const VARIANTS = [
-  { key: 'A', name: 'Editor bands' },
-  { key: 'B', name: 'Document' },
-  { key: 'C', name: 'Outline rails' },
+  { key: 'T', name: 'Level tag' },
+  { key: 'N', name: 'Numbered sections' },
+  { key: 'P', name: 'Level pips' },
+  { key: 'R', name: 'One-colour ramp' },
+  { key: 'L', name: 'Ladder' },
+  { key: 'B', name: 'Round 1 B' },
 ] as const;
 
 export type RelVariant = 'A' | 'B' | 'C';

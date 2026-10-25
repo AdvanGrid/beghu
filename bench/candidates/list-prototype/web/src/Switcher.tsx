@@ -55,7 +55,7 @@ export function Switcher() {
       </label>
       <label>
         frame{' '}
-        <select value={(search.frame as string) ?? 'card'} onChange={(e) => setSearch({ frame: e.currentTarget.value === 'card' ? undefined : e.currentTarget.value }, { replace: true })}>
+        <select value={(search.frame as string) ?? 'tint'} onChange={(e) => setSearch({ frame: e.currentTarget.value === 'tint' ? undefined : e.currentTarget.value }, { replace: true })}>
           <option value="card">card</option>
           <option value="sheet">sheet</option>
           <option value="timeline">timeline</option>

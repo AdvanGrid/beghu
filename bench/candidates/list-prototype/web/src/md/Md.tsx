@@ -51,8 +51,10 @@ function report(ms: number, nodes: number) {
 export function Md(props: { ast: any[]; repo: string }) {
   const [search] = useSearchParams();
   let host!: HTMLDivElement;
+  // Round 3: the style is B; ?variant= picks the heading treatment.
   const opts = (): Opts => ({
-    variant: (['A', 'B', 'C'].includes(search.variant as string) ? search.variant : 'A') as Opts['variant'],
+    variant: 'B',
+    heads: (search.variant as string) ?? 'T',
     icons: (search.icons === 'glyph' ? 'glyph' : 'svg') as IconMode,
     repo: props.repo,
   });
@@ -65,5 +67,5 @@ export function Md(props: { ast: any[]; repo: string }) {
       report(performance.now() - t0, host.getElementsByTagName('*').length);
     },
   );
-  return <div class={`md md-${opts().variant} md-ic-${opts().icons}`} ref={(e) => (host = e)} />;
+  return <div class={`md md-${opts().variant} hv-${opts().heads} md-ic-${opts().icons}`} ref={(e) => (host = e)} />;
 }

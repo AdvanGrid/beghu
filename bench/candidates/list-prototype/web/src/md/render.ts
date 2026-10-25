@@ -9,6 +9,8 @@ import { icon, type IconMode } from './icons';
 
 export type Opts = {
   variant: 'A' | 'B' | 'C';
+  /** Round 3: how heading levels read (B base). N numbers sections, L wraps them for a ladder. */
+  heads?: string;
   icons: IconMode;
   /** The thread's repo: a bare #n means this repo. */
   repo: string;
@@ -57,8 +59,12 @@ const GH_ISSUE = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(
 
 export function render(ast: any[], o: Opts): DocumentFragment {
   const frag = document.createDocumentFragment();
-  const ctx = { o, listDepth: 0, inLink: false, inCode: false };
-  if (o.variant === 'C') {
+  // Levels relative to the document's top heading (a comment that starts at ### treats it as
+  // its first level), for numbering and the ladder.
+  let top = 7;
+  for (const n of ast) { const m = Array.isArray(n) && /^h([1-6])$/.exec(n[0]); if (m) top = Math.min(top, +m[1]); }
+  const ctx: Ctx = { o, listDepth: 0, inLink: false, inCode: false, top, num: [0, 0, 0, 0, 0, 0] };
+  if (o.variant === 'C' || o.heads === 'L') {
     // C: each heading opens a section that runs to the next heading of the same or a higher
     // level, so a rail can mark how far it reaches.
     const stack: { level: number; box: Node }[] = [{ level: 0, box: frag }];
@@ -77,7 +83,7 @@ export function render(ast: any[], o: Opts): DocumentFragment {
   return frag;
 }
 
-type Ctx = { o: Opts; listDepth: number; inLink: boolean; inCode: boolean };
+type Ctx = { o: Opts; listDepth: number; inLink: boolean; inCode: boolean; top: number; num: number[] };
 
 function kids(e: Node, n: any[], ctx: Ctx, from = 2) {
   for (let i = from; i < n.length; i++) e.appendChild(node(n[i], ctx));
@@ -91,7 +97,19 @@ function node(n: any, ctx: Ctx): Node {
     case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': {
       const level = tag[1];
       const h = el(tag, `md-h md-${tag}`);
+      const rel = +level - ctx.top; // 0 = the document's top level
+      h.dataset.rel = String(rel);
       h.append(el('span', 'md-hi', [level]));
+      if (ctx.o.heads === 'N') {
+        ctx.num[rel]++;
+        for (let i = rel + 1; i < 6; i++) ctx.num[i] = 0;
+        h.append(el('span', 'md-hn', [ctx.num.slice(0, rel + 1).map((x) => x || 1).join('.')]));
+      }
+      if (ctx.o.heads === 'P') {
+        const pips = el('span', 'md-pips');
+        for (let i = 1; i <= 6; i++) pips.append(el('i', i <= +level ? 'on' : ''));
+        h.append(pips);
+      }
       const t = el('span', 'md-ht');
       kids(t, n, ctx);
       h.append(t);
