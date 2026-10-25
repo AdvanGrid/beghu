@@ -42,15 +42,15 @@ export type Ctx = {
   live: () => number;
 };
 
-// #68 round 3: Markdown is style B, framed by tint, with SVG icons; ?variant= now picks how
-// heading levels read.
+// #68 round 4: Markdown is style B, framed by tint, with SVG icons, and heading levels show as
+// pips; ?variant= picks the pip variation.
 export const VARIANTS = [
-  { key: 'T', name: 'Level tag' },
-  { key: 'N', name: 'Numbered sections' },
-  { key: 'P', name: 'Level pips' },
-  { key: 'R', name: 'One-colour ramp' },
-  { key: 'L', name: 'Ladder' },
-  { key: 'B', name: 'Round 1 B' },
+  { key: 'P', name: 'Pips (round 3)' },
+  { key: 'Q', name: 'Lit pips only' },
+  { key: 'S', name: 'Signal steps' },
+  { key: 'D', name: 'Dots' },
+  { key: 'G', name: 'Pips in the gutter' },
+  { key: 'M', name: 'One-colour pips' },
 ] as const;
 
 export type RelVariant = 'A' | 'B' | 'C';

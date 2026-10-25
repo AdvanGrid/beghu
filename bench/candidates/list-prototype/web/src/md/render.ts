@@ -83,6 +83,9 @@ export function render(ast: any[], o: Opts): DocumentFragment {
   return frag;
 }
 
+/** Round 4: every pip variant renders the same six ticks; CSS shapes them. */
+export const PIPS = new Set(['P', 'Q', 'S', 'D', 'G', 'M']);
+
 type Ctx = { o: Opts; listDepth: number; inLink: boolean; inCode: boolean; top: number; num: number[] };
 
 function kids(e: Node, n: any[], ctx: Ctx, from = 2) {
@@ -105,7 +108,7 @@ function node(n: any, ctx: Ctx): Node {
         for (let i = rel + 1; i < 6; i++) ctx.num[i] = 0;
         h.append(el('span', 'md-hn', [ctx.num.slice(0, rel + 1).map((x) => x || 1).join('.')]));
       }
-      if (ctx.o.heads === 'P') {
+      if (PIPS.has(ctx.o.heads ?? '')) {
         const pips = el('span', 'md-pips');
         for (let i = 1; i <= 6; i++) pips.append(el('i', i <= +level ? 'on' : ''));
         h.append(pips);

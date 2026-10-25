@@ -4,7 +4,7 @@
 // text, as #54 rendered it). ?variant= picks the style, ?icons=svg|glyph the icon approach.
 import { createEffect, createSignal } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import { render, type Opts } from './render';
+import { PIPS, render, type Opts } from './render';
 import type { IconMode } from './icons';
 import './md.css';
 import './frames.css';
@@ -54,7 +54,7 @@ export function Md(props: { ast: any[]; repo: string }) {
   // Round 3: the style is B; ?variant= picks the heading treatment.
   const opts = (): Opts => ({
     variant: 'B',
-    heads: (search.variant as string) ?? 'T',
+    heads: (search.variant as string) ?? 'P',
     icons: (search.icons === 'glyph' ? 'glyph' : 'svg') as IconMode,
     repo: props.repo,
   });
@@ -67,5 +67,5 @@ export function Md(props: { ast: any[]; repo: string }) {
       report(performance.now() - t0, host.getElementsByTagName('*').length);
     },
   );
-  return <div class={`md md-${opts().variant} hv-${opts().heads} md-ic-${opts().icons}`} ref={(e) => (host = e)} />;
+  return <div class={`md md-${opts().variant} hv-${opts().heads} ${PIPS.has(opts().heads ?? '') ? 'pipv' : ''} md-ic-${opts().icons}`} ref={(e) => (host = e)} />;
 }

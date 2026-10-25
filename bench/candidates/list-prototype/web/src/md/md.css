@@ -221,11 +221,34 @@
 
 .hv-N .md-hn { order: -1; font: 600 0.85em/1 ui-monospace, monospace; color: var(--md-muted); font-variant-numeric: tabular-nums; min-width: 1.6em; }
 
-.hv-P .md-pips { order: -1; align-self: center; display: inline-flex; gap: 2px; }
-.hv-P .md-pips i { width: 3px; height: 11px; border-radius: 1px; background: var(--md-line); }
-.hv-P .md-h1 .md-pips i.on { background: var(--md-h1); } .hv-P .md-h2 .md-pips i.on { background: var(--md-h2); }
-.hv-P .md-h3 .md-pips i.on { background: var(--md-h3); } .hv-P .md-h4 .md-pips i.on { background: var(--md-h4); }
-.hv-P .md-h5 .md-pips i.on { background: var(--md-h5); } .hv-P .md-h6 .md-pips i.on { background: var(--md-h6); }
+.pipv .md-pips { order: -1; align-self: center; display: inline-flex; gap: 2px; }
+.pipv .md-pips i { width: 3px; height: 11px; border-radius: 1px; background: var(--md-line); }
+.pipv .md-h1 .md-pips i.on { background: var(--md-h1); } .pipv .md-h2 .md-pips i.on { background: var(--md-h2); }
+.pipv .md-h3 .md-pips i.on { background: var(--md-h3); } .pipv .md-h4 .md-pips i.on { background: var(--md-h4); }
+.pipv .md-h5 .md-pips i.on { background: var(--md-h5); } .pipv .md-h6 .md-pips i.on { background: var(--md-h6); }
+
+/* round 4: pip variations
+ *   P  round 3: six slots, as many lit as the level.
+ *   Q  only the lit ticks: the mark grows one tick per level.
+ *   S  signal steps: ticks rise left to right, so a deeper level is a taller, longer mark.
+ *   D  dots instead of ticks.
+ *   G  the pips hang in a gutter left of the text, so headings line up with the paragraphs.
+ *   M  one colour: pips in the accent, heading text in the text colour; the pips alone carry
+ *      the level. */
+.hv-Q .md-pips i:not(.on) { display: none; }
+.hv-S .md-pips { align-items: flex-end; gap: 1.5px; height: 14px; }
+.hv-S .md-pips i { width: 3px; }
+.hv-S .md-pips i:nth-child(1) { height: 4px; } .hv-S .md-pips i:nth-child(2) { height: 6px; } .hv-S .md-pips i:nth-child(3) { height: 8px; }
+.hv-S .md-pips i:nth-child(4) { height: 10px; } .hv-S .md-pips i:nth-child(5) { height: 12px; } .hv-S .md-pips i:nth-child(6) { height: 14px; }
+.hv-D .md-pips { gap: 2.5px; }
+.hv-D .md-pips i { width: 5px; height: 5px; border-radius: 50%; }
+.hv-G { padding-left: 30px; }
+.hv-G .md-h { position: relative; }
+.hv-G .md-pips { position: absolute; left: -30px; top: 50%; translate: 0 -50%; gap: 2px; }
+.hv-G .md-pips i { width: 2.5px; }
+.hv-M .md-h, .hv-M .md-h .md-ht { color: var(--fg); }
+.hv-M .md-h .md-pips i.on { background: var(--accent); }
+.hv-M .md-h5 .md-ht, .hv-M .md-h6 .md-ht { color: var(--md-muted); }
 
 .hv-R .md-h, .hv-R .md-h .md-ht { color: var(--fg); }
 .hv-R .md-h1 { font-size: 1.55em; font-weight: 700; border-bottom: 2px solid var(--md-line); }
