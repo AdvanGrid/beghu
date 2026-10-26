@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>beghu bench: filtering (worker)</title>
+    <!-- The snapshot is not preloaded: a returning tab reads IndexedDB and asks only for a delta. -->
+    <link rel="preload" href="/api/facets" as="fetch" crossorigin />
+    <script>
+      document.documentElement.classList.toggle('dark', matchMedia('(prefers-color-scheme: dark)').matches);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/entry-worker.tsx"></script>
+  </body>
+</html>

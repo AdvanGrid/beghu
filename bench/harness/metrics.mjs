@@ -45,7 +45,8 @@ export function dockerStats(container) {
         const s = JSON.parse(line);
         const cpu = typeof s.CPU === 'number' ? s.CPU : parseFloat(s.CPUPerc);
         const mem = typeof s.MemUsage === 'number' ? s.MemUsage : parseBytes(String(s.MemUsage).split('/')[0]);
-        if (Number.isFinite(cpu) && Number.isFinite(mem)) samples.push({ t: Date.now(), cpu, mem });
+        const pids = Number(s.PIDs ?? s.PIDS);
+        if (Number.isFinite(cpu) && Number.isFinite(mem)) samples.push({ t: Date.now(), cpu, mem, pids });
       } catch {}
     }
   });
@@ -59,6 +60,8 @@ export function dockerStats(container) {
         cpu_mean_pct: round(cpu.reduce((a, b) => a + b, 0) / (cpu.length || 1)),
         cpu_peak_pct: round(cpu.length ? Math.max(...cpu) : null),
         mem_peak_mb: round(mem.length ? Math.max(...mem) : null),
+        // Threads in the container (Docker's PIDs column counts threads), where the runtime reports it.
+        threads_peak: samples.some((s) => Number.isFinite(s.pids)) ? Math.max(...samples.map((s) => s.pids).filter(Number.isFinite)) : null,
       };
     },
   };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ./bench/load <candidate>[:<variant>] [--scale 20k|50k|all] [--users 1,5,20] [--events 30]
-//   [--accounts per-user|shared] [--conn pool|open] [--cpus 1] [--sqlite stock]
+//   [--accounts per-user|shared] [--conn pool|open] [--cpus 1] [--sqlite stock] [--db sqlx] [--env K=V,…]
 //
 // Server cost of a few people using a candidate at once, over plain HTTP (no browser), for
 // "Benchmark: client-side vs server-side filtering at 20k and 50k issues". A run starts the
@@ -22,7 +22,8 @@
 // `x-account`); `--accounts shared` puts every user on one mirror. `--conn` is passed as
 // BENCH_CONN (a pool per account, or a connection opened per request), `--cpus` sets the
 // container's CPU limit. `--sqlite stock` builds the candidate with STOCK_SQLITE=1, for candidates
-// that support it (filtering: rusqlite's default SQLite flags).
+// that support it (filtering: rusqlite's default SQLite flags). `--db` is passed as BENCH_DB, for
+// candidates with more than one database layer (filtering-sqlx: `rusqlite` or `sqlx`).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -51,6 +52,9 @@ const accounts = flag('accounts', 'per-user');
 const conn = flag('conn', 'pool');
 const cpus = flag('cpus', '1');
 const stock = flag('sqlite', '') === 'stock';
+const dbLayer = flag('db', '');
+// Extra KEY=VALUE pairs for the candidate's environment, comma-separated (`--env BENCH_SQLX_WRITES=pool`).
+const extraEnv = Object.fromEntries(flag('env', '').split(',').filter(Boolean).map((kv) => kv.split('=')));
 
 const LABELS = ['bug', 'enhancement', 'frontend', 'backend', 'ux', 'p2', 'performance', 'p1'];
 const TEAM = ['ilze-k', 'martins-dev', 'anna-b', 'roberts', 'liga-p', 'edgars', 'zane-m'];
@@ -216,11 +220,11 @@ async function live(box, users, scale) {
   return result;
 }
 
-const results = { candidate, client, sync, events, accounts, conn, cpus, sqlite: stock ? 'stock' : 'default', started: new Date().toISOString(), runs: [] };
+const results = { candidate, client, sync, events, accounts, conn, cpus, sqlite: stock ? 'stock' : 'default', db: dbLayer || null, env: extraEnv, started: new Date().toISOString(), runs: [] };
 const image = `beghu-bench-${dir}${stock ? '-stock' : ''}`;
-console.log(`building ${image}... (${accounts} accounts, conn ${conn}, ${cpus} CPU${stock ? ', stock SQLite' : ''})`);
+console.log(`building ${image}... (${accounts} accounts, conn ${conn}, ${cpus} CPU${stock ? ', stock SQLite' : ''}${dbLayer ? `, ${dbLayer}` : ''})`);
 container.build(join(root, 'candidates', dir), image, stock ? { STOCK_SQLITE: 1 } : {});
-const outDir = join(root, 'results', `${results.started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-load-${candidate.replace(':', '-')}${sync ? '-sync' : ''}-${accounts}-${conn}-${cpus}cpu${stock ? '-stock' : ''}`);
+const outDir = join(root, 'results', `${results.started.replace(/[:]/g, '').replace('T', '-').slice(0, 17)}-load-${candidate.replace(':', '-')}${sync ? '-sync' : ''}-${accounts}-${conn}-${cpus}cpu${stock ? '-stock' : ''}${dbLayer ? `-${dbLayer}` : ''}${Object.keys(extraEnv).length ? `-${Object.values(extraEnv).join('-')}` : ''}`);
 mkdirSync(outDir, { recursive: true });
 
 for (const scale of scales) {
@@ -233,7 +237,7 @@ for (const scale of scales) {
       mirror,
       workDir,
       limits: [`--cpus=${cpus}`, '--memory=512m'],
-      env: { GITHUB_LATENCY_MS: 300, BENCH_ACCOUNTS: accounts === 'shared' ? 1 : users, BENCH_CONN: conn, ...(variant ? { BENCH_VARIANT: variant } : {}) },
+      env: { GITHUB_LATENCY_MS: 300, BENCH_ACCOUNTS: accounts === 'shared' ? 1 : users, BENCH_CONN: conn, ...(dbLayer ? { BENCH_DB: dbLayer } : {}), ...extraEnv, ...(variant ? { BENCH_VARIANT: variant } : {}) },
     });
     try {
       const run = { scale, users, phases: [] };
@@ -241,7 +245,7 @@ for (const scale of scales) {
         const r = await p(box, users);
         run.phases.push(r);
         console.log(
-          `${scale} ${String(users).padStart(2)} users ${r.phase.padEnd(6)} ${String(r.requests).padStart(4)} req  p50 ${r.latency_ms.p50 ?? '—'} p95 ${r.latency_ms.p95 ?? '—'} ms  CPU mean ${r.server.cpu_mean_pct}% peak ${r.server.cpu_peak_pct}%  RAM ${r.server.mem_peak_mb} MB${r.errors.length ? `  ${r.errors.length} errors (${r.errors[0]})` : ''}`,
+          `${scale} ${String(users).padStart(2)} users ${r.phase.padEnd(6)} ${String(r.requests).padStart(4)} req  p50 ${r.latency_ms.p50 ?? '—'} p95 ${r.latency_ms.p95 ?? '—'} ms  CPU mean ${r.server.cpu_mean_pct}% peak ${r.server.cpu_peak_pct}%  RAM ${r.server.mem_peak_mb} MB  threads ${r.server.threads_peak ?? '—'}${r.errors.length ? `  ${r.errors.length} errors (${r.errors[0]})` : ''}`,
         );
       }
       results.runs.push(run);
