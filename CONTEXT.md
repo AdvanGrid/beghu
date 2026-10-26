@@ -12,6 +12,10 @@ _Avoid_: User, tenant
 A repo whose issues and PRs beghu copies into a mirror.
 _Avoid_: Tracked repo, watched repo
 
+**Role**:
+A connected account's permission on a synced repo: Read, Triage, or Write and up. With authorship, the repo's archived flag and the issue's locked flag, it decides which writes beghu offers on an issue.
+_Avoid_: Access level, permission set
+
 **Mirror**:
 The server-side copy of a connected account's GitHub data. It is disposable and can always be rebuilt from GitHub.
 _Avoid_: Database, replica, backend store
