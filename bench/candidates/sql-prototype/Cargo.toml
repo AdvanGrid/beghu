@@ -1,0 +1,8 @@
+# PROTOTYPE — throwaway. Answers "Prototype compile-time SQL checks on rusqlite and a
+# migrate-on-first-use runner". See README.md.
+[workspace]
+resolver = "3"
+members = ["sqlcheck", "dbrt", "mirror-db", "control-db", "proto"]
+
+[workspace.dependencies]
+rusqlite = { version = "0.40", features = ["bundled", "column_metadata", "column_decltype", "modern_sqlite"] }
