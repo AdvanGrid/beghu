@@ -8,6 +8,10 @@ A fast frontend for GitHub issues, for one person and a few teammates. GitHub is
 A GitHub account that has signed in to beghu and whose repos it syncs.
 _Avoid_: User, tenant
 
+**Dormant account**:
+A connected account nobody has used beghu as for 30 days. Its mirror is deleted and it receives no webhooks or sweeps; using it again re-imports its synced repos.
+_Avoid_: Inactive account, idle account
+
 **Synced repo**:
 A repo whose issues and PRs beghu copies into a mirror.
 _Avoid_: Tracked repo, watched repo
