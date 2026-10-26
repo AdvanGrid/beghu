@@ -435,6 +435,7 @@ async function reset(args: string[]): Promise<void> {
     done.push("mirrors will be pristine");
   }
   if (set.has("--all")) {
+    // The server's names under BEGHU_DATA_DIR (crates/server/src/config.rs).
     for (const f of ["control.db", "control.db-wal", "control.db-shm", "backups"]) remove(join(DATA, f));
     done.push("control DB wiped");
   } else {

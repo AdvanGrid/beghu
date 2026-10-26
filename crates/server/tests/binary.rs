@@ -1,0 +1,107 @@
+//! The real `beghu` binary, configured from the environment only: it refuses to start without a
+//! required variable, naming it, and with a valid environment it serves `/healthz`.
+
+use std::io::Read as _;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+const BIN: &str = env!("CARGO_BIN_EXE_beghu");
+
+/// Everything `beghu` needs, for a data directory under `dir` and `port`.
+fn valid_env(dir: &std::path::Path, port: u16) -> Vec<(&'static str, String)> {
+    vec![
+        ("PORT", port.to_string()),
+        ("BEGHU_BUILD_ID", "smoke".into()),
+        ("BEGHU_PUBLIC_URL", format!("http://localhost:{port}")),
+        ("BEGHU_DATA_DIR", dir.join("data").display().to_string()),
+        // 32 bytes, base64.
+        (
+            "BEGHU_TOKEN_KEY",
+            "c21va2UgdGVzdCBrZXkgdGhhdCBpcyAzMiBieXRlcyE=".into(),
+        ),
+        ("GITHUB_CLIENT_ID", "Iv1.smoke".into()),
+        ("GITHUB_CLIENT_SECRET", "smoke-secret".into()),
+    ]
+}
+
+fn beghu(env: &[(&str, String)]) -> Command {
+    let mut cmd = Command::new(BIN);
+    cmd.env_clear().envs(env.iter().map(|(k, v)| (*k, v)));
+    cmd
+}
+
+/// A running `beghu`, killed when dropped, so a failing test leaves no process behind.
+struct Running(Child);
+
+impl Running {
+    /// Stops the child and fails the test with `why` and everything it wrote to stderr.
+    fn fail(&mut self, why: &str) -> ! {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.0.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        panic!("{why}; beghu's stderr:\n{stderr}");
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn it_refuses_to_start_without_a_required_variable_and_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let env: Vec<_> = valid_env(dir.path(), 1)
+        .into_iter()
+        .filter(|(k, _)| *k != "GITHUB_CLIENT_ID")
+        .collect();
+    let out = beghu(&env).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("GITHUB_CLIENT_ID is required"), "{stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_valid_environment_it_serves_healthz() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = Running(
+        beghu(&valid_env(dir.path(), port))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+
+    let http = reqwest::Client::new();
+    let started = Instant::now();
+    let res = loop {
+        if let Ok(res) = http
+            .get(format!("http://localhost:{port}/healthz"))
+            .send()
+            .await
+        {
+            break res;
+        }
+        if let Some(status) = child.0.try_wait().unwrap() {
+            child.fail(&format!("beghu exited with {status}"));
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            child.fail("no /healthz in 20 s");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["x-beghu-build"], "smoke");
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["build"], "smoke");
+}

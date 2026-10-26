@@ -1,0 +1,7 @@
+/* The escape stylesheet: the few rules StyleX can't express, one comment each. Colours never go
+   here; they come from the token module. */
+
+/* <body> isn't a component StyleX can style: drop the UA margin so the app fills the viewport. */
+body {
+  margin: 0;
+}

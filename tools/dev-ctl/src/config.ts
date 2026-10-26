@@ -41,6 +41,9 @@ export const URLS = {
 /** The OAuth client the dev server uses with the fake. */
 export const CLIENT = { id: "Iv1.fakegithub", secret: "fake-github-secret" };
 
+/** The dev server's BEGHU_TOKEN_KEY (base64, 38 bytes). Dev data only: never use it elsewhere. */
+export const DEV_TOKEN_KEY = "ZGV2LW9ubHkgYmVnaHUgdG9rZW4ga2V5LCBub3QgYSBzZWNyZXQ=";
+
 export const SCALES = ["1k", "20k", "50k"] as const;
 export type Scale = (typeof SCALES)[number];
 export const DEFAULT_SCALE: Scale = "50k";
@@ -114,6 +117,8 @@ export interface FakeState {
     latency: { endpoint: string; ms: number }[];
     fail: { endpoint: string; remaining: number; status: number; retry_after: number | null }[];
   };
+  /** Refresh tokens honoured, and refresh tokens that came back already spent. */
+  refreshes: { ok: number; reused: number };
 }
 
 /** The fake's state from its control port at `control`, or null when it doesn't answer. */

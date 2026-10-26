@@ -272,15 +272,24 @@ async fn exchange(fake: &Fake, req: TokenRequest) -> Result<Value, Response> {
         let pair = truth
             .write(move |tx| {
                 let Some(used) = q::use_refresh_token(tx, &token, now)? else {
-                    return Ok(None);
+                    // Known but no longer live: spent, revoked or expired.
+                    let known = q::token_owner(tx, &token)?.is_some();
+                    return Ok(Err(known));
                 };
                 // "That refresh token and the old user access token will no longer work."
                 q::revoke_pair(tx, &used.pair, now)?;
-                issue(tx, used.user_id, now, ttl).map(Some)
+                issue(tx, used.user_id, now, ttl).map(Ok)
             })
             .await
             .map_err(api::internal)?;
-        return Ok(pair.unwrap_or_else(|| {
+        let counts = &fake.state().refreshes;
+        use std::sync::atomic::Ordering::Relaxed;
+        match &pair {
+            Ok(_) => counts.ok.fetch_add(1, Relaxed),
+            Err(true) => counts.reused.fetch_add(1, Relaxed),
+            Err(false) => 0,
+        };
+        return Ok(pair.unwrap_or_else(|_| {
             token_error(
                 "bad_refresh_token",
                 "The refresh token passed is incorrect or expired.",

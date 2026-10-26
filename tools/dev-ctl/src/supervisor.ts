@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   CLIENT,
   DATA,
+  DEV_TOKEN_KEY,
   FAKE_DB,
   FIXTURES,
   LOG,
@@ -204,7 +205,9 @@ function commands(fixture: string): Record<Proc, () => [string, string[], NodeJS
         PORT: String(PORTS.server),
         BEGHU_BUILD_ID: "dev",
         BEGHU_PUBLIC_URL: URLS.app,
+        // control.db, backups/ and mirrors/ live here; `reset --all` deletes the first two.
         BEGHU_DATA_DIR: DATA,
+        BEGHU_TOKEN_KEY: DEV_TOKEN_KEY,
         GITHUB_API_URL: URLS.fake,
         GITHUB_WEB_URL: URLS.fake,
         GITHUB_CLIENT_ID: CLIENT.id,

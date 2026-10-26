@@ -49,6 +49,29 @@ pub(crate) struct State {
     cfg: Config,
     ttl: Mutex<Ttl>,
     faults: faults::Faults,
+    refreshes: Refreshes,
+}
+
+/// What the token endpoint did with refresh tokens since the start (or the last reset): how
+/// many it honoured, and how many arrived already spent. A client that refreshes twice with one
+/// token shows up in `reused`.
+#[derive(Default)]
+pub(crate) struct Refreshes {
+    pub ok: std::sync::atomic::AtomicU64,
+    pub reused: std::sync::atomic::AtomicU64,
+}
+
+impl Refreshes {
+    pub(crate) fn snapshot(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        serde_json::json!({ "ok": self.ok.load(Relaxed), "reused": self.reused.load(Relaxed) })
+    }
+
+    pub(crate) fn clear(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.ok.store(0, Relaxed);
+        self.reused.store(0, Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -75,6 +98,7 @@ impl Fake {
             ttl: Mutex::new(Ttl::of(&cfg)),
             cfg,
             faults: faults::Faults::default(),
+            refreshes: Refreshes::default(),
         })))
     }
 

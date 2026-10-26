@@ -6,12 +6,33 @@ publish.workspace = true
 description = "The beghu server: one binary for the HTTP API, webhooks and every job."
 
 [dependencies]
+aes-gcm = "0.10"
 axum = { workspace = true }
+base64 = "0.22"
+control-db = { workspace = true }
+dbrt = { workspace = true }
+hkdf = "0.12"
+mirror-db = { workspace = true }
+rand = "0.9"
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_urlencoded = "0.7"
+sha2 = "0.10"
 tokio = { workspace = true, features = ["net", "signal"] }
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "fs"] }
+ts-rs = "12"
 
 [dev-dependencies]
+# Decode what the server compressed.
+brotli = "8"
+fake-github = { path = "../fake-github" }
+fixture = { workspace = true }
+flate2 = "1"
 reqwest = { workspace = true }
+# The tests that stand in for tampering or another writer open the control DB themselves.
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

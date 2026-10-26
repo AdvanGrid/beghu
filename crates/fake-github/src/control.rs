@@ -1,7 +1,8 @@
 //! The control port: what dev tooling (`./dev-ctl fake …`) and tests use to steer the fake at
 //! runtime. JSON in and out.
 //!
-//! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes and fault rules.
+//! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules, and
+//!   how many refresh tokens were honoured and how many arrived already spent.
 //! - `POST /faults/latency {endpoint, ms}`: delay calls to `endpoint`; `ms: 0` removes the rule.
 //! - `POST /faults/fail {endpoint, count, status, retry_after?}`: the next `count` calls fail.
 //! - `POST /faults/down {down}`: GitHub unreachable, or back.
@@ -68,6 +69,7 @@ async fn state(State(fake): State<Fake>) -> Response {
         "signed_in": signed_in,
         "tokens": fake.ttl(),
         "faults": fake.state().faults.snapshot(),
+        "refreshes": fake.state().refreshes.snapshot(),
     }))
     .into_response()
 }
@@ -182,6 +184,7 @@ async fn reset(State(fake): State<Fake>) -> Response {
     match done {
         Ok(Ok(())) => {
             fake.state().faults.clear();
+            fake.state().refreshes.clear();
             *fake.state().ttl.lock().unwrap_or_else(|e| e.into_inner()) =
                 Ttl::of(&fake.state().cfg);
             ok()

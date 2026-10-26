@@ -25,7 +25,7 @@ CREATE TABLE account_tokens (
   status TEXT NOT NULL DEFAULT 'active'
 );
 
--- One per browser. Only the SHA-256 of the `beghu_sid` cookie is stored.
+-- One per browser. Only the SHA-256 of the `__Host-beghu_sid` cookie is stored.
 CREATE TABLE browser_sessions (
   id_hash BLOB PRIMARY KEY,
   active_account_id INTEGER REFERENCES accounts(github_user_id) ON DELETE SET NULL,

@@ -1,54 +1,46 @@
-// Applies the theme before first paint and wires up the theme switch.
-// Choice is "light", "dark" or "system" (follows the OS setting).
+// Inlined into the shell's <head> (see vite.config.ts), so it runs before first paint. Sets
+// `color-scheme` on <html>, which every light-dark() colour token follows, and `.dark` for the
+// rare non-colour case (the logo). The choice is "light", "dark" or "system" (follows the OS),
+// a device preference kept in localStorage and shared with other tabs through `storage`.
 (() => {
-  const KEY = "theme";
+  const KEY = "beghu.theme";
   const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const listeners = new Set();
 
   const stored = () => {
     try {
-      return localStorage.getItem(KEY) || "system";
+      const v = localStorage.getItem(KEY);
+      return v === "light" || v === "dark" ? v : "system";
     } catch {
       return "system";
     }
   };
 
   const apply = (choice) => {
-    const dark = choice === "dark" || (choice === "system" && media.matches);
     const root = document.documentElement;
-    // Only write on change so the MutationObserver below doesn't loop.
-    if (root.classList.contains("dark") !== dark) root.classList.toggle("dark", dark);
-    for (const button of document.querySelectorAll("[data-theme-choice]")) {
-      const pressed = String(button.dataset.themeChoice === choice);
-      if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
-    }
+    root.style.colorScheme = choice === "system" ? "light dark" : choice;
+    root.classList.toggle("dark", choice === "dark" || (choice === "system" && media.matches));
+    root.dataset.theme = choice;
+    for (const f of listeners) f(choice);
+  };
+
+  window.beghuTheme = {
+    choice: stored,
+    set(choice) {
+      try {
+        if (choice === "system") localStorage.removeItem(KEY);
+        else localStorage.setItem(KEY, choice);
+      } catch {}
+      apply(choice);
+    },
+    /** Calls `f` with the choice whenever it changes, here or in another tab; returns an unsubscribe. */
+    subscribe(f) {
+      listeners.add(f);
+      return () => listeners.delete(f);
+    },
   };
 
   apply(stored());
-
-  media.addEventListener("change", () => {
-    if (stored() === "system") apply("system");
-  });
-
-  document.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-theme-choice]");
-    if (!button) return;
-    const choice = button.dataset.themeChoice;
-    try {
-      if (choice === "system") localStorage.removeItem(KEY);
-      else localStorage.setItem(KEY, choice);
-    } catch {}
-    apply(choice);
-  });
-
-  // Buttons don't exist yet when this runs in <head>; sync their state once parsed.
-  document.addEventListener("DOMContentLoaded", () => apply(stored()));
-
-  // Re-apply when the DOM is replaced underneath us, e.g. by `topcoat dev` live updates,
-  // which reset <html> attributes and re-render the switch from server markup.
-  new MutationObserver(() => apply(stored())).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class", "aria-pressed"],
-    childList: true,
-    subtree: true,
-  });
+  media.addEventListener("change", () => stored() === "system" && apply("system"));
+  window.addEventListener("storage", (e) => (e.key === KEY || e.key === null) && apply(stored()));
 })();

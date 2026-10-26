@@ -68,6 +68,20 @@ impl Error {
             _ => None,
         }
     }
+
+    /// A failure that may pass if the same work is tried again soon: at capacity or updating
+    /// (anything with a [`retry_after`](Self::retry_after)), or SQLite busy or locked by
+    /// another writer.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::Unavailable { .. } => true,
+            Error::Sqlite(e) => matches!(
+                e.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            ),
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Error {

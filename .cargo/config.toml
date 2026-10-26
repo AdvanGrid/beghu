@@ -3,3 +3,7 @@
 # memory statistics. [env] reaches libsqlite3-sys's build script for host and target alike.
 [env]
 LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"
+# ts-rs: the server's wire types are exported to the web app as TypeScript by `cargo test`
+# (types go one way, Rust to TS). i64 ids and timestamps fit a JS number.
+TS_RS_EXPORT_DIR = { value = "web/src/bindings", relative = true }
+TS_RS_LARGE_INT = "number"

@@ -29,6 +29,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude fixture --locked
 
+      # ts-rs writes the server's wire types to web/src/bindings during `cargo test`.
+      - name: TypeScript bindings are committed
+        run: |
+          git add -N web/src/bindings
+          git diff --exit-code -- web/src/bindings || {
+            echo "web/src/bindings is stale: run cargo test and commit it"; exit 1; }
+
       - name: Fixture still loads after the migrations
         run: cargo test -p fixture --locked
 
@@ -49,3 +56,77 @@ jobs:
       - name: Typecheck ./dev-ctl
         run: npx tsc --noEmit
         working-directory: tools/dev-ctl
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # StyleX's rules, colours only from the token module, no class/style attributes and no CSS
+      # import but the escape stylesheet; then the lint rules' own tests.
+      - name: Lint
+        run: |
+          npx eslint .
+          npm run test:lint
+
+      - name: Build
+        run: npx vite build
+
+  e2e:
+    # Playwright on full Chromium against the ./dev-ctl stack in fixture mode.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            tools/dev-ctl/package-lock.json
+
+      - name: Install
+        run: |
+          npm --prefix web ci
+          npm --prefix tools/dev-ctl ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: Start the stack
+        run: ./dev-ctl start --scale 1k
+
+      - name: Browser tests
+        run: npx playwright test
+        working-directory: web
+
+      - name: Stack log
+        if: failure()
+        run: ./dev-ctl logs -n 300
+
+      - name: Stop the stack
+        if: always()
+        run: ./dev-ctl stop
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report

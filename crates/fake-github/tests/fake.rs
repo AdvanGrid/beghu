@@ -279,6 +279,17 @@ async fn a_refresh_token_is_single_use_and_retires_the_old_access_token() {
     assert!(reused.get("access_token").is_none());
     let third = fake.refresh(&second["refresh_token"]).await;
     assert!(third["access_token"].is_string(), "{third}");
+    assert_eq!(
+        fake.state().await["refreshes"],
+        json!({ "ok": 2, "reused": 1 }),
+        "the control port counts a spent refresh token coming back"
+    );
+    fake.control(reqwest::Method::POST, "/reset", json!({}))
+        .await;
+    assert_eq!(
+        fake.state().await["refreshes"],
+        json!({ "ok": 0, "reused": 0 })
+    );
 }
 
 #[tokio::test]
