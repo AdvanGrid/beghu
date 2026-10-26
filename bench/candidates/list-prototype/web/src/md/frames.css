@@ -1,0 +1,49 @@
+/* PROTOTYPE (beghu #68, round 2). How a body or comment marks out its own space, so styled
+ * Markdown doesn't run into the detail's chrome. ?frame= on the detail article; the post is the
+ * body with its byline (.post) or a comment (.thread .comment).
+ *   card      GitHub's comment box: a border, the byline in a header strip.
+ *   sheet     the panel goes grey and each post is a white sheet on it.
+ *   timeline  avatar in a left column on a thread line; the text in a bordered box beside it.
+ *   tint      each post on a faint tinted surface, no border; the panel stays white.
+ *   none      round 1: no frame. */
+:root {
+  --fr-strip: light-dark(#f6f8fa, #14171c);
+  --fr-sheet-bg: light-dark(#eceef2, #09090b);
+  --fr-sheet: light-dark(#ffffff, #17191f);
+  --fr-tint: light-dark(#f5f6f8, #14161b);
+  --fr-line: light-dark(#d8dee4, #2c3139);
+}
+.post-meta { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.post .body { position: relative; }
+
+/* ---------- card ---------- */
+.fr-card .post, .fr-card .thread .comment.flat { border: 1px solid var(--fr-line); border-radius: 8px; padding: 0; margin-bottom: 10px; background: var(--bg); }
+.fr-card .post-meta, .fr-card .thread .comment-meta { background: var(--fr-strip); border-bottom: 1px solid var(--fr-line); padding: 6px 12px; margin: 0; border-radius: 8px 8px 0 0; }
+.fr-card .post .body, .fr-card .thread .comment > .md, .fr-card .thread .comment > .text { padding: 12px 14px 14px; }
+.fr-card .post .edit-body { top: -27px; right: 8px; }
+
+/* ---------- sheet ---------- */
+.detail:has(.fr-sheet), .fr-sheet, .fr-sheet .da-compose { background: var(--fr-sheet-bg); }
+.fr-sheet { --md-code-bg: light-dark(#f4f6f8, #0f1115); }
+.fr-sheet .post, .fr-sheet .thread .comment.flat { background: var(--fr-sheet); border: 0; border-radius: 8px; padding: 10px 14px 14px; margin-bottom: 10px; box-shadow: 0 0 0 1px var(--fr-line), 0 1px 3px rgb(0 0 0 / 0.06); }
+.fr-sheet .post-meta, .fr-sheet .thread .comment-meta { margin-bottom: 8px; }
+.fr-sheet .post .edit-body { top: -30px; right: 0; }
+
+/* ---------- timeline ---------- */
+.fr-timeline .post, .fr-timeline .thread .comment.flat { position: relative; padding: 0 0 0 38px; border: 0; margin-bottom: 14px; }
+.fr-timeline .post-meta .avatar, .fr-timeline .thread .comment-meta .avatar { position: absolute; left: 0; top: 0; width: 28px !important; height: 28px !important; font-size: 13px !important; }
+.fr-timeline .post-meta, .fr-timeline .thread .comment-meta { min-height: 28px; margin: 0; }
+.fr-timeline .post .body, .fr-timeline .thread .comment > .md, .fr-timeline .thread .comment > .text { border: 1px solid var(--fr-line); border-radius: 8px; padding: 10px 14px 12px; margin-top: 2px; background: var(--bg); }
+.fr-timeline .thread { position: relative; }
+.fr-timeline .thread::before { content: ''; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--fr-line); }
+.fr-timeline .thread .comment { z-index: 0; }
+.fr-timeline .post .edit-body { top: -26px; right: 0; }
+
+/* ---------- tint ---------- */
+.fr-tint { --md-code-bg: var(--bg); --md-code-head: var(--fr-strip); --md-ic-bg: light-dark(#e6e9ee, #262b35); }
+.fr-tint .post, .fr-tint .thread .comment.flat { background: var(--fr-tint); border: 0; border-radius: 8px; padding: 10px 14px 14px; margin-bottom: 10px; }
+.fr-tint .post-meta, .fr-tint .thread .comment-meta { margin-bottom: 8px; }
+.fr-tint .post .edit-body { top: -30px; right: 0; }
+
+/* ---------- none ---------- */
+.fr-none .post-meta .avatar { display: none; }

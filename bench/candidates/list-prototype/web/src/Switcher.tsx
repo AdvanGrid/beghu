@@ -1,9 +1,10 @@
-// PROTOTYPE (beghu #52). The floating bar: cycle variants (← → or the arrows), add read latency,
-// switch theme. Not part of any design being judged.
+// PROTOTYPE (beghu #52, #54). The floating bar: cycle variants (← → or the arrows), add read latency,
+// pick how GitHub answers writes, switch theme. Not part of any design being judged.
 import { createSignal, For, onSettled } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
 import { VARIANTS } from './App';
-import { lag, setLag } from './api';
+import { fail, lag, setFail, setLag, type Fail } from './api';
+import { corpus, walk } from './md/Md';
 
 const LAGS = [0, 150, 400, 1000, 2500];
 type Theme = 'light' | 'dark' | 'system';
@@ -23,7 +24,7 @@ export function Switcher() {
   onSettled(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest('input, textarea, select, [contenteditable]')) return;
+      if (t.closest('input, textarea, select, [contenteditable]') || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
       if (e.key === 'ArrowLeft') step(-1);
       if (e.key === 'ArrowRight') step(1);
     };
@@ -43,6 +44,36 @@ export function Switcher() {
         ›
       </button>
       <span class="sw-sep" />
+      {/* #68: which real thread stands in for the fixture's text, the icon approach, walk time */}
+      <label>
+        md{' '}
+        <select value={(search.md as string) ?? 'auto'} onChange={(e) => setSearch({ md: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="auto">auto (by issue)</option>
+          <option value="off">off (fixture text)</option>
+          <For each={corpus() ?? []}>{(t) => <option value={t.key}>{t.key.replace('agent:', '🤖 ')}</option>}</For>
+        </select>
+      </label>
+      <label>
+        frame{' '}
+        <select value={(search.frame as string) ?? 'tint'} onChange={(e) => setSearch({ frame: e.currentTarget.value === 'tint' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="card">card</option>
+          <option value="sheet">sheet</option>
+          <option value="timeline">timeline</option>
+          <option value="tint">tint</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+      <label>
+        icons{' '}
+        <select value={(search.icons as string) ?? 'svg'} onChange={(e) => setSearch({ icons: e.currentTarget.value === 'svg' ? undefined : e.currentTarget.value }, { replace: true })}>
+          <option value="svg">svg sprite</option>
+          <option value="glyph">unicode glyphs</option>
+        </select>
+      </label>
+      <span class="sw-walk" title="Walker time for the last frame's Markdown (body + comments), before layout">
+        walk {walk().ms.toFixed(1)} ms · {walk().docs} docs · {walk().nodes} nodes
+      </span>
+      <span class="sw-sep" />
       <label>
         lag{' '}
         <select
@@ -54,6 +85,15 @@ export function Switcher() {
           }}
         >
           <For each={LAGS}>{(l) => <option value={String(l)}>{l} ms</option>}</For>
+        </select>
+      </label>
+      <label>
+        writes{' '}
+        <select value={fail} onChange={(e) => setFail(e.currentTarget.value as Fail)} title="How GitHub answers writes (each takes ~300 ms)">
+          <option value="">succeed</option>
+          <option value="422">fail 422</option>
+          <option value="409">body 409</option>
+          <option value="down">GitHub down</option>
         </select>
       </label>
       <select

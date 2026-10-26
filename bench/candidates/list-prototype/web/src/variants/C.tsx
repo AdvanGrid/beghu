@@ -1,4 +1,5 @@
-// PROTOTYPE (beghu #52), variant C: a token bar. Filters live as removable tokens inside one input;
+// PROTOTYPE (beghu #52), variant C, the list that won; #54 hosts the detail layouts in it.
+// A token bar. Filters live as removable tokens inside one input;
 // typing suggests keys and values (with counts) from the facets; plain words search titles. A row
 // of preset views sits under it. Rows are a single line, title first.
 import { createMemo, createSignal, For, Show, onSettled, Loading, Errored } from 'solid-js';
@@ -10,6 +11,9 @@ import type { IssueRow, TreeNode } from '../api';
 import type { Element } from 'solid-js';
 import { Avatars, RelHints, StateIcon, describeEmpty, href } from '../bits';
 import { ago, sameView, toggle, EMPTY, MULTI, type Multi, type View } from '../view';
+import { useNewIssue } from '../detail/layouts';
+import { useSearchParams } from '@solidjs/router';
+import { LabelCell, WaitsOn, isBlocked } from '../rel/Blocked';
 
 type Suggestion = { label: string; hint?: string; color?: string | null; count?: number; apply: () => void };
 
@@ -36,9 +40,138 @@ const PRESETS: { name: string; view: View }[] = [
 export function VariantC(props: { ctx: Ctx }) {
   const c = props.ctx;
   let box!: HTMLInputElement;
+  // #55: the divider between the list and the detail drags; the width is remembered per browser.
+  const [detailW, setDetailW] = createSignal<number | undefined>(
+    (() => {
+      try {
+        return Number(localStorage.getItem('beghu.detailW')) || undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  let mainEl!: HTMLElement;
+  // #55: column widths. Each fixed column has an automatic width from the list's width, unless it
+  // has been dragged in the header (remembered per browser; double-click resets). Labels and
+  // blockers fill stacked columns of two slots, as many as their width holds.
+  const [listW, setListW] = createSignal(800);
+  const [sbw, setSbw] = createSignal(0);
+  let listCol!: HTMLDivElement;
+  onSettled(() => {
+    const measure = () => {
+      setListW(listCol.clientWidth);
+      const l = listCol.querySelector('.list') as HTMLElement | null;
+      if (l) setSbw(l.offsetWidth - l.clientWidth);
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(listCol);
+    measure();
+    return () => ro.disconnect();
+  });
+  const COLS = ['lab', 'wait', 'hint', 'ref', 'asg', 'when'] as const;
+  type Col = (typeof COLS)[number];
+  const MIN: Record<Col, number> = { lab: 60, wait: 70, hint: 30, ref: 56, asg: 24, when: 28 };
+  const [colW, setColW] = createSignal<Partial<Record<Col, number>>>(
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem('beghu.colW') ?? '{}');
+      } catch {
+        return {};
+      }
+    })(),
+  );
+  const saveColW = (v: Partial<Record<Col, number>>) => {
+    setColW(v);
+    try {
+      localStorage.setItem('beghu.colW', JSON.stringify(v));
+    } catch {}
+  };
+  const auto = (k: Col, w: number): number => {
+    const narrow = w < 1000;
+    switch (k) {
+      case 'lab':
+        return (w >= 1500 ? 3 : w >= 900 ? 2 : 1) * 96;
+      case 'wait':
+        return (w >= 1800 ? 3 : w >= 1200 ? 2 : 1) * 100;
+      case 'hint':
+        return narrow ? 40 : 52;
+      case 'ref':
+        return narrow ? 96 : 104;
+      case 'asg':
+        return narrow ? 40 : 46;
+      case 'when':
+        return narrow ? 30 : 32;
+    }
+  };
+  const width = (k: Col) => colW()[k] ?? auto(k, listW());
+  const dens = createMemo(() => ({
+    lc: Math.max(1, Math.floor((width('lab') + 8) / 96)),
+    bc: Math.max(1, Math.floor((width('wait') + 4) / 100)),
+  }));
+  const startCol = (k: Col, e: PointerEvent) => {
+    e.preventDefault();
+    const h = e.currentTarget as HTMLElement;
+    h.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const w0 = width(k);
+    document.body.classList.add('resizing');
+    const move = (ev: PointerEvent) => setColW({ ...colW(), [k]: Math.round(Math.min(640, Math.max(MIN[k], w0 - (ev.clientX - x0)))) });
+    const up = () => {
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      saveColW(colW());
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+  };
+  const resetCol = (k: Col) => {
+    const v = { ...colW() };
+    delete v[k];
+    saveColW(v);
+  };
+  const HEAD: Record<Col, string> = { lab: 'Labels', wait: 'Blocked by', hint: 'Subs', ref: 'Issue', asg: 'Who', when: 'Upd' };
+  const startResize = (e: PointerEvent) => {
+    e.preventDefault();
+    const h = e.currentTarget as HTMLElement;
+    h.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev: PointerEvent) => {
+      const r = mainEl.getBoundingClientRect();
+      setDetailW(Math.round(Math.min(r.width - 360, Math.max(360, r.right - ev.clientX))));
+    };
+    const up = () => {
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      try {
+        localStorage.setItem('beghu.detailW', String(detailW() ?? ''));
+      } catch {}
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+  };
+  const resetResize = () => {
+    setDetailW(undefined);
+    try {
+      localStorage.removeItem('beghu.detailW');
+    } catch {}
+  };
   const [text, setText] = createSignal(c.view().q);
   const [focused, setFocused] = createSignal(false);
   const [hi, setHi] = createSignal(0);
+
+  const newIssue = useNewIssue();
+  const [sp] = useSearchParams();
+  // c starts a new issue from anywhere outside a text field.
+  onSettled(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey) return;
+      if (e.key === 'c') (e.preventDefault(), newIssue());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   onSettled(() => {
     const onPop = () => {
@@ -142,25 +275,36 @@ export function VariantC(props: { ctx: Ctx }) {
   const showPop = () => focused() && suggestions().length > 0;
 
   const row = (r: IssueRow | TreeNode, lead?: Element) => (
-              <a class="c-row" href={href(r, c.search())} noscroll aria-current={c.openId() === r.id ? 'page' : undefined}>
-{lead}
-                <StateIcon r={r} />
-                <span class="c-title">{r.title}</span>
-                <span class="c-labels">
-                  <For each={r.labels}>{(l) => <span style={{ '--c': `#${l.color}` }} class="c-ltext">{l.name}</span>}</For>
+              <a
+                class={`c-row cols ${isBlocked(r) ? 'edge-blocked' : ''}`}
+                href={href(r, c.search())}
+                noscroll
+                aria-current={c.openId() === r.id ? 'page' : undefined}
+              >
+                <span class="k-main">
+                  {lead}
+                  <StateIcon r={r} />
+                  <span class="c-title">{r.title}</span>
                 </span>
-                <span class="c-spacer" />
-                <RelHints r={r} />
-                <span class="muted mono c-ref">
+                <LabelCell r={r as IssueRow} cap={dens().lc * 2} />
+                <span class="k-wait">
+                  <WaitsOn r={r as IssueRow} cap={dens().bc * 2} />
+                </span>
+                <span class="k-hint">
+                  <RelHints r={r} noBlocked />
+                </span>
+                <span class="k-ref muted mono">
                   {r.repo}#{r.number}
                 </span>
-                <Avatars logins={r.assignees} size={18} />
-                <span class="muted c-when">{ago(r.updated_at)}</span>
+                <span class="k-asg">
+                  <Avatars logins={r.assignees} size={18} />
+                </span>
+                <span class="k-when muted">{ago(r.updated_at)}</span>
               </a>
   );
 
   return (
-    <div class="app c">
+    <div class={`app c cols-${c.rel()}`}>
       <header class="c-head">
         <div class="c-bar" onClick={() => box.focus()}>
           <For each={tokens()}>
@@ -251,12 +395,42 @@ export function VariantC(props: { ctx: Ctx }) {
             )}
           </For>
           <ListTreeToggle ctx={c} />
+          <button class="primary small new-btn" onClick={() => newIssue()} title="New issue (c)">
+            New issue
+          </button>
           <span class="c-count muted">
             {c.view().state === 'open' ? `${c.facets()?.open?.toLocaleString('en') ?? '…'} open` : c.view().state === 'closed' ? `${c.facets()?.closed?.toLocaleString('en') ?? '…'} closed` : ''}
           </span>
         </div>
       </header>
-      <main class="c-main">
+      <main
+        ref={mainEl}
+        class={`c-main layout-${c.layout()} ${c.openId() || c.creating() ? 'has-detail' : ''}`}
+        style={{
+          ...(detailW() ? { '--detail-w': `${detailW()}px` } : {}),
+          ...Object.fromEntries(COLS.map((k) => [`--w-${k}`, `${width(k)}px`])),
+          '--sbw': `${sbw()}px`,
+        }}
+      >
+        <div class="list-col" ref={listCol}>
+          <Show when={c.rel() === 'A'}>
+            <div class="c-row cols col-head">
+              <span class="k-main">Title</span>
+              <For each={COLS}>
+                {(k) => (
+                  <span class={`k-${k} col-h ${colW()[k] ? 'set' : ''}`}>
+                    <span
+                      class="col-grip"
+                      onPointerDown={(e) => startCol(k, e)}
+                      onDblClick={() => resetCol(k)}
+                      title="Drag to resize; double-click to reset"
+                    />
+                    {HEAD[k]}
+                  </span>
+                )}
+              </For>
+            </div>
+          </Show>
         <Loading fallback={<div class="list" />}>
           <Show when={c.tree()} fallback={
           <Rows
@@ -271,11 +445,18 @@ export function VariantC(props: { ctx: Ctx }) {
             <TreeRows ctx={c} rowHeight={34} row={(r, lead) => row(r, lead)} />
           </Show>
         </Loading>
-        <aside class="detail">
-          <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
-            <Loading>{c.detail}</Loading>
-          </Errored>
-        </aside>
+        </div>
+        {/* A: always beside the list. B: over the list, which keeps its scroll underneath. C: a drawer
+            over the list's right side; ?full=1 widens it. */}
+        {/* #55: always the side panel. */}
+        <div class="split-handle" onPointerDown={startResize} onDblClick={resetResize} title="Drag to resize; double-click to reset" />
+        <Show when={true}>
+          <aside class={`detail detail-${c.layout()} ${sp.full ? 'full' : ''}`}>
+            <Errored fallback={(err) => <p>Couldn't load the issue: {String(err())}</p>}>
+              <Loading>{c.detail}</Loading>
+            </Errored>
+          </aside>
+        </Show>
       </main>
     </div>
   );

@@ -1,15 +1,15 @@
-// PROTOTYPE for "Prototype the issue list and filter bar" (beghu #52). Throwaway.
-// Three variants of the list and filter bar on one route, switched with ?variant= and the floating
-// bar. This shell owns the data (view, rows, facets, live updates, the pending pulse); each variant
-// owns the whole layout.
-import { createMemo, createSignal, createEffect, onSettled, Show, type Element } from 'solid-js';
+// PROTOTYPE for "Prototype the issue detail" (beghu #54), on top of the list prototype (#52).
+// Throwaway. The list is #52's winner, variant C; ?variant= and the floating bar now switch the
+// issue detail's layout (A side panel, B full page, C drawer). This shell owns the list's data
+// (view, rows, facets, live updates, the pending pulse).
+import { createMemo, createSignal, createEffect, onSettled, type Element } from 'solid-js';
 import { revalidate, useLocation, useMatch, useSearchParams } from '@solidjs/router';
-import { fetchFacets, getIssue, getIssues, type Changed, type Facets, type IssueRow } from './api';
+import { fetchFacets, getIssues, type Changed, type Facets, type IssueRow } from './api';
 import { fromSearch, sameView, toSearch, type View } from './view';
-import { VariantA } from './variants/A';
-import { VariantB } from './variants/B';
 import { VariantC } from './variants/C';
 import { Switcher } from './Switcher';
+import { Toasts } from './detail/toasts';
+import { shell } from './shell';
 
 const PAGE = 100;
 
@@ -26,6 +26,12 @@ export type Ctx = {
   /** The query string, for row hrefs that keep the view. */
   search: () => string;
   openId: () => number | undefined;
+  /** The new-issue form is open. */
+  creating: () => boolean;
+  /** The detail is always #54's side panel. */
+  layout: () => 'A';
+  /** Which relationship design ?variant= picks. */
+  rel: () => RelVariant;
   detail: Element;
   /** List or tree (?tree=1). */
   tree: () => boolean;
@@ -36,11 +42,19 @@ export type Ctx = {
   live: () => number;
 };
 
+// #68 round 4: Markdown is style B, framed by tint, with SVG icons, and heading levels show as
+// pips; ?variant= picks the pip variation.
 export const VARIANTS = [
-  { key: 'A', name: 'Query bar + menus, two-line rows' },
-  { key: 'B', name: 'Facet rail, table rows' },
-  { key: 'C', name: 'Token bar + presets, one-line rows' },
+  { key: 'E', name: 'Split line (picked)' },
+  { key: 'P', name: 'Pips (round 3)' },
+  { key: 'Q', name: 'Lit pips only' },
+  { key: 'S', name: 'Signal steps' },
+  { key: 'D', name: 'Dots' },
+  { key: 'G', name: 'Pips in the gutter' },
+  { key: 'M', name: 'One-colour pips' },
 ] as const;
+
+export type RelVariant = 'A' | 'B' | 'C';
 
 /** The view in the address bar right now, for refilling a search box on back/forward (the router's
  * copy can lag a popstate). */
@@ -59,6 +73,7 @@ export function App(props: { children?: Element }) {
   const view = createMemo<View>(() => fromSearch(search), { equals: sameView });
   const location = useLocation();
   const open = useMatch(() => '/issues/:id');
+  const creating = useMatch(() => '/new');
 
   // Pending pulse: only for user-started loads, only past 200 ms, and the old rows stay. Driven
   // straight on the element so a held transition can't delay it.
@@ -120,6 +135,8 @@ export function App(props: { children?: Element }) {
     setSearch(toSearch(v), { replace: opts?.replace });
   };
 
+  const variant = () => VARIANTS.find((v) => v.key === search.variant) ?? VARIANTS[0];
+
   const [live, setLive] = createSignal(0);
   onSettled(() => {
     const events = new EventSource('/events');
@@ -129,8 +146,7 @@ export function App(props: { children?: Element }) {
       revalidate(getIssues.key);
       loadFacets(view());
       setLive(live() + 1);
-      const id = Number(open()?.params.id);
-      if (ids.includes(id)) revalidate(getIssue.keyFor(id));
+      window.dispatchEvent(new CustomEvent('issues-changed', { detail: ids }));
     };
     return () => events.close();
   });
@@ -145,6 +161,9 @@ export function App(props: { children?: Element }) {
     pulseTarget: (el) => (pulseEl = el),
     search: () => location.search,
     openId: () => (open() ? Number(open()!.params.id) : undefined),
+    creating: () => !!creating(),
+    layout: () => 'A',
+    rel: () => 'A',
     tree: () => search.tree === '1',
     setTree: (on) => setSearch({ tree: on ? '1' : undefined }),
     settle,
@@ -154,19 +173,12 @@ export function App(props: { children?: Element }) {
     },
   };
 
-  const variant = () => VARIANTS.find((v) => v.key === search.variant) ?? VARIANTS[0];
+  shell.rows = rows;
 
   return (
     <>
-      <Show when={variant().key === 'A'}>
-        <VariantA ctx={ctx} />
-      </Show>
-      <Show when={variant().key === 'B'}>
-        <VariantB ctx={ctx} />
-      </Show>
-      <Show when={variant().key === 'C'}>
-        <VariantC ctx={ctx} />
-      </Show>
+      <VariantC ctx={ctx} />
+      <Toasts />
       <Switcher />
     </>
   );

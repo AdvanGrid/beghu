@@ -33,7 +33,7 @@ cp "data/mirror-$scale.db" "$work/mirror.db"
 server_port=$port
 [ -n "$rtt" ] && server_port=$((port + 1))
 name="beghu-serve-$dir-$$"
-docker run -d --rm --name "$name" --cpus=1 --memory=512m -p "127.0.0.1:$server_port:8080" -v "$work:/data" \
+docker run -d --rm --name "$name" --cpus=1 --memory=512m -p "${BIND:-127.0.0.1}:$server_port:8080" -v "$work:/data" \
   -e MIRROR_PATH=/data/mirror.db -e PORT=8080 -e GITHUB_LATENCY_MS=300 ${variant:+-e BENCH_VARIANT=$variant} \
   "beghu-bench-$dir" >/dev/null
 pids=()
