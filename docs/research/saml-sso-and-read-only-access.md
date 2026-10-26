@@ -94,16 +94,18 @@ org). Scope was narrowed to one question: is supporting it trivial?
    reference says "Issue owners and users with push access or Triage role can edit an issue"
    (`/rest/issues/issues#update-an-issue`). The UI doc says authors and "people with write
    access or higher"
-   (`/issues/tracking-your-work-with-issues/using-issues/editing-an-issue`).
+   (`/issues/tracking-your-work-with-issues/using-issues/editing-an-issue`). **Verified: the UI
+   doc is right.** Triage's title/body edit on others' issues is a 200 that changes nothing (section 1).
 4. **Many denials are silent 2xx responses.** REST says labels, assignees, milestone and type
    sent without push access are "silently dropped" (`PATCH`/`POST …/issues`) or "silently
    ignored" (`POST`/`DELETE …/assignees`). That conflicts with the roles table, which gives
-   triage labels, assignees and milestones. Which side wins for triage is the main unverified
-   point. The response body carries the issue as GitHub stored it, so beghu can detect a drop by
+   triage labels, assignees and milestones. **Verified: the roles table wins.** Triage sets all
+   three through every endpoint, and the silent drops happen to Read on their own issues
+   (section 1). The response body carries the issue as GitHub stored it, so beghu can detect a drop by
    comparing the response with the request (inferred).
 5. **Loud failures** are documented only as status codes. Writes list 403 and/or 404, and
-   relationship writes list 403, 404 and 422 (OpenAPI). The exact role-denial messages were not
-   observed. App-side denials are verified: 403 `"Resource not accessible by integration"` with
+   relationship writes list 403, 404 and 422 (OpenAPI). Role denials are the same 403 `"Resource not
+   accessible by integration"` as app-side ones (verified, section 1). App-side denials are verified: 403 `"Resource not accessible by integration"` with
    `X-Accepted-GitHub-Permissions: issues=write; pull_requests=write`, and on GraphQL an HTTP 200
    with `type: "FORBIDDEN"` and the same message.
 6. **App ∩ user.** A user token "only has permissions that both the user and the app have"
@@ -126,33 +128,56 @@ org). Scope was narrowed to one question: is supporting it trivial?
 
 Roles: Read, Triage, Write (Maintain and Admin are supersets). "Own" means the user authored the
 issue. Every row assumes the app has Issues: write; without it, every write is a 403 "Resource not
-accessible by integration" (verified). "Docs" codes are the ones the OpenAPI description lists.
-None of the role outcomes were observed with a write; they come from the docs cited.
+accessible by integration" (verified).
 
-| Write (REST) | Read | Triage | Write | Failure shape (documented) | Source |
-|---|---|---|---|---|---|
-| Comment `POST …/issues/{n}/comments` | yes | yes | yes | 403, 404, 410, 422. A locked issue takes comments only from write and above (`LOCKED`); 410 when issues are disabled | roles table ("Lock conversations": write); `RepositoryPermission.READ` "can also open and comment"; OpenAPI |
-| Add labels `POST …/labels` / remove `DELETE …/labels/{name}` | no | yes (roles table) | yes | Docs codes 200, 301, 404, 410, 422; no 403 listed. What a read user gets is **unverified** (error or no-op) | roles table "Apply/dismiss labels"; `/issues/using-labels-and-milestones-to-track-work/managing-labels` |
-| Labels via `PATCH …/issues/{n}` (`labels`) | no, silent | **conflict**: REST says push only, so silently dropped | yes | 200 with labels unchanged | `/rest/issues/issues#update-an-issue` |
-| Assignees `POST`/`DELETE …/assignees` (or `PATCH assignees`) | no, silent | **conflict**: roles table yes, REST "Only users with push access… silently ignored" | yes | 201/200 with assignees unchanged | `/rest/issues/assignees#add-assignees-to-an-issue`; roles table "Close, reopen, and assign all issues" |
-| Milestone via `PATCH` (`milestone`) | no, silent | **conflict**: roles table "Apply milestones" yes, REST push only | yes | 200 with milestone unchanged | `/rest/issues/issues#update-an-issue` |
-| Close / reopen via `PATCH state` | own only; reopen only if they closed it | yes, any | yes | 403 or 404 (message unverified) | roles table; `/issues/tracking-your-work-with-issues/administering-issues/closing-an-issue` |
-| Edit title/body via `PATCH` | own only | own yes; others **conflict** (REST yes, UI doc write+) | yes | 403 or 404 (message unverified) | `/rest/issues/issues#update-an-issue`; `/issues/…/editing-an-issue` |
-| Create issue `POST …/issues` | yes | yes | yes | Labels, assignees, milestone and type are silently dropped without push; `parent` needs triage on both repos. 403 when blocked, 410 when issues are disabled | `/rest/issues/issues#create-an-issue` |
-| Sub-issue add / remove / reorder (`POST sub_issues`, `DELETE sub_issue`, `PATCH sub_issues/priority`) | no (own parent: undocumented) | yes | yes | 403, 404, 422 | `/issues/…/adding-sub-issues` ("at least triage"); `/rest/issues/sub-issues` |
-| Blocked-by add / remove (`POST`/`DELETE …/dependencies/blocked_by`) | no (own: undocumented) | yes | yes | 403, 404, 422 (DELETE also 400, 401) | `/issues/…/creating-issue-dependencies` ("at least triage"); `/rest/issues/issue-dependencies` |
-| "Relates to" add / remove (`POST`/`DELETE …/relates_to`) | undocumented | undocumented (inferred: triage, like the other relationships) | yes | 403, 404, 422 (DELETE also 400) | `/rest/issues/issues#add-a-related-issue` |
+**Verified 2026-10-26** for Read and Triage ([Test v1 writes as a read and triage
+collaborator](https://github.com/AdvanGrid/beghu/issues/78)). A teammate (`JurisBaltacs`, org
+member) signed in to the AdvanGrid dev App `beghu-dev-toms` through the device flow, so every
+call used a GitHub App **user-to-server** token. He ran each write on `AdvanGrid/beghu-sandbox`,
+first as Read (org base permission), then with Triage granted on that repo, on issues he
+authored and on issues the owner authored. Each write was followed by a re-read. The Write column
+is still from the docs. Raw results: `.dev/probe-roles/results-{read,triage}.json` (local,
+gitignored); the script is `.dev/probe-roles/probe.mjs`.
+
+| Write (REST) | Read, own | Read, others' | Triage (own and others') | Write |
+|---|---|---|---|---|
+| Comment `POST …/issues/{n}/comments` | 201 | 201 | 201 | yes |
+| Labels `POST …/labels` / `DELETE …/labels/{name}` | 403 | 403 | 200 | yes |
+| Labels via `PATCH …/issues/{n}` | **200, silently dropped** | 403 | 200, applied | yes |
+| Assignees `POST`/`DELETE …/assignees` | 403 | 403 | 201 / 200 | yes |
+| Assignees via `PATCH` | **200, silently dropped** | 403 | 200, applied | yes |
+| Milestone via `PATCH` | **200, silently dropped** | 403 | 200, applied | yes |
+| Close / reopen via `PATCH state` | 200 | 403 | 200 | yes |
+| Edit title/body via `PATCH` | 200 | 403 | own: 200; others': **200, silently dropped** | yes |
+| Create `POST …/issues` | 201 | — | 201 | yes |
+| Create with labels, assignees, milestone | **201, all three silently dropped** | — | 201, all applied | yes |
+| Sub-issue add / remove / reorder | 403 (own parent and own child too) | 403 | 201 / 200 / 200 | yes |
+| Blocked-by add / remove | 403 (own issues too) | 403 | 201 / 200 | yes |
+| "Relates to" add / remove | 403 (own issues too) | 403 | 201 / 200 | yes |
+
+Every 403 above is `"Resource not accessible by integration"` with
+`X-Accepted-GitHub-Permissions: issues=write; pull_requests=write` (relationship endpoints:
+`issues=write`). That's the same body and header as an app-side denial, although the app *has*
+Issues: write. The message can't tell a missing user role from a missing app permission. A
+`DELETE` of a sub-issue that was never added is 404.
 
 Notes:
 
-- The roles table is the UI permission matrix. The "silently dropped" notes are REST-specific.
-  GitHub has not reconciled the two in the docs. The triage rows marked "conflict" are where a
-  live test matters most.
+- **The triage conflicts are settled.** Labels, assignees and milestone work for Triage through
+  every endpoint, so the roles table is right and REST's "push access, silently dropped" is wrong
+  for Triage (it holds for Read on their own issues). Editing others' title/body follows the UI
+  doc (write and up), not REST, and fails silently rather than with a 403.
+- **A `PATCH` applies partially.** As Triage on an issue by someone else, one `PATCH` with
+  `title` and `labels` returned 200 with the labels applied and the title unchanged. The response
+  body is the stored issue, so comparing it field by field with the request catches every silent
+  drop seen here.
+- **Authorship gives no relationship rights.** A Read user gets 403 on sub-issues, dependencies
+  and "relates to" even when every issue involved is their own.
 - GraphQL mutations (`updateIssue`, `addLabelsToLabelable`, `addAssigneesToAssignable`,
   `closeIssue`, `addSubIssue`, `addBlockedBy`, `addRelatesTo` and the rest) carry no permission
-  notes in their schema descriptions (introspected). Failure shape (verified for an app-side
-  denial): HTTP 200, `data.<mutation>: null`, and an `errors[]` entry with `type: "FORBIDDEN"`
-  and `extensions: { saml_failure: false, ip_allow_list_failure: false }`.
+  notes in their schema descriptions (introspected) and weren't probed by role. Failure shape
+  (verified for an app-side denial): HTTP 200, `data.<mutation>: null`, and an `errors[]` entry
+  with `type: "FORBIDDEN"` and `extensions: { saml_failure: false, ip_allow_list_failure: false }`.
 - `TRIAGE_PLUS` is a `RepositoryPermission` value, described as "Can also manage issues and pull
   requests, plus additional triage abilities" (introspected). The docs say no more.
   `viewerCanUpdateMetadata` "reflects the viewer's base repository role and does not account for
@@ -161,7 +186,9 @@ Notes:
 
 ## 2. What beghu can know in advance
 
-Observed values (`viewer*` from GraphQL, `perms` from REST `GET /repos/{o}/{r}`):
+Observed values (`viewer*` from GraphQL, `perms` from REST `GET /repos/{o}/{r}`). For the
+user-to-server rows, every outcome in section 1 matched what these fields predicted, silent
+drops included (verified):
 
 | Token | Repo / issue | `viewerPermission` | `perms` | Issue `viewerCan*` |
 |---|---|---|---|---|
@@ -170,6 +197,10 @@ Observed values (`viewer*` from GraphQL, `perms` from REST `GET /repos/{o}/{r}`)
 | gh OAuth (owner, read role) | `cli/cli` #10000 | `READ` | | same as `pi-fzf` #6 |
 | beghu-dev installation | `tomsjansons/beghu` #29 | `null` | all `false` (also on `/installation/repositories`) | `Update/Close/Reopen/Label/Assign/SetMilestone: true`, `viewerCanUpdateMetadata: false` |
 | beghu-dev installation | `kaofelix/pi-fzf` (not installed) | `null` | all `false` | all `false`, `INSUFFICIENT_ACCESS`; `viewerCanCreateIssues: true` (meaningless for a bot) |
+| App user-to-server (`beghu-dev-toms`), Read | `beghu-sandbox`, owner's issue | `READ` | `pull` only | all `false`, `INSUFFICIENT_ACCESS` |
+| App user-to-server, Read | `beghu-sandbox`, own issue | `READ` | `pull` only | `Update`/`Close: true`; `Reopen`, `Label`, `Assign`, `SetMilestone`, `UpdateMetadata: false` |
+| App user-to-server, Triage | `beghu-sandbox`, owner's issue | `TRIAGE` | `pull`, `triage` | `Update: false` (`INSUFFICIENT_ACCESS`); `Close`, `Reopen`, `Label`, `Assign`, `SetMilestone`, `UpdateMetadata: true` |
+| App user-to-server, Triage | `beghu-sandbox`, own issue | `TRIAGE` | `pull`, `triage` | all `true` |
 
 What to use:
 
@@ -185,38 +216,24 @@ What to use:
   `viewerCanUpdateMetadata` is `false` for the bot even with Issues: write, so it isn't a stand-in
   either (verified).
 - **No flag for relationships.** Gate sub-issues, dependencies and "relates to" on
-  `viewerPermission >= TRIAGE` (inferred from the "at least triage" docs). Include both repos for
-  cross-repo links: `parent` on create says triage is needed "to both" repos (documented). Whether
-  the add and remove endpoints need it on both is unverified.
+  `viewerPermission >= TRIAGE` (verified on one repo: Read gets 403 on all three, Triage
+  succeeds). Include both repos for cross-repo links: `parent` on create says triage is needed
+  "to both" repos (documented). Whether the add and remove endpoints need it on both is
+  unverified.
 - **After every write:** compare the returned issue with the request (labels, assignees,
-  milestone), since a silent drop comes back as 2xx. Treat a mismatch as a failed write with a
-  "you don't have permission" reason (inferred).
+  milestone, title, body), since a silent drop comes back as 2xx and a `PATCH` can apply only
+  some of its fields (verified). Treat a mismatch as a failed write with a "you don't have
+  permission" reason.
+- **Don't read a 403's message.** "Resource not accessible by integration" comes back for both a
+  missing app permission and a missing user role (verified), so the reason shown to the user comes
+  from `viewerPermission` / `viewerCan*`, not from the error.
 
 ## Open items / unverified
 
-- **No role-level write was observed.** Every read/triage outcome above is from the docs. A
-  follow-up needs:
-  1. An org owned by the owner (a free org has Read and Triage roles) with one test repo.
-  2. A second GitHub account added to that repo as an outside collaborator, first with Read,
-     then with Triage.
-  3. That account running each write in the table on (a) an issue it authored and (b) an issue
-     the owner authored. Record status, body and `X-Accepted-GitHub-Permissions`, and re-read the
-     issue to catch silent drops.
-
-  Doing this with the second account's `gh` token tests the role layer alone. Testing the app ∩
-  user path needs beghu-dev installed on that org. A private app installs only on its owning
-  account (`github-app-mechanics.md`), so that means making beghu-dev public or registering a
-  dev app owned by the org.
-- The triage conflicts: labels, assignees and milestone via REST ("push access, silently
-  dropped") against the roles table, and title/body edits on others' issues (REST against the UI
-  doc).
-- Whether a read user's `POST …/labels` errors (and with what) or quietly does nothing. The
-  OpenAPI lists no 403 for it.
-- Whether an issue author with read access can add sub-issues, dependencies or "relates to" on
-  their own issue. The docs say "at least triage" and don't mention authors.
-- What `viewerPermission` and the `viewerCan*` fields return for a GitHub App **user-to-server**
-  token. The schema says `viewerPermission` is null only "if authenticated as an GitHub App".
-  Only the OAuth token and the installation token were probed.
+- Cross-repo relationships where the user's role differs between the two repos (Triage on one,
+  Read on the other). Only same-repo links were probed.
+- GraphQL mutations by role (beghu's v1 writes are REST).
+- The Write column of section 1 (docs only; nobody doubts it).
 - SAML (lower priority, docs and reports only): the exact REST status, body and `X-GitHub-SSO`
   for a user-to-server token; whether `GET /user/installations` omits the locked org or lists it
   and only its repos fail; and whether the credential authorization survives refreshes and the

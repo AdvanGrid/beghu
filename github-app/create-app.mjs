@@ -81,4 +81,4 @@ const server = createServer(async (req, res) => {
   console.log(`Install: ${app.html_url}/installations/new`);
   server.close();
 });
-server.listen(port, () => console.log(`Open http://${args.host}:${port}/ to create ${args.name}`));
+server.listen(port, "0.0.0.0", () => console.log(`Open http://${args.host}:${port}/ to create ${args.name}`));
