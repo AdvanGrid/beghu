@@ -1,0 +1,18 @@
+# Raw rusqlite statements are allowed only in the database crates; see `[workspace.lints]` in
+# Cargo.toml. App code calls the checked functions that mirror-db and control-db generate.
+# `Transaction` derefs to `Connection`, so these also cover the same calls on a transaction.
+disallowed-methods = [
+  { path = "rusqlite::Connection::prepare", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::prepare_cached", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::prepare_with_flags", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::execute", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::execute_batch", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::query_row", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::query_row_and_then", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::query_one", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::pragma", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::pragma_query", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::pragma_query_value", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::pragma_update", reason = "SQL lives in the database crates; call a generated query" },
+  { path = "rusqlite::Connection::pragma_update_and_check", reason = "SQL lives in the database crates; call a generated query" },
+]

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # The build runs the SQL checker over every migration and named query.
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      # -D on the command line also covers a crate that forgets `[lints] workspace = true`.
+      - name: Lint (SQL only in the database crates)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::disallowed_methods
+
+      - name: Test
+        run: cargo test --workspace --exclude fixture --locked
+
+      - name: Fixture still loads after the migrations
+        run: cargo test -p fixture --locked

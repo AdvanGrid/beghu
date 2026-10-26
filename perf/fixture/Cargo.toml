@@ -1,0 +1,17 @@
+[package]
+name = "fixture"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Seeded, deterministic fixture mirrors at 1k, 20k and 50k issues, in the real mirror schema."
+
+[dependencies]
+mirror-db = { workspace = true }
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

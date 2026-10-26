@@ -1,0 +1,5 @@
+# One SQLite build for the app, the tests and the build-time SQL checker: the bundled copy with
+# FTS5 (on by default in the bundled build), without SQLITE_ENABLE_MEMORY_MANAGEMENT, and without
+# memory statistics. [env] reaches libsqlite3-sys's build script for host and target alike.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

@@ -1,0 +1,15 @@
+[package]
+name = "sqlcheck"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Build-time SQL checker: applies a schema crate's migrations to an in-memory SQLite, prepares every named query and generates typed rusqlite functions."
+
+[dependencies]
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

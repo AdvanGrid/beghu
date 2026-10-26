@@ -1,11 +1,29 @@
-[package]
-name = "beghu"
-version = "0.1.0"
+[workspace]
+resolver = "3"
+members = ["crates/sqlcheck", "crates/dbrt", "crates/mirror-db", "crates/control-db", "perf/fixture"]
+# The benchmark candidates are throwaway projects with their own manifests.
+exclude = ["bench"]
+
+[workspace.package]
 edition = "2024"
+publish = false
 
-[dependencies]
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
-topcoat = { version = "0.10.0", features = ["tailwind"] }
+[workspace.dependencies]
+# `bundled` builds SQLite from source with FTS5. `.cargo/config.toml` sets the extra compile
+# flags (LIBSQLITE3_FLAGS) for both the app and the build-time checker.
+rusqlite = { version = "0.40", features = ["bundled", "column_metadata", "column_decltype", "modern_sqlite"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tempfile = "3"
+sqlcheck = { path = "crates/sqlcheck" }
+dbrt = { path = "crates/dbrt" }
+mirror-db = { path = "crates/mirror-db" }
+control-db = { path = "crates/control-db" }
 
-[build-dependencies]
-topcoat = { version = "0.10.0", default-features = false, features = ["tailwind"] }
+# SQLite's C at -O0 makes debug tests and fixture generation several times slower.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+[workspace.lints.clippy]
+# SQL lives only in the database crates (sqlcheck, dbrt, mirror-db, control-db). Everywhere else
+# calls the functions they generate. Those crates opt out with `#![allow(clippy::disallowed_methods)]`.
+disallowed_methods = "deny"
