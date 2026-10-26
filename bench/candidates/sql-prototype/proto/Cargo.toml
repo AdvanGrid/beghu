@@ -1,0 +1,12 @@
+[package]
+name = "proto"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rusqlite = { workspace = true }
+dbrt = { path = "../dbrt" }
+mirror-db = { path = "../mirror-db" }
+control-db = { path = "../control-db" }
+sqlcheck = { path = "../sqlcheck" }

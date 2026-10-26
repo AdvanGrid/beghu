@@ -1,0 +1,4 @@
+# Same SQLite build as bench/candidates/filtering/server (see its OPTIMISATION.md). It applies to
+# the host copy build.rs links as well as the target copy.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"
