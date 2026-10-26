@@ -26,6 +26,10 @@ use std::path::{Path, PathBuf};
 pub struct Options {
     /// Mirrors may mark a migration `*.rebuild.sql`; the control DB may not.
     pub allow_rebuild: bool,
+    /// Another schema crate's directory (relative to this crate's), whose migrations come first:
+    /// this schema extends that one. Its own migrations are numbered from 1 in `migrations/` and
+    /// take versions after the base's. The base's `.rebuild.sql` files keep their kind.
+    pub base: Option<String>,
 }
 
 /// The whole check for the crate whose `build.rs` calls it. Errors become `cargo::error=` lines,
@@ -35,6 +39,9 @@ pub fn run(opts: Options) {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("db.rs");
     println!("cargo::rerun-if-changed=migrations");
     println!("cargo::rerun-if-changed=queries");
+    if let Some(base) = &opts.base {
+        println!("cargo::rerun-if-changed={base}/migrations");
+    }
     let code = match check(&dir, &opts) {
         Ok(code) => code,
         Err(errs) => {
@@ -54,7 +61,22 @@ pub fn check(dir: &Path, opts: &Options) -> Result<String, Vec<String>> {
     let errs = &mut errs;
     let conn = Connection::open_in_memory().unwrap();
     let mut code = String::new();
-    let migs = apply_migrations(&conn, &dir.join("migrations"), opts, errs, &mut code);
+    let mut list = String::new();
+    let mut migs = 0;
+    if let Some(base) = &opts.base {
+        let base_opts = Options {
+            allow_rebuild: true,
+            base: None,
+        };
+        let migrations = dir.join(base).join("migrations");
+        migs = apply_migrations(&conn, &migrations, &base_opts, 0, errs, &mut list);
+    }
+    let base_migs = opts.base.as_ref().map(|_| migs);
+    migs = apply_migrations(&conn, &dir.join("migrations"), opts, migs, errs, &mut list);
+    let _ = writeln!(
+        code,
+        "pub static MIGRATIONS: &[dbrt::Migration] = &[\n{list}];"
+    );
     if !errs.is_empty() {
         // Every query would fail on the half-built schema too; report only the cause.
         return Err(std::mem::take(errs));
@@ -96,6 +118,12 @@ pub fn check(dir: &Path, opts: &Options) -> Result<String, Vec<String>> {
         return Err(std::mem::take(errs));
     }
     let _ = writeln!(code, "pub const SCHEMA_VERSION: u32 = {migs};");
+    if let Some(base) = base_migs {
+        let _ = writeln!(
+            code,
+            "/// The version of the base schema's last migration: `MIGRATIONS[..BASE_VERSION]` are the base's.\npub const BASE_VERSION: u32 = {base};"
+        );
+    }
     let _ = writeln!(
         code,
         "#[allow(clippy::all, unused_imports)]\npub mod q {{\nuse rusqlite::{{OptionalExtension as _, ToSql}};\n{q}}}"
@@ -107,19 +135,21 @@ pub fn check(dir: &Path, opts: &Options) -> Result<String, Vec<String>> {
     Ok(code)
 }
 
+/// Applies `dir`'s migrations after the first `offset` versions, appending each to `list` (the
+/// body of `MIGRATIONS`). Returns the last version.
 fn apply_migrations(
     conn: &Connection,
     dir: &Path,
     opts: &Options,
+    offset: u32,
     errs: &mut Vec<String>,
-    code: &mut String,
+    list: &mut String,
 ) -> u32 {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect();
     files.sort();
-    let mut list = String::new();
     let mut v = 0;
     for f in files
         .iter()
@@ -180,15 +210,12 @@ fn apply_migrations(
         let kind = if rebuild { "Rebuild" } else { "InPlace" };
         let _ = writeln!(
             list,
-            "    dbrt::Migration {{ version: {n}, name: {name:?}, kind: dbrt::Kind::{kind}, sql: include_str!({:?}) }},",
+            "    dbrt::Migration {{ version: {}, name: {name:?}, kind: dbrt::Kind::{kind}, sql: include_str!({:?}) }},",
+            offset + n,
             f.display()
         );
     }
-    let _ = writeln!(
-        code,
-        "pub static MIGRATIONS: &[dbrt::Migration] = &[\n{list}];"
-    );
-    v
+    offset + v
 }
 
 // ---------------------------------------------------------------------------------------------

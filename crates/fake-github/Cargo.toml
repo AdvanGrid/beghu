@@ -1,0 +1,29 @@
+[package]
+name = "fake-github"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Fake GitHub: GitHub's API, OAuth and webhooks for local dev and tests, over its own copy of the fixture, with faults set at runtime on a control port."
+
+[dependencies]
+axum = { workspace = true }
+base64 = "0.22"
+dbrt = { workspace = true }
+fake-db = { workspace = true }
+mirror-db = { workspace = true }
+rand = "0.9"
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+tokio = { workspace = true, features = ["net", "signal"] }
+
+[dev-dependencies]
+fixture = { workspace = true }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

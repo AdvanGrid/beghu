@@ -2,6 +2,7 @@
 //! `sqlcheck`). A mirror tracks its version in `PRAGMA user_version`, the control DB in a
 //! `_migrations` table. Production only rolls forward: a database newer than the build is refused.
 
+use crate::copy::suffixed;
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 
@@ -102,7 +103,8 @@ pub fn file_version(path: &Path) -> Result<Option<u32>, MigError> {
     user_version(&c).map(Some).map_err(classify)
 }
 
-pub(crate) fn user_version(c: &Connection) -> rusqlite::Result<u32> {
+/// A connection's `user_version`: a database file's schema version.
+pub fn user_version(c: &Connection) -> rusqlite::Result<u32> {
     c.pragma_query_value(None, "user_version", |r| r.get(0))
 }
 
@@ -176,10 +178,6 @@ pub fn create_fresh(path: &Path, migs: &[Migration]) -> Result<(), crate::Error>
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
-}
-
-fn suffixed(p: &Path, ext: &str) -> PathBuf {
-    PathBuf::from(format!("{}{ext}", p.display()))
 }
 
 #[derive(Debug, PartialEq, Eq)]

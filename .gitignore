@@ -1,3 +1,4 @@
 /target
 /.dev
 /perf/data
+node_modules/

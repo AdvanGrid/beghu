@@ -1,0 +1,152 @@
+//! The fixture accounts that can sign in to the fake, with different access and roles, and the
+//! App installation that holds the fixture's synced repos.
+
+use fake_db::q;
+use rusqlite::Transaction;
+use std::path::{Path, PathBuf};
+
+/// An account's **Role** on a repo, in GitHub's five levels (beghu folds the top three into
+/// "Write and up"). Ordered from least to most access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    Read,
+    Triage,
+    Write,
+    Maintain,
+    Admin,
+}
+
+impl Role {
+    /// GitHub's name for the role, as the truth stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Read => "read",
+            Role::Triage => "triage",
+            Role::Write => "write",
+            Role::Maintain => "maintain",
+            Role::Admin => "admin",
+        }
+    }
+
+    /// The role GitHub calls `name`, or `None` for a name GitHub doesn't have.
+    pub fn from_name(name: &str) -> Option<Role> {
+        match name {
+            "admin" => Some(Role::Admin),
+            "maintain" => Some(Role::Maintain),
+            "write" => Some(Role::Write),
+            "triage" => Some(Role::Triage),
+            "read" => Some(Role::Read),
+            _ => None,
+        }
+    }
+}
+
+pub struct Account {
+    pub login: &'static str,
+    pub name: &'static str,
+    /// The account's role on a fixture repo, by repo name. `None`: it can't see the repo.
+    pub role: fn(&str) -> Option<Role>,
+}
+
+/// Who the authorize page offers, in order.
+pub const ACCOUNTS: [Account; 3] = [
+    // An org owner: admin everywhere.
+    Account {
+        login: "tomsj",
+        name: "Toms J.",
+        role: |_| Some(Role::Admin),
+    },
+    // A member with a mix of roles: write, triage and read.
+    Account {
+        login: "ilze-k",
+        name: "Ilze K.",
+        role: |repo| match repo {
+            "web" | "api" | "mobile" => Some(Role::Write),
+            "cli" | "billing" | "ops" => Some(Role::Read),
+            _ => Some(Role::Triage),
+        },
+    },
+    // An outside collaborator with read on two repos.
+    Account {
+        login: "octo-ext",
+        name: "Octo External",
+        role: |repo| matches!(repo, "web" | "docs").then_some(Role::Read),
+    },
+];
+
+/// The org that owns the fixture repos and installed the App.
+const ORG_ID: i64 = 61_000_001;
+const INSTALLED_AT: i64 = 1_756_684_800; // 2025-09-01T00:00:00Z
+
+/// Fills the fake's tables in a fresh copy of the fixture.
+pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
+    let repos = q::installed_repos(tx)?;
+    let mut installations: Vec<(i64, &str)> = repos
+        .iter()
+        .map(|r| (r.installation_id, r.owner.as_str()))
+        .collect();
+    installations.dedup();
+    for (id, owner) in installations {
+        q::add_installation(tx, id, ORG_ID, owner, "Organization", INSTALLED_AT)?;
+    }
+    for (position, a) in ACCOUNTS.iter().enumerate() {
+        let user = q::user_by_login(tx, a.login)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        q::add_account(tx, user.id, a.name, position as i64)?;
+        for r in &repos {
+            if let Some(role) = (a.role)(&r.name) {
+                q::add_permission(tx, user.id, r.id, role.as_str())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes a pristine mirror, `<dir>/<github_user_id>.db`, for each fixture account that sees
+/// every synced fixture repo: a copy of the fixture with that account's roles. Accounts that see
+/// fewer repos get none (their mirror comes from an import). Returns `(login, path)` for each.
+pub async fn pristine_mirrors(
+    fixture: &Path,
+    db: &Path,
+    dir: &Path,
+) -> Result<Vec<(String, PathBuf)>, fake_db::Error> {
+    let (fixture, db, dir) = (fixture.to_owned(), db.to_owned(), dir.to_owned());
+    let truth = {
+        let (fixture, db) = (fixture.clone(), db.clone());
+        tokio::task::spawn_blocking(move || fake_db::Truth::open(&db, &fixture, Box::new(seed)))
+            .await
+            .map_err(|_| fake_db::Error::Panicked)??
+    };
+    let plan = truth
+        .read(|c| {
+            let installed = q::installed_repos(c)?.len();
+            let mut out = Vec::new();
+            for a in q::accounts(c)? {
+                let roles = q::account_roles(c, a.id)?;
+                if roles.len() == installed {
+                    out.push((a.id, a.login, roles));
+                }
+            }
+            Ok(out)
+        })
+        .await?;
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir)?;
+        let mut written = Vec::new();
+        for (id, login, roles) in plan {
+            let path = dir.join(format!("{id}.db"));
+            dbrt::copy::copy_over(&fixture, &path, |conn| {
+                let tx = conn.transaction()?;
+                mirror_db::q::bump_seq(&tx)?;
+                for r in &roles {
+                    mirror_db::q::set_repo_role(&tx, r.repo_id, &r.role)?;
+                }
+                tx.commit()?;
+                Ok::<_, fake_db::Error>(())
+            })?;
+            written.push((login, path));
+        }
+        Ok::<_, fake_db::Error>(written)
+    })
+    .await
+    .map_err(|_| fake_db::Error::Panicked)?
+}

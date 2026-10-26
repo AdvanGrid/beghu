@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the beghu dev stack. The TypeScript in tools/dev-ctl runs directly on Node (>= 23.6).
+exec node "$(dirname "$0")/tools/dev-ctl/src/main.ts" "$@"

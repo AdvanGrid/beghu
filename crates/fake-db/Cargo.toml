@@ -1,0 +1,20 @@
+[package]
+name = "fake-db"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Fake GitHub's truth: a copy of the fixture mirror plus the fake's own tables (fixture accounts, roles, OAuth codes and tokens), with checked named queries over both."
+
+[dependencies]
+rusqlite = { workspace = true }
+dbrt = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+sqlcheck = { workspace = true }
+
+[lints]
+workspace = true

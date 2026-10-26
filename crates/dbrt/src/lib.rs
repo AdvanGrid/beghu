@@ -1,8 +1,9 @@
-//! The database runtime under `mirror-db` and `control-db`: migration runners, the per-account
-//! gate, the `Filter` glue for checked fragments, and connection management. It's the only place
-//! unchecked SQL is composed.
+//! The database runtime under `mirror-db`, `control-db` and `fake-db`: migration runners, the
+//! per-account gate, the `Filter` glue for checked fragments, and connection management. It's the
+//! only place unchecked SQL is composed.
 #![allow(clippy::disallowed_methods)] // a database crate: raw rusqlite calls are allowed here
 
+pub mod copy;
 pub mod db;
 pub mod filter;
 pub mod gate;
@@ -37,6 +38,12 @@ pub enum Error {
     /// The database is newer than this build and won't be opened.
     TooNew {
         db: u32,
+        build: u32,
+    },
+    /// Fake GitHub's fixture isn't at the mirror schema version this build expects, so copying
+    /// it would migrate across a rebuild or fail. Regenerate the fixture (or rebuild).
+    FixtureVersion {
+        fixture: u32,
         build: u32,
     },
     /// A query or job panicked.
@@ -81,6 +88,16 @@ impl std::fmt::Display for Error {
             Error::TooNew { db, build } => {
                 write!(f, "database is at v{db}, newer than this build (v{build})")
             }
+            Error::FixtureVersion { fixture, build } if fixture > build => write!(
+                f,
+                "the fixture is at mirror schema v{fixture}, newer than this build (v{build}): \
+                 rebuild, or use a fixture made by this build"
+            ),
+            Error::FixtureVersion { fixture, build } => write!(
+                f,
+                "the fixture is stale: it is at mirror schema v{fixture} and this build expects \
+                 v{build}; regenerate it"
+            ),
             Error::Panicked => f.write_str("a database task panicked"),
         }
     }

@@ -31,3 +31,21 @@ jobs:
 
       - name: Fixture still loads after the migrations
         run: cargo test -p fixture --locked
+
+  dev-ctl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/dev-ctl/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: tools/dev-ctl
+
+      - name: Typecheck ./dev-ctl
+        run: npx tsc --noEmit
+        working-directory: tools/dev-ctl

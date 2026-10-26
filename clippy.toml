@@ -1,5 +1,5 @@
 # Raw rusqlite statements are allowed only in the database crates; see `[workspace.lints]` in
-# Cargo.toml. App code calls the checked functions that mirror-db and control-db generate.
+# Cargo.toml. App code calls the checked functions that mirror-db, control-db and fake-db generate.
 # `Transaction` derefs to `Connection`, so these also cover the same calls on a transaction.
 disallowed-methods = [
   { path = "rusqlite::Connection::prepare", reason = "SQL lives in the database crates; call a generated query" },

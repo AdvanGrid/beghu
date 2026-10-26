@@ -3,7 +3,7 @@ name = "dbrt"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
-description = "Database runtime shared by mirror-db and control-db: migrations, the per-account gate, filter glue and connection management. The only place unchecked SQL is composed."
+description = "Database runtime shared by mirror-db, control-db and fake-db: migrations, the per-account gate, filter glue and connection management. The only place unchecked SQL is composed."
 
 [dependencies]
 rusqlite = { workspace = true }

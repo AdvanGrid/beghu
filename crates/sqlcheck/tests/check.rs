@@ -6,9 +6,11 @@ use std::path::Path;
 
 const MIRROR: Options = Options {
     allow_rebuild: true,
+    base: None,
 };
 const CONTROL: Options = Options {
     allow_rebuild: false,
+    base: None,
 };
 
 fn schema(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -201,5 +203,35 @@ fn a_broken_migration_is_reported_alone_not_again_by_every_query() {
         errs[0].contains("0001_init.sql:2: migration 0001_init: no such column: titel"),
         "{}",
         errs[0]
+    );
+}
+
+#[test]
+fn a_schema_built_on_a_base_schema_applies_the_base_migrations_first_and_numbers_its_own_after_them()
+ {
+    let base = schema(&[("migrations/0001_init.sql", ITEMS)]);
+    let dir = schema(&[
+        (
+            "migrations/0001_notes.sql",
+            "CREATE TABLE notes (item_id INTEGER NOT NULL REFERENCES items(id), note TEXT NOT NULL);\n",
+        ),
+        (
+            "queries/notes.sql",
+            "-- name: notes :many\nSELECT i.title, n.note FROM notes n JOIN items i ON i.id = n.item_id;\n",
+        ),
+    ]);
+    let opts = Options {
+        allow_rebuild: false,
+        base: Some(base.path().to_str().unwrap().to_owned()),
+    };
+    let code = check(dir.path(), &opts).unwrap();
+    assert!(
+        code.contains("pub const SCHEMA_VERSION: u32 = 2;"),
+        "{code}"
+    );
+    assert!(code.contains("pub const BASE_VERSION: u32 = 1;"), "{code}");
+    assert!(
+        code.contains("version: 1, name: \"init\"") && code.contains("version: 2, name: \"notes\""),
+        "{code}"
     );
 }
