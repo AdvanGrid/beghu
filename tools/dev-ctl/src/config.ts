@@ -11,7 +11,7 @@ export const STATE = join(DEV, "dev-ctl.json");
 export const DATA = join(DEV, "data");
 export const MIRRORS = join(DATA, "mirrors");
 export const FAKE_DB = join(DATA, "fake", "truth.db");
-/** What `start` seeded the data with: `{scale}`. Gone after a plain `reset`, so `start` seeds again. */
+/** What `start` seeded the data with (`Seeded`). Gone after a plain `reset`, so `start` seeds again. */
 export const SEEDED = join(DATA, "seeded.json");
 export const FIXTURES = join(ROOT, "perf", "data");
 export const TARGET = join(ROOT, "target", "debug");
@@ -50,6 +50,12 @@ export const DEV_TOKEN_KEY = "ZGV2LW9ubHkgYmVnaHUgdG9rZW4ga2V5LCBub3QgYSBzZWNyZX
 export const SCALES = ["1k", "20k", "50k"] as const;
 export type Scale = (typeof SCALES)[number];
 export const DEFAULT_SCALE: Scale = "50k";
+
+/**
+ * `seeded.json`: the scale and the fixture file the pristine mirrors were copied from, or, after
+ * `reset --fresh`, `fresh` (mirrors deleted, so the accounts import their own).
+ */
+export type Seeded = { scale: Scale; fixture?: string; fresh?: boolean };
 
 export const PROCS = ["dev-ctl", "cargo", "fixture", "fake", "server", "vite"] as const;
 

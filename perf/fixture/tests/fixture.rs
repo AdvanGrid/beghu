@@ -2,6 +2,7 @@
 //! and serves the list from it. This is the CI check that the generator still loads after each
 //! migration.
 
+use dbrt::filter::Filter;
 use fixture::{GENERATOR_HASH, Scale, cached, generate};
 use mirror_db::{Caller, Config, Mirrors, frag, q};
 
@@ -21,7 +22,14 @@ async fn the_1k_fixture_opens_with_the_current_schema_and_serves_the_default_lis
 
     let (open, top) = mirrors
         .read(1, Caller::Request, |c| {
-            let open = q::item_ids(c, &frag::state("open"), "issue", i64::MAX)?;
+            let open: Vec<i64> = q::ids_updated(
+                c,
+                &Filter::And(vec![frag::kind("issue"), frag::state("open")]),
+                i64::MAX,
+            )?
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
             let top = q::hydrate(c, &open[..40])?;
             Ok((open, top))
         })

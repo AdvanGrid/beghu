@@ -3,9 +3,9 @@
 //! account, so it's cacheable (`max-age=300`) and the same for everyone.
 //!
 //! The preloads must match the client's fetches byte for byte (`web/src/api.ts`): `/api/me`,
-//! `/api/issues` with the page's own query string, and on an issue's URL (`/issues/:id`) that
-//! issue's detail, `/api/issues/:id`. `web/vite.config.ts` applies the same rule in dev, where Vite
-//! serves the shell.
+//! `/api/facets` (the filter bar's suggestions), `/api/issues` with the page's own query string,
+//! and on an issue's URL (`/issues/:id`) that issue's detail, `/api/issues/:id`.
+//! `web/vite.config.ts` applies the same rule in dev, where Vite serves the shell.
 //!
 //! An issue's URL also gets `<link rel=modulepreload>` for the issue panel's chunk, so a cold deep
 //! link fetches it alongside the entry instead of after it. The chunk's hashed name comes from
@@ -96,7 +96,7 @@ fn preloads(path: &str, query: Option<&str>) -> String {
         Some(q) => format!("/api/issues?{q}"),
         None => "/api/issues".into(),
     };
-    let mut hrefs = vec![String::from("/api/me"), list];
+    let mut hrefs = vec![String::from("/api/me"), String::from("/api/facets"), list];
     // In the canonical form the app fetches (`/issues/007` opens issue 7). Anything that isn't
     // an id in range gets no preload.
     if let Some(id) = path

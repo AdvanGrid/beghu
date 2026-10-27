@@ -18,6 +18,9 @@ pub struct Config {
     pub budget: Budget,
     pub readers_per_account: usize,
     pub gate: gate::Config,
+    /// The indexes `pool::sample` analyzes in full when a writer closes: the schema's, not a
+    /// setting.
+    pub sampled_indexes: &'static [&'static str],
 }
 
 impl Default for Config {
@@ -26,6 +29,7 @@ impl Default for Config {
             budget: Budget::default(),
             readers_per_account: 2,
             gate: gate::Config::default(),
+            sampled_indexes: &[],
         }
     }
 }
@@ -88,7 +92,7 @@ impl Mirrors {
     /// Must be called inside a tokio runtime: it starts the idle-connection reaper.
     pub fn new(dir: impl Into<PathBuf>, migs: &'static [Migration], cfg: Config) -> Mirrors {
         let (notices, _) = broadcast::channel(256);
-        let shared = Shared::new(cfg.budget.clone());
+        let shared = Shared::new(cfg.budget.clone(), cfg.sampled_indexes);
         Mirrors {
             inner: Arc::new(Inner {
                 dir: dir.into(),

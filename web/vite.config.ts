@@ -28,7 +28,7 @@ function preloads(url: string): string {
   const digits = /^\/issues\/(\d+)$/.exec(path)?.[1];
   const id = digits === undefined ? undefined : BigInt(digits);
   const issue = id !== undefined && id <= 2n ** 63n - 1n ? [`/api/issues/${id}`] : [];
-  const data = ["/api/me", `/api/issues${q.length > 1 ? q : ""}`, ...issue]
+  const data = ["/api/me", "/api/facets", `/api/issues${q.length > 1 ? q : ""}`, ...issue]
     .map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`)
     .join("");
   const panel = /^\/issues\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";

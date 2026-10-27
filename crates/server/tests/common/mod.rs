@@ -28,6 +28,18 @@ pub fn fixture() -> PathBuf {
     .unwrap()
 }
 
+/// The 1k fixture's `TwinRepo` variant (a second org's `web` repo), generated once per test run.
+pub fn twin_repo_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::TwinRepo,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
 /// The fixture generator's summary: the independent oracle for what the default list holds.
 pub fn summary() -> Value {
     let path = fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH));
@@ -79,10 +91,14 @@ pub async fn start() -> Stack {
 
 /// Starts a fake and a server, letting the test adjust the server's config first.
 pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+    start_on(fixture(), adjust).await
+}
+
+/// Starts a fake and a server on `fixture` (a variant of the 1k fixture, say).
+pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let truth = dir.path().join("fake").join("truth.db");
-    let fixture = fixture();
     // As `./dev-ctl start` does: pristine mirrors for the accounts that see every repo.
     fake_github::pristine_mirrors(&fixture, &truth, &data.join("mirrors"))
         .await

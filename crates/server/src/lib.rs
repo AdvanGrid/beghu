@@ -7,8 +7,10 @@ mod config;
 mod crypto;
 mod detail;
 mod error;
+mod facets;
 mod github;
 mod live;
+mod query;
 mod repos;
 mod shell;
 mod tokens;
@@ -148,6 +150,8 @@ pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/me", get(api::me))
         .route("/issues", get(api::issues))
+        .route("/facets", get(facets::facets))
+        .route("/facets/{facet}/counts", get(facets::counts))
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/stream", get(live::stream))

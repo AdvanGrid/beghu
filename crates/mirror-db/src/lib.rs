@@ -5,13 +5,16 @@
 
 include!(concat!(env!("OUT_DIR"), "/db.rs"));
 
+pub mod list;
+
 pub use dbrt::AccountId;
 pub use dbrt::mirrors::{Config, Notice};
 pub use dbrt::{Caller, Error};
-/// What a mirror query returns.
-pub use rusqlite::Result as QueryResult;
+/// The connection and result types `q`'s functions take and return, for app code that wraps
+/// them.
+pub use rusqlite::{Connection, Result as QueryResult};
 
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Transaction, TransactionBehavior};
 use std::path::PathBuf;
 
 /// A read's connection, as [`Mirrors::read`] hands it over. It derefs to the connection the
@@ -35,6 +38,10 @@ pub struct Mirrors(dbrt::Mirrors);
 impl Mirrors {
     /// Must be called inside a tokio runtime.
     pub fn new(dir: impl Into<PathBuf>, cfg: Config) -> Mirrors {
+        let cfg = Config {
+            sampled_indexes: SAMPLED_INDEXES,
+            ..cfg
+        };
         Mirrors(dbrt::Mirrors::new(dir, MIGRATIONS, cfg))
     }
 
@@ -83,4 +90,16 @@ impl Mirrors {
 /// tools that write a mirror directly (the fixture generator).
 pub fn create(path: &std::path::Path) -> Result<(), Error> {
     dbrt::migrations::create_fresh(path, MIGRATIONS)
+}
+
+/// The indexes whose values the planner must tell apart (`dbrt::pool::sample`): an issue type
+/// can be on no issue (`type:epic`) or on a third of them (`type:bug`).
+const SAMPLED_INDEXES: &[&str] = &["items_issue_type"];
+
+/// Brings the planner's statistics up to date (`dbrt::pool::optimize`, then
+/// `dbrt::pool::sample`), for tools that write a mirror directly: the fixture generator, so the
+/// mirrors copied from it plan as an imported mirror does once its writer has closed.
+pub fn optimize(conn: &Connection) -> rusqlite::Result<()> {
+    dbrt::pool::optimize(conn)?;
+    dbrt::pool::sample(conn, SAMPLED_INDEXES)
 }

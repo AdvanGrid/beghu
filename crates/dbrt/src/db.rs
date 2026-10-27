@@ -35,7 +35,7 @@ impl Db {
             ..Budget::default()
         };
         // The budget fits every reader and the writer, so a checkout never waits at its cap.
-        let shared = Shared::new(budget);
+        let shared = Shared::new(budget, &[]);
         let lane = Lane::new(
             LaneKey::Control,
             PathBuf::from(path),

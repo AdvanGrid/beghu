@@ -5,16 +5,22 @@
 //! ```json
 //! { "repo": "acme/web" | "web", "number": 12, "as": "tomsj",
 //!   "title": "…", "body": "…", "state": "open" | "closed", "state_reason": "not_planned",
-//!   "add_labels": ["bug"], "remove_labels": ["triage"], "comment": "…" }
+//!   "add_labels": ["bug"], "remove_labels": ["triage"], "comment": "…",
+//!   "type": "Bug" | null }
 //! ```
 //!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
+//! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
+//! (`untyped`), as GitHub's `PATCH /repos/{owner}/{repo}/issues/{number}` takes it. A PR has no
+//! type.
 //! Each delivery carries the issue as it is after the whole edit.
 
 use crate::Fake;
 use crate::api::{self, rfc3339};
 use crate::control::bad_request;
-use crate::webhooks::{Delivery, author_association, envelope, issue_json, label_json, user_json};
+use crate::webhooks::{
+    Delivery, author_association, envelope, issue_json, issue_type_json, label_json, user_json,
+};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use fake_db::q;
@@ -36,6 +42,14 @@ pub(crate) struct Edit {
     #[serde(default)]
     remove_labels: Vec<String>,
     comment: Option<String>,
+    /// Absent: unchanged. `null`: untyped. A name: that type.
+    #[serde(rename = "type", default, deserialize_with = "present")]
+    issue_type: Option<Option<String>>,
+}
+
+/// A field that's present, `null` included: `Some(None)` for `null`, so absent stays `None`.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
 }
 
 /// Why an edit can't be made: the control port answers 400 with it.
@@ -123,6 +137,17 @@ fn apply(
     }
 
     let before = q::issue(tx, id)?;
+    if e.issue_type.is_some() && before.kind == "pr" {
+        return refuse(format!(
+            "{}#{} is a pull request: it has no type",
+            e.repo, e.number
+        ));
+    }
+    if let Some(Some(t)) = &e.issue_type
+        && t.trim().is_empty()
+    {
+        return refuse("type is a name or null".into());
+    }
     // GitHub's clock only moves forward, even past a fixture written "in the future".
     let at = now.max(before.updated_at.unwrap_or(0));
     let title = e.title.clone().unwrap_or_else(|| before.title.clone());
@@ -152,6 +177,14 @@ fn apply(
         closed_at,
         at,
     )?;
+    // Setting the type it already has changes nothing and sends nothing.
+    let typed = match &e.issue_type {
+        Some(t) if *t != before.issue_type => {
+            q::set_issue_type(tx, id, t.as_deref(), at)?;
+            Some(t.clone())
+        }
+        _ => None,
+    };
     // As on GitHub, labelling with a label already there (or removing one that isn't) changes
     // nothing and sends nothing.
     let mut added = Vec::new();
@@ -217,6 +250,15 @@ fn apply(
             "reopened"
         };
         out.push(delivery("issues", action, json!({})));
+    }
+    if let Some(t) = typed {
+        // `type` names the issue's type now, or, once untyped, the one it had.
+        let (action, name) = match &t {
+            Some(name) => ("typed", Some(name.as_str())),
+            None => ("untyped", before.issue_type.as_deref()),
+        };
+        let ty = name.map_or(Value::Null, issue_type_json);
+        out.push(delivery("issues", action, json!({ "type": ty })));
     }
     for (action, labels) in [("labeled", &added), ("unlabeled", &removed)] {
         for l in labels {

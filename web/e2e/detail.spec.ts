@@ -225,7 +225,7 @@ test("below 900 px the panel sits under the list, 40% list to 60% issue", async 
   await signIn(page);
   await rows(page).first().click();
   await expect(detail(page)).toBeVisible();
-  const list = (await page.locator('[data-perf="list"]').locator("xpath=../..").boundingBox())!;
+  const list = (await page.locator('[data-perf="list-pane"]').boundingBox())!;
   const issue = (await panel(page).boundingBox())!;
   expect(issue.y).toBeGreaterThanOrEqual(list.y + list.height - 1);
   expect(issue.width).toBe(800);
@@ -238,7 +238,7 @@ test("the divider resizes, keeps 360 px either side, and is remembered on this d
   await rows(page).first().click();
   await expect(detail(page)).toBeVisible();
   const divider = page.locator('[data-perf="divider"]');
-  const listPane = page.locator('[data-perf="list"]').locator("xpath=../..");
+  const listPane = page.locator('[data-perf="list-pane"]');
   // The panel sizes itself only once it has measured the room it shares with the list (its
   // largest width, 1400 - 4 - 360, says so); a drag or a box read before that would see the
   // placeholder width and a divider about to move.

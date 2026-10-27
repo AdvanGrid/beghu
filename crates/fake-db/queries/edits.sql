@@ -35,7 +35,7 @@ SELECT i.id FROM items i WHERE i.repo_id = :repo_id AND i.number = :number AND i
 -- param: id i64
 SELECT i.id, i.node_id, i.repo_id, i.number, i.kind, i.title, i.body, i.state, i.state_reason,
        i.locked AS "locked: bool", i.author_id, i.milestone_id, i.created_at, i.updated_at,
-       i.closed_at, i.comments_count, i.merged_at, i.draft AS "draft: bool"
+       i.closed_at, i.comments_count, i.merged_at, i.draft AS "draft: bool", i.issue_type
 FROM items i WHERE i.id = :id;
 
 -- name: issue_labels :many
@@ -69,6 +69,12 @@ SELECT u.id, u.login, u.avatar_url FROM users u WHERE u.id = :id;
 UPDATE items SET title = :title, body = :body, state = :state, state_reason = :state_reason,
   closed_at = :closed_at, updated_at = :updated_at
 WHERE id = :id;
+
+-- name: set_issue_type :exec
+-- param: id i64
+-- param: issue_type Option<&str>
+-- param: updated_at i64
+UPDATE items SET issue_type = :issue_type, updated_at = :updated_at WHERE id = :id;
 
 -- name: label_by_name :opt
 -- param: repo_id i64

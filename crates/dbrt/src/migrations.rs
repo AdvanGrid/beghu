@@ -133,7 +133,8 @@ pub(crate) fn classify_job(e: crate::Error) -> MigError {
 }
 
 /// Every pending migration and the new `user_version` in one `BEGIN IMMEDIATE` transaction, so
-/// a failure leaves the file exactly as it was.
+/// a failure leaves the file exactly as it was. Then the planner's statistics are brought up to
+/// date (`pool::optimize`).
 pub fn migrate_in_place(
     conn: &mut Connection,
     migs: &[Migration],
@@ -151,7 +152,11 @@ pub fn migrate_in_place(
     }
     tx.pragma_update(None, "user_version", to)
         .map_err(classify)?;
-    tx.commit().map_err(classify)
+    tx.commit().map_err(classify)?;
+    // New indexes have no statistics yet. They only steer the planner: a failure here keeps the
+    // migration.
+    let _ = crate::pool::optimize(conn);
+    Ok(())
 }
 
 /// An empty mirror at the build's version, built beside `path` and renamed over it, so a crash

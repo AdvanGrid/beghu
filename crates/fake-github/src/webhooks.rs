@@ -357,6 +357,29 @@ pub(crate) fn label_json(
     })
 }
 
+/// An issue type as GitHub's REST API serialises it (`issue.type`, and an `issues` delivery's
+/// `type` for `typed` and `untyped`): the fields the schema requires (`id`, `node_id`, `name`,
+/// `description`) and those the fake can say. The truth keeps only the name, so the id is the
+/// name's hash (stable, as an org's type's id is) and there's no description or colour.
+pub(crate) fn issue_type_json(name: &str) -> Value {
+    // FNV-1a over the lowercased name, kept positive.
+    let id = name
+        .to_lowercase()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+        >> 33;
+    json!({
+        "id": id,
+        "node_id": format!("IT_kw{id}"),
+        "name": name,
+        "description": null,
+        "color": null,
+        "is_enabled": true,
+    })
+}
+
 /// The issue as GitHub's REST API and webhooks serialise it.
 pub(crate) fn issue_json(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<Value> {
     let i = q::issue(c, id)?;
@@ -419,6 +442,7 @@ pub(crate) fn issue_json(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<
         "author_association": author_association(c, &r, i.author_id)?,
         "active_lock_reason": null,
         "body": i.body,
+        "type": i.issue_type.as_deref().map_or(Value::Null, issue_type_json),
     });
     if i.kind == "pr" {
         issue["draft"] = json!(i.draft.unwrap_or(false));

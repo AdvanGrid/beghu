@@ -14,7 +14,7 @@ use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, OwnedMutexGuard, Semaphore};
 use tokio::time::Instant;
 
 /// Which of a lane's connections: its writer or one of its `query_only` readers.
@@ -85,7 +85,12 @@ struct Idle {
     slot: Slot,
     conn: Connection,
     since: Instant,
+    /// A writer's lane's turn, which the reaper takes before analyzing and closing it.
+    turn: Option<Turn>,
 }
+
+/// A lane's writer turn: whoever holds it is the only one writing to the lane's file.
+type Turn = Arc<tokio::sync::Mutex<()>>;
 
 #[derive(Default)]
 struct BudgetState {
@@ -119,6 +124,8 @@ struct Place {
     slot: Slot,
     conn: Option<Connection>,
     held: bool,
+    /// The lane's writer turn, kept with the connection when it's checked in.
+    turn: Option<Turn>,
 }
 
 impl Place {
@@ -134,7 +141,7 @@ impl Place {
     fn checkin(mut self) {
         if let Some(conn) = self.conn.take() {
             self.held = false;
-            self.shared.checkin(self.slot, conn);
+            self.shared.checkin(self.slot, conn, self.turn.take());
         }
     }
 }
@@ -151,15 +158,18 @@ impl Drop for Place {
 
 pub(crate) struct Shared {
     budget: Budget,
+    /// The indexes `sample` analyzes in full when a writer closes.
+    sampled: &'static [&'static str],
     state: Mutex<BudgetState>,
     freed: Notify,
 }
 
 impl Shared {
     /// A budget and its reaper, which closes idle connections until the budget is dropped.
-    pub(crate) fn new(budget: Budget) -> Arc<Shared> {
+    pub(crate) fn new(budget: Budget, sampled: &'static [&'static str]) -> Arc<Shared> {
         let shared = Arc::new(Shared {
             budget,
+            sampled,
             state: Mutex::default(),
             freed: Notify::new(),
         });
@@ -204,6 +214,39 @@ impl Shared {
         gone
     }
 
+    /// The expired idle writers whose lane's turn is free, each still holding its place under
+    /// the cap and now its lane's turn, so analyzing and closing it runs beside no write.
+    /// A writer whose turn is taken is about to be reused: it stays.
+    fn take_idle_writers(
+        self: &Arc<Self>,
+        expired: impl Fn(&Idle) -> bool,
+    ) -> Vec<(Place, OwnedMutexGuard<()>)> {
+        let mut st = self.state.lock().unwrap();
+        let mut taken = Vec::new();
+        let mut keep = Vec::new();
+        for i in std::mem::take(&mut st.idle) {
+            let turn = match &i.turn {
+                Some(t) if expired(&i) => t.clone().try_lock_owned().ok(),
+                _ => None,
+            };
+            match turn {
+                Some(turn) => taken.push((
+                    Place {
+                        shared: self.clone(),
+                        slot: i.slot,
+                        conn: Some(i.conn),
+                        held: true,
+                        turn: None,
+                    },
+                    turn,
+                )),
+                None => keep.push(i),
+            }
+        }
+        st.idle = keep;
+        taken
+    }
+
     /// A place for `slot`: an idle connection of that slot, else a new place (see `claim_new`).
     async fn claim(self: &Arc<Self>, slot: Slot, patience: Patience) -> Result<Claim, Error> {
         self.wait_for(slot, patience, |st| {
@@ -245,6 +288,7 @@ impl Shared {
                         slot,
                         conn: reused,
                         held: true,
+                        turn: None,
                     },
                     evicted,
                 });
@@ -299,11 +343,12 @@ impl Shared {
         Shared::run_in(claim, move |_place| work()).await
     }
 
-    fn checkin(&self, slot: Slot, conn: Connection) {
+    fn checkin(&self, slot: Slot, conn: Connection, turn: Option<Turn>) {
         self.state.lock().unwrap().idle.push(Idle {
             slot,
             conn,
             since: Instant::now(),
+            turn,
         });
         self.freed.notify_waiters();
     }
@@ -371,12 +416,59 @@ async fn reap(shared: Weak<Shared>) {
                 s.budget.writer_idle
             }
         };
-        let expired = s.take_idle(|i| now >= i.since + idle_for(i.slot.kind));
-        if !expired.is_empty() {
+        let expired = |i: &Idle| now >= i.since + idle_for(i.slot.kind);
+        // A writer is analyzed before it closes, so it keeps its place and its lane's turn
+        // until then: no other writer opens beside it, over the cap or into `SQLITE_BUSY`.
+        let writers = s.take_idle_writers(expired);
+        let readers = s.take_idle(|i| i.turn.is_none() && expired(i));
+        if !writers.is_empty() || !readers.is_empty() {
+            let sampled = s.sampled;
             // Closing the last connection to a WAL file checkpoints it: keep that off the runtime.
-            tokio::task::spawn_blocking(move || drop(expired));
+            tokio::task::spawn_blocking(move || {
+                drop(readers);
+                for (place, turn) in writers {
+                    if let Some(conn) = &place.conn {
+                        // Statistics only steer the planner: a failure keeps the old ones.
+                        let _ = optimize(conn).and_then(|()| sample(conn, sampled));
+                    }
+                    // Closes the connection and gives its place back, then the turn.
+                    drop(place);
+                    drop(turn);
+                }
+            });
         }
     }
+}
+
+/// Refreshes the query planner's statistics (`sqlite_stat1`) where they're missing or stale:
+/// SQLite's `PRAGMA optimize` over every table (`0x10000`), which analyzes (`0x02`) a table that
+/// has none yet or has grown or shrunk tenfold since, and does nothing otherwise. Each analysis
+/// samples about 2000 rows per index (`0x10`, the limit `PRAGMA analysis_limit` sets) rather
+/// than reading every row, so it skips STAT4 too: about 170 ms on an unanalyzed 50k mirror,
+/// against about 600 ms unlimited. The planner then knows each index's size and how many rows a
+/// value matches on average, but not which values are rare: `sample` adds that where it
+/// matters. Run on a writer: after migrations, and when an idle writer closes (SQLite's advice
+/// for long-lived connections), which is after an import or a burst of webhook writes. The
+/// fixture's cache key hashes this file (`perf/fixture/build.rs`): a new mask regenerates the
+/// cached fixtures.
+pub fn optimize(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "optimize", OPTIMIZE)
+}
+
+/// `PRAGMA optimize`'s mask: every table, analysis limited, analyze what needs it.
+const OPTIMIZE: i64 = 0x10000 | 0x10 | 0x02;
+
+/// Analyzes `indexes` in full, which `optimize`'s limited pass doesn't: their per-value samples
+/// (`sqlite_stat4`) tell the planner a rare value from a common one, where an average can't
+/// (`type:epic` looked up through its index, `type:bug` walked in the sort's order). About 8 ms
+/// for the issue-type index of a 50k mirror. Run after `optimize`, which drops the samples of
+/// any table it analyzes: the reaper runs both when a writer closes, so it also restores what a
+/// migration's `optimize` dropped.
+pub fn sample(conn: &Connection, indexes: &[&str]) -> rusqlite::Result<()> {
+    for idx in indexes {
+        conn.execute_batch(&format!("ANALYZE \"{}\"", idx.replace('"', "\"\"")))?;
+    }
+    Ok(())
 }
 
 /// Opens a connection to an existing file with the settings every beghu connection uses.
@@ -412,7 +504,7 @@ pub(crate) struct Lane {
     key: LaneKey,
     path: PathBuf,
     shared: Arc<Shared>,
-    writer: Arc<tokio::sync::Mutex<()>>,
+    writer: Turn,
     readers: Arc<Semaphore>,
 }
 
@@ -467,7 +559,7 @@ impl Lane {
         E: From<Error> + From<W> + Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, W> + Send + 'static,
     {
-        let claim = self
+        let mut claim = self
             .shared
             .claim(
                 Slot {
@@ -477,6 +569,9 @@ impl Lane {
                 patience,
             )
             .await?;
+        if kind == ConnKind::Writer {
+            claim.place.turn = Some(self.writer.clone());
+        }
         let path = self.path.clone();
         Shared::run_in(claim, move |place| {
             // Declared first, so it's dropped after `place` on every path, a panic's included.

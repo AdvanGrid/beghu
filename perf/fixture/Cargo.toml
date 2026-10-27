@@ -10,6 +10,9 @@ mirror-db = { workspace = true }
 rusqlite = { workspace = true }
 
 [dev-dependencies]
+dbrt = { workspace = true }
+# The plan check reads the SQL the list runs, with its parameters, from SQLite's trace hook.
+rusqlite = { workspace = true, features = ["trace"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

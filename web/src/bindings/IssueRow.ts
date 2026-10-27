@@ -18,4 +18,20 @@ state_reason: string | null,
 /**
  * Unix seconds.
  */
-updated_at: number, comments: number, labels: Array<Label>, assignees: Array<User>, };
+created_at: number, 
+/**
+ * Unix seconds.
+ */
+updated_at: number, 
+/**
+ * Unix seconds; `null` if it was never closed.
+ */
+closed_at: number | null, 
+/**
+ * When the last comment came, in Unix seconds; `null` with no comments.
+ */
+commented_at: number | null, comments: number, 
+/**
+ * The GitHub issue type's name; `null` when untyped, and always for a PR.
+ */
+issue_type: string | null, labels: Array<Label>, assignees: Array<User>, };

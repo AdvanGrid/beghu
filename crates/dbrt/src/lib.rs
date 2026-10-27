@@ -9,6 +9,7 @@ pub mod filter;
 pub mod gate;
 pub mod migrations;
 pub mod mirrors;
+pub mod plan;
 pub mod pool;
 
 pub use db::Db;

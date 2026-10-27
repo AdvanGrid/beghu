@@ -16,13 +16,15 @@ fn issue(
 ) -> rusqlite::Result<usize> {
     q::insert_item(
         tx, id, "I_x", 1, id, "issue", title, body, "open", None, 1, None, 0, id, None, None, None,
-        None, None, None, None, seq,
+        None, None, None, None, None, seq,
     )
 }
 
 async fn ids(m: &Mirrors, filter: Filter) -> Vec<i64> {
     m.read(ACCT, Caller::Request, move |c| {
-        q::item_ids(c, &filter, "issue", 50)
+        let filter = Filter::And(vec![frag::kind("issue"), filter]);
+        let rows = q::ids_updated(c, &filter, 50)?;
+        Ok(rows.into_iter().map(|r| r.id).collect())
     })
     .await
     .unwrap()
@@ -115,9 +117,10 @@ async fn titles_bodies_and_comments_are_searchable_as_they_change_and_stubs_are_
             "UPDATE comments SET body = 'Fine in Chrome' WHERE id = 10",
             [],
         )?;
-        // The repo becomes synced: its stub is now a real issue.
+        // The repo becomes synced: its stub is now a real issue, written in full (a listed item
+        // always has its timestamps).
         tx.execute(
-            "UPDATE items SET is_stub = 0, body = 'SDK side' WHERE id = 3",
+            "UPDATE items SET is_stub = 0, body = 'SDK side', created_at = 0, updated_at = 3 WHERE id = 3",
             [],
         )
     })

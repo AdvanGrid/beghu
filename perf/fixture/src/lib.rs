@@ -84,29 +84,68 @@ impl Summary {
     }
 }
 
+/// A fixture with something the plain one lacks, for the tests that need it. Its files are
+/// cached beside the plain ones under their own prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    /// A second org's synced repo, `acme-labs/web`, sharing its name with `acme/web`, holding
+    /// `TWIN_REPO_OPEN_ISSUES` open issues. Installed through an installation of its own.
+    TwinRepo,
+}
+
+/// The open issues in `acme-labs/web`, the `TwinRepo` variant's extra repo.
+pub const TWIN_REPO_OPEN_ISSUES: usize = 3;
+
+impl Variant {
+    fn prefix(self) -> &'static str {
+        match self {
+            Variant::TwinRepo => "twin-repo-",
+        }
+    }
+}
+
 /// The fixture for `scale` in `dir`, generated only if no file for this generator hash exists.
 /// Returns the mirror's path; `fixture-<scale>-<hash>.json` beside it holds the `Summary`.
 pub fn cached(scale: Scale, dir: &Path) -> std::io::Result<PathBuf> {
-    let path = dir.join(format!("mirror-{}-{GENERATOR_HASH}.db", scale.name()));
+    cached_as(scale, None, dir)
+}
+
+/// `cached`, for a variant of the fixture: `<variant>-mirror-<scale>-<hash>.db`.
+pub fn cached_variant(scale: Scale, variant: Variant, dir: &Path) -> std::io::Result<PathBuf> {
+    cached_as(scale, Some(variant), dir)
+}
+
+fn cached_as(scale: Scale, variant: Option<Variant>, dir: &Path) -> std::io::Result<PathBuf> {
+    let prefix = variant.map_or("", Variant::prefix);
+    let path = dir.join(format!(
+        "{prefix}mirror-{}-{GENERATOR_HASH}.db",
+        scale.name()
+    ));
     if path.exists() {
         return Ok(path);
     }
     std::fs::create_dir_all(dir)?;
-    // Older generators' files for this scale are stale.
+    // Older generators' files for this scale (and variant) are stale.
     for entry in std::fs::read_dir(dir)? {
         let name = entry?.file_name().to_string_lossy().into_owned();
-        let prefix = (
-            format!("mirror-{}-", scale.name()),
-            format!("fixture-{}-", scale.name()),
+        let stale = (
+            format!("{prefix}mirror-{}-", scale.name()),
+            format!("{prefix}fixture-{}-", scale.name()),
         );
-        if name.starts_with(&prefix.0) || name.starts_with(&prefix.1) {
+        if name.starts_with(&stale.0) || name.starts_with(&stale.1) {
             let _ = std::fs::remove_file(dir.join(name));
         }
     }
-    let tmp = dir.join(format!(".mirror-{}-{GENERATOR_HASH}.db", scale.name()));
-    let summary = generate(scale, &tmp).map_err(std::io::Error::other)?;
+    let tmp = dir.join(format!(
+        ".{prefix}mirror-{}-{GENERATOR_HASH}.db",
+        scale.name()
+    ));
+    let summary = generate_as(scale, variant, &tmp).map_err(std::io::Error::other)?;
     std::fs::write(
-        dir.join(format!("fixture-{}-{GENERATOR_HASH}.json", scale.name())),
+        dir.join(format!(
+            "{prefix}fixture-{}-{GENERATOR_HASH}.json",
+            scale.name()
+        )),
         summary.to_json(scale),
     )?;
     std::fs::rename(&tmp, &path)?;
@@ -129,6 +168,16 @@ const REPOS: [(&str, f64); 10] = [
     ("ops", 0.03),
 ];
 const UNSYNCED_REPO: &str = "partner-sdk";
+/// The users' ids, in `LOGINS` order from this one: tomsj's is the first.
+const FIRST_USER_ID: i64 = 1000;
+const TOMSJ: i64 = FIRST_USER_ID;
+/// The org's repos' ids, in `REPOS` order from this one.
+const FIRST_REPO_ID: i64 = 9_000_000;
+/// The installation the org's repos come through.
+const ORG_INSTALLATION_ID: i64 = 41_000_001;
+/// The org's issue types (GitHub's defaults), with each one's share of issues. The rest are
+/// untyped; PRs never have a type.
+const ISSUE_TYPES: [(&str, f64); 3] = [("Bug", 0.25), ("Feature", 0.2), ("Task", 0.3)];
 const LABELS: [(&str, &str, f64); 12] = [
     ("bug", "d73a4a", 0.3),
     ("enhancement", "a2eeef", 0.25),
@@ -337,11 +386,24 @@ struct Item {
 
 /// Writes a fresh fixture mirror at `path` in one transaction (`seq` 1).
 pub fn generate(scale: Scale, path: &Path) -> Result<Summary, mirror_db::Error> {
+    generate_as(scale, None, path)
+}
+
+fn generate_as(
+    scale: Scale,
+    variant: Option<Variant>,
+    path: &Path,
+) -> Result<Summary, mirror_db::Error> {
     mirror_db::create(path)?;
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;
     let summary = fill(&tx, scale)?;
+    match variant {
+        None => {}
+        Some(Variant::TwinRepo) => twin_repo(&tx)?,
+    }
     tx.commit()?;
+    mirror_db::optimize(&conn)?;
     drop(conn);
     Ok(summary)
 }
@@ -352,7 +414,9 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     let words = Words(WORDS.split(' ').collect());
     let seq = q::bump_seq(tx)?;
 
-    let users: Vec<i64> = (0..LOGINS.len() as i64).map(|i| 1000 + i).collect();
+    let users: Vec<i64> = (0..LOGINS.len() as i64)
+        .map(|i| FIRST_USER_ID + i)
+        .collect();
     for (i, login) in LOGINS.iter().enumerate() {
         q::insert_user(
             tx,
@@ -371,7 +435,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     }
     let mut repos = Vec::new();
     for (i, (name, weight)) in REPOS.iter().enumerate() {
-        let id = 9_000_000 + i as i64;
+        let id = FIRST_REPO_ID + i as i64;
         q::insert_repo(
             tx,
             id,
@@ -379,7 +443,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             OWNER,
             name,
             true,
-            Some(41_000_001),
+            Some(ORG_INSTALLATION_ID),
             true,
             Some("write"),
         )?;
@@ -427,6 +491,9 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     let span = 3 * 365 * DAY;
     let (mut next_item, mut next_pr) = (3_000_000_000i64, 2_400_000_000i64);
     let mut items = Vec::new();
+    // Issue types draw from their own stream, so every other value matches the generator before
+    // types were added.
+    let types = &mut Rng(n as u32 ^ 0x7479_7065);
     for repo in &repos {
         let issue_count = (n as f64 * repo.weight).round() as usize;
         let pr_count = (issue_count as f64 / 4.0).round() as usize;
@@ -483,6 +550,15 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             let draft = pr.then(|| r.chance(0.1));
             let review = pr.then(|| *r.pick(&["approved", "changes_requested", "review_required"]));
             let head = pr.then(|| format!("feature/{}", id % 1000));
+            let issue_type = if pr {
+                None
+            } else {
+                let mut x = types.next();
+                ISSUE_TYPES.iter().find_map(|&(name, p)| {
+                    x -= p;
+                    (x < 0.0).then_some(name)
+                })
+            };
             q::insert_item(
                 tx,
                 id,
@@ -505,6 +581,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                 head.as_deref(),
                 pr.then_some("main"),
                 review,
+                issue_type,
                 seq,
             )?;
             for &(lid, p) in &repo.labels {
@@ -699,6 +776,60 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
         open_issues: default_order.len(),
         detail_targets,
     })
+}
+
+/// `acme-labs/web`: a second org's synced repo with the same name as `acme/web`, and
+/// `TWIN_REPO_OPEN_ISSUES` open issues by tomsj. The summary doesn't count them.
+fn twin_repo(tx: &Connection) -> rusqlite::Result<()> {
+    /// Past the org's repos.
+    const REPO_ID: i64 = FIRST_REPO_ID + 50;
+    /// The other org's own installation.
+    const INSTALLATION_ID: i64 = ORG_INSTALLATION_ID + 1;
+    /// Clear of every generated item's id.
+    const FIRST_ITEM_ID: i64 = 3_900_000_000;
+    let seq = q::bump_seq(tx)?;
+    let repo = REPO_ID;
+    q::insert_repo(
+        tx,
+        repo,
+        &format!("R_kw{repo}"),
+        "acme-labs",
+        "web",
+        true,
+        Some(INSTALLATION_ID),
+        true,
+        Some("write"),
+    )?;
+    for n in 0..TWIN_REPO_OPEN_ISSUES as i64 {
+        let id = FIRST_ITEM_ID + n;
+        let at = FIXTURE_NOW - (n + 1) * DAY;
+        q::insert_item(
+            tx,
+            id,
+            &format!("I_kw{}", radix36(id)),
+            repo,
+            n + 1,
+            "issue",
+            &format!("Twin repo issue {}", n + 1),
+            "Filed in the other org's web repo.",
+            "open",
+            None,
+            TOMSJ,
+            None,
+            at,
+            at,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            seq,
+        )?;
+    }
+    Ok(())
 }
 
 fn radix36(mut n: i64) -> String {

@@ -1,8 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, Loading, onSettled, Show } from "solid-js";
-import { SessionEnded, getIssues, refetchIssues, rowCursor, signIn, type IssuePage, type IssueRow } from "./api";
+import { createEffect, createMemo, createSignal, For, Loading, onSettled, Show, untrack } from "solid-js";
+import { SessionEnded, getIssues, refetchIssues, signIn, type IssuePage, type IssueRow } from "./api";
 import { Avatar, issueState, StateIcon } from "./bits";
 import { coalesced, onPush } from "./live";
+import { queryOf, sortOf, type SortKey } from "./query";
 import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { colors, fonts } from "./tokens.stylex";
@@ -13,6 +14,17 @@ export const ROW_HEIGHT = 34;
 const OVERSCAN = 6;
 /** Load the next page when the window gets this close to the last loaded row. */
 const NEAR_END = 40;
+/** A view change that takes longer than this pulses the list's outline, over the old rows. */
+export const PULSE_AFTER_MS = 200;
+
+/** The time the last column shows: the sort's, or the last update. */
+const TIME: Record<SortKey, { head: string; of: (r: IssueRow) => number | null }> = {
+  updated: { head: "Upd.", of: (r) => r.updated_at },
+  created: { head: "Opened", of: (r) => r.created_at },
+  closed: { head: "Closed", of: (r) => r.closed_at },
+  commented: { head: "Comm.", of: (r) => r.commented_at },
+  comments: { head: "Upd.", of: (r) => r.updated_at },
+};
 
 /**
  * The issue list: strict columns (state, title, labels, blockers, progress, `repo#number`,
@@ -25,8 +37,36 @@ const NEAR_END = 40;
  * asked for again from the refetched rows, so rows never vanish and come back.
  */
 export function IssueList(props: { search: string; openId?: number }) {
-  // The first page follows the view (the URL's query string); later pages are appended.
-  const [page, setPage] = createSignal<IssuePage>(() => getIssues(props.search));
+  // The first page follows the view (the URL's query string); later pages are appended. A new
+  // view keeps the old rows on screen until its page lands. Each view's fetch is a generation.
+  // The list is waiting from the first view change until the newest generation lands; once it
+  // has waited PULSE_AFTER_MS it pulses, however many views were asked for meanwhile, so steady
+  // typing pulses too. Only the newest landing ends the wait, so an older view landing late
+  // never clears it while the newest is on its way. The first view has no old rows to pulse
+  // over: the boundary's fallback shows instead.
+  const [pulse, setPulse] = createSignal(false);
+  let generation = 0;
+  /** When the list began waiting (`performance.now()`), while it waits. */
+  let waitingSince: number | undefined;
+  let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+  const [page, setPage] = createSignal<IssuePage>(() => {
+    const mine = ++generation;
+    const fetched = getIssues(props.search);
+    if (mine > 1) {
+      waitingSince ??= performance.now();
+      clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => setPulse(true), Math.max(0, waitingSince + PULSE_AFTER_MS - performance.now()));
+      const landed = () => {
+        if (mine !== generation) return;
+        clearTimeout(pulseTimer);
+        waitingSince = undefined;
+        setPulse(false);
+      };
+      fetched.then(landed, landed);
+    }
+    return fetched;
+  });
+  const time = createMemo(() => TIME[sortOf(queryOf(props.search)).key]);
   // What's on screen and for which view, once it has loaded: where a refetch starts from. Set
   // here as each page lands, and by the effect below for the first page of a view.
   let shown: { view: string; page: IssuePage } | undefined;
@@ -50,20 +90,21 @@ export function IssueList(props: { search: string; openId?: number }) {
   let refetchesStarted = 0;
   let refetching: Promise<void> | undefined;
   let loadingMore = false;
+  // Called from the rows' near-end effect: these reads are a snapshot, not dependencies.
   const loadMore = async () => {
     if (loadingMore) return;
     loadingMore = true;
-    const view = props.search;
+    const view = untrack(() => props.search);
     try {
       for (;;) {
         while (refetching) await refetching;
-        const have = page();
-        if (!have.next || view !== props.search) return;
+        const have = untrack(page);
+        if (!have.next || view !== untrack(() => props.search)) return;
         const started = refetchesStarted;
         const more = await getIssues(view, have.next);
-        if (view !== props.search) return;
+        if (view !== untrack(() => props.search)) return;
         if (started === refetchesStarted) {
-          const next = { rows: [...have.rows, ...more.rows], next: more.next };
+          const next = { rows: [...have.rows, ...more.rows], next: more.next, last: more.last };
           setPage(next);
           recordShown(view, next);
           return;
@@ -81,12 +122,11 @@ export function IssueList(props: { search: string; openId?: number }) {
     // A push that beats the first page waits for it: that page may predate the change.
     while (shown?.view !== props.search) await new Promise<void>((r) => waitingForShown.push(r));
     const { view, page: have } = shown;
-    const last = have.rows.at(-1);
     refetchesStarted++;
     let done!: () => void;
     refetching = new Promise<void>((r) => (done = r));
     try {
-      const fresh = await refetchIssues(view, last && rowCursor(last));
+      const fresh = await refetchIssues(view, have.last ?? undefined);
       if (view !== props.search) return;
       setPage(fresh);
       recordShown(view, fresh);
@@ -111,16 +151,36 @@ export function IssueList(props: { search: string; openId?: number }) {
         <span {...stylex.attrs(s.wide)}>Subs</span>
         <span {...stylex.attrs(s.end)}>Issue</span>
         <span>Who</span>
-        <span {...stylex.attrs(s.end)}>Upd.</span>
+        <span {...stylex.attrs(s.end)}>{time().head}</span>
       </div>
+      {/* The pulse lives on a frame outside the rows' Loading boundary, which holds the old
+          rows while the next view loads. */}
+      <div
+        {...stylex.attrs(s.frame, pulse() && s.pulse)}
+        data-perf="list-frame"
+        aria-busy={pulse() ? "true" : undefined}
+      >
       <Loading fallback={<div {...stylex.attrs(s.scroller)} data-perf="list" aria-busy="true" />}>
-        <Rows rows={page().rows} search={props.search} openId={props.openId} onNearEnd={loadMore} />
+        <Rows
+          rows={page().rows}
+          search={props.search}
+          openId={props.openId}
+          onNearEnd={loadMore}
+          time={time().of}
+        />
       </Loading>
+      </div>
     </div>
   );
 }
 
-function Rows(props: { rows: IssueRow[]; search: string; openId?: number; onNearEnd: () => void }) {
+function Rows(props: {
+  rows: IssueRow[];
+  search: string;
+  openId?: number;
+  onNearEnd: () => void;
+  time: (r: IssueRow) => number | null;
+}) {
   let scroller!: HTMLDivElement;
   const v = createVirtualizer({
     count: () => props.rows.length,
@@ -149,13 +209,13 @@ function Rows(props: { rows: IssueRow[]; search: string; openId?: number; onNear
       data-perf="list"
       data-perf-rows={props.rows.length}
     >
-      <Show when={props.rows.length > 0} fallback={<p {...stylex.attrs(s.empty)}>No open issues.</p>}>
+      <Show when={props.rows.length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
           {/* One translated wrapper around rows in normal flow: a row that stays in the window
               keeps its DOM node. */}
           <div {...stylex.attrs(s.window(visible().first * ROW_HEIGHT))}>
             <For each={visible().rows}>
-              {(r) => <Row r={r} search={props.search} current={props.openId === r.id} />}
+              {(r) => <Row r={r} search={props.search} current={props.openId === r.id} time={props.time} />}
             </For>
           </div>
         </div>
@@ -164,8 +224,9 @@ function Rows(props: { rows: IssueRow[]; search: string; openId?: number; onNear
   );
 }
 
-function Row(props: { r: IssueRow; search: string; current: boolean }) {
+function Row(props: { r: IssueRow; search: string; current: boolean; time: (r: IssueRow) => number | null }) {
   const r = () => props.r;
+  const at = () => props.time(r());
   return (
     <a
       href={`/issues/${r().id}${props.search}`}
@@ -181,7 +242,7 @@ function Row(props: { r: IssueRow; search: string; current: boolean }) {
         <For each={r().labels}>
           {(l) => (
             <span {...stylex.attrs(s.pill)} title={l.name}>
-              <span {...stylex.attrs(s.dot(`#${l.color}`))} />
+              <LabelDot color={l.color} />
               {l.name}
             </span>
           )}
@@ -196,12 +257,22 @@ function Row(props: { r: IssueRow; search: string; current: boolean }) {
       <span {...stylex.attrs(s.avatars)}>
         <For each={r().assignees.slice(0, 3)}>{(u) => <Avatar login={u.login} />}</For>
       </span>
-      <span {...stylex.attrs(s.when, s.end)} title={fullDate(r().updated_at)}>
-        {ago(r().updated_at)}
+      <span {...stylex.attrs(s.when, s.end)} title={at() === null ? undefined : fullDate(at()!)}>
+        {at() === null ? "" : ago(at()!)}
       </span>
     </a>
   );
 }
+
+/** A label's colour dot. GitHub's label colours are data, so they come in as a dynamic style. */
+export function LabelDot(props: { color: string }) {
+  return <span {...stylex.attrs(s.dot(`#${props.color}`))} />;
+}
+
+const pulseOutline = stylex.keyframes({
+  from: { outlineColor: "transparent" },
+  to: { outlineColor: colors.accent },
+});
 
 /**
  * A wide list shows every column; a narrow one keeps state, title, number, assignees and age. The
@@ -215,13 +286,31 @@ const s = stylex.create({
     display: "flex",
     flexDirection: "column",
     flexGrow: 1,
+    minHeight: 0,
     minWidth: 0,
+  },
+  frame: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    outlineColor: "transparent",
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+    minHeight: 0,
   },
   scroller: {
     scrollbarGutter: "stable",
     contain: "strict",
     flexGrow: 1,
     overflowY: "auto",
+  },
+  pulse: {
+    animationDirection: "alternate",
+    animationDuration: "0.6s",
+    animationIterationCount: "infinite",
+    animationName: pulseOutline,
+    animationTimingFunction: "ease-in-out",
   },
   sizer: (height: number) => ({
     position: "relative",

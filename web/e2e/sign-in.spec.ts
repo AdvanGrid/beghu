@@ -101,7 +101,7 @@ test.describe("signed in", () => {
     expect(await rows.count()).toBeLessThanOrEqual(most);
   });
 
-  test("a load fetches /api/me and its list page once each (the shell's preloads), then opens the stream", async ({ page }) => {
+  test("a load fetches /api/me, the facets and its list page once each (the shell's preloads), then opens the stream", async ({ page }) => {
     const api: string[] = [];
     page.on("request", (r) => {
       const u = new URL(r.url());
@@ -113,11 +113,15 @@ test.describe("signed in", () => {
     await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
     // Chrome warns about an unused preload a few seconds after load.
     await page.waitForTimeout(3500);
-    // The stream's opening reset refetches the list (`through=`), as may pushes from edits
-    // elsewhere; those are the live path's, not the first load's.
-    const live = api.filter((u) => u.includes("through="));
-    expect(live.length).toBeGreaterThanOrEqual(1);
-    expect(api.filter((u) => !live.includes(u)).sort()).toEqual(["/api/issues?view=e2e", "/api/me", "/api/stream"]);
+    // Everything before the stream is the first load. The stream's opening reset then refetches
+    // the list (`through=`) and the facets, as may pushes from edits elsewhere; those are the
+    // live path's, not the first load's.
+    const stream = api.indexOf("/api/stream");
+    expect(stream).toBeGreaterThan(0);
+    expect(api.slice(0, stream).sort()).toEqual(["/api/facets", "/api/issues?view=e2e", "/api/me"]);
+    const live = api.slice(stream + 1);
+    expect(live.filter((u) => u.includes("through=")).length).toBeGreaterThanOrEqual(1);
+    expect(live).toContain("/api/facets");
     expect(unused).toEqual([]);
   });
 

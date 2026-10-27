@@ -127,6 +127,36 @@ test("a burst of pushes costs one immediate refetch and one trailing one, and th
   expect(refetches).toHaveLength(2);
 });
 
+test("a push refetches a filtered, sorted view through its last loaded row, in its own sort", async ({ page }) => {
+  // Bugs, oldest first: an edit moves nothing in this sort, and the label decides membership.
+  const q = "label:bug sort:created-asc";
+  const live = liveRefetch(page);
+  await page.goto(`/?${new URLSearchParams({ q })}`);
+  await live;
+  const rows = page.locator('[data-perf="row"]');
+  await expect(rows.first()).toBeVisible();
+  const before = await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-id")));
+  const kept = await rowRef(page, 2);
+  const dropped = await rowRef(page, 4);
+  const title = unique("Retitled in a filtered view");
+  const refetches: URL[] = [];
+  page.on("request", (r) => r.url().includes("through=") && refetches.push(new URL(r.url())));
+
+  // One edit keeps its row (in place: this sort doesn't follow updates), one drops the label.
+  await fake("/edit", { repo: kept.repo, number: kept.number, title });
+  await fake("/edit", { repo: dropped.repo, number: dropped.number, remove_labels: ["bug"] });
+
+  const row = (id: string) => page.locator(`[data-perf="row"][data-id="${id}"]`);
+  await expect(row(kept.id)).toContainText(title, { timeout: 4000 });
+  await expect(row(dropped.id)).toHaveCount(0, { timeout: 4000 });
+  await expect(rows.nth(2)).toHaveAttribute("data-id", kept.id);
+  const after = await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-id")));
+  expect(after.slice(0, 6)).toEqual(before.filter((id) => id !== dropped.id).slice(0, 6));
+  // Every refetch asked for this view, through the last row the tab had loaded.
+  expect(refetches.length).toBeGreaterThanOrEqual(1);
+  for (const u of refetches) expect(u.searchParams.get("q")).toBe(q);
+});
+
 /** Polls the server (as the tab, without the tab) until `id` heads the list with `title`. */
 async function untilInMirror(page: Page, id: string, title: string): Promise<void> {
   await expect

@@ -3,6 +3,20 @@
 -- `deleted` is never written again. Each `:exec` upsert reports 0 rows when a guard kept the
 -- row as it was.
 
+-- An issue or PR as a REST payload has it, in two steps so that an update rewrites only the
+-- indexes over columns whose values changed. An UPDATE rewrites every index over a column it
+-- SETs, changed or not (see 0003_list_sorts.sql): a DO UPDATE setting the whole row would
+-- rewrite all of an item's ~15 indexes and its FTS entry on every delivery.
+--
+-- First `upsert_item`: a new item is inserted whole (every index written once, unavoidably);
+-- an existing one passes the `updated_at` guard or not (0 rows), and if it does, only its
+-- unindexed columns and `seq` are SET. Then, only when it applied, one `set_item_*` per indexed
+-- column group, each of which matches no row (and so writes nothing) when its values are
+-- already the payload's. `crates/server/src/webhook.rs` (`upsert_issue`) runs them all; a
+-- column added to `items` belongs in exactly one of the two steps.
+--
+-- `issue_type` is the REST payload's `issue.type.name` (`type` is null for an untyped issue),
+-- NULL for a PR: see 0004_issue_type.rebuild.sql.
 -- name: upsert_item :exec
 -- param: id i64
 -- param: node_id &str
@@ -20,23 +34,84 @@
 -- param: updated_at i64
 -- param: closed_at Option<i64>
 -- param: comments_count i64
+-- param: issue_type Option<&str>
 -- param: seq i64
 INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, body, state, state_reason,
-  locked, author_id, milestone_id, created_at, updated_at, closed_at, comments_count, seq)
+  locked, author_id, milestone_id, created_at, updated_at, closed_at, comments_count,
+  issue_type, seq)
 SELECT :id, :node_id, :repo_id, :number, :kind, 0, :title, :body, :state, :state_reason,
   :locked, :author_id,
   -- A milestone deleted since is gone from the issue too.
   CASE WHEN EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'milestone' AND d.id = :milestone_id)
     THEN NULL ELSE :milestone_id END,
-  :created_at, :updated_at, :closed_at, :comments_count, :seq
+  :created_at, :updated_at, :closed_at, :comments_count, :issue_type, :seq
 WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'item' AND d.id = :id)
-ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id, repo_id = excluded.repo_id,
-  number = excluded.number, kind = excluded.kind, is_stub = 0, title = excluded.title,
-  body = excluded.body, state = excluded.state, state_reason = excluded.state_reason,
-  locked = excluded.locked, author_id = excluded.author_id, milestone_id = excluded.milestone_id,
-  created_at = excluded.created_at, updated_at = excluded.updated_at,
-  closed_at = excluded.closed_at, comments_count = excluded.comments_count, seq = excluded.seq
+ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id,
+  state_reason = excluded.state_reason, locked = excluded.locked,
+  milestone_id = excluded.milestone_id, seq = excluded.seq
 WHERE items.updated_at IS NULL OR excluded.updated_at >= items.updated_at;
+
+-- The UNIQUE (repo_id, number) index.
+-- name: set_item_place :exec
+-- param: id i64
+-- param: repo_id i64
+-- param: number i64
+UPDATE items SET repo_id = :repo_id, number = :number
+WHERE id = :id AND (repo_id IS NOT :repo_id OR number IS NOT :number);
+
+-- A stub the payload fills in becomes a full item: every partial index, and FTS.
+-- name: unstub_item :exec
+-- param: id i64
+UPDATE items SET is_stub = 0 WHERE id = :id AND is_stub <> 0;
+
+-- FTS (the `items_fts_update` trigger fires on an UPDATE OF either).
+-- name: set_item_text :exec
+-- param: id i64
+-- param: title &str
+-- param: body Option<&str>
+UPDATE items SET title = :title, body = :body
+WHERE id = :id AND (title IS NOT :title OR body IS NOT :body);
+
+-- Every list index.
+-- name: set_item_kind :exec
+-- param: id i64
+-- param: kind &str
+UPDATE items SET kind = :kind WHERE id = :id AND kind IS NOT :kind;
+
+-- The list indexes under a state, and the `closed` sort's.
+-- name: set_item_state :exec
+-- param: id i64
+-- param: state &str
+-- param: closed_at Option<i64>
+UPDATE items SET state = :state, closed_at = :closed_at
+WHERE id = :id AND (state IS NOT :state OR closed_at IS NOT :closed_at);
+
+-- name: set_item_created :exec
+-- param: id i64
+-- param: created_at Option<i64>
+UPDATE items SET created_at = :created_at WHERE id = :id AND created_at IS NOT :created_at;
+
+-- name: set_item_updated :exec
+-- param: id i64
+-- param: updated_at i64
+UPDATE items SET updated_at = :updated_at WHERE id = :id AND updated_at IS NOT :updated_at;
+
+-- name: set_item_author :exec
+-- param: id i64
+-- param: author_id Option<i64>
+UPDATE items SET author_id = :author_id WHERE id = :id AND author_id IS NOT :author_id;
+
+-- name: set_item_comments :exec
+-- param: id i64
+-- param: comments_count i64
+UPDATE items SET comments_count = :comments_count
+WHERE id = :id AND comments_count IS NOT :comments_count;
+
+-- Set by `issues` deliveries of every action, `typed` and `untyped` among them.
+-- name: set_item_type :exec
+-- param: id i64
+-- param: issue_type Option<&str>
+UPDATE items SET issue_type = :issue_type WHERE id = :id AND issue_type IS NOT :issue_type;
 
 -- name: upsert_user :exec
 -- param: id i64

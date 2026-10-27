@@ -21,6 +21,7 @@ import {
   ROOT,
   type Scale,
   SEEDED,
+  type Seeded,
   STATE,
   type State,
   TARGET,
@@ -110,7 +111,10 @@ export async function supervise(scale: Scale): Promise<void> {
   save();
   if (!(await seedMirrors(scale, fixture))) return fail("seeding the mirrors failed");
 
-  const stack = processes(fixture, {
+  // The fixture the processes run with: a rebuild that changes the generator or the mirror
+  // schema moves it to a new file (rebuildAndRestart).
+  const current = { fixture };
+  const stack = processes(() => current.fixture, {
     started: (name, pid) => {
       state.children = { ...state.children, [name]: pid };
       save();
@@ -154,7 +158,25 @@ export async function supervise(scale: Scale): Promise<void> {
 
   let startupTokens = (await fakeState(URLS.control))?.tokens;
   watchSources(async () => {
-    startupTokens = await rebuildAndRestart(stack, startupTokens);
+    startupTokens = await rebuildAndRestart(stack, startupTokens, async () => {
+      const next = await generateFixture(scale);
+      if (!next) {
+        log("dev-ctl", "the fixture generator failed; the running processes keep the old fixture");
+        return false;
+      }
+      if (next === current.fixture) return false;
+      // A new generator hash: the mirror schema (or the generator) changed. The fake's truth and
+      // the mirrors come from the fixture, so both stop while the mirrors are reseeded, and start
+      // again on the new one. Without the reseed a rebuild migration would empty the mirrors.
+      log("dev-ctl", "the fixture changed; reseeding the mirrors");
+      await stack.restartAround(["server", "fake"], async () => {
+        current.fixture = next;
+        state.fixture = next;
+        save();
+        if (!(await seedMirrors(scale, next))) log("dev-ctl", "seeding the mirrors failed; see the [fake] lines above");
+      });
+      return true;
+    });
   });
 }
 
@@ -184,9 +206,15 @@ async function generateFixture(scale: Scale): Promise<string | null> {
   return gen.code === 0 && fixture ? fixture : null;
 }
 
-/** Writes pristine mirrors unless they're already seeded at `scale`; false when that fails. */
+/**
+ * Writes pristine mirrors unless they're already seeded from `fixture`; false when that fails.
+ * The fixture's file name carries the generator's hash, which covers the mirror schema, so a new
+ * schema reseeds: otherwise a rebuild migration would empty the old mirrors and leave them so.
+ * After `reset --fresh` (recorded as `fresh`) the accounts import their own instead.
+ */
 async function seedMirrors(scale: Scale, fixture: string): Promise<boolean> {
-  if (readJson<{ scale: Scale }>(SEEDED)?.scale === scale) return true;
+  const seeded = readJson<Seeded>(SEEDED);
+  if (seeded?.scale === scale && (seeded.fresh === true || seeded.fixture === fixture)) return true;
   log("dev-ctl", "seeding pristine mirrors");
   remove(MIRRORS);
   const seed = await run(
@@ -195,19 +223,19 @@ async function seedMirrors(scale: Scale, fixture: string): Promise<boolean> {
     "fake",
   );
   if (seed.code !== 0) return false;
-  writeJson(SEEDED, { scale });
+  writeJson(SEEDED, { scale, fixture } satisfies Seeded);
   return true;
 }
 
 /** How each process is launched: command, arguments and extra environment. */
-function commands(fixture: string): Record<Proc, () => [string, string[], NodeJS.ProcessEnv]> {
+function commands(fixture: () => string): Record<Proc, () => [string, string[], NodeJS.ProcessEnv]> {
   return {
     fake: () => [
       BINARIES.fake,
       [
         "serve",
         "--fixture",
-        fixture,
+        fixture(),
         "--db",
         FAKE_DB,
         "--port",
@@ -274,7 +302,7 @@ interface Events {
  * The three child processes: starting, stopping and restarting them, with their output logged.
  * One that exits (or can't be spawned) when nothing asked it to is started again with backoff.
  */
-function processes(fixture: string, events: Events) {
+function processes(fixture: () => string, events: Events) {
   const command = commands(fixture);
   const children = new Map<Proc, ChildProcess>();
   const restarting = new Set<Proc>();
@@ -365,21 +393,47 @@ function processes(fixture: string, events: Events) {
       log("dev-ctl", `restarting ${name}`);
       start(name);
     },
+    /** Stops `names` (in order), runs `between`, then starts them again (in reverse order). */
+    restartAround: async (names: Proc[], between: () => Promise<void>) => {
+      for (const name of names) {
+        clearTimeout(pending.get(name));
+        pending.delete(name);
+        restarting.add(name);
+      }
+      for (const name of names) await stop(name);
+      try {
+        await between();
+      } finally {
+        for (const name of [...names].reverse()) {
+          restarting.delete(name);
+          if (stopping) continue;
+          log("dev-ctl", `restarting ${name}`);
+          start(name);
+        }
+      }
+    },
   };
 }
 
 type Tokens = FakeState["tokens"] | undefined;
 
 /**
- * Rebuilds the Rust binaries and restarts whichever changed. Resolves to the token lifetimes
- * the fake runs with now: read again after a restart, since its flags may have changed.
+ * Rebuilds the Rust binaries and runs `refixture`, which regenerates the fixture and, when its
+ * hash changed, reseeds the mirrors around a stop and start of the server and the fake (true).
+ * Otherwise restarts whichever binary changed. Resolves to the token lifetimes the fake runs with now:
+ * read again after a restart, since its flags may have changed.
  */
-async function rebuildAndRestart(stack: Stack, startupTokens: Tokens): Promise<Tokens> {
+async function rebuildAndRestart(stack: Stack, startupTokens: Tokens, refixture: () => Promise<boolean>): Promise<Tokens> {
   const before = mtimes();
   log("dev-ctl", "sources changed; rebuilding");
   if ((await build()).code !== 0) {
     log("dev-ctl", "the build failed; the running processes are unchanged");
     return startupTokens;
+  }
+  if (await refixture()) {
+    // Both run the new binaries already.
+    log("dev-ctl", "Fake GitHub restarted on the new fixture: any fault rules or token lifetimes set at runtime are gone");
+    return (await fakeStateOnceUp(stack))?.tokens;
   }
   const after = mtimes();
   if (after.fake !== before.fake) {

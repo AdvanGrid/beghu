@@ -16,6 +16,7 @@ import {
   type FakeState,
   type Scale,
   SEEDED,
+  type Seeded,
   STATE,
   SUPERVISOR,
   type State,
@@ -493,7 +494,7 @@ async function reset(args: string[]): Promise<void> {
   const { set, pos, json } = parse(args, [], ["--all", "--fresh"]);
   if (pos.length) throw new Usage("usage: ./dev-ctl reset [--all] [--fresh]");
   const r = running();
-  const scale = r?.state?.scale ?? readJson<{ scale: Scale }>(SEEDED)?.scale ?? DEFAULT_SCALE;
+  const scale = r?.state?.scale ?? readJson<Seeded>(SEEDED)?.scale ?? DEFAULT_SCALE;
   if (r && !json) console.log("stopping the stack");
   await stop();
 
@@ -504,7 +505,7 @@ async function reset(args: string[]): Promise<void> {
   remove(MIRRORS);
   if (set.has("--fresh")) {
     // Recorded as seeded, so start doesn't put pristine mirrors back: accounts re-import.
-    writeJson(SEEDED, { scale });
+    writeJson(SEEDED, { scale, fresh: true } satisfies Seeded);
     done.push("mirrors deleted");
   } else {
     remove(SEEDED);

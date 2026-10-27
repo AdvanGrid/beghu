@@ -8,4 +8,9 @@ export type IssuePage = { rows: Array<IssueRow>,
 /**
  * Pass as `after` for the next page; `null` on the last one.
  */
-next: string | null, };
+next: string | null, 
+/**
+ * The last row's cursor, in the view's sort: pass as `through` to refetch the view from the
+ * top through this row. `null` with no rows.
+ */
+last: string | null, };

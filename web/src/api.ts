@@ -6,6 +6,9 @@
 import { query, revalidate } from "@solidjs/router";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
+import type { Facet } from "./bindings/Facet";
+import type { FacetCount } from "./bindings/FacetCount";
+import type { Facets } from "./bindings/Facets";
 import type { CommentPage } from "./bindings/CommentPage";
 import type { CommentOrder } from "./bindings/CommentOrder";
 import type { Comment } from "./bindings/Comment";
@@ -14,7 +17,7 @@ import type { IssuePage } from "./bindings/IssuePage";
 import type { IssueRef } from "./bindings/IssueRef";
 import type { Me } from "./bindings/Me";
 
-export type { Comment, CommentOrder, CommentPage, IssueDetail, IssuePage, IssueRef, Me };
+export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me };
 export type { IssueRow } from "./bindings/IssueRow";
 
 /** beghu can't be reached: offline, or the server is down. */
@@ -118,14 +121,36 @@ export const getMe = query(() => request<Me>("/api/me"), "me");
 
 export const getIssues = query((search: string, after?: string) => request<IssuePage>(issuesUrl(search, after)), "issues");
 
-/** Where a row sits in the list's order: `after` and `through` take it. */
-export function rowCursor(row: { updated_at: number; id: number }): string {
-  return `${row.updated_at}.${row.id}`;
+/** The filter bar's values per facet. The URL matches the shell's preload. */
+export const getFacets = query(() => request<Facets>("/api/facets"), "facets");
+
+/** How many rows of the view `q` carry each of `facet`'s values. */
+export const getFacetCounts = query(
+  (facet: Facet, q: string) =>
+    request<FacetCount[]>(`/api/facets/${facet}/counts?${new URLSearchParams({ q })}`),
+  "facetCounts",
+);
+
+/**
+ * Hands `read`'s value to `ok`. A lapsed session leaves for sign-in; any other failure calls
+ * `failed`, for a notice whose Retry calls `forgetFailure` before reading again.
+ */
+export function readThen<T>(read: Promise<T>, ok: (value: T) => void, failed: () => void): void {
+  read.then(ok, (e: unknown) => {
+    if (e instanceof SessionEnded) signIn();
+    else failed();
+  });
+}
+
+/** A failed read stays in the query cache for a few seconds: drop `q`'s, so a retry asks again. */
+export function forgetFailure(q: { key: string }): void {
+  void revalidate(q.key);
 }
 
 /**
- * A live refetch of a view, bypassing the query cache: from the top through `through` (the last
- * row the tab shows) in one request, or the first page when it shows none yet.
+ * A live refetch of a view, bypassing the query cache: from the top through `through` (the cursor
+ * of the last row the tab shows, the page's `last`) in one request, or the first page when it
+ * shows none yet.
  */
 export function refetchIssues(search: string, through?: string): Promise<IssuePage> {
   if (!through) return request<IssuePage>(issuesUrl(search));

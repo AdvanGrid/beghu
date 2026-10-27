@@ -36,6 +36,9 @@ INSERT INTO labels (id, repo_id, name, color, description) VALUES (:id, :repo_id
 -- param: due_on i64
 INSERT INTO milestones (id, repo_id, number, title, state, due_on) VALUES (:id, :repo_id, :number, :title, :state, :due_on);
 
+-- The fixture's item write. Every item writer sets `issue_type` (see
+-- 0004_issue_type.rebuild.sql): here from the generator, NULL for PRs and untyped issues; the
+-- webhook writer's is `upsert_item` in webhooks.sql.
 -- name: insert_item :exec
 -- param: id i64
 -- param: node_id &str
@@ -57,13 +60,14 @@ INSERT INTO milestones (id, repo_id, number, title, state, due_on) VALUES (:id, 
 -- param: head_ref Option<&str>
 -- param: base_ref Option<&str>
 -- param: review_decision Option<&str>
+-- param: issue_type Option<&str>
 -- param: seq i64
 INSERT INTO items (id, node_id, repo_id, number, kind, title, body, state, state_reason, author_id,
   milestone_id, created_at, updated_at, closed_at, pr_id, draft, merged_at, head_ref, base_ref,
-  review_decision, seq)
+  review_decision, issue_type, seq)
 VALUES (:id, :node_id, :repo_id, :number, :kind, :title, :body, :state, :state_reason, :author_id,
   :milestone_id, :created_at, :updated_at, :closed_at, :pr_id, :draft, :merged_at, :head_ref, :base_ref,
-  :review_decision, :seq);
+  :review_decision, :issue_type, :seq);
 
 -- name: insert_stub :exec
 -- param: id i64

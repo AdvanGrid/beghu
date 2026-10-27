@@ -1,14 +1,15 @@
-//! The JSON API this slice serves: `/api/me` and the default issue list. Every response is
+//! The JSON API this slice serves: `/api/me` and the issue list, filtered and sorted by the
+//! filter bar's query (`q`, see `query.rs`); the bar's suggestions are in `facets.rs`. Every response is
 //! `no-store` and carries `X-Beghu-Build` (see `lib.rs`). The wire types are exported to the web
 //! app as TypeScript by ts-rs (`cargo test` writes `web/src/bindings/`).
 
 use crate::auth::Session;
 use crate::error::ApiError;
-use crate::{App, repos};
+use crate::{App, query, repos};
 use axum::Json;
 use axum::extract::{Extension, Query, State};
-use dbrt::filter::Filter;
-use mirror_db::{Caller, frag, q};
+use mirror_db::list;
+use mirror_db::{Caller, q};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
@@ -134,6 +135,9 @@ pub struct IssuePage {
     pub rows: Vec<IssueRow>,
     /// Pass as `after` for the next page; `null` on the last one.
     pub next: Option<String>,
+    /// The last row's cursor, in the view's sort: pass as `through` to refetch the view from the
+    /// top through this row. `null` with no rows.
+    pub last: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -151,8 +155,16 @@ pub struct IssueRow {
     /// `completed`, `not_planned`, … once closed.
     pub state_reason: Option<String>,
     /// Unix seconds.
+    pub created_at: i64,
+    /// Unix seconds.
     pub updated_at: i64,
+    /// Unix seconds; `null` if it was never closed.
+    pub closed_at: Option<i64>,
+    /// When the last comment came, in Unix seconds; `null` with no comments.
+    pub commented_at: Option<i64>,
     pub comments: i64,
+    /// The GitHub issue type's name; `null` when untyped, and always for a PR.
+    pub issue_type: Option<String>,
     pub labels: Vec<Label>,
     pub assignees: Vec<User>,
 }
@@ -173,73 +185,65 @@ pub struct User {
 
 #[derive(Deserialize)]
 pub struct ListQuery {
+    /// The filter bar's query; absent means the Open preset.
+    q: Option<String>,
     /// The next page: the rows after this cursor.
     after: Option<String>,
     /// A live refetch: the rows from the top through this cursor (the last row the tab shows).
     through: Option<String>,
 }
 
-/// `<updated_at>.<id>` of the last row shown.
-fn parse_cursor(s: &str) -> Option<(i64, i64)> {
-    let (u, id) = s.split_once('.')?;
-    Some((u.parse().ok()?, id.parse().ok()?))
-}
-
-/// The default list: open issues, newest update first, ties on id. Filters and sorts come with
-/// the filter bar. `after` pages on; `through` is a live refetch, in one request, of everything
-/// from the top through the last row the tab has loaded.
+/// A page of the list for the query in `q`, in its sort, ties on id. `after` pages on;
+/// `through` is a live refetch, in one request, of the view from the top through the last row
+/// the tab has loaded. Both cursors are the sort's (`<key>.<id>`, see `list::Cursor`), so a
+/// refetch works under every filter and sort.
 pub async fn issues(
     State(app): State<App>,
     Extension(s): Extension<Session>,
     Query(lq): Query<ListQuery>,
 ) -> Result<Json<IssuePage>, ApiError> {
-    let cursor =
-        |c: &str| parse_cursor(c).ok_or_else(|| ApiError::BadRequest(format!("bad cursor {c:?}")));
-    let mut filter = vec![frag::state("open")];
-    let limit = match (lq.after.as_deref(), lq.through.as_deref()) {
+    let view = query::parse(lq.q.as_deref().unwrap_or(query::DEFAULT));
+    let cursor = |c: &str| {
+        c.parse::<list::Cursor>()
+            .map_err(|()| ApiError::BadRequest(format!("bad cursor {c:?}")))
+    };
+    let (span, limit) = match (lq.after.as_deref(), lq.through.as_deref()) {
         (Some(_), Some(_)) => {
             return Err(ApiError::BadRequest(
                 "after and through don't go together".into(),
             ));
         }
-        (Some(after), None) => {
-            let (u, id) = cursor(after)?;
-            filter.push(frag::updated_before(u, id));
-            PAGE
-        }
-        (None, Some(through)) => {
-            let (u, id) = cursor(through)?;
-            filter.push(frag::updated_through(u, id));
-            THROUGH_MAX
-        }
-        (None, None) => PAGE,
+        (Some(after), None) => (list::Span::After(cursor(after)?), PAGE),
+        (None, Some(through)) => (list::Span::Through(cursor(through)?), THROUGH_MAX),
+        (None, None) => (list::Span::Top, PAGE),
     };
-    let refetch = lq.through.is_some();
-    let filter = Filter::And(filter);
-    let (rows, labels, assignees, more) = app
+    let filter = list::filter(&view, s.account);
+    let sort = view.sort;
+    let (rows, labels, assignees, next, last) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
-            let mut ids = q::item_ids(c, &filter, "issue", limit + 1)?;
+            // A refetch stops at its cursor, not at a page's end: the list goes on if any row
+            // follows the last one it returns, which takes the filter again.
+            let probe = matches!(span, list::Span::Through(_)).then(|| filter.clone());
+            let mut ids = list::ids(c, sort, filter, span, limit + 1)?;
             let mut more = ids.len() as i64 > limit;
             ids.truncate(limit as usize);
-            let rows = q::hydrate(c, &ids)?;
-            // A refetch stops at its cursor, not at a page's end: the list goes on if any row
-            // follows the last one it returns.
-            if refetch
+            if let Some(filter) = probe
                 && !more
-                && let Some(last) = rows.last()
+                && let Some(&last) = ids.last()
             {
-                let after = Filter::And(vec![
-                    frag::state("open"),
-                    frag::updated_before(last.updated_at.unwrap_or(0), last.id),
-                ]);
-                more = !q::item_ids(c, &after, "issue", 1)?.is_empty();
+                more = !list::ids(c, sort, filter, list::Span::After(last), 1)?.is_empty();
             }
+            let last = ids.last().copied();
+            let next = more.then_some(last).flatten();
+            let ids: Vec<i64> = ids.into_iter().map(|row| row.id).collect();
+            let rows = q::hydrate(c, &ids)?;
             Ok((
                 rows,
                 q::hydrate_labels(c, &ids)?,
                 q::hydrate_assignees(c, &ids)?,
-                more,
+                next,
+                last,
             ))
         })
         .await?;
@@ -270,20 +274,23 @@ pub async fn issues(
                 title: r.title,
                 state: r.state,
                 state_reason: r.state_reason,
-                // Never NULL here: only stubs leave `updated_at` unset (the item writes take it
-                // as an `i64`; GitHub always sends it) and the list skips stubs. The column is
-                // nullable for them alone. Were a listed row ever NULL, the cursor's 0 and the
-                // SQL's row-value `<` would disagree, so COALESCE both, in the `items_list` index
-                // too.
+                // Never NULL here: only stubs leave the timestamps unset (the item writes take
+                // them as `i64`s; GitHub always sends them) and the list skips stubs.
+                created_at: r.created_at.unwrap_or(0),
                 updated_at: r.updated_at.unwrap_or(0),
+                closed_at: r.closed_at,
+                commented_at: r.last_commented_at,
+                issue_type: r.issue_type,
                 comments: r.comments_count,
                 labels,
                 assignees,
             }
         })
         .collect();
-    let next = more
-        .then(|| rows.last().map(|r| format!("{}.{}", r.updated_at, r.id)))
-        .flatten();
-    Ok(Json(IssuePage { rows, next }))
+    // The cursors carry the sort key the id query ordered by, so they're exact for every sort.
+    Ok(Json(IssuePage {
+        rows,
+        next: next.map(|c| c.to_string()),
+        last: last.map(|c| c.to_string()),
+    }))
 }

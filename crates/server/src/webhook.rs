@@ -699,6 +699,15 @@ struct Issue {
     updated_at: String,
     closed_at: Option<String>,
     pull_request: Option<serde_json::Value>,
+    /// The GitHub issue type: `null` (or, from an older payload, absent) when untyped.
+    #[serde(rename = "type")]
+    issue_type: Option<IssueType>,
+}
+
+/// An issue's `type` (GitHub's issue-type object); only its name is kept.
+#[derive(Deserialize)]
+struct IssueType {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -755,6 +764,8 @@ impl RepoChange {
             // Transfers re-point relationships and come with their own slice.
             ("issues", "transferred") => None,
             ("issues", "deleted") => p.issue.map(|i| Change::IssueDeleted(i.id)),
+            // Every other action carries the whole issue as it is now: `typed` and `untyped`
+            // too, whose `issue.type` is the new type (null once untyped).
             ("issues", _) => p.issue.map(Change::Issue),
             ("issue_comment", "deleted") => match (p.issue, p.comment) {
                 (Some(issue), Some(c)) => Some(Change::CommentDeleted {
@@ -866,13 +877,21 @@ fn upsert_milestone(tx: &Transaction, repo: i64, m: &Milestone) -> rusqlite::Res
 }
 
 /// Writes the issue under the `updated_at` guard; with it, its labels, assignees, author and
-/// milestone. False when the mirror already had it as new or newer.
+/// milestone. False when the mirror already had it as new or newer. An update SETs only the
+/// columns whose values changed, so it rewrites only their indexes (see `webhooks.sql`).
 fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::Result<bool> {
-    let kind = if i.pull_request.is_some() {
-        "pr"
-    } else {
-        "issue"
-    };
+    let pr = i.pull_request.is_some();
+    let kind = if pr { "pr" } else { "issue" };
+    // Never on a PR, as the import leaves it.
+    let issue_type = i
+        .issue_type
+        .as_ref()
+        .filter(|_| !pr)
+        .map(|t| t.name.as_str());
+    let author = i.user.as_ref().map(|u| u.id);
+    let created = i.created_at.as_deref().map(time);
+    let updated = time(&i.updated_at);
+    let closed = i.closed_at.as_deref().map(time);
     let applied = q::upsert_item(
         tx,
         i.id,
@@ -885,17 +904,29 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
         &i.state,
         i.state_reason.as_deref(),
         i.locked,
-        i.user.as_ref().map(|u| u.id),
+        author,
         i.milestone.as_ref().map(|m| m.id),
-        i.created_at.as_deref().map(time),
-        time(&i.updated_at),
-        i.closed_at.as_deref().map(time),
+        created,
+        updated,
+        closed,
         i.comments,
+        issue_type,
         seq,
     )? > 0;
     if !applied {
         return Ok(false);
     }
+    // A new row was inserted whole and these match nothing; an existing one gets what changed.
+    q::set_item_place(tx, i.id, repo, i.number)?;
+    q::unstub_item(tx, i.id)?;
+    q::set_item_text(tx, i.id, &i.title, i.body.as_deref())?;
+    q::set_item_kind(tx, i.id, kind)?;
+    q::set_item_state(tx, i.id, &i.state, closed)?;
+    q::set_item_created(tx, i.id, created)?;
+    q::set_item_updated(tx, i.id, updated)?;
+    q::set_item_author(tx, i.id, author)?;
+    q::set_item_comments(tx, i.id, i.comments)?;
+    q::set_item_type(tx, i.id, issue_type)?;
     if let Some(u) = &i.user {
         q::upsert_user(tx, u.id, &u.login, u.avatar_url.as_deref())?;
     }

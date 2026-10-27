@@ -33,5 +33,9 @@
     "chrome >= 123",
     "firefox >= 120",
     "safari >= 17.5"
-  ]
+  ],
+  "overrides": {
+    "@solidjs/babel-plugin": "2.0.0-rc.15",
+    "@solidjs/compiler": "2.0.0-rc.15"
+  }
 }

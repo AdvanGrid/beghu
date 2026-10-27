@@ -19,6 +19,53 @@ i.repo_id IN (SELECT r.id FROM repos r WHERE r.name = :name COLLATE NOCASE)
 -- param: state &str
 i.state = :state
 
+-- `is:open`/`is:closed` with no kind (`is:any`, `is:issue is:pr`): checked on each row of the
+-- kind-less walk in the sort's order (`items_updated_any_kind`), never looked up. The `+` keeps
+-- the planner off `items_list`: with statistics it would skip-scan that over both kinds and then
+-- sort every row of the state, 4 ms against 0.1 ms at 50k.
+-- name: state_any_kind :fragment
+-- param: state &str
++i.state = :state
+
+-- name: kind :fragment
+-- param: kind &str
+i.kind = :kind
+
+-- name: assignee_id :fragment
+-- param: id i64
+i.id IN (SELECT ia.item_id FROM item_assignees ia WHERE ia.user_id = :id)
+
+-- name: author :fragment
+-- param: login &str
+i.author_id IN (SELECT u.id FROM users u WHERE u.login = :login COLLATE NOCASE)
+
+-- name: author_id :fragment
+-- param: id i64
+i.author_id = :id
+
+-- `repo:owner/name`.
+-- name: repo_full :fragment
+-- param: owner &str
+-- param: name &str
+i.repo_id IN (SELECT r.id FROM repos r WHERE r.name = :name COLLATE NOCASE AND r.owner = :owner COLLATE NOCASE)
+
+-- By title: the same title in several repos is one milestone to the filter bar.
+-- name: milestone :fragment
+-- param: title &str
+i.milestone_id IN (SELECT m.id FROM milestones m WHERE m.title = :title COLLATE NOCASE)
+
+-- `type:`, by the issue type's name.
+-- name: issue_type :fragment
+-- param: name &str
+i.issue_type = :name COLLATE NOCASE
+
+-- For `no:label` and `no:assignee`, under NOT.
+-- name: has_label :fragment
+i.id IN (SELECT il.item_id FROM item_labels il)
+
+-- name: has_assignee :fragment
+i.id IN (SELECT ia.item_id FROM item_assignees ia)
+
 -- name: no_milestone :fragment
 i.milestone_id IS NULL
 
@@ -32,28 +79,11 @@ i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH :q)
 -- param: q &str
 i.id IN (SELECT c.item_id FROM comments c WHERE c.id IN (SELECT rowid FROM comments_fts WHERE comments_fts MATCH :q))
 
--- The list's ids: issues and PRs, never stubs, newest update first.
--- name: item_ids :many
--- param: kind &str
--- param: limit i64
-SELECT i.id
-FROM items i
-WHERE i.kind = :kind AND i.is_stub = 0 AND /* filter */
-ORDER BY i.updated_at DESC, i.id DESC
-LIMIT :limit;
-
--- Where the next page starts in the default order (newest update first, ties on id): the rows
--- after the last one shown.
--- name: updated_before :fragment
--- param: updated_at i64
--- param: id i64
-(i.updated_at, i.id) < (:updated_at, :id)
-
 -- The rows for ids a filter returned, in their order.
 -- name: hydrate :many
 -- param: ids &[i64]
-SELECT i.id, i.kind, i.number, i.title, i.state, i.state_reason, i.updated_at, i.comments_count,
-       r.owner, r.name AS repo
+SELECT i.id, i.kind, i.number, i.title, i.state, i.state_reason, i.created_at, i.updated_at,
+       i.closed_at, i.last_commented_at, i.comments_count, i.issue_type, r.owner, r.name AS repo
 FROM json_each(:ids) j
 JOIN items i ON i.id = j.value
 JOIN repos r ON r.id = i.repo_id
@@ -76,9 +106,3 @@ FROM json_each(:ids) j
 JOIN item_assignees ia ON ia.item_id = j.value
 JOIN users u ON u.id = ia.user_id
 ORDER BY j.key, u.login COLLATE NOCASE;
-
--- A live refetch: from the top of the default order through the last row the client shows.
--- name: updated_through :fragment
--- param: updated_at i64
--- param: id i64
-(i.updated_at, i.id) >= (:updated_at, :id)

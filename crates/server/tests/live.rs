@@ -440,6 +440,137 @@ async fn a_live_refetch_returns_the_list_from_the_top_through_the_last_loaded_ro
     assert_eq!(status, 400);
 }
 
+/// A view's page `url` (with `?q=` already on it), as the client asks for it.
+fn with(url: &str, key: &str, cursor: &str) -> String {
+    format!("{url}&{key}={cursor}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_refetch_follows_the_views_filter_and_sort() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    // A filter, and a sort whose key can be NULL (uncommented rows go last both ways).
+    let base = format!(
+        "/api/issues?{}",
+        serde_urlencoded::to_string([("q", "label:bug sort:commented-asc")]).unwrap()
+    );
+    let mut loaded: Vec<Value> = Vec::new();
+    let mut lasts = Vec::new();
+    let mut url = base.clone();
+    loop {
+        let (status, page) = s.api(&mut b, &url).await;
+        assert_eq!(status, 200, "{page}");
+        loaded.extend(page["rows"].as_array().unwrap().iter().cloned());
+        lasts.push((loaded.len(), page["last"].as_str().unwrap().to_owned()));
+        match page["next"].as_str() {
+            // `next` is the page's last row while more follow.
+            Some(next) => {
+                assert_eq!(page["last"], next);
+                url = with(&base, "after", next);
+            }
+            None => break,
+        }
+    }
+    assert!(lasts.len() >= 2, "the view needs more than a page");
+    assert!(loaded.iter().all(|r| {
+        r["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["name"] == "bug")
+    }));
+
+    // Through the first page's last row: the same rows, and the list goes on after them.
+    let (n, cursor) = &lasts[0];
+    let (status, page) = s.api(&mut b, &with(&base, "through", cursor)).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["rows"].as_array().unwrap(), &loaded[..*n]);
+    assert_eq!(page["next"], *cursor);
+    assert_eq!(page["last"], *cursor);
+
+    // Through the view's last row: all of it in one request, with nothing after it.
+    let (n, cursor) = lasts.last().unwrap();
+    let (_, page) = s.api(&mut b, &with(&base, "through", cursor)).await;
+    assert_eq!(page["rows"].as_array().unwrap(), &loaded[..*n]);
+    assert_eq!(page["next"], Value::Null);
+
+    // A change that moves a row within the sort shows in the refetch: a comment takes an
+    // uncommented row (last in this sort) to just before the uncommented ones.
+    let moved = loaded
+        .iter()
+        .find(|r| r["commented_at"].is_null())
+        .expect("an uncommented bug")
+        .clone();
+    let mut st = s.stream(&b).await;
+    st.event_within(SECS).await;
+    s.edit(json!({ "repo": moved["repo"], "number": moved["number"], "comment": "Seen." }))
+        .await;
+    assert_eq!(
+        ids_of(&st.event_within(4 * SECS).await.unwrap()),
+        [moved["id"].as_i64().unwrap()]
+    );
+    let (_, page) = s.api(&mut b, &with(&base, "through", cursor)).await;
+    let rows = page["rows"].as_array().unwrap();
+    let at = rows.iter().position(|r| r["id"] == moved["id"]).unwrap();
+    assert!(!rows[at]["commented_at"].is_null());
+    assert!(rows[at + 1..].iter().all(|r| r["commented_at"].is_null()));
+    assert!(rows[..at].iter().all(|r| !r["commented_at"].is_null()));
+}
+
+/// The first page of `type:epic`.
+async fn epics(s: &Stack, b: &mut Browser) -> Value {
+    s.api(b, "/api/issues?q=type%3Aepic").await.1
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_webhook_sets_the_issue_type_and_type_filters_find_it() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    st.event_within(SECS).await;
+    // No fixture issue has the type Epic.
+    assert_eq!(epics(&s, &mut b).await["rows"], json!([]));
+
+    // An outside edit types an issue: an `issues` `typed` delivery.
+    let r = top(&s, &mut b).await;
+    let id = r["id"].as_i64().unwrap();
+    s.edit(json!({ "repo": r["repo"], "number": r["number"], "type": "Epic" }))
+        .await;
+    assert_eq!(ids_of(&st.event_within(4 * SECS).await.unwrap()), [id]);
+    let page = epics(&s, &mut b).await;
+    let rows = page["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{page}");
+    assert_eq!(rows[0]["id"], id);
+    assert_eq!(rows[0]["issue_type"], "Epic");
+    // The bar offers the new type.
+    let (_, facets) = s.api(&mut b, "/api/facets").await;
+    assert!(
+        facets["types"].as_array().unwrap().contains(&json!("Epic")),
+        "{facets}"
+    );
+
+    // `untyped` clears it.
+    s.edit(json!({ "repo": r["repo"], "number": r["number"], "type": null }))
+        .await;
+    assert_eq!(ids_of(&st.event_within(4 * SECS).await.unwrap()), [id]);
+    assert_eq!(epics(&s, &mut b).await["rows"], json!([]));
+    let (_, page) = s.api(&mut b, "/api/issues").await;
+    assert_eq!(row(&page, id).unwrap()["issue_type"], Value::Null);
+
+    // A payload with no `type` at all (an older one) is untyped too.
+    let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
+    let mut p = issues_payload("typed", repo, &r, "Typed by hand", "2030-01-01T00:00:00Z");
+    p["issue"]["type"] =
+        json!({ "id": 7, "node_id": "IT_kw7", "name": "Epic", "description": null });
+    assert_eq!(s.deliver("issues", "type-1", &p).await, 202);
+    st.event_within(4 * SECS).await.expect("a push");
+    assert_eq!(epics(&s, &mut b).await["rows"][0]["id"], id);
+    let p = issues_payload("edited", repo, &r, "Edited by hand", "2030-01-01T00:00:01Z");
+    assert_eq!(s.deliver("issues", "type-2", &p).await, 202);
+    st.event_within(4 * SECS).await.expect("a push");
+    assert_eq!(epics(&s, &mut b).await["rows"], json!([]));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_account_that_loses_access_to_a_repo_stops_getting_its_changes() {
     // Every `/api/me` re-reads the roles.

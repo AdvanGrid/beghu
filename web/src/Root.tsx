@@ -2,6 +2,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, Errored, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
+import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { connectLive, reconnecting } from "./live";
 import { ChunkFailed } from "./router";
@@ -32,7 +33,7 @@ export function Root(props: { children?: Element }) {
       <Errored fallback={(err) => <RootFailure error={err()} />}>
         <Header />
         <main {...stylex.attrs(s.main)}>
-          <div {...stylex.attrs(s.listPane)}>
+          <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
             <List />
           </div>
           <Errored fallback={(err, reset) => <PanelFailure error={err()} reset={reset} />}>
@@ -161,10 +162,14 @@ function AccountFailure(props: { error: unknown; reset: () => void }) {
 function List() {
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
+  // The bar sits outside the list's boundary, so a view that fails to load can be changed.
   return (
-    <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
-      <IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
-    </Errored>
+    <div {...stylex.attrs(s.listColumn)}>
+      <FilterBar />
+      <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
+        <IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
+      </Errored>
+    </div>
   );
 }
 
@@ -267,6 +272,13 @@ const s = stylex.create({
     },
     flexGrow: 1,
     minHeight: 0,
+  },
+  listColumn: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minHeight: 0,
+    minWidth: 0,
   },
   // Beside the panel the list takes what the panel leaves; under 900 px it takes 40% to the
   // panel's 60%.

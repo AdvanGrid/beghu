@@ -1,14 +1,15 @@
 //! The SPA shell: account-free, cached for 5 minutes, and generated per URL with preloads for
-//! `/api/me`, that URL's list page and the issue it opens, so the data fetches start alongside
-//! the JS. An issue's URL also modulepreloads the issue panel's chunk, so it loads alongside the
-//! entry instead of after it.
+//! `/api/me`, the filter bar's facets, that URL's list page and the issue it opens, so the data
+//! fetches start alongside the JS. An issue's URL also modulepreloads the issue panel's chunk, so
+//! it loads alongside the entry instead of after it.
 
 mod common;
 
 use common::{Browser, PANEL_CHUNK, start};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_shell_preloads_api_me_the_urls_list_page_and_its_issue_and_caches_for_five_minutes() {
+async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_and_caches_for_five_minutes()
+ {
     let s = start().await;
     let res = s.get(&mut Browser::default(), "/").await;
     assert_eq!(res.status(), 200);
@@ -23,6 +24,10 @@ async fn the_shell_preloads_api_me_the_urls_list_page_and_its_issue_and_caches_f
     let html = res.text().await.unwrap();
     assert!(
         html.contains(r#"<link rel="preload" href="/api/me" as="fetch" crossorigin>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"<link rel="preload" href="/api/facets" as="fetch" crossorigin>"#),
         "{html}"
     );
     assert!(
