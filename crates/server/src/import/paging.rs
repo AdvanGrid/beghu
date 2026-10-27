@@ -176,7 +176,8 @@ impl Run {
             self.progress(phase, 0);
             let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let gate = Arc::new(tokio::sync::Semaphore::new(STREAMS));
-            let mut tasks = tokio::task::JoinSet::new();
+            // Jobs, so the drain stops (and waits for) each repo's task, not just the round.
+            let mut tasks = self.app.jobs().set();
             for repo in self.repos.clone() {
                 if self.failed().contains_key(&repo.id) {
                     continue;

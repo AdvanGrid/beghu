@@ -47,6 +47,9 @@ pub enum Error {
     Db(control_db::Error),
     /// The refresh task panicked: a bug, not GitHub or the DB.
     Panicked(String),
+    /// A refresh asked for once the drain had stopped the jobs: refused before it spent the
+    /// refresh token.
+    Restarting,
 }
 
 impl From<control_db::Error> for Error {
@@ -68,6 +71,7 @@ impl std::fmt::Display for Error {
             Error::GitHub(e) => write!(f, "{e}"),
             Error::Db(e) => write!(f, "{e}"),
             Error::Panicked(e) => write!(f, "the token refresh task panicked: {e}"),
+            Error::Restarting => f.write_str("beghu is restarting: the token wasn't refreshed"),
         }
     }
 }
@@ -94,6 +98,9 @@ pub struct Tokens {
     gh: GitHub,
     key: Arc<crate::crypto::Keys>,
     locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Refreshes run as whole jobs: the drain waits for one rather than cut it between spending
+    /// the refresh token and storing the new pair.
+    jobs: crate::jobs::Jobs,
 }
 
 /// The access token as stored, decrypted.
@@ -104,12 +111,18 @@ struct Current {
 }
 
 impl Tokens {
-    pub fn new(control: Arc<Control>, gh: GitHub, key: Arc<crate::crypto::Keys>) -> Tokens {
+    pub fn new(
+        control: Arc<Control>,
+        gh: GitHub,
+        key: Arc<crate::crypto::Keys>,
+        jobs: crate::jobs::Jobs,
+    ) -> Tokens {
         Tokens {
             control,
             gh,
             key,
             locks: Mutex::default(),
+            jobs,
         }
     }
 
@@ -228,7 +241,10 @@ impl Tokens {
     }
 
     /// Spends the refresh token and stores the new pair, in a task of its own that holds `turn`
-    /// (the account's lock) until both are done, whether or not the caller is still waiting.
+    /// (the account's lock) until both are done, whether or not the caller is still waiting. A
+    /// whole job: the drain waits for it, as cutting it after GitHub spent the refresh token
+    /// would leave the account to sign in again. Once the drain has stopped the jobs it's
+    /// [`Error::Restarting`], and the refresh token stays unspent.
     async fn refresh(
         &self,
         account: i64,
@@ -236,7 +252,7 @@ impl Tokens {
         turn: OwnedMutexGuard<()>,
     ) -> Result<String, Error> {
         let (control, gh, key) = (self.control.clone(), self.gh.clone(), self.key.clone());
-        let job = tokio::spawn(async move {
+        let Some(job) = self.jobs.spawn_whole(async move {
             let _turn = turn;
             match gh.refresh(&refresh).await {
                 Ok(pair) => {
@@ -252,7 +268,9 @@ impl Tokens {
                 }
                 Err(e) => Err(Error::GitHub(e)),
             }
-        });
+        }) else {
+            return Err(Error::Restarting);
+        };
         job.await
             .unwrap_or_else(|e| Err(Error::Panicked(e.to_string())))
     }

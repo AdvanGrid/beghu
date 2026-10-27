@@ -99,7 +99,7 @@ async fn the_shell_is_compressed_too() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_built_asset_is_served_from_its_precompressed_sibling() {
-    let s = start().await;
+    let mut s = start().await;
     let assets = s.web.join("assets");
     std::fs::create_dir_all(&assets).unwrap();
     let js = "export const greeting = 'hello';\n".repeat(50);
@@ -110,6 +110,8 @@ async fn a_built_asset_is_served_from_its_precompressed_sibling() {
         .read_to_end(&mut br)
         .unwrap();
     std::fs::write(assets.join("index-abc123.js.br"), &br).unwrap();
+    // A start copies its build's assets to the volume, which serves them.
+    s.restart_with(|_| {}).await;
 
     let b = Browser::default();
     let (status, enc, vary, body) = fetch(&s, &b, "/assets/index-abc123.js", "gzip, br").await;

@@ -122,21 +122,19 @@ impl Roles {
         let id = a.next;
         a.next += 1;
         a.running = Some((id, rx.clone()));
-        let app = app.clone();
-        tokio::spawn(async move {
+        app.spawn(move |app| async move {
             if let Some(before) = running {
                 outcome(before, None).await;
             }
             // Its own task, so a panic ends as `Failed` (and backs off) instead of unwinding
             // through the bookkeeping below.
-            let reread = {
-                let app = app.clone();
-                tokio::spawn(async move { refresh_roles(&app, account).await })
-            };
+            let reread = app.spawn(move |app| async move { refresh_roles(&app, account).await });
             let outcome = match reread.await {
-                Ok(Ok(())) => Outcome::Fresh,
-                Ok(Err(ApiError::SignedOut)) => Outcome::SignedOut,
-                Ok(Err(e)) => {
+                // The drain stopped it, and this with it.
+                Ok(None) => return,
+                Ok(Some(Ok(()))) => Outcome::Fresh,
+                Ok(Some(Err(ApiError::SignedOut))) => Outcome::SignedOut,
+                Ok(Some(Err(e))) => {
                     eprintln!("account {account}: refreshing roles failed: {e:?}");
                     Outcome::Failed
                 }
@@ -197,6 +195,7 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
         .await
         .map_err(|e| match e {
             tokens::Error::SignInAgain => ApiError::SignedOut,
+            tokens::Error::Restarting => ApiError::restarting(),
             e => ApiError::Internal(format!("refreshing the repo set: {e}")),
         })?;
     let visible: HashSet<i64> = repos.iter().map(|r| r.id).collect();
@@ -334,8 +333,7 @@ pub async fn reconcile(app: &App, account: i64) -> Result<bool, ApiError> {
     if !finishing.is_empty() {
         // Its own task, so a request that goes away doesn't stop it partway. One that fails (or a
         // restart) leaves the rest to a later reconcile, which finds it in `unfinished_unsyncs`.
-        let app = app.clone();
-        let done = tokio::spawn(async move {
+        let done = app.spawn(move |app| async move {
             for repo in finishing {
                 if let Err(e) = finish_unsync(&app, account, repo).await {
                     eprintln!("account {account}: unsyncing repo {repo}: {e:?}");
@@ -571,11 +569,9 @@ pub async fn pick(
         })
         .await?;
     // Its own task: a browser that goes away mid-pick still gets it carried out whole.
-    let rec = {
-        let app = app.clone();
-        tokio::spawn(async move { reconcile(&app, account).await })
-    };
+    let rec = app.spawn(move |app| async move { reconcile(&app, account).await });
     rec.await
-        .map_err(|e| ApiError::Internal(format!("reconciling the pick panicked: {e}")))??;
+        .map_err(|e| ApiError::Internal(format!("reconciling the pick panicked: {e}")))?
+        .ok_or_else(ApiError::restarting)??;
     Ok(Json(picker(&app, account).await?))
 }

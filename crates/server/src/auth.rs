@@ -356,6 +356,21 @@ pub async fn callback(
             );
             res
         }
+        // At capacity, or beghu restarting (the drain sealed the control DB under it): a 503
+        // with `retry-after`, as the API answers.
+        Err(ApiError::Unavailable { retry_after, why }) => {
+            eprintln!("sign-in: storing the session failed: {why}");
+            let mut res = sign_in_failed(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "beghu is busy or restarting. Sign in again in a moment.",
+                next,
+            );
+            res.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(retry_after.as_secs().max(1)),
+            );
+            res
+        }
         Err(e) => {
             eprintln!("sign-in: storing the session failed: {e:?}");
             sign_in_failed(

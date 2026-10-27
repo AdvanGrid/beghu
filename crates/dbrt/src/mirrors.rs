@@ -3,7 +3,7 @@
 
 use crate::gate::{self, Caller, Effect, Event, Gate, Refusal};
 use crate::migrations::{self, MigError, Migration};
-use crate::pool::{Budget, ConnKind, Lane, LaneKey, Patience, Shared, Slot};
+use crate::pool::{Budget, Lane, LaneKey, Patience, Shared};
 use crate::{AccountId, Error, Unavailable};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -135,8 +135,44 @@ impl Mirrors {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     {
+        // Refused before the gate, which would otherwise open (or create) a mirror for nothing.
+        self.inner.shared.unsealed()?;
         let acct = self.ready(account, caller).await?;
         acct.lane.write(caller.into(), f).await
+    }
+
+    /// The drain's last step: seals every mirror, so each write from now on fails with
+    /// [`Error::Sealed`] and no mirror is created, then lets each one's write in flight finish,
+    /// folds its WAL into its file and closes its idle connections. The mirrors go all at once,
+    /// so one kept waiting (a long write in flight, a reader holding its WAL) holds up none of
+    /// the others. A mirror with no connection open has no WAL left to fold (closing its last
+    /// connection did that). The mirrors that failed, and why.
+    pub async fn checkpoint(&self) -> Vec<(AccountId, Error)> {
+        self.inner.shared.seal();
+        let all: Vec<Arc<Account>> = {
+            let map = self.inner.accounts.lock().unwrap();
+            map.values().cloned().collect()
+        };
+        // Dropped with this future, a set aborts its tasks: a checkpoint the caller stops
+        // waiting for stops at its next await (one already in SQLite runs to its end).
+        let mut set = tokio::task::JoinSet::new();
+        let mut accounts = HashMap::new();
+        for a in all {
+            let id = a.id;
+            let task = set.spawn(async move { a.lane.checkpoint().await });
+            accounts.insert(task.id(), id);
+        }
+        let mut failed = Vec::new();
+        while let Some(done) = set.join_next_with_id().await {
+            let (task, r) = match done {
+                Ok((task, r)) => (task, r),
+                Err(e) => (e.id(), Err(Error::Panicked)),
+            };
+            if let Err(e) = r {
+                failed.push((accounts[&task], e));
+            }
+        }
+        failed
     }
 
     fn account(&self, id: AccountId) -> Arc<Account> {
@@ -239,19 +275,10 @@ impl Mirrors {
                 }
                 Effect::Create { .. } => {
                     // Nothing of this account's is in use: the gate only creates on first use.
-                    let lane = LaneKey::Account(acct.id);
-                    self.inner.shared.close_idle(lane);
-                    let (shared, path, migs) = (
-                        self.inner.shared.clone(),
-                        acct.path.clone(),
-                        self.inner.migs,
-                    );
-                    let slot = Slot {
-                        lane,
-                        kind: ConnKind::Writer,
-                    };
+                    self.inner.shared.close_idle(LaneKey::Account(acct.id));
+                    let (a, path, migs) = (acct.clone(), acct.path.clone(), self.inner.migs);
                     self.job(acct, async move {
-                        let created = shared.with_slot(slot, Patience::Wait, move || {
+                        let created = a.lane.replace(Patience::Wait, move || {
                             path.parent().map_or(Ok(()), std::fs::create_dir_all)?;
                             migrations::create_fresh(&path, migs)
                         });

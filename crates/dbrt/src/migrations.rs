@@ -120,12 +120,13 @@ impl From<crate::Error> for MigError {
     }
 }
 
-/// How a mirror job's error reads to the gate: a busy cap, an I/O error or a SQLite error that
-/// may clear is transient, anything else won't.
+/// How a mirror job's error reads to the gate: a busy cap, an I/O error, a SQLite error that
+/// may clear, or the drain's seal (the next start does the job) is transient, anything else
+/// won't.
 pub(crate) fn classify_job(e: crate::Error) -> MigError {
     match e {
         crate::Error::Sqlite(e) => classify(e),
-        e @ (crate::Error::Unavailable { .. } | crate::Error::Io(_)) => {
+        e @ (crate::Error::Unavailable { .. } | crate::Error::Io(_) | crate::Error::Sealed) => {
             MigError::Transient(e.to_string())
         }
         e => MigError::Failed(e.to_string()),
@@ -224,14 +225,15 @@ pub fn migrate_control(
     }
     let backup = if db > 0 {
         let path = backup_dir.join(format!("control-before-v{to}.db"));
-        let vacuum = || -> Result<(), String> {
-            std::fs::create_dir_all(backup_dir).map_err(|e| e.to_string())?;
-            let _ = std::fs::remove_file(&path);
-            conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])
-                .map(drop)
-                .map_err(|e| e.to_string())
+        // Whole and on disk before anything is migrated.
+        let vacuum = || -> Result<(), crate::Error> {
+            std::fs::create_dir_all(backup_dir)?;
+            crate::copy::write_whole(&path, |tmp| {
+                conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy()])?;
+                Ok(())
+            })
         };
-        vacuum().map_err(crate::Error::BackupFailed)?;
+        vacuum().map_err(|e| crate::Error::BackupFailed(e.to_string()))?;
         Some(path)
     } else {
         None

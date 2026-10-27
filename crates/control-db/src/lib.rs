@@ -23,6 +23,18 @@ impl Control {
         Ok((Control(db), outcome))
     }
 
+    /// Writes a consistent copy of the control DB to `dest` (`VACUUM INTO`), never leaving
+    /// `dest` half written, on a connection of its own: writes carry on meanwhile.
+    pub async fn backup(&self, dest: &Path) -> Result<(), Error> {
+        self.0.vacuum_into(dest).await
+    }
+
+    /// The drain's last step: refuses every write from now on (`Error::Sealed`), lets the one in
+    /// flight finish, folds the WAL into the file and closes the idle connections.
+    pub async fn checkpoint(&self) -> Result<(), Error> {
+        self.0.checkpoint().await
+    }
+
     pub async fn read<T, F>(&self, f: F) -> Result<T, Error>
     where
         T: Send + 'static,

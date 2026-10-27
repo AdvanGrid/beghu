@@ -2,14 +2,17 @@
 
 use crate::Error;
 use crate::migrations::{self, ControlOutcome, Migration};
-use crate::pool::{self, Budget, ConnKind, Lane, LaneKey, Patience, Shared};
-use rusqlite::Connection;
+use crate::pool::{self, Budget, ConnKind, Lane, LaneKey, Patience, Shared, Slot};
+use rusqlite::{Connection, InterruptHandle};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct Db {
+    path: PathBuf,
     lane: Lane,
     shared: Arc<Shared>,
+    /// The backup under way ([`Db::vacuum_into`]), which the drain's checkpoint interrupts.
+    backup: Arc<Mutex<Option<InterruptHandle>>>,
 }
 
 impl Db {
@@ -42,7 +45,15 @@ impl Db {
             readers,
             shared.clone(),
         );
-        Ok((Db { lane, shared }, outcome))
+        Ok((
+            Db {
+                path: path.to_owned(),
+                lane,
+                shared,
+                backup: Arc::default(),
+            },
+            outcome,
+        ))
     }
 
     pub async fn read<T, F>(&self, f: F) -> Result<T, Error>
@@ -59,6 +70,54 @@ impl Db {
         F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     {
         self.lane.write(Patience::Wait, f).await
+    }
+
+    /// Writes a consistent copy of the database to `dest` (`VACUUM INTO`), replacing any file
+    /// there whole (see [`crate::copy::write_whole`]). It reads one snapshot on a connection of
+    /// its own, under the budget but beside the lane's: writes carry on meanwhile. Refused with
+    /// [`Error::Sealed`] once the drain has checkpointed the database, and cut short (an error,
+    /// `dest` untouched) if the checkpoint comes while it runs.
+    pub async fn vacuum_into(&self, dest: &Path) -> Result<(), Error> {
+        self.shared.unsealed()?;
+        let (src, dest) = (self.path.clone(), dest.to_owned());
+        let (shared, backup) = (self.shared.clone(), self.backup.clone());
+        let slot = Slot {
+            lane: LaneKey::Control,
+            kind: ConnKind::Reader,
+        };
+        self.shared
+            .with_slot(slot, Patience::Wait, move || {
+                // Not a `query_only` reader: `VACUUM INTO` writes, if only to the new file.
+                let c = pool::open_unpooled(&src)?;
+                {
+                    // Checked under the lock the checkpoint interrupts under: it either finds
+                    // this backup registered, or this backup finds the seal.
+                    let mut running = backup.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.unsealed()?;
+                    *running = Some(c.get_interrupt_handle());
+                }
+                let copied = crate::copy::write_whole(&dest, |tmp| {
+                    c.execute("VACUUM INTO ?1", [tmp.to_string_lossy()])?;
+                    Ok::<_, Error>(())
+                });
+                *backup.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                copied
+            })
+            .await
+    }
+
+    /// The drain's last step: seals the database, so every write from now on fails with
+    /// [`Error::Sealed`], interrupts a backup under way (its snapshot would keep the WAL from
+    /// being folded until it ends), lets the write in flight finish, folds the WAL into the file
+    /// and closes the idle connections (see [`Lane::checkpoint`]).
+    ///
+    /// [`Lane::checkpoint`]: crate::pool
+    pub async fn checkpoint(&self) -> Result<(), Error> {
+        self.shared.seal();
+        if let Some(running) = &*self.backup.lock().unwrap_or_else(|e| e.into_inner()) {
+            running.interrupt();
+        }
+        self.lane.checkpoint().await
     }
 
     pub fn open_connections(&self) -> usize {

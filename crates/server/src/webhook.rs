@@ -39,6 +39,7 @@
 
 use crate::App;
 use crate::edges::{self, Edge, Kind, Refetcher, Subject};
+use crate::jobs::Jobs;
 use crate::live::{Hub, Push};
 use axum::body::Bytes;
 use axum::extract::State;
@@ -55,7 +56,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, JoinSet};
 
 /// GitHub's payloads go up to 25 MB.
 pub const MAX_BODY: usize = 25 * 1024 * 1024;
@@ -146,19 +146,24 @@ fn enqueue(tx: &mpsc::UnboundedSender<Delivery>, in_flight: &InFlight, d: Delive
     }
 }
 
-/// The queue into the dispatcher. Dropping it (with the server) stops the dispatcher, its lanes,
-/// the requeue and the pruning; anything not finished stays unprocessed in the control DB for
-/// the next start.
+/// The queue into the dispatcher. Made before the server serves, so a delivery that comes in
+/// before [`resume`] waits in it, behind the ones [`resume`] puts first. The drain stops the
+/// dispatcher, its lanes, the requeue and the pruning (they're jobs); anything not finished stays
+/// unprocessed in the control DB for the next start.
 pub struct Queue {
     tx: mpsc::UnboundedSender<Delivery>,
     in_flight: Arc<InFlight>,
-    tasks: [JoinHandle<()>; 3],
+    /// The dispatcher's end, until [`resume`] starts it.
+    rx: Mutex<Option<mpsc::UnboundedReceiver<Delivery>>>,
 }
 
-impl Drop for Queue {
-    fn drop(&mut self) {
-        for t in &self.tasks {
-            t.abort();
+impl Queue {
+    pub fn new() -> Queue {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Queue {
+            tx,
+            in_flight: Arc::default(),
+            rx: Mutex::new(Some(rx)),
         }
     }
 }
@@ -173,6 +178,8 @@ pub struct Sinks {
     pub installs: mpsc::UnboundedSender<InstallChange>,
     /// Reads relationships back from GitHub after their deliveries.
     pub edges: Arc<Refetcher>,
+    /// What the dispatcher, its lanes and their settles run as.
+    pub jobs: Jobs,
 }
 
 /// An `installation` or `installation_repositories` delivery: the App's reach changed. Its rows
@@ -221,53 +228,62 @@ impl InstallChange {
     }
 }
 
-/// Starts the dispatcher with every delivery acked but not processed before this start queued
-/// first, oldest first, then the requeue and the pruning of processed deliveries older than
-/// `kept_for`. Call before the server listens, so the resumed deliveries go ahead of new ones.
-pub async fn resume(sinks: Sinks, kept_for: Duration) -> Result<Queue, control_db::Error> {
+/// Starts the dispatcher with every delivery acked but not processed before this start first,
+/// oldest first, ahead of any that came in since the server began serving (those wait in the
+/// queue, which holds them, so they aren't taken twice). An unprocessed delivery that a request
+/// holds at that moment (GitHub redelivering it, between the request's hold and its finding the
+/// delivery already stored) is skipped too, and waits for the requeue, up to a minute. Then
+/// the requeue, and the pruning of processed deliveries older than `kept_for`. They all run as
+/// jobs, which the drain stops; what they leave unprocessed waits in the control DB for the next
+/// start. Called once, after the server serves.
+pub async fn resume(
+    queue: &Queue,
+    sinks: Sinks,
+    kept_for: Duration,
+) -> Result<(), control_db::Error> {
+    let rx = queue
+        .rx
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .expect("the dispatcher resumes once");
     let pending = sinks
         .control
         .read(|c| control_db::q::pending_deliveries(c, i64::MAX))
         .await?;
-    if !pending.is_empty() {
+    let in_flight = queue.in_flight.clone();
+    // One a request holds came in since the server began serving: it's in the queue, or (a
+    // redelivery of one already stored) left for the requeue.
+    let resumed: Vec<Delivery> = pending
+        .into_iter()
+        .filter(|d| in_flight.claim(&d.guid))
+        .map(|d| Delivery {
+            guid: d.guid,
+            event: d.event,
+            payload: d.payload,
+        })
+        .collect();
+    if !resumed.is_empty() {
         eprintln!(
             "webhooks: resuming {} unprocessed deliveries",
-            pending.len()
+            resumed.len()
         );
     }
-    let in_flight = Arc::new(InFlight::default());
-    let (tx, rx) = mpsc::unbounded_channel();
-    for d in pending {
-        in_flight.claim(&d.guid);
-        enqueue(
-            &tx,
-            &in_flight,
-            Delivery {
-                guid: d.guid,
-                event: d.event,
-                payload: d.payload,
-            },
-        );
-    }
-    let prune = {
-        let control = sinks.control.clone();
-        tokio::spawn(async move {
-            loop {
-                prune(&control, kept_for).await;
-                tokio::time::sleep(PRUNE_EVERY).await;
-            }
-        })
-    };
-    let requeue = tokio::spawn(requeue(
+    let jobs = sinks.jobs.clone();
+    let control = sinks.control.clone();
+    jobs.spawn(async move {
+        loop {
+            prune(&control, kept_for).await;
+            tokio::time::sleep(PRUNE_EVERY).await;
+        }
+    });
+    jobs.spawn(requeue(
         sinks.control.clone(),
         in_flight.clone(),
-        tx.clone(),
+        queue.tx.clone(),
     ));
-    Ok(Queue {
-        tx,
-        in_flight: in_flight.clone(),
-        tasks: [tokio::spawn(dispatch(sinks, in_flight, rx)), prune, requeue],
-    })
+    jobs.spawn(dispatch(sinks, in_flight, resumed, rx));
+    Ok(())
 }
 
 /// Deletes the processed deliveries received more than `kept_for` ago: past GitHub's
@@ -445,6 +461,8 @@ struct Job {
     in_flight: Arc<InFlight>,
     /// Reads a relationship delivery's edges back once every account has applied it.
     edges: Arc<Refetcher>,
+    /// What its settle runs as.
+    jobs: Jobs,
 }
 
 /// One account's share of a [`Job`]. However it ends (applied, dropped on a full queue, or lost
@@ -476,8 +494,8 @@ impl Drop for Ticket {
         }
         if self.job.left.fetch_sub(1, Ordering::AcqRel) == 1 {
             let job = self.job.clone();
-            // None only while the runtime shuts down, when the delivery stays unprocessed anyway.
-            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            // No runtime only while it shuts down, when the delivery stays unprocessed anyway.
+            if tokio::runtime::Handle::try_current().is_ok() {
                 // Only now, with the delivery in every account's mirror (or given up there), so
                 // no lagging lane can apply it over the read-back. Each lane applies in delivery
                 // order, so whatever came before it is in too.
@@ -485,7 +503,8 @@ impl Drop for Ticket {
                     .change
                     .refetch()
                     .map(|(subject, kind, at_once)| job.edges.schedule(subject, kind, at_once));
-                rt.spawn(async move {
+                let jobs = job.jobs.clone();
+                jobs.spawn(async move {
                     if job.given_up.load(Ordering::Acquire) {
                         eprintln!(
                             "webhooks: {} {} left unprocessed, to be queued again",
@@ -538,26 +557,32 @@ struct Lane {
     task: tokio::task::Id,
 }
 
-/// Reads each delivery once and hands it to the lane of every account it fans out to.
+/// Reads each delivery once, `resumed` first, and hands it to the lane of every account it
+/// fans out to.
 async fn dispatch(
     sinks: Sinks,
     in_flight: Arc<InFlight>,
+    resumed: Vec<Delivery>,
     mut rx: mpsc::UnboundedReceiver<Delivery>,
 ) {
     // One lane per account that has had a delivery since this start: a handful of teammates.
     // Dropped with the dispatcher, which aborts them.
     let mut lanes: HashMap<i64, Lane> = HashMap::new();
-    let mut running = JoinSet::new();
+    let mut running = sinks.jobs.set();
+    let mut resumed = resumed.into_iter();
     loop {
-        let d = tokio::select! {
-            d = rx.recv() => match d {
-                Some(d) => d,
-                None => return,
+        let d = match resumed.next() {
+            Some(d) => d,
+            None => tokio::select! {
+                d = rx.recv() => match d {
+                    Some(d) => d,
+                    None => return,
+                },
+                Some(ended) = running.join_next_with_id() => {
+                    lane_ended(&sinks, &mut lanes, ended).await;
+                    continue;
+                }
             },
-            Some(ended) = running.join_next_with_id() => {
-                lane_ended(&sinks, &mut lanes, ended).await;
-                continue;
-            }
         };
         let started = Instant::now();
         if let Some(change) = InstallChange::parse(&d.event, &d.payload) {
@@ -595,6 +620,7 @@ async fn dispatch(
             control: sinks.control.clone(),
             in_flight: in_flight.clone(),
             edges: sinks.edges.clone(),
+            jobs: sinks.jobs.clone(),
         });
         for account in targets {
             let mut ticket = Ticket::new(&job);
@@ -630,18 +656,21 @@ async fn dispatch(
 
 fn spawn_settle(sinks: &Sinks, in_flight: &Arc<InFlight>, guid: String) {
     let (control, in_flight) = (sinks.control.clone(), in_flight.clone());
-    tokio::spawn(async move { settle(&control, &in_flight, &guid).await });
+    sinks
+        .jobs
+        .spawn(async move { settle(&control, &in_flight, &guid).await });
 }
 
-/// A lane's task ended, which only a panic does while the dispatcher runs: what it held is given
-/// up, so its account may now be missing deliveries that a later one doesn't cover.
+/// A lane's task ended, which only a panic does while the dispatcher runs (or the drain, which
+/// stops the dispatcher too): what it held is given up, so its account may now be missing
+/// deliveries that a later one doesn't cover.
 async fn lane_ended(
     sinks: &Sinks,
     lanes: &mut HashMap<i64, Lane>,
-    ended: Result<(tokio::task::Id, ()), tokio::task::JoinError>,
+    ended: Result<(tokio::task::Id, Option<()>), tokio::task::JoinError>,
 ) {
     let task = match &ended {
-        Ok((id, ())) => *id,
+        Ok((id, _)) => *id,
         Err(e) => e.id(),
     };
     let Some(account) = lanes.iter().find(|(_, l)| l.task == task).map(|(a, _)| *a) else {

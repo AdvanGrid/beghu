@@ -59,6 +59,13 @@ impl Mirrors {
         self.0.open_connections(account)
     }
 
+    /// The drain's last step: refuses every write from now on (`Error::Sealed`), lets each
+    /// mirror's write in flight finish, folds its WAL into its file and closes its idle
+    /// connections. The mirrors that failed, and why.
+    pub async fn checkpoint(&self) -> Vec<(AccountId, Error)> {
+        self.0.checkpoint().await
+    }
+
     /// Runs `f` on a `query_only` connection.
     pub async fn read<T, F>(&self, account: AccountId, caller: Caller, f: F) -> Result<T, Error>
     where

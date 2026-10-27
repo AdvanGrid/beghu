@@ -1,0 +1,15 @@
+# The build context: sources only. Build output, dependencies and local dev data stay out.
+.git
+target
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report
+.dev
+perf/data
+bench
+# Secrets never enter a build layer (`COPY . .`): the ones deploy/compose.yaml reads, any key
+# (the committed dev and test keys aren't needed to build the server), and env files.
+deploy/secrets
+**/*.pem
+.env*

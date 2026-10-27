@@ -32,6 +32,7 @@
 //! more is deleted.
 
 use crate::installations::{Installations, Scope};
+use crate::jobs::Jobs;
 use crate::live::{Hub, Push};
 use crate::webhook;
 use control_db::Control;
@@ -148,6 +149,8 @@ struct Inner {
     installations: Arc<Installations>,
     /// The waits between tries of a read-back GitHub fails; past the last, it gives up.
     retries: Vec<Duration>,
+    /// Where the workers run, so the drain stops them (see `jobs.rs`).
+    jobs: Jobs,
     /// The read-backs waiting or running, by issue and kind.
     pending: Mutex<HashMap<(i64, Kind), Pending>>,
 }
@@ -191,6 +194,7 @@ impl Refetcher {
         hub: Arc<Hub>,
         installations: Arc<Installations>,
         retries: Vec<Duration>,
+        jobs: Jobs,
     ) -> Refetcher {
         Refetcher(Arc::new(Inner {
             control,
@@ -198,6 +202,7 @@ impl Refetcher {
             hub,
             installations,
             retries,
+            jobs,
             pending: Mutex::default(),
         }))
     }
@@ -236,7 +241,11 @@ impl Refetcher {
             return heard;
         }
         let due = if at_once { now } else { now + REFETCH_AFTER };
-        let worker = tokio::spawn(worker(self.0.clone(), key)).abort_handle();
+        let worker = self
+            .0
+            .jobs
+            .spawn(worker(self.0.clone(), key))
+            .abort_handle();
         all.insert(
             key,
             Pending {

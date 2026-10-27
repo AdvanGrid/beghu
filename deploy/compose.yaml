@@ -1,0 +1,43 @@
+# An example of running beghu's image with Docker Compose (docs/deploy.md has the recipe). The
+# edge in front of it (TLS, h2) is yours: see "The edge" in docs/deploy.md.
+#
+#   BEGHU_IMAGE=beghu:<git sha> docker compose -f deploy/compose.yaml up -d
+services:
+  beghu:
+    image: ${BEGHU_IMAGE:?set BEGHU_IMAGE to the image you built}
+    restart: unless-stopped
+    # Over the drain's 25 s (docs/deploy.md, "Stopping"). Compose's default is 10 s.
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Block storage only: a named volume on the host's local disk. Never NFS or SMB.
+      - beghu-data:/data
+    environment:
+      BEGHU_PUBLIC_URL: https://beghu.example.com
+      GITHUB_APP_ID: "123456"
+      GITHUB_CLIENT_ID: Iv1.0123456789abcdef
+      GITHUB_APP_SLUG: beghu-example
+      BEGHU_TOKEN_KEY_FILE: /run/secrets/beghu_token_key
+      GITHUB_CLIENT_SECRET_FILE: /run/secrets/github_client_secret
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/github_webhook_secret
+    secrets:
+      - beghu_token_key
+      - github_client_secret
+      - github_app_private_key
+      - github_webhook_secret
+
+volumes:
+  beghu-data:
+
+# Files outside the repo, readable by uid 65532 (the image's nonroot user).
+secrets:
+  beghu_token_key:
+    file: ./secrets/beghu_token_key
+  github_client_secret:
+    file: ./secrets/github_client_secret
+  github_app_private_key:
+    file: ./secrets/github_app_private_key.pem
+  github_webhook_secret:
+    file: ./secrets/github_webhook_secret

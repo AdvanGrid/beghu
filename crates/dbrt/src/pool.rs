@@ -12,6 +12,7 @@ use crate::gate::Caller;
 use crate::{AccountId, Error};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{Notify, OwnedMutexGuard, Semaphore};
@@ -162,6 +163,8 @@ pub(crate) struct Shared {
     sampled: &'static [&'static str],
     state: Mutex<BudgetState>,
     freed: Notify,
+    /// Set by the drain's checkpoint: every lane on this budget refuses writes from then on.
+    sealed: AtomicBool,
 }
 
 impl Shared {
@@ -172,10 +175,41 @@ impl Shared {
             sampled,
             state: Mutex::default(),
             freed: Notify::new(),
+            sealed: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&shared);
         tokio::spawn(reap(weak));
         shared
+    }
+
+    /// From now on, every write on this budget's lanes fails with [`Error::Sealed`] (a write
+    /// already holding its lane's turn runs to its end). The drain's checkpoint calls it first,
+    /// so the WAL it folds stays folded.
+    pub(crate) fn seal(&self) {
+        self.sealed.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed.load(Ordering::SeqCst)
+    }
+
+    /// [`Error::Sealed`] once [`Shared::seal`] has been called: for a write to check before it
+    /// starts.
+    pub(crate) fn unsealed(&self) -> Result<(), Error> {
+        match self.is_sealed() {
+            true => Err(Error::Sealed),
+            false => Ok(()),
+        }
+    }
+
+    /// Open connections to one lane's file.
+    fn open_in(&self, lane: LaneKey) -> usize {
+        let st = self.state.lock().unwrap();
+        st.per_slot
+            .iter()
+            .filter(|(s, _)| s.lane == lane)
+            .map(|(_, n)| n)
+            .sum()
     }
 
     pub(crate) fn open_connections(&self, account: Option<AccountId>) -> usize {
@@ -481,6 +515,17 @@ pub fn open(path: &Path, kind: ConnKind) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// A connection to an existing file outside any lane, for work that needs neither a lane's writer
+/// nor a `query_only` reader (a `VACUUM INTO` backup). The caller holds its place under the cap.
+pub(crate) fn open_unpooled(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    Ok(conn)
+}
+
 /// The settings every beghu connection uses. Foreign keys are on explicitly: the control DB's
 /// cascades rely on them, and only the bundled SQLite build turns them on by default. Mirrors
 /// declare no foreign keys, so for them it changes nothing.
@@ -535,14 +580,76 @@ impl Lane {
             .await
     }
 
+    /// Runs `f` on the writer once every write that arrived before it is done; fails with
+    /// [`Error::Sealed`] once the drain has checkpointed the lane's budget.
     pub(crate) async fn write<T, E, W, F>(&self, patience: Patience, f: F) -> Result<T, E>
     where
         T: Send + 'static,
         E: From<Error> + From<W> + Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, W> + Send + 'static,
     {
-        let turn = self.writer.clone().lock_owned().await;
+        let turn = self.write_turn().await?;
         self.run(ConnKind::Writer, patience, turn, f).await
+    }
+
+    /// The lane's writer turn, once every write that arrived before is done; then
+    /// [`Error::Sealed`] if the drain sealed the budget meanwhile.
+    async fn write_turn(&self) -> Result<OwnedMutexGuard<()>, Error> {
+        let turn = self.writer.clone().lock_owned().await;
+        self.shared.unsealed()?;
+        Ok(turn)
+    }
+
+    /// Runs `work` holding the lane's writer turn and a writer's place under the cap, but on no
+    /// connection of the lane's: building a fresh file to put in place of the lane's. Sealed as
+    /// [`Lane::write`] is.
+    pub(crate) async fn replace<T, E>(
+        &self,
+        patience: Patience,
+        work: impl FnOnce() -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<Error> + Send + 'static,
+    {
+        let turn = self.write_turn().await?;
+        let slot = Slot {
+            lane: self.key,
+            kind: ConnKind::Writer,
+        };
+        self.shared
+            .with_slot(slot, patience, move || {
+                let _turn = turn;
+                work()
+            })
+            .await
+    }
+
+    /// The drain's last step, once the budget is sealed: waits for the write in flight (every
+    /// write queued behind it is refused), folds the WAL into the database file
+    /// (`wal_checkpoint(TRUNCATE)`), then closes the lane's idle connections. A lane with no
+    /// connection open has no WAL to fold: closing its last one did that. A connection still in
+    /// use stays open; a reader still holding part of the WAL is [`Error::CheckpointBusy`].
+    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
+        debug_assert!(self.shared.is_sealed(), "a checkpoint before the seal");
+        let turn = self.writer.clone().lock_owned().await;
+        if self.shared.open_in(self.key) == 0 {
+            return Ok(());
+        }
+        // `busy` is 1 when the checkpoint couldn't finish (`PRAGMA wal_checkpoint`).
+        let busy: i64 = self
+            .run::<_, Error, rusqlite::Error, _>(ConnKind::Writer, Patience::Wait, turn, |c| {
+                c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            })
+            .await?;
+        let (shared, key) = (self.shared.clone(), self.key);
+        tokio::task::spawn_blocking(move || shared.close_idle(key))
+            .await
+            .map_err(|_| Error::Panicked)?;
+        match busy {
+            0 => Ok(()),
+            _ => Err(Error::CheckpointBusy),
+        }
     }
 
     /// Runs `f` holding `turn` (the writer's lock or a reader's permit) until the query ends

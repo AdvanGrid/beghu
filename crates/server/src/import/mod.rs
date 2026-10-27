@@ -245,8 +245,7 @@ pub fn request(app: &App, account: i64, joined: Vec<i64>, resumed: Vec<i64>) {
         true
     });
     if start {
-        let app = app.clone();
-        tokio::spawn(async move { job(app, account).await });
+        app.spawn(move |app| job(app, account));
     }
 }
 
@@ -301,14 +300,13 @@ async fn job(app: App, account: i64) {
             }
             Next::Done => return,
         };
-        // Its own task: a panic ends this round, not the account's imports.
-        let run = {
-            let app = app.clone();
-            tokio::spawn(async move { paging::round(app, account, ids).await })
-        };
+        // Its own task: a panic ends this round, not the account's imports. A job, so the drain
+        // stops it between two pages; the next start resumes the import.
+        let run = app.spawn(move |app| paging::round(app, account, ids));
         let outcome = match run.await {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => {
+            Ok(None) => return,
+            Ok(Some(Ok(o))) => o,
+            Ok(Some(Err(e))) => {
                 eprintln!("import: account {account}: {e}");
                 Outcome::default()
             }

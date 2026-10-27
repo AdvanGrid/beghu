@@ -49,6 +49,13 @@ pub enum Error {
     },
     /// A query or job panicked.
     Panicked,
+    /// The database takes no more writes: the drain has checkpointed it (`Db::checkpoint`,
+    /// `Mirrors::checkpoint`), and a write now would bring back the WAL it folded.
+    Sealed,
+    /// The drain's checkpoint couldn't fold the whole WAL into the file: a reader still held
+    /// part of it (`wal_checkpoint`'s busy column). The WAL is intact, so nothing is lost; the
+    /// next open replays it.
+    CheckpointBusy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +121,12 @@ impl std::fmt::Display for Error {
                  v{build}; regenerate it"
             ),
             Error::Panicked => f.write_str("a database task panicked"),
+            Error::Sealed => f.write_str(
+                "the database takes no more writes: the drain has checkpointed it",
+            ),
+            Error::CheckpointBusy => f.write_str(
+                "the checkpoint didn't complete: a reader held the WAL, which stays beside the file",
+            ),
         }
     }
 }

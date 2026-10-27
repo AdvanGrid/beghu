@@ -72,6 +72,8 @@ pub struct Stack {
     server_rt: Option<tokio::runtime::Runtime>,
     /// The running server, until it stops.
     server_task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    /// A startup [`Stack::restart_held`] held back, until it hands it over.
+    held: Option<Held>,
     /// Signals the running server as SIGTERM does: the first drains, a second stops it at once.
     signals: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     _dir: tempfile::TempDir,
@@ -227,6 +229,7 @@ async fn start_seeded(
         web,
         server_rt: None,
         server_task: None,
+        held: None,
         signals: None,
         _dir: dir,
     };
@@ -247,6 +250,28 @@ impl Stack {
     pub async fn try_restart_with(
         &mut self,
         adjust: impl FnOnce(&mut beghu::Config),
+    ) -> Result<(), String> {
+        self.restart_gated(adjust, None).await
+    }
+
+    /// As [`Stack::restart_with`], but holding the startup back once the server serves, before
+    /// it resumes the webhook deliveries and starts the jobs (`Opened::start`), until
+    /// [`Held::start`].
+    pub async fn restart_held(&mut self, adjust: impl FnOnce(&mut beghu::Config)) -> Held {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        self.restart_gated(adjust, Some((gate, release)))
+            .await
+            .unwrap();
+        self.held.take().expect("a held start")
+    }
+
+    async fn restart_gated(
+        &mut self,
+        adjust: impl FnOnce(&mut beghu::Config),
+        gate: Option<(
+            tokio::sync::oneshot::Receiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        )>,
     ) -> Result<(), String> {
         self.stop();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -279,6 +304,9 @@ impl Stack {
             github_probe_every: Duration::from_secs(10),
             github_write_timeout: Duration::from_secs(30),
             read_back_retries: beghu::default_read_back_retries(),
+            backup_every: beghu::default_backup_every(),
+            assets_kept_for: beghu::default_assets_kept_for(),
+            drain_for: beghu::default_drain_for(),
         };
         adjust(&mut cfg);
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -287,17 +315,40 @@ impl Stack {
             .build()
             .unwrap();
         let (signals, received) = tokio::sync::mpsc::unbounded_channel();
+        let (release, gate) = match gate {
+            Some((gate, release)) => (Some(release), Some(gate)),
+            None => (None, None),
+        };
+        // As `main` starts it: serving, then the rest of the startup.
+        let (serving, served) = tokio::sync::oneshot::channel();
         let started = rt.spawn(async move {
-            let app = beghu::App::open(cfg).await?;
+            let opened = beghu::App::open(cfg).await?;
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            Ok::<_, String>(tokio::spawn(beghu::serve_until(listener, app, received)))
-        });
-        let task = match started.await.unwrap() {
-            Ok(task) => task,
-            Err(e) => {
-                rt.shutdown_background();
-                return Err(e);
+            let _ = serving.send(tokio::spawn(beghu::serve_until(
+                listener,
+                opened.app(),
+                received,
+            )));
+            if let Some(gate) = gate {
+                let _ = gate.await;
             }
+            opened.start().await
+        });
+        // It never serves if the open fails; a held startup is waited for in `Held::start`.
+        let served = served.await.ok();
+        let task = match (served, release) {
+            (Some(task), Some(release)) => {
+                self.held = Some(Held { release, started });
+                task
+            }
+            (served, _) => match (served, started.await.unwrap()) {
+                (Some(task), Ok(())) => task,
+                (_, Err(e)) => {
+                    rt.shutdown_background();
+                    return Err(e);
+                }
+                (None, Ok(())) => unreachable!("a startup that never served succeeded"),
+            },
         };
         // A stack that restarts or goes away shuts the server's runtime down instead.
         self.signals = Some(signals);
@@ -320,11 +371,26 @@ impl Stack {
     }
 }
 
+/// A server's startup held back after it began serving (see [`Stack::restart_held`]).
+pub struct Held {
+    release: tokio::sync::oneshot::Sender<()>,
+    started: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl Held {
+    /// Lets the startup go on, and waits for it.
+    pub async fn start(self) {
+        let _ = self.release.send(());
+        self.started.await.unwrap().unwrap();
+    }
+}
+
 impl Stack {
     /// Stops the running server, if any, as a crash would: its runtime goes, and with it every
     /// task it had, at the task's next await. Blocking work already under way (a mirror
     /// transaction) runs to its end.
     fn stop(&mut self) {
+        self.held = None;
         self.signals = None;
         self.server_task = None;
         if let Some(rt) = self.server_rt.take() {

@@ -178,12 +178,14 @@ dependencies = [
  "reqwest",
  "ring",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tower-http",
  "ts-rs",
 ]
@@ -1680,6 +1682,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

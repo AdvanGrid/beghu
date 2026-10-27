@@ -47,10 +47,12 @@ async fn an_unknown_api_path_is_a_json_404_signed_in_or_not() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_not_modified_asset_keeps_its_cache_headers() {
-    let s = start().await;
+    let mut s = start().await;
     let assets = s.web.join("assets");
     std::fs::create_dir_all(&assets).unwrap();
     std::fs::write(assets.join("index-abc123.js"), "export {};\n").unwrap();
+    // A start copies its build's assets to the volume, which serves them.
+    s.restart_with(|_| {}).await;
     let url = format!("{}/assets/index-abc123.js", s.server);
 
     let first = s.http.get(&url).send().await.unwrap();

@@ -76,6 +76,22 @@ fn it_refuses_to_start_without_a_required_variable_and_names_it() {
 }
 
 #[test]
+fn it_refuses_a_build_id_it_cant_name_a_file_or_header_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let env: Vec<_> = valid_env(dir.path(), 1)
+        .into_iter()
+        .map(|(k, v)| match k {
+            "BEGHU_BUILD_ID" => (k, "../a b".into()),
+            _ => (k, v),
+        })
+        .collect();
+    let out = beghu(&env).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("BEGHU_BUILD_ID"), "{stderr}");
+}
+
+#[test]
 fn it_refuses_an_app_key_it_cant_sign_with() {
     let dir = tempfile::tempdir().unwrap();
     let env: Vec<_> = valid_env(dir.path(), 1)
@@ -120,22 +136,20 @@ fn it_refuses_the_committed_dev_app_key_against_anything_but_a_local_fake() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn with_a_valid_environment_it_serves_healthz() {
-    let dir = tempfile::tempdir().unwrap();
+/// Starts `beghu` on a free port and waits for its first `/healthz` answer.
+async fn running(dir: &std::path::Path) -> (Running, u16, reqwest::Response) {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
     let mut child = Running(
-        beghu(&valid_env(dir.path(), port))
+        beghu(&valid_env(dir, port))
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
     );
-
     let http = reqwest::Client::new();
     let started = Instant::now();
     let res = loop {
@@ -154,10 +168,43 @@ async fn with_a_valid_environment_it_serves_healthz() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    (child, port, res)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_valid_environment_it_serves_healthz() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_child, _, res) = running(dir.path()).await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["x-beghu-build"], "smoke");
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["build"], "smoke");
+}
+
+/// What a platform's stop sends: SIGTERM, with nothing in flight, ends the process cleanly well
+/// inside the drain, the control DB's WAL folded into its file.
+#[tokio::test(flavor = "multi_thread")]
+async fn sigterm_stops_it_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, _, _) = running(dir.path()).await;
+    let killed = Command::new("kill")
+        .args(["-TERM", &child.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            child.fail("still running 10 s after SIGTERM");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(status.success(), "{status}");
+    let wal = dir.path().join("data").join("control.db-wal");
+    assert_eq!(std::fs::metadata(&wal).map_or(0, |m| m.len()), 0);
 }
 
 #[test]

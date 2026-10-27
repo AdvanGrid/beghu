@@ -121,6 +121,11 @@ pub enum ErrorKind {
 
 impl From<dbrt::Error> for ApiError {
     fn from(e: dbrt::Error) -> Self {
+        // A write that reached a database after the drain's checkpoint sealed it: a request the
+        // drain's deadline left running.
+        if let dbrt::Error::Sealed = e {
+            return ApiError::restarting();
+        }
         match e.retry_after() {
             Some(retry_after) => ApiError::Unavailable {
                 retry_after,
@@ -135,8 +140,19 @@ impl From<crate::tokens::Error> for ApiError {
     fn from(e: crate::tokens::Error) -> Self {
         match e {
             crate::tokens::Error::SignInAgain => ApiError::SignedOut,
+            crate::tokens::Error::Restarting => ApiError::restarting(),
             crate::tokens::Error::Db(e) => e.into(),
             e => ApiError::Internal(e.to_string()),
+        }
+    }
+}
+
+impl ApiError {
+    /// The drain stopped the work this request waited on: beghu is restarting.
+    pub fn restarting() -> ApiError {
+        ApiError::Unavailable {
+            retry_after: Duration::from_secs(5),
+            why: "beghu is restarting; try again in a moment".into(),
         }
     }
 }

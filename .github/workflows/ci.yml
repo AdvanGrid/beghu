@@ -103,6 +103,62 @@ jobs:
       - name: Build
         run: npx vite build
 
+  changes:
+    # Whether a PR touches what the image is built from: the server's and the web app's sources
+    # as much as the Dockerfile, so most PRs do. `image` runs only then (and on main).
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            image:
+              - Dockerfile
+              - .dockerignore
+              - deploy/**
+              - Cargo.toml
+              - Cargo.lock
+              - .cargo/**
+              - crates/**
+              - perf/fixture/**
+              - web/src/**
+              - web/package.json
+              - web/package-lock.json
+              - web/vite.config.*
+              - web/index.html
+              - web/theme.js
+              - web/*.svg
+              - .github/workflows/ci.yml
+
+  image:
+    # The deploy image (docs/deploy.md): built from the Dockerfile, then run as it would be
+    # deployed, on a fresh volume, by deploy/smoke.sh. Nothing is pushed. On main, and on PRs
+    # that touch the image's inputs; required where it runs (a skipped job passes).
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # The layers cached in GitHub Actions' cache between runs.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: beghu:ci
+          build-args: BEGHU_BUILD_ID=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: deploy/smoke.sh beghu:ci
+
   e2e:
     # Playwright on full Chromium against the ./dev-ctl stack in fixture mode.
     runs-on: ubuntu-latest

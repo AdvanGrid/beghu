@@ -202,6 +202,8 @@ enum Failure {
     MaybePosted {
         after: i64,
     },
+    /// The drain stopped the jobs before the write's token could be refreshed: nothing was sent.
+    Restarting,
     Internal(String),
 }
 
@@ -216,6 +218,7 @@ impl From<Failure> for ApiError {
             Failure::Conflict(m) => ApiError::Conflict(m),
             Failure::GitHubDown(m) => ApiError::GitHubDown(m),
             Failure::MaybePosted { after } => ApiError::MaybePosted { after },
+            Failure::Restarting => ApiError::restarting(),
             Failure::Internal(m) => ApiError::Internal(m),
         }
     }
@@ -343,8 +346,9 @@ impl Ops {
             _done: done,
         };
         drop(book);
-        // Its own task: the request that started it may go away; the write carries on.
-        tokio::spawn(async move {
+        // Its own task: the request that started it may go away; the write carries on. A job, so
+        // a write the drain's step 3 didn't see finish in time is stopped at step 4.
+        app.jobs().spawn(async move {
             if let Some(before) = before {
                 // Done, or its task ended some other way: either way it's this op's turn.
                 let _ = before.await;
@@ -649,6 +653,7 @@ async fn call(
             Ok(v) => return Ok(v),
             Err(tokens::Error::GitHub(e)) => e,
             Err(tokens::Error::SignInAgain) => return Err(Failure::SignedOut),
+            Err(tokens::Error::Restarting) => return Err(Failure::Restarting),
             // Only before a call, or after a 401 (GitHub took nothing): the write wasn't made.
             Err(e) => return Err(Failure::Internal(e.to_string())),
         };
@@ -720,21 +725,21 @@ async fn refused_why(app: &App, account: i64, at: &Place, op: &Op) -> String {
     // The repo by its bare name, as the user knows it.
     let repo = &at.repo;
     let reread = {
-        let (app, at) = (app.clone(), at.clone());
-        tokio::spawn(async move { reread_role(&app, account, &at).await })
+        let at = at.clone();
+        app.spawn(move |app| async move { reread_role(&app, account, &at).await })
     };
     let unknown = || format!("your role on {repo} may not allow it");
     match tokio::time::timeout(REREAD_WAIT, reread).await {
-        Ok(Ok(Ok(Access::Role(role)))) if allows(role, op, at.own) => {
+        Ok(Ok(Some(Ok(Access::Role(role))))) if allows(role, op, at.own) => {
             "GitHub didn't apply this change".into()
         }
-        Ok(Ok(Ok(Access::Role(role)))) => format!(
+        Ok(Ok(Some(Ok(Access::Role(role))))) => format!(
             "you have {} on {repo}, which closes or reopens only issues you opened",
             role.name()
         ),
-        Ok(Ok(Ok(Access::None))) => format!("you no longer have access to {repo}"),
-        Ok(Ok(Ok(Access::Unknown))) => unknown(),
-        Ok(Ok(Err(e))) => {
+        Ok(Ok(Some(Ok(Access::None)))) => format!("you no longer have access to {repo}"),
+        Ok(Ok(Some(Ok(Access::Unknown)))) | Ok(Ok(None)) => unknown(),
+        Ok(Ok(Some(Err(e)))) => {
             eprintln!("ops: account {account}: re-reading the role on {repo}: {e}");
             unknown()
         }
@@ -760,8 +765,7 @@ async fn reread_role(app: &App, account: i64, at: &Place) -> Result<Access, Stri
         .map_err(|e| e.to_string())?;
     match access {
         Access::None => {
-            let app = app.clone();
-            tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+            app.spawn(move |app| async move { repos::refresh_roles_now(&app, account).await });
         }
         Access::Unknown => {}
         Access::Role(role) => {

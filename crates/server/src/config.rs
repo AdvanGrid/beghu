@@ -14,7 +14,8 @@ pub struct Config {
     /// port other than the scheme's own, in lower case), as browsers send it in `Origin`. Sets
     /// the OAuth callback.
     pub public_url: String,
-    /// `BEGHU_DATA_DIR`: the volume. Holds `control.db`, `backups/` and `mirrors/`.
+    /// `BEGHU_DATA_DIR`: the volume, on block storage. Holds `control.db`, `backups/`,
+    /// `mirrors/`, and with a web build `assets/` and `builds/`.
     pub data_dir: PathBuf,
     /// `BEGHU_TOKEN_KEY`: the HKDF master key (base64, at least 32 bytes).
     pub token_key: Vec<u8>,
@@ -57,6 +58,15 @@ pub struct Config {
     /// in all). Past the last, the accounts syncing the issue's repo are marked `needs_resync`
     /// for a sweep to repair.
     pub read_back_retries: Vec<Duration>,
+    /// How often the control DB is backed up (an hour; see `backups.rs`).
+    pub backup_every: Duration,
+    /// How long a superseded build's assets stay on the volume (a day): open tabs, cached shells
+    /// and pages restored from the back-forward cache still load the old build's chunks.
+    pub assets_kept_for: Duration,
+    /// How long the drain waits for the writes in flight, the jobs and the open requests before
+    /// its WAL checkpoint (22 s), which gets 3 s more: 25 s in all, inside the 30 s stop grace
+    /// period docs/deploy.md ("Stopping") asks for.
+    pub drain_for: Duration,
 }
 
 /// [`Config::read_back_retries`]: doubling from a second, then every minute, 15 tries in all.
@@ -65,6 +75,21 @@ pub fn default_read_back_retries() -> Vec<Duration> {
         .into_iter()
         .map(Duration::from_secs)
         .collect()
+}
+
+/// [`Config::backup_every`]: an hour.
+pub fn default_backup_every() -> Duration {
+    Duration::from_secs(60 * 60)
+}
+
+/// [`Config::drain_for`]: 22 s.
+pub fn default_drain_for() -> Duration {
+    Duration::from_secs(22)
+}
+
+/// [`Config::assets_kept_for`]: a day.
+pub fn default_assets_kept_for() -> Duration {
+    Duration::from_secs(24 * 60 * 60)
 }
 
 pub struct GitHubConfig {
@@ -107,7 +132,7 @@ impl Config {
             ));
         }
         Ok(Config {
-            build_id: std::env::var("BEGHU_BUILD_ID").unwrap_or_else(|_| "dev".into()),
+            build_id: build_id()?,
             public_url,
             data_dir: PathBuf::from(required("BEGHU_DATA_DIR")?),
             token_key,
@@ -136,6 +161,9 @@ impl Config {
             github_probe_every: Duration::from_secs(10),
             github_write_timeout: Duration::from_secs(30),
             read_back_retries: default_read_back_retries(),
+            backup_every: default_backup_every(),
+            assets_kept_for: default_assets_kept_for(),
+            drain_for: default_drain_for(),
         })
     }
 
@@ -147,13 +175,30 @@ impl Config {
         self.data_dir.join("control.db")
     }
 
-    /// Where the control DB's `VACUUM INTO` backups go.
+    /// Where the control DB's `VACUUM INTO` backups go: the hourly ones and the one taken
+    /// before a migration.
     pub fn backups(&self) -> PathBuf {
         self.data_dir.join("backups")
     }
 
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
+    }
+}
+
+/// `BEGHU_BUILD_ID` (default `dev`): it names the build's asset record on the volume
+/// (`builds/<id>.json`) and goes out in a header, so only letters, digits, `.`, `_` and `-`.
+fn build_id() -> Result<String, String> {
+    let id = optional("BEGHU_BUILD_ID", "dev");
+    let ok = id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    match ok {
+        true => Ok(id),
+        false => Err(format!(
+            "BEGHU_BUILD_ID must be up to 64 letters, digits, '.', '_' or '-' (the git SHA), got {id:?}"
+        )),
     }
 }
 

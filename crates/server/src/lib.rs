@@ -1,9 +1,13 @@
 //! The beghu server: sign-in, the browser session, the shell, the JSON API, webhooks (with the
-//! relationship read-backs that follow them) and the live stream. Jobs land here as later slices
-//! add them.
+//! relationship read-backs that follow them), the live stream, and the jobs: the import, the
+//! hourly control-DB backup and asset pruning. Jobs land here as later slices add them. Every
+//! background task is spawned through [`jobs::Jobs`], so the drain stops it and waits for it;
+//! `jobs.rs` has the contract a job keeps, and the few tasks outside it.
 
 mod api;
+mod assets;
 mod auth;
+mod backups;
 mod config;
 mod crypto;
 mod detail;
@@ -13,6 +17,7 @@ mod facets;
 mod github;
 mod import;
 mod installations;
+mod jobs;
 mod live;
 mod ops;
 mod query;
@@ -20,9 +25,13 @@ mod relationships;
 mod repos;
 mod shell;
 mod tokens;
+mod volume;
 mod webhook;
 
-pub use config::{Config, GitHubConfig, MirrorsConfig, default_read_back_retries};
+pub use config::{
+    Config, GitHubConfig, MirrorsConfig, default_assets_kept_for, default_backup_every,
+    default_drain_for, default_read_back_retries,
+};
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -62,13 +71,52 @@ struct Inner {
     ops: ops::Ops,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
     draining: tokio::sync::watch::Sender<bool>,
+    /// True once the startup is done ([`Opened::start`]): `/readyz` answers 503 until then.
+    started: std::sync::atomic::AtomicBool,
+    /// The background jobs, which the drain stops.
+    jobs: jobs::Jobs,
+    /// Where `/assets/*` is served from: the volume's copy of this build's assets and the
+    /// previous builds' (`None` without a web build).
+    assets_dir: Option<std::path::PathBuf>,
+}
+
+/// An app opened up to listening, nothing running in the background yet. Startup's steps (#86,
+/// "Startup order") split at listening:
+///
+/// 1. migrate the control DB (after a `VACUUM INTO` backup);
+/// 2. copy this build's assets to the volume and prune the old ones;
+/// 3. delete dormant accounts' mirror files (#114, not built yet);
+/// 4. listen;
+/// 5. resume the webhook deliveries acked but not processed, then redeliver for the downtime
+///    (#92);
+/// 6. start the migration walker (#114, not built yet);
+///
+/// then the other jobs. [`App::open`] runs 1 to 3; the caller listens and serves
+/// ([`Opened::app`] to [`serve_until`]); then [`Opened::start`] runs 5, 6 and the jobs, while the
+/// server already answers. A webhook delivery that comes in before step 5 waits in the queue
+/// behind the resumed ones (see [`webhook::resume`]), and `/readyz` answers 503 until `start`
+/// is done.
+pub struct Opened {
+    app: App,
+    sinks: webhook::Sinks,
+    notices: tokio::sync::broadcast::Receiver<mirror_db::Notice>,
+    installs: tokio::sync::mpsc::UnboundedReceiver<webhook::InstallChange>,
+    /// The volume's assets, and when their next prune is due (`None` without a web build, or
+    /// with no build superseded, when there's none to wait for).
+    assets: Option<(assets::Assets, i64)>,
 }
 
 impl App {
-    /// Opens the control DB (migrating it after a `VACUUM INTO` backup) and the mirrors under
-    /// `BEGHU_DATA_DIR`, reads the shell template and the build's Vite manifest, and resumes the
-    /// webhook deliveries acked but not processed before. Any error should stop startup.
-    pub async fn open(cfg: Config) -> Result<App, String> {
+    /// Startup up to listening (steps 1 to 3, see [`Opened`]): refuses a data directory on a
+    /// network filesystem, opens the control DB (migrating it after a `VACUUM INTO` backup),
+    /// reads the shell template and the build's Vite manifest, copies the build's assets to the
+    /// volume and prunes the old ones, and opens the mirrors. Nothing runs in the background
+    /// yet: [`Opened::start`] starts it once the server listens. Any error should stop startup.
+    pub async fn open(cfg: Config) -> Result<Opened, String> {
+        let dir = cfg.data_dir.clone();
+        tokio::task::spawn_blocking(move || volume::check(&dir))
+            .await
+            .map_err(|_| "checking the data directory panicked".to_owned())??;
         let (path, backups) = (cfg.control_db(), cfg.backups());
         let control = tokio::task::spawn_blocking(move || Control::open(&path, &backups))
             .await
@@ -76,15 +124,28 @@ impl App {
             .map_err(|e| format!("can't open the control DB: {e}"))?
             .0;
         let control = Arc::new(control);
-        let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
         let shell = cfg.web_dir.as_deref().map(shell::Shell::load).transpose()?;
+        let assets = assets::Assets::new(&cfg.data_dir, cfg.assets_kept_for);
+        let prune_next = match cfg.web_dir.clone() {
+            None => None,
+            Some(web) => {
+                let (a, build) = (assets.clone(), cfg.build_id.clone());
+                tokio::task::spawn_blocking(move || a.install(&web, &build, now()))
+                    .await
+                    .map_err(|_| "copying the assets panicked".to_owned())?
+                    .map_err(|e| format!("can't copy the build's assets to the volume: {e}"))?
+            }
+        };
+        let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
+        let jobs = jobs::Jobs::default();
         let github = github::GitHub::new(
             &cfg.github,
             cfg.github_probe_every,
             cfg.github_write_timeout,
         );
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
-        let tokens = tokens::Tokens::new(control.clone(), github.clone(), keys.clone());
+        let tokens =
+            tokens::Tokens::new(control.clone(), github.clone(), keys.clone(), jobs.clone());
         let hub = Arc::new(live::Hub::default());
         let installations = installations::Installations::new(github.clone(), &cfg.github)?;
         let edges = Arc::new(edges::Refetcher::new(
@@ -93,21 +154,19 @@ impl App {
             hub.clone(),
             installations.clone(),
             cfg.read_back_retries.clone(),
+            jobs.clone(),
         ));
         let (installs, installs_rx) = tokio::sync::mpsc::unbounded_channel();
-        let webhooks = webhook::resume(
-            webhook::Sinks {
-                control: control.clone(),
-                mirrors: mirrors.clone(),
-                hub: hub.clone(),
-                installs,
-                edges,
-            },
-            cfg.deliveries_kept_for,
-        )
-        .await
-        .map_err(|e| format!("can't read the unprocessed webhook deliveries: {e}"))?;
+        let sinks = webhook::Sinks {
+            control: control.clone(),
+            mirrors: mirrors.clone(),
+            hub: hub.clone(),
+            installs,
+            edges,
+            jobs: jobs.clone(),
+        };
         let notices = mirrors.notices();
+        let assets_dir = cfg.web_dir.is_some().then(|| assets.dir.clone());
         let app = App(Arc::new(Inner {
             cfg,
             control,
@@ -118,15 +177,24 @@ impl App {
             shell,
             roles: repos::Roles::default(),
             hub,
-            webhooks,
+            webhooks: webhook::Queue::new(),
             installations,
             imports: import::Imports::default(),
             ops: ops::Ops::default(),
             draining: tokio::sync::watch::channel(false).0,
+            started: Default::default(),
+            jobs,
+            assets_dir,
         }));
-        tokio::spawn(follow_notices(app.clone(), notices));
-        tokio::spawn(follow_installations(app.clone(), installs_rx));
-        Ok(app)
+        // Step 3: delete dormant accounts' mirror files, before anything can open one.
+        // TODO(#114): dormancy's startup cleanup goes here.
+        Ok(Opened {
+            app,
+            sinks,
+            notices,
+            installs: installs_rx,
+            assets: prune_next.map(|next| (assets, next)),
+        })
     }
 
     fn cfg(&self) -> &Config {
@@ -181,6 +249,20 @@ impl App {
         &self.0.ops
     }
 
+    fn jobs(&self) -> &jobs::Jobs {
+        &self.0.jobs
+    }
+
+    /// Runs `job` as a job (see [`jobs::Jobs::spawn`]), handing it its own clone of the app.
+    fn spawn<F, Fut>(&self, job: F) -> tokio::task::JoinHandle<Option<Fut::Output>>
+    where
+        F: FnOnce(App) -> Fut,
+        Fut: std::future::Future + Send + 'static,
+        Fut::Output: Send + 'static,
+    {
+        self.jobs().spawn(job(self.clone()))
+    }
+
     /// True once the drain has started.
     fn draining(&self) -> bool {
         *self.0.draining.borrow()
@@ -192,6 +274,44 @@ impl App {
     }
 }
 
+impl Opened {
+    /// The app to serve, from step 4 on.
+    pub fn app(&self) -> App {
+        self.app.clone()
+    }
+
+    /// Startup once the server listens (steps 5 and 6, see [`Opened`]), then the other jobs.
+    /// Any error should stop startup.
+    pub async fn start(self) -> Result<(), String> {
+        let Opened {
+            app,
+            sinks,
+            notices,
+            installs,
+            assets,
+        } = self;
+        // Step 5: the deliveries acked but not processed go first, ahead of any that came in
+        // since listening.
+        webhook::resume(app.webhooks(), sinks, app.cfg().deliveries_kept_for)
+            .await
+            .map_err(|e| format!("can't read the unprocessed webhook deliveries: {e}"))?;
+        // TODO(#92): redelivery for the downtime, then the reconciliation start, go here. Spawn
+        // them through `jobs`, never await them here: `start` isn't a job, so the drain couldn't
+        // stop what it awaits, and readiness and the jobs below would wait on GitHub.
+        // Step 6. TODO(#114): start the migration walker here.
+        app.spawn(backups::job);
+        if let Some((assets, next)) = assets {
+            app.jobs().spawn(assets::job(assets, Some(next)));
+        }
+        app.spawn(|app| follow_notices(app, notices));
+        app.spawn(|app| follow_installations(app, installs));
+        app.0
+            .started
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 /// A mirror created empty (none on disk, or a rebuild) gets the account's synced repos imported:
 /// the re-read of its repos brings the new mirror in line with its pick.
 async fn follow_notices(app: App, mut rx: tokio::sync::broadcast::Receiver<mirror_db::Notice>) {
@@ -200,8 +320,7 @@ async fn follow_notices(app: App, mut rx: tokio::sync::broadcast::Receiver<mirro
         match rx.recv().await {
             Ok(mirror_db::Notice::NeedsImport { account, why }) => {
                 eprintln!("account {account}: {why}; importing its synced repos");
-                let app = app.clone();
-                tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+                app.spawn(move |app| async move { repos::refresh_roles_now(&app, account).await });
             }
             Ok(_) | Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return,
@@ -240,8 +359,7 @@ async fn follow_installations(
             }
         }
         for account in accounts {
-            let app = app.clone();
-            tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+            app.spawn(move |app| async move { repos::refresh_roles_now(&app, account).await });
         }
     }
 }
@@ -303,10 +421,11 @@ pub fn router(app: App) -> Router {
         )
         .merge(shell)
         .nest("/api", api);
-    if let Some(dir) = &app.cfg().web_dir {
-        // Hashed build assets: immutable, and served from their precompressed siblings when the
-        // browser takes one. An unknown path is a 404, never the shell.
-        let files = tower_http::services::ServeDir::new(dir.join("assets"))
+    if let Some(dir) = &app.0.assets_dir {
+        // Hashed build assets, this build's and the previous builds' still kept on the volume:
+        // immutable, and served from their precompressed siblings when the browser takes one. An
+        // unknown path is a 404, never the shell.
+        let files = tower_http::services::ServeDir::new(dir)
             .precompressed_br()
             .precompressed_gzip();
         let assets = Router::new()
@@ -348,20 +467,36 @@ pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Resu
     axum::serve(listener, router(app)).await
 }
 
-/// The longest a drain takes before the server stops anyway.
-const DRAIN: Duration = Duration::from_secs(25);
+/// The part of the drain kept for the final WAL checkpoint, after [`Config::drain_for`] (22 s)
+/// for steps 1 to 5's stop: 25 s in all. docs/deploy.md ("Stopping") has these figures and the
+/// stop grace period (30 s) they need.
+const CHECKPOINT: Duration = Duration::from_secs(3);
 
-/// Serves until the first of `signals` (SIGTERM, in `main`), then drains for up to [`DRAIN`]:
-/// `/readyz` answers 503, the live streams close and new writes are turned away (503 with
-/// `retry-after`) while the writes in flight finish; then the server stops taking connections,
-/// sends the answers still on their way and returns. A second signal during the drain returns at
-/// once.
+/// Serves until the first of `signals` (SIGTERM, in `main`), then drains for up to
+/// [`Config::drain_for`] and [`CHECKPOINT`] (25 s):
 ///
-/// The drain waits for writes only, not for webhook deliveries or the relationship read-backs
-/// that hold them (see [`edges`]). A write has no durable queue, so one cut off is lost; a
-/// delivery is marked processed only once its read-back has landed, so one cut off is replayed,
-/// and read back, at the next start, and replaying is idempotent. A read-back can also wait out
-/// retries for about 10 minutes, far past the drain's 25 s.
+/// 1. `/readyz` answers 503;
+/// 2. the live streams close;
+/// 3. new writes are turned away (503 with `retry-after`) while the writes in flight finish;
+/// 4. the jobs stop at their next await (see [`jobs`]);
+/// 5. the server stops taking connections and sends the answers still on their way, then the
+///    control DB and the mirrors are sealed (a write from anything still running fails, and a
+///    request it was for answers 503 with `retry-after`), and their WALs checkpointed into their
+///    files, all at once; and it returns.
+///
+/// Steps 1 to 5's stop take up to [`Config::drain_for`], the checkpoint up to [`CHECKPOINT`].
+/// Steps 3 and 4 share one deadline, `drain_for` after the signal: writes that use most of it
+/// leave the jobs only the rest, and the server's stop in step 5 is cut off at it too. A
+/// checkpoint that overruns is left running: the caller should exit once this returns (`main`
+/// does), since a blocking thread still in SQLite would hold up a runtime's shutdown.
+///
+/// A second signal during the drain returns at once, without the checkpoint.
+///
+/// The drain waits for writes, not for webhook deliveries or the relationship read-backs that
+/// hold them (see [`edges`]): those are jobs, stopped. A write has no durable queue, so one cut
+/// off is lost; a delivery is marked processed only once its read-back has landed, so one cut
+/// off is replayed, and read back, at the next start, and replaying is idempotent. A read-back
+/// can also wait out retries for about 10 minutes, far past the drain's 25 s.
 pub async fn serve_until(
     listener: tokio::net::TcpListener,
     app: App,
@@ -388,41 +523,66 @@ pub async fn serve_until(
         let stop = signalled(1);
         async move {
             stop.await;
-            let until = tokio::time::Instant::now() + DRAIN;
-            eprintln!(
-                "draining: waiting up to {} s for writes in flight",
-                DRAIN.as_secs()
-            );
+            let wait = app.cfg().drain_for;
+            let until = tokio::time::Instant::now() + wait;
+            eprintln!("draining: waiting up to {wait:?} for writes in flight");
             app.0.draining.send_replace(true);
             if tokio::time::timeout_at(until, app.ops().idle())
                 .await
                 .is_err()
             {
-                eprintln!(
-                    "draining: writes still in flight after {} s",
-                    DRAIN.as_secs()
-                );
+                eprintln!("draining: writes still in flight after {wait:?}");
+            }
+            if !app.jobs().stop(until).await {
+                eprintln!("draining: jobs still running after {wait:?}");
             }
             let _ = drained.send(until);
         }
     };
-    let server = axum::serve(listener, router(app)).with_graceful_shutdown(drain);
+    let server = axum::serve(listener, router(app.clone())).with_graceful_shutdown(drain);
     let give_up = async {
         match deadline.await {
             Ok(until) => tokio::time::sleep_until(until).await,
             Err(_) => std::future::pending().await,
         }
     };
-    tokio::select! {
-        r = server.into_future() => r,
-        () = give_up => {
-            eprintln!("draining: stopping with requests still open");
-            Ok(())
+    let stopped = async {
+        tokio::select! {
+            r = server.into_future() => r,
+            () = give_up => {
+                eprintln!("draining: stopping with requests still open");
+                Ok(())
+            }
         }
+    };
+    tokio::select! {
+        r = async {
+            let r = stopped.await;
+            if tokio::time::timeout(CHECKPOINT, checkpoint(&app)).await.is_err() {
+                eprintln!("draining: checkpoint unfinished after {} s", CHECKPOINT.as_secs());
+            }
+            r
+        } => r,
         () = signalled(2) => {
             eprintln!("draining: signalled again; stopping now");
             Ok(())
         }
+    }
+}
+
+/// The drain's last step: seals the control DB and the mirrors, so nothing still running (a job
+/// that didn't stop in time, a transaction a stopped job left on its blocking thread) can write
+/// once it's done, lets each one's write in flight finish, and folds their WALs into their
+/// files, so the volume holds whole databases. All at once, so one database kept waiting holds
+/// up none of the others within the budget. One a reader kept from completing says so
+/// (`CheckpointBusy`); its WAL stays beside it, whole, for the next start to replay.
+async fn checkpoint(app: &App) {
+    let (control, mirrors) = tokio::join!(app.control().checkpoint(), app.mirrors().checkpoint());
+    if let Err(e) = control {
+        eprintln!("draining: checkpointing the control DB: {e}");
+    }
+    for (account, e) in mirrors {
+        eprintln!("draining: checkpointing account {account}'s mirror: {e}");
     }
 }
 
@@ -436,13 +596,24 @@ async fn healthz(State(app): State<App>) -> impl IntoResponse {
     )
 }
 
-/// Readiness: 503 once the drain has started.
+/// Readiness: 503 until the startup is done, and once the drain has started.
 async fn readyz(State(app): State<App>) -> Response {
     if app.draining() {
         (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response()
+    } else if !app.0.started.load(std::sync::atomic::Ordering::SeqCst) {
+        (StatusCode::SERVICE_UNAVAILABLE, "starting").into_response()
     } else {
         "ready".into_response()
     }
+}
+
+/// A file's I/O error as `can't <what> <path>: <error>`, the words every one of beghu's uses.
+pub(crate) fn io_failed(
+    what: &'static str,
+    path: &std::path::Path,
+) -> impl Fn(std::io::Error) -> String + use<> {
+    let path = path.display().to_string();
+    move |e| format!("can't {what} {path}: {e}")
 }
 
 /// Unix seconds.
