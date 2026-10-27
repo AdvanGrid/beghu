@@ -16,13 +16,23 @@ const proxy = Object.fromEntries(
 const PRELOAD = "<!--beghu:preload-->";
 const THEME = "<!--beghu:theme-->";
 
-/** The same preloads the server's shell writes for a URL (crates/server/src/shell.rs). */
+/**
+ * The same preloads the server's shell writes for a URL (crates/server/src/shell.rs): the data,
+ * and on an issue's URL the panel's code, which Vite serves from its source path in dev.
+ */
 function preloads(url: string): string {
   const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  const path = url.includes("?") ? url.slice(0, url.indexOf("?")) : url;
   const attr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  return ["/api/me", `/api/issues${q.length > 1 ? q : ""}`]
+  // In the canonical form the app fetches (leading zeros dropped), and only for an id in range.
+  const digits = /^\/issues\/(\d+)$/.exec(path)?.[1];
+  const id = digits === undefined ? undefined : BigInt(digits);
+  const issue = id !== undefined && id <= 2n ** 63n - 1n ? [`/api/issues/${id}`] : [];
+  const data = ["/api/me", `/api/issues${q.length > 1 ? q : ""}`, ...issue]
     .map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`)
     .join("");
+  const panel = /^\/issues\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";
+  return data + panel;
 }
 
 /**
@@ -96,8 +106,49 @@ function onlyAssets(): Plugin {
   };
 }
 
+/**
+ * Keeps first-load JS in one file. Everything the entry reaches through static imports goes in
+ * the entry chunk, so only code reached solely through a dynamic import (the issue panel, the
+ * router's forms support) is split off. Without this, Rolldown hoists the code those lazy chunks
+ * share with the entry into a common chunk: a second first-load request that also compresses
+ * worse than one file. `test` is the code-splitting group's test; the plugin fills its set, and
+ * fails the build if the set came out empty or the entry chunk still imports another chunk
+ * statically (either means the grouping silently stopped working).
+ */
+function firstLoadInEntry(): { plugin: Plugin; test: (id: string) => boolean } {
+  const entryGraph = new Set<string>();
+  return {
+    test: (id) => entryGraph.has(id),
+    plugin: {
+      name: "beghu-first-load-in-entry",
+      apply: "build",
+      buildEnd() {
+        entryGraph.clear();
+        const todo = [...this.getModuleIds()].filter((id) => this.getModuleInfo(id)?.isEntry);
+        for (let id = todo.pop(); id !== undefined; id = todo.pop()) {
+          if (entryGraph.has(id)) continue;
+          entryGraph.add(id);
+          todo.push(...(this.getModuleInfo(id)?.importedIds ?? []));
+        }
+        if (entryGraph.size === 0) this.error("first-load-in-entry: found no modules reachable from the entry");
+      },
+      generateBundle(_options, bundle) {
+        const entries = Object.values(bundle).filter((c) => c.type === "chunk" && c.isEntry);
+        if (entries.length === 0) this.error("first-load-in-entry: the build has no entry chunk");
+        for (const c of entries) {
+          if (c.type === "chunk" && c.imports.length > 0) {
+            this.error(`first-load-in-entry: entry ${c.fileName} statically imports ${c.imports.join(", ")}: first-load JS is split`);
+          }
+        }
+      },
+    },
+  };
+}
+
+const firstLoad = firstLoadInEntry();
+
 export default defineConfig({
-  plugins: [stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets()],
+  plugins: [stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
   // out of first-load JS (see src/no-server-functions.ts). Exact match only, so the router's
   // lazy `…/server-functions/server` import is untouched.
@@ -110,5 +161,11 @@ export default defineConfig({
     ],
   },
   server: { proxy, strictPort: true },
-  build: { target: ["chrome123", "firefox120", "safari17.5"] },
+  build: {
+    target: ["chrome123", "firefox120", "safari17.5"],
+    // Every target supports <link rel="modulepreload">: no polyfill in first-load JS.
+    modulePreload: { polyfill: false },
+    manifest: true,
+    rolldownOptions: { output: { codeSplitting: { groups: [{ name: "index", test: firstLoad.test }] } } },
+  },
 });

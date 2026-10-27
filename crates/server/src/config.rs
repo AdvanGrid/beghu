@@ -17,7 +17,8 @@ pub struct Config {
     /// `BEGHU_TOKEN_KEY`: the HKDF master key (base64, at least 32 bytes).
     pub token_key: Vec<u8>,
     pub github: GitHubConfig,
-    /// `BEGHU_WEB_DIR`: the built web app (`index.html`, the shell template, and `assets/`).
+    /// `BEGHU_WEB_DIR`: the built web app (`index.html`, the shell template; `assets/`; and
+    /// `.vite/manifest.json`, which names the chunks the shell preloads).
     /// Without it the server answers only `/api`, `/auth` and the probes, as in dev, where Vite
     /// serves the app.
     pub web_dir: Option<PathBuf>,

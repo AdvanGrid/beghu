@@ -57,13 +57,16 @@ pub struct Summary {
     /// The top 40 rows of the default view (open issues, newest update first): each has exactly
     /// 30 comments.
     pub detail_targets: Vec<i64>,
+    /// Every stub's id: issues in the unsynced repo.
+    pub stub_ids: Vec<i64>,
 }
 
 impl Summary {
     pub fn to_json(&self, scale: Scale) -> String {
         let targets: Vec<String> = self.detail_targets.iter().map(i64::to_string).collect();
+        let stubs: Vec<String> = self.stub_ids.iter().map(i64::to_string).collect();
         format!(
-            "{{\n  \"scale\": \"{}\",\n  \"generator\": \"{GENERATOR_HASH}\",\n  \"fixture_now\": {FIXTURE_NOW},\n  \"issues\": {},\n  \"prs\": {},\n  \"stubs\": {},\n  \"comments\": {},\n  \"relationships\": {{ \"sub\": {}, \"blocks\": {}, \"relates\": {}, \"closes\": {}, \"stub_edges\": {} }},\n  \"open_issues\": {},\n  \"detail_targets\": [{}]\n}}\n",
+            "{{\n  \"scale\": \"{}\",\n  \"generator\": \"{GENERATOR_HASH}\",\n  \"fixture_now\": {FIXTURE_NOW},\n  \"issues\": {},\n  \"prs\": {},\n  \"stubs\": {},\n  \"comments\": {},\n  \"relationships\": {{ \"sub\": {}, \"blocks\": {}, \"relates\": {}, \"closes\": {}, \"stub_edges\": {} }},\n  \"open_issues\": {},\n  \"detail_targets\": [{}],\n  \"stub_ids\": [{}]\n}}\n",
             scale.name(),
             self.issues,
             self.prs,
@@ -75,7 +78,8 @@ impl Summary {
             self.closes,
             self.stub_edges,
             self.open_issues,
-            targets.join(", ")
+            targets.join(", "),
+            stubs.join(", ")
         )
     }
 }
@@ -685,6 +689,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
         issues: issues.len(),
         prs: items.len() - issues.len(),
         stubs: stubs.len(),
+        stub_ids: stubs,
         comments: comment_total,
         sub,
         blocks,

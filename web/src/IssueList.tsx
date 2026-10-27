@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, Show } from "solid-js";
 import { SessionEnded, getIssues, signIn, type IssuePage, type IssueRow } from "./api";
+import { Avatar, issueState, StateIcon } from "./bits";
 import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { colors, fonts } from "./tokens.stylex";
@@ -111,7 +112,7 @@ function Row(props: { r: IssueRow; search: string; current: boolean }) {
       aria-current={props.current ? "page" : undefined}
       {...stylex.attrs(s.row, s.link, props.current && s.current)}
     >
-      <StateIcon r={r()} />
+      <StateIcon state={issueState(r())} />
       <span {...stylex.attrs(s.title)}>{r().title}</span>
       <span {...stylex.attrs(s.wide, s.labels)}>
         <For each={r().labels}>
@@ -130,13 +131,7 @@ function Row(props: { r: IssueRow; search: string; current: boolean }) {
         {r().repo}#{r().number}
       </span>
       <span {...stylex.attrs(s.avatars)}>
-        <For each={r().assignees.slice(0, 3)}>
-          {(u) => (
-            <span title={u.login} {...stylex.attrs(s.avatar, AVATARS[hash(u.login) % AVATARS.length])}>
-              {u.login.slice(0, 1).toUpperCase()}
-            </span>
-          )}
-        </For>
+        <For each={r().assignees.slice(0, 3)}>{(u) => <Avatar login={u.login} />}</For>
       </span>
       <span {...stylex.attrs(s.when, s.end)} title={fullDate(r().updated_at)}>
         {ago(r().updated_at)}
@@ -145,38 +140,15 @@ function Row(props: { r: IssueRow; search: string; current: boolean }) {
   );
 }
 
-function StateIcon(props: { r: IssueRow }) {
-  const kind = () =>
-    props.r.state === "open" ? "open" : props.r.state_reason === "not_planned" ? "notPlanned" : "done";
-  const label = () => ({ open: "Open", done: "Closed as completed", notPlanned: "Closed as not planned" })[kind()];
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label={label()} {...stylex.attrs(s.icon, s[kind()])}>
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
-      <Show when={kind() === "open"}>
-        <circle cx="8" cy="8" r="1.5" fill="currentColor" />
-      </Show>
-      <Show when={kind() === "done"}>
-        <path d="M5.2 8.2 7.1 10l3.7-4" fill="none" stroke="currentColor" stroke-width="1.5" />
-      </Show>
-      <Show when={kind() === "notPlanned"}>
-        <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" stroke-width="1.5" />
-      </Show>
-    </svg>
-  );
-}
-
-/** A stable small hash, so a login keeps its avatar colour. */
-function hash(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
-}
-
-/** Wide screens show every column; narrow ones keep state, title, number, assignees and age. */
-const NARROW = "@media (max-width: 700px)";
+/**
+ * A wide list shows every column; a narrow one keeps state, title, number, assignees and age. The
+ * list's own width decides, as the issue panel beside it takes part of the screen.
+ */
+const NARROW = "@container (max-width: 700px)";
 
 const s = stylex.create({
   column: {
+    containerType: "inline-size",
     display: "flex",
     flexDirection: "column",
     flexGrow: 1,
@@ -247,18 +219,6 @@ const s = stylex.create({
   end: {
     textAlign: "end",
   },
-  icon: {
-    flexShrink: 0,
-  },
-  open: {
-    color: colors.open,
-  },
-  done: {
-    color: colors.done,
-  },
-  notPlanned: {
-    color: colors.notPlanned,
-  },
   title: {
     overflow: "hidden",
     textOverflow: "ellipsis",
@@ -305,18 +265,6 @@ const s = stylex.create({
     gap: 2,
     display: "flex",
   },
-  avatar: {
-    borderRadius: "50%",
-    alignItems: "center",
-    color: colors.avatarFg,
-    display: "inline-flex",
-    flexShrink: 0,
-    fontSize: 10,
-    fontWeight: 600,
-    justifyContent: "center",
-    height: 18,
-    width: 18,
-  },
   when: {
     color: colors.muted,
     fontVariantNumeric: "tabular-nums",
@@ -327,13 +275,3 @@ const s = stylex.create({
     color: colors.muted,
   },
 });
-
-const a = stylex.create({
-  c0: { backgroundColor: colors.avatar0 },
-  c1: { backgroundColor: colors.avatar1 },
-  c2: { backgroundColor: colors.avatar2 },
-  c3: { backgroundColor: colors.avatar3 },
-  c4: { backgroundColor: colors.avatar4 },
-  c5: { backgroundColor: colors.avatar5 },
-});
-const AVATARS = [a.c0, a.c1, a.c2, a.c3, a.c4, a.c5];

@@ -8,9 +8,24 @@ include!(concat!(env!("OUT_DIR"), "/db.rs"));
 pub use dbrt::AccountId;
 pub use dbrt::mirrors::{Config, Notice};
 pub use dbrt::{Caller, Error};
+/// What a mirror query returns.
+pub use rusqlite::Result as QueryResult;
 
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::path::PathBuf;
+
+/// A read's connection, as [`Mirrors::read`] hands it over. It derefs to the connection the
+/// generated queries take, so app code can split a read into helper functions without naming
+/// rusqlite.
+pub struct Reader<'a>(&'a Connection);
+
+impl std::ops::Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.0
+    }
+}
 
 /// Every account's mirror under one directory (`<dir>/<github_user_id>.db`), opened and
 /// migrated on first use, within the process-wide connection budget.
@@ -39,9 +54,9 @@ impl Mirrors {
     pub async fn read<T, F>(&self, account: AccountId, caller: Caller, f: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+        F: FnOnce(&Reader<'_>) -> rusqlite::Result<T> + Send + 'static,
     {
-        self.0.read(account, caller, f).await
+        self.0.read(account, caller, move |c| f(&Reader(c))).await
     }
 
     /// Runs `f` in one write transaction on the account's writer lane, after the writes queued

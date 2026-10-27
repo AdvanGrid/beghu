@@ -14,6 +14,11 @@ pub enum ApiError {
     BadRequest(String),
     /// No such API path.
     NotFound,
+    /// No such issue in the account's mirror: deleted, or never there.
+    Gone,
+    /// The issue is in the mirror but outside the synced repos (a stub, or a repo no longer
+    /// synced), so beghu doesn't hold it. Its body says where it is on GitHub.
+    NoAccess(IssueRef),
     /// Try again after `retry_after`: at the connection cap, or a mirror still migrating.
     Unavailable {
         retry_after: Duration,
@@ -28,6 +33,22 @@ pub enum ApiError {
 pub struct ErrorBody {
     pub error: ErrorKind,
     pub message: String,
+    /// With `no_access`: the issue, enough to link out to it on GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub issue: Option<IssueRef>,
+}
+
+/// An issue beghu doesn't hold, named well enough to link out to it on GitHub.
+#[derive(Serialize, TS, Debug)]
+#[ts(export)]
+pub struct IssueRef {
+    /// `issue` or `pr`.
+    pub kind: String,
+    pub owner: String,
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
 }
 
 /// What kind of failure: the client maps each kind to one of its named error classes.
@@ -41,6 +62,10 @@ pub enum ErrorKind {
     BadRequest,
     /// 404: no such API path.
     NotFound,
+    /// 404: the issue isn't there (any more).
+    Gone,
+    /// 403: the issue is outside the account's synced repos.
+    NoAccess,
     /// 503: try again after the `retry-after` header's seconds.
     Unavailable,
     /// 500.
@@ -71,23 +96,39 @@ impl From<crate::tokens::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, kind, message) = match &self {
+        let (mut retry_after, mut issue) = (None, None);
+        let (status, kind, message) = match self {
             ApiError::SignedOut => (
                 StatusCode::UNAUTHORIZED,
                 ErrorKind::SignedOut,
                 "Sign in to continue".to_owned(),
             ),
-            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, ErrorKind::BadRequest, m.clone()),
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, ErrorKind::BadRequest, m),
             ApiError::NotFound => (
                 StatusCode::NOT_FOUND,
                 ErrorKind::NotFound,
                 "No such API path".to_owned(),
             ),
-            ApiError::Unavailable { why, .. } => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorKind::Unavailable,
-                why.clone(),
+            ApiError::Gone => (
+                StatusCode::NOT_FOUND,
+                ErrorKind::Gone,
+                "This issue was deleted, or isn't in your synced repos".to_owned(),
             ),
+            ApiError::NoAccess(i) => {
+                issue = Some(i);
+                (
+                    StatusCode::FORBIDDEN,
+                    ErrorKind::NoAccess,
+                    "This issue is in a repo that isn't synced".to_owned(),
+                )
+            }
+            ApiError::Unavailable {
+                retry_after: r,
+                why,
+            } => {
+                retry_after = Some(r);
+                (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::Unavailable, why)
+            }
             ApiError::Internal(m) => {
                 eprintln!("internal error: {m}");
                 (
@@ -102,10 +143,11 @@ impl IntoResponse for ApiError {
             axum::Json(ErrorBody {
                 error: kind,
                 message,
+                issue,
             }),
         )
             .into_response();
-        if let ApiError::Unavailable { retry_after, .. } = self {
+        if let Some(retry_after) = retry_after {
             // Whole seconds, rounded up: `retry-after: 0` would invite a hot loop.
             let secs = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
             res.headers_mut()

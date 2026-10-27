@@ -30,7 +30,9 @@ fake-github = { path = "../fake-github" }
 fixture = { workspace = true }
 flate2 = "1"
 reqwest = { workspace = true }
-# The tests that stand in for tampering or another writer open the control DB themselves.
+# Tests that need control-DB state no HTTP seam can make (tampering, a lock another process
+# holds, an aged session, a preference no API sets yet) open the control DB themselves. Never
+# a mirror: mirror state comes from Fake GitHub or the fixture (AGENTS.md).
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

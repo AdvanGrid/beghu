@@ -34,12 +34,34 @@ pub struct Account {
     pub login: String,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Serialize, TS, Clone, Copy)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum CommentOrder {
     Newest,
     Oldest,
+}
+
+impl std::str::FromStr for CommentOrder {
+    type Err = ApiError;
+
+    /// `newest` or `oldest`, as on the wire.
+    fn from_str(s: &str) -> Result<CommentOrder, ApiError> {
+        match s {
+            "newest" => Ok(CommentOrder::Newest),
+            "oldest" => Ok(CommentOrder::Oldest),
+            _ => Err(ApiError::BadRequest(format!("bad order {s:?}"))),
+        }
+    }
+}
+
+impl CommentOrder {
+    /// The account's stored preference. None means newest first, and so does one this build
+    /// doesn't know (written by a newer build): a preference never fails a read.
+    pub fn from_pref(pref: Option<&str>) -> CommentOrder {
+        pref.and_then(|p| p.parse().ok())
+            .unwrap_or(CommentOrder::Newest)
+    }
 }
 
 #[derive(Serialize, TS)]
@@ -72,7 +94,7 @@ pub async fn me(
     let row = row.ok_or(ApiError::SignedOut)?;
     let repos = app
         .mirrors()
-        .read(s.account, Caller::Request, q::synced_repos)
+        .read(s.account, Caller::Request, |c| q::synced_repos(c))
         .await?;
     Ok(Json(Me {
         account: Account {
@@ -86,10 +108,7 @@ pub async fn me(
                 login: a.login,
             })
             .collect(),
-        comment_order: match row.comment_order.as_deref() {
-            Some("oldest") => CommentOrder::Oldest,
-            _ => CommentOrder::Newest,
-        },
+        comment_order: CommentOrder::from_pref(row.comment_order.as_deref()),
         repos: repos
             .into_iter()
             .map(|r| Repo {

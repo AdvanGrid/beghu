@@ -5,6 +5,7 @@ mod api;
 mod auth;
 mod config;
 mod crypto;
+mod detail;
 mod error;
 mod github;
 mod repos;
@@ -35,14 +36,15 @@ struct Inner {
     github: github::GitHub,
     keys: Arc<crypto::Keys>,
     tokens: tokens::Tokens,
-    shell: Option<String>,
+    shell: Option<shell::Shell>,
     /// Each account's role re-reads from GitHub.
     roles: repos::Roles,
 }
 
 impl App {
     /// Opens the control DB (migrating it after a `VACUUM INTO` backup) and the mirrors under
-    /// `BEGHU_DATA_DIR`, and reads the shell template. Any error should stop startup.
+    /// `BEGHU_DATA_DIR`, and reads the shell template and the build's Vite manifest. Any error
+    /// should stop startup.
     pub async fn open(cfg: Config) -> Result<App, String> {
         let (path, backups) = (cfg.control_db(), cfg.backups());
         let control = tokio::task::spawn_blocking(move || Control::open(&path, &backups))
@@ -52,22 +54,7 @@ impl App {
             .0;
         let control = Arc::new(control);
         let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
-        let shell = match &cfg.web_dir {
-            Some(dir) => {
-                let path = dir.join("index.html");
-                let html = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("BEGHU_WEB_DIR: can't read {}: {e}", path.display()))?;
-                if !html.contains(shell::MARKER) {
-                    return Err(format!(
-                        "BEGHU_WEB_DIR: {} has no {} marker",
-                        path.display(),
-                        shell::MARKER
-                    ));
-                }
-                Some(html)
-            }
-            None => None,
-        };
+        let shell = cfg.web_dir.as_deref().map(shell::Shell::load).transpose()?;
         let github = github::GitHub::new(&cfg.github);
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
         let tokens = tokens::Tokens::new(control.clone(), github.clone(), keys.clone());
@@ -107,8 +94,8 @@ impl App {
         &self.0.tokens
     }
 
-    fn shell_template(&self) -> Option<&str> {
-        self.0.shell.as_deref()
+    fn shell(&self) -> Option<&shell::Shell> {
+        self.0.shell.as_ref()
     }
 
     fn roles(&self) -> &repos::Roles {
@@ -134,6 +121,8 @@ pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/me", get(api::me))
         .route("/issues", get(api::issues))
+        .route("/issues/{id}", get(detail::issue))
+        .route("/issues/{id}/comments", get(detail::comments_page))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,

@@ -3,4 +3,4 @@
 /**
  * What kind of failure: the client maps each kind to one of its named error classes.
  */
-export type ErrorKind = "signed_out" | "bad_request" | "not_found" | "unavailable" | "internal";
+export type ErrorKind = "signed_out" | "bad_request" | "not_found" | "gone" | "no_access" | "unavailable" | "internal";

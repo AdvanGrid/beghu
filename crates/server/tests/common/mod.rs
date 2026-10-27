@@ -40,7 +40,7 @@ pub struct Stack {
     pub http: reqwest::Client,
     /// What a restart needs to build the server's config again.
     fake_api: String,
-    /// The built web app the server serves: `index.html` and `assets/`.
+    /// The built web app the server serves: `index.html`, `assets/` and Vite's manifest.
     pub web: PathBuf,
     /// The running server, stopped when a restart replaces it.
     server_task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
@@ -49,6 +49,28 @@ pub struct Stack {
 
 /// A minimal built web app: the shell template the server fills in per URL.
 pub const SHELL_TEMPLATE: &str = "<!doctype html><html><head><!--beghu:preload--></head><body><div id=\"root\"></div></body></html>";
+
+/// Where the minimal build's issue panel chunk is, as its Vite manifest says.
+pub const PANEL_CHUNK: &str = "assets/IssuePanel-test.js";
+
+/// The minimal build's Vite manifest (`.vite/manifest.json`), in the shape `vite build` writes.
+pub fn manifest() -> String {
+    serde_json::json!({
+        "index.html": {
+            "file": "assets/index-test.js",
+            "src": "index.html",
+            "isEntry": true,
+            "dynamicImports": ["src/IssuePanel.tsx"],
+        },
+        "src/IssuePanel.tsx": {
+            "file": PANEL_CHUNK,
+            "src": "src/IssuePanel.tsx",
+            "isDynamicEntry": true,
+            "imports": ["index.html"],
+        },
+    })
+    .to_string()
+}
 
 pub async fn start() -> Stack {
     start_with(|_| {}).await
@@ -87,6 +109,8 @@ pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
     let web = dir.path().join("web");
     std::fs::create_dir_all(&web).unwrap();
     std::fs::write(web.join("index.html"), SHELL_TEMPLATE).unwrap();
+    std::fs::create_dir_all(web.join(".vite")).unwrap();
+    std::fs::write(web.join(".vite").join("manifest.json"), manifest()).unwrap();
 
     let mut s = Stack {
         server: String::new(),
@@ -110,6 +134,15 @@ impl Stack {
     /// and restart would, and points the stack at it. Nothing in memory carries over. The old
     /// server is stopped first.
     pub async fn restart_with(&mut self, adjust: impl FnOnce(&mut beghu::Config)) {
+        self.try_restart_with(adjust).await.unwrap();
+    }
+
+    /// As [`Stack::restart_with`], but a server that refuses to start says why instead of
+    /// panicking; the stack then has no server running.
+    pub async fn try_restart_with(
+        &mut self,
+        adjust: impl FnOnce(&mut beghu::Config),
+    ) -> Result<(), String> {
         if let Some(old) = self.server_task.take() {
             old.abort();
             let _ = old.await;
@@ -133,9 +166,10 @@ impl Stack {
             roles_retry_after_failure: Duration::from_secs(60),
         };
         adjust(&mut cfg);
-        let app = beghu::App::open(cfg).await.unwrap();
+        let app = beghu::App::open(cfg).await?;
         self.server_task = Some(tokio::spawn(beghu::serve(listener, app)));
         self.server = server;
+        Ok(())
     }
 }
 

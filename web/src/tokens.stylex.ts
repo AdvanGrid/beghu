@@ -17,6 +17,10 @@ export const colors = stylex.defineVars({
   done: "light-dark(#8250df, #a371f7)",
   notPlanned: "light-dark(#6e7781, #8b949e)",
   danger: "light-dark(#cf222e, #f85149)",
+  // State badges: filled, under accentFg text.
+  openBg: "light-dark(#1f883d, #238636)",
+  doneBg: "light-dark(#8250df, #8957e5)",
+  notPlannedBg: "light-dark(#6e7781, #6e7681)",
   avatarFg: "light-dark(#ffffff, #ffffff)",
   avatar0: "light-dark(#b45309, #92400e)",
   avatar1: "light-dark(#047857, #065f46)",
@@ -29,4 +33,9 @@ export const colors = stylex.defineVars({
 export const fonts = stylex.defineVars({
   ui: "system-ui, -apple-system, 'Segoe UI', sans-serif",
   mono: "ui-monospace, 'SF Mono', Menlo, monospace",
+});
+
+export const media = stylex.defineConsts({
+  /** Below 900 px of viewport the issue panel sits under the list instead of beside it. */
+  stacked: "@media (max-width: 899px)",
 });
