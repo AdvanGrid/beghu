@@ -180,6 +180,8 @@ export interface FakeState {
   webhooks: { url: string | null; faults: WebhookFaults };
   /** Seconds the fake's clock runs ahead of the real one. */
   clock: { offset: number };
+  /** The rate-limit fault: every token reads as at most `cap` calls left (`null`: none). */
+  quota: { cap: number | null };
   /** Where the install page sends the browser afterwards. */
   setup_url: string | null;
 }

@@ -836,6 +836,20 @@ impl GitHub {
         query: &str,
         variables: serde_json::Value,
     ) -> Result<serde_json::Value, CallError> {
+        Ok(self
+            .graphql_quota(token, operation, query, variables)
+            .await?
+            .0)
+    }
+
+    /// [`graphql_data`](Self::graphql_data), with the quota the answer's headers state.
+    pub async fn graphql_quota(
+        &self,
+        token: &str,
+        operation: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<(serde_json::Value, Option<Quota>), CallError> {
         let res =
             self.send(self.api(reqwest::Method::POST, "/graphql", token).json(
                 &serde_json::json!({
@@ -848,6 +862,7 @@ impl GitHub {
         if !res.status().is_success() {
             return Err(call_error(res).await);
         }
+        let quota = Quota::of(res.headers());
         let wait = header_wait(res.headers());
         let mut body: serde_json::Value = res.json().await?;
         let errors = body["errors"].as_array().cloned().unwrap_or_default();
@@ -857,7 +872,7 @@ impl GitHub {
             }));
         }
         match body.get_mut("data").map(serde_json::Value::take) {
-            Some(data) if !data.is_null() => Ok(data),
+            Some(data) if !data.is_null() => Ok((data, quota)),
             _ => Err(CallError::GraphQl(
                 errors
                     .first()
@@ -870,12 +885,174 @@ impl GitHub {
 
     /// The import's REST read (`path` with its query string): the JSON it answers.
     pub async fn rest(&self, token: &str, path: &str) -> Result<serde_json::Value, CallError> {
+        match self.rest_if_changed(token, path, None).await?.0 {
+            Fetched::Fresh { body, .. } => Ok(body),
+            Fetched::NotModified => Err(CallError::Malformed("a 304 nobody asked for".into())),
+        }
+    }
+
+    /// A sweep's REST read: conditional on `etag` (`If-None-Match`), so an unchanged answer is
+    /// a 304 that costs nothing. With the quota the answer's headers state.
+    pub async fn rest_if_changed(
+        &self,
+        token: &str,
+        path: &str,
+        etag: Option<&str>,
+    ) -> Result<(Fetched, Option<Quota>), CallError> {
+        let mut req = self.api(reqwest::Method::GET, path, token);
+        if let Some(tag) = etag {
+            req = req.header("if-none-match", tag);
+        }
+        let res = self.send(req).await?;
+        let quota = Quota::of(res.headers());
+        if res.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok((Fetched::NotModified, quota));
+        }
+        if !res.status().is_success() {
+            return Err(call_error(res).await);
+        }
+        let etag = res
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = res.json().await?;
+        Ok((Fetched::Fresh { body, etag }, quota))
+    }
+
+    /// The token's primary rate limits, core and GraphQL (`GET /rate_limit`, which costs
+    /// nothing).
+    pub async fn rate_limit(&self, token: &str) -> Result<(Quota, Quota), CallError> {
+        #[derive(Deserialize)]
+        struct Limit {
+            limit: i64,
+            remaining: i64,
+            reset: i64,
+        }
+        #[derive(Deserialize)]
+        struct Resources {
+            core: Limit,
+            graphql: Limit,
+        }
+        #[derive(Deserialize)]
+        struct Answer {
+            resources: Resources,
+        }
         let res = self
-            .send(self.api(reqwest::Method::GET, path, token))
+            .send(self.api(reqwest::Method::GET, "/rate_limit", token))
             .await?;
         if !res.status().is_success() {
             return Err(call_error(res).await);
         }
-        Ok(res.json().await?)
+        let a: Answer = res.json().await?;
+        let q = |l: Limit| Quota {
+            limit: l.limit,
+            remaining: l.remaining,
+            reset: l.reset,
+        };
+        Ok((q(a.resources.core), q(a.resources.graphql)))
     }
+
+    /// A page of the App's webhook deliveries, newest first (`GET /app/hook/deliveries`, with
+    /// its JWT), and the cursor of the next page, if any.
+    pub async fn hook_deliveries(
+        &self,
+        jwt: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<HookDelivery>, Option<String>), Error> {
+        let mut path = "/app/hook/deliveries?per_page=100".to_owned();
+        if let Some(c) = cursor {
+            path.push('&');
+            path.push_str(&serde_urlencoded::to_string([("cursor", c)]).unwrap_or_default());
+        }
+        let res = self
+            .send(self.api(reqwest::Method::GET, &path, jwt))
+            .await?;
+        if !res.status().is_success() {
+            return Err(refusal(res).await);
+        }
+        // GitHub pages by cursor through the `Link` header's `next`.
+        let next = res
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .and_then(next_cursor);
+        Ok((res.json().await?, next))
+    }
+
+    /// Asks GitHub to send a delivery again (`POST /app/hook/deliveries/{id}/attempts`).
+    pub async fn redeliver(&self, jwt: &str, id: i64) -> Result<(), Error> {
+        let path = format!("/app/hook/deliveries/{id}/attempts");
+        let res = self
+            .send(self.api(reqwest::Method::POST, &path, jwt))
+            .await?;
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            Err(refusal(res).await)
+        }
+    }
+}
+
+/// An answer to a conditional read.
+pub enum Fetched {
+    /// Changed, or asked unconditionally: the body, and the ETag to ask with next time.
+    Fresh {
+        body: serde_json::Value,
+        etag: Option<String>,
+    },
+    /// 304: unchanged since the ETag asked with.
+    NotModified,
+}
+
+/// A primary rate limit as GitHub reports it: of `limit`, `remaining` left until `reset` (Unix
+/// seconds).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quota {
+    pub limit: i64,
+    pub remaining: i64,
+    pub reset: i64,
+}
+
+impl Quota {
+    /// From an answer's `x-ratelimit-*` headers, if it has them.
+    fn of(h: &reqwest::header::HeaderMap) -> Option<Quota> {
+        let num = |name: &str| -> Option<i64> { h.get(name)?.to_str().ok()?.trim().parse().ok() };
+        Some(Quota {
+            limit: num("x-ratelimit-limit")?,
+            remaining: num("x-ratelimit-remaining")?,
+            reset: num("x-ratelimit-reset")?,
+        })
+    }
+
+    /// Below a fifth of the limit: sweeps wait for the reset (webhook follow-ups don't).
+    pub fn low(&self) -> bool {
+        self.remaining * 5 < self.limit
+    }
+}
+
+/// One attempt at delivering a webhook, as `GET /app/hook/deliveries` lists it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HookDelivery {
+    pub id: i64,
+    pub guid: String,
+    pub delivered_at: String,
+    /// "OK" for a delivery the App answered with a 2xx; anything else failed.
+    pub status: String,
+    pub installation_id: Option<i64>,
+}
+
+/// The `cursor` of a `Link` header's `rel="next"` URL.
+fn next_cursor(link: &str) -> Option<String> {
+    link.split(',')
+        .find(|part| part.contains("rel=\"next\""))
+        .and_then(|part| part.split(['<', '>']).nth(1))
+        .and_then(|url| url.split_once('?'))
+        .and_then(|(_, q)| serde_urlencoded::from_str::<Vec<(String, String)>>(q).ok())
+        .and_then(|pairs| {
+            pairs
+                .into_iter()
+                .find(|(k, _)| k == "cursor")
+                .map(|(_, v)| v)
+        })
 }

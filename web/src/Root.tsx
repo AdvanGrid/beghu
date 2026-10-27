@@ -5,7 +5,7 @@ import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
-import { Importing } from "./WhileImporting";
+import { Background } from "./WhileSyncing";
 import { connectLive, reconnecting } from "./live";
 import { overlay } from "./overlay";
 import { ChunkFailed } from "./router";
@@ -65,8 +65,9 @@ const SEARCH_HINTS: { syntax: string; does: string }[] = [
 /**
  * The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. Once
  * the tab can write, the writes code fills it, failed writes first (overlay.ts); otherwise a lost
- * connection comes before the import (whose progress it can't hear meanwhile). Its hints follow
- * the focus: while the filter box has it, the search syntax.
+ * connection comes before the import (whose progress it can't hear meanwhile), and the import
+ * before the sync state. Its hints follow the focus: while the filter box has it, the search
+ * syntax.
  */
 function StatusBar(props: { hints: boolean }) {
   return (
@@ -75,7 +76,7 @@ function StatusBar(props: { hints: boolean }) {
         <Show
           when={overlay()?.Status}
           fallback={
-            <Show when={reconnecting()} fallback={<Importing />}>
+            <Show when={reconnecting()} fallback={<Background />}>
               reconnecting…
             </Show>
           }

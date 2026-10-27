@@ -18,6 +18,8 @@ export type Status = {
   phase?: string;
   urls: { app: string; server: string; fake: string; control: string };
   up: { app: boolean; server: boolean; fake: boolean };
+  /** The secret the server checks webhook deliveries with. */
+  webhook_secret: string;
 };
 
 /** The running stack's status; throws if it isn't running. */

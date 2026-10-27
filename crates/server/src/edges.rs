@@ -98,11 +98,17 @@ pub struct Edge {
 pub fn apply_delivery(tx: &Transaction, seq: i64, e: &Edge) -> rusqlite::Result<Vec<i64>> {
     let kind = e.kind.name();
     let ends = [e.src, e.dst];
+    // Newer than what a sweep under way read of either end.
+    for id in ends {
+        q::touch_edges(tx, id, seq)?;
+    }
     let mut touched: BTreeSet<i64> = ends.into_iter().collect();
     let changed = if e.add {
         if e.kind == Kind::Sub
             && let Some(old) = q::detach_child(tx, e.dst, e.src)?
         {
+            // Its old parent's edges changed too.
+            q::touch_edges(tx, old, seq)?;
             touched.insert(old);
             q::prune_stubs(tx, &[old])?;
         }
@@ -359,7 +365,7 @@ async fn conclude(
         let repo = s.repo;
         let what = format!("reading who syncs repo {repo}");
         for account in webhook::syncing(&inner.control, repo, &what).await {
-            webhook::mark_for_resync(&inner.control, account).await;
+            webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
         }
     }
     for a in answers {
@@ -396,9 +402,10 @@ struct Data {
     node: Option<Node>,
 }
 
-#[derive(Deserialize, Default)]
+/// An issue's relationships as `IssueEdges` (and the sweeps' `SweepEdges`) answer them.
+#[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Node {
+pub(crate) struct Node {
     parent: Option<End>,
     sub_issues: Option<Nodes>,
     blocked_by: Option<Nodes>,
@@ -406,7 +413,17 @@ struct Node {
     relates_to: Option<Nodes>,
 }
 
-#[derive(Deserialize, Default)]
+impl Node {
+    /// Whether its relates-to goes on past the page read.
+    pub(crate) fn more_relates(&self) -> bool {
+        self.relates_to
+            .as_ref()
+            .and_then(|r| r.page_info.as_ref())
+            .is_some_and(|p| p.has_next_page)
+    }
+}
+
+#[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Nodes {
     #[serde(default)]
@@ -414,7 +431,7 @@ struct Nodes {
     page_info: Option<PageInfo>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PageInfo {
     has_next_page: bool,
@@ -458,7 +475,7 @@ struct Owner {
 
 /// An issue's edges of one kind as GitHub has them: `(src, dst, end)`, the end being the other
 /// issue, with sub-issues in GitHub's order.
-struct Fetched {
+pub(crate) struct Fetched {
     edges: Vec<(i64, i64, End)>,
 }
 
@@ -556,7 +573,12 @@ where
             )));
         }
     }
-    let me = s.id;
+    Ok(Some(fetched(s.id, kind, node)))
+}
+
+/// Issue `me`'s edges of `kind` in `node` as GitHub answered them: `(src, dst, end)`, with
+/// sub-issues in GitHub's order.
+pub(crate) fn fetched(me: i64, kind: Kind, node: Node) -> Fetched {
     let mut edges = Vec::new();
     match kind {
         Kind::Sub => {
@@ -582,7 +604,7 @@ where
             }
         }
     }
-    Ok(Some(Fetched { edges }))
+    Fetched { edges }
 }
 
 /// Reads the edges back and writes them to every account syncing the issue's repo.
@@ -615,7 +637,7 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
             Ok(ids) => ids.into_iter().collect(),
             Err(e) => {
                 eprintln!("edges: reading account {account}'s repos failed: {e}");
-                webhook::mark_for_resync(&inner.control, account).await;
+                webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
                 continue;
             }
         };
@@ -623,7 +645,14 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
         let written = inner
             .mirrors
             .write(account, Caller::Webhook, move |tx, seq| {
-                replace(tx, seq, kind, installation, id, &read, &synced)
+                let r = replace(tx, seq, kind, installation, id, &read, &synced)?;
+                // Newer than what a sweep under way read of it, and of every item whose edges
+                // this changed.
+                q::touch_edges(tx, id, seq)?;
+                for &end in &r.touched {
+                    q::touch_edges(tx, end, seq)?;
+                }
+                Ok(r.ids)
             })
             .await;
         match written {
@@ -635,7 +664,7 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
                     "edges: writing issue {id}'s {} edges failed for account {account}: {e}",
                     kind.name()
                 );
-                webhook::mark_for_resync(&inner.control, account).await;
+                webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
             }
         }
     }
@@ -660,14 +689,46 @@ async fn unseen_subject(inner: &Inner, s: &Subject, targets: &[i64]) {
                 "edges: installation {} can't see issue {id}, which account {account} holds; marking it for resync",
                 s.installation
             );
-            webhook::mark_for_resync(&inner.control, account).await;
+            webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
         }
     }
 }
 
-/// Replaces `id`'s edges of `kind` with the fetched ones this account may hold. The items whose
-/// rows or detail changed; none when nothing did.
-fn replace(
+/// What [`replace`] changed.
+#[derive(Default)]
+pub(crate) struct Replaced {
+    /// The items whose rows or detail changed; none when nothing did.
+    pub ids: Vec<i64>,
+    /// The items whose edges it changed (added, removed, moved to another parent, or reordered),
+    /// `id` among them when any did: a read-back stamps them.
+    pub touched: Vec<i64>,
+    /// The ends of the edges it added or removed: empty when it only reordered sub-issues or
+    /// refreshed a stub's title, which GitHub sends no webhook for.
+    pub moved: Vec<i64>,
+}
+
+/// Every item whose edges of `kind` replacing `id`'s with `f` may change: `id`, the ends `f`
+/// reads, and the ends the mirror holds. A write since a sweep read `f` to any of them makes
+/// what it read stale.
+pub(crate) fn ends(
+    tx: &Transaction,
+    kind: Kind,
+    id: i64,
+    f: &Fetched,
+) -> rusqlite::Result<BTreeSet<i64>> {
+    let mut out = BTreeSet::from([id]);
+    for (src, dst, _) in &f.edges {
+        out.extend([*src, *dst]);
+    }
+    for e in q::edges_of(tx, kind.name(), id)? {
+        out.extend([e.src_id, e.dst_id]);
+    }
+    Ok(out)
+}
+
+/// Replaces `id`'s edges of `kind` with the fetched ones this account may hold. Read with
+/// `installation`'s token; `synced` is the account's synced repos.
+pub(crate) fn replace(
     tx: &Transaction,
     seq: i64,
     kind: Kind,
@@ -675,7 +736,7 @@ fn replace(
     id: i64,
     f: &Fetched,
     synced: &HashSet<i64>,
-) -> rusqlite::Result<Vec<i64>> {
+) -> rusqlite::Result<Replaced> {
     let name = kind.name();
     let old: HashSet<(i64, i64)> = q::edges_of(tx, name, id)?
         .into_iter()
@@ -718,12 +779,17 @@ fn replace(
         .map(|r| r.id)
         .collect();
     let mut changed = false;
+    // The ends of the edges added or removed, and of those reordered.
+    let (mut moved, mut reordered): (BTreeSet<i64>, BTreeSet<i64>) = Default::default();
     let mut ends: BTreeSet<i64> = BTreeSet::new();
     for &(src, dst) in old.difference(&keep) {
         if unseen.contains(&src) || unseen.contains(&dst) {
             continue;
         }
-        changed |= q::remove_edge(tx, name, src, dst)? > 0;
+        if q::remove_edge(tx, name, src, dst)? > 0 {
+            changed = true;
+            moved.extend([src, dst]);
+        }
         ends.extend([src, dst]);
     }
     let mut position = 0.0;
@@ -762,23 +828,34 @@ fn replace(
             && let Some(other) = q::detach_child(tx, *dst, *src)?
         {
             changed = true;
+            moved.extend([other, *dst]);
             ends.insert(other);
         }
-        if !old.contains(&(*src, *dst)) {
-            changed |= q::add_edge(tx, name, *src, *dst, seq)? > 0;
+        if !old.contains(&(*src, *dst)) && q::add_edge(tx, name, *src, *dst, seq)? > 0 {
+            changed = true;
+            moved.extend([*src, *dst]);
         }
         // Sub-issues take GitHub's order, 1..n, under this issue.
         if kind == Kind::Sub && *src == id {
             position += 1.0;
-            changed |= q::set_position(tx, id, *dst, position, seq)? > 0;
+            if q::set_position(tx, id, *dst, position, seq)? > 0 {
+                changed = true;
+                reordered.extend([*src, *dst]);
+            }
         }
         ends.extend([*src, *dst]);
     }
     let stale: Vec<i64> = ends.iter().copied().collect();
     q::prune_stubs(tx, &stale)?;
     if !changed {
-        return Ok(Vec::new());
+        return Ok(Replaced::default());
     }
+    let mut touched: BTreeSet<i64> = moved.union(&reordered).copied().collect();
+    touched.insert(id);
     ends.insert(id);
-    with_neighbours(tx, ends)
+    Ok(Replaced {
+        ids: with_neighbours(tx, ends)?,
+        touched: touched.into_iter().collect(),
+        moved: moved.into_iter().collect(),
+    })
 }

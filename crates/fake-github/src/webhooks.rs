@@ -5,6 +5,10 @@
 //! happens to the next deliveries: `drop` loses them, `duplicate` sends each twice under one GUID
 //! (as a redelivery would), `reorder` holds a batch and sends it newest first, and `delay` adds
 //! to every delivery's wait. A reset clears the faults; the target stays.
+//!
+//! Every attempt is logged, as GitHub logs an App's deliveries (`hook_deliveries.rs` lists them
+//! and redelivers them): when, how it went, and the payload, for 3 days on the fake's clock. A
+//! dropped delivery is logged as a failed attempt: GitHub sent it, and no answer came back.
 
 use crate::api::rfc3339;
 use base64::Engine as _;
@@ -24,6 +28,12 @@ pub const DELAY: Duration = Duration::from_secs(1);
 const REORDER_FLUSH: Duration = Duration::from_secs(10);
 /// GitHub gives a webhook receiver 10 s.
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// A failed attempt's `status` when no answer came, and when the receiver couldn't be reached.
+/// Only "OK" (a 2xx) is documented (`/webhooks/using-webhooks/automatically-redelivering-failed-
+/// deliveries-for-a-github-app-webhook` checks for it); these two wordings and their
+/// `status_code` 0 are unverified: check them with `--github` (#118) before relying on them.
+const TIMED_OUT: &str = "timed out";
+const UNREACHABLE: &str = "failed to connect to host";
 
 /// One delivery: what GitHub sends for one event.
 #[derive(Debug, Clone)]
@@ -31,6 +41,10 @@ pub(crate) struct Delivery {
     pub guid: String,
     pub event: &'static str,
     pub payload: Value,
+    /// Sent again through `POST /app/hook/deliveries/{id}/attempts`.
+    pub redelivery: bool,
+    /// Lost on the way (the `drop` fault): logged as failed, never sent.
+    pub lost: bool,
 }
 
 impl Delivery {
@@ -39,7 +53,51 @@ impl Delivery {
             guid: guid(),
             event,
             payload,
+            redelivery: false,
+            lost: false,
         }
+    }
+}
+
+/// How long GitHub keeps an App's deliveries for listing and redelivery (docs/research/
+/// github-app-mechanics.md §4: the pages' body text says 3 days).
+pub const RETENTION: i64 = 3 * 24 * 60 * 60;
+
+/// One delivery attempt, as `GET /app/hook/deliveries` lists it, with its payload kept for a
+/// redelivery.
+#[derive(Debug, Clone)]
+pub(crate) struct Attempt {
+    pub id: i64,
+    pub guid: String,
+    /// On the fake's clock, Unix seconds.
+    pub delivered_at: i64,
+    pub redelivery: bool,
+    pub duration: f64,
+    pub status: String,
+    pub status_code: u16,
+    pub event: &'static str,
+    pub payload: Value,
+}
+
+/// Every attempt in the last [`RETENTION`], oldest first.
+#[derive(Default)]
+pub(crate) struct Log {
+    next_id: i64,
+    attempts: Vec<Attempt>,
+}
+
+impl Log {
+    /// Records an attempt; its id, GitHub's `id`, grows with each.
+    fn record(&mut self, mut a: Attempt) {
+        self.next_id += 1;
+        a.id = 90_000_000 + self.next_id;
+        self.attempts.push(a);
+    }
+
+    /// The attempts still kept at `now`, oldest first.
+    pub fn kept(&mut self, now: i64) -> &[Attempt] {
+        self.attempts.retain(|a| a.delivered_at > now - RETENTION);
+        &self.attempts
     }
 }
 
@@ -87,6 +145,7 @@ pub(crate) struct Webhooks {
     held: Arc<Mutex<Vec<Delivery>>>,
     queue: mpsc::UnboundedSender<(Instant, Delivery)>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<(Instant, Delivery)>>>,
+    log: Mutex<Log>,
 }
 
 impl Webhooks {
@@ -99,7 +158,30 @@ impl Webhooks {
             held: Arc::default(),
             queue,
             rx: Mutex::new(Some(rx)),
+            log: Mutex::default(),
         }
+    }
+
+    /// The attempt log, as of `now` on the fake's clock.
+    pub fn log<T>(&self, now: i64, f: impl FnOnce(&[Attempt]) -> T) -> T {
+        let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        f(log.kept(now))
+    }
+
+    fn record(&self, a: Attempt) {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).record(a);
+    }
+
+    /// Forgets every attempt (a reset).
+    pub fn clear_log(&self) {
+        *self.log.lock().unwrap_or_else(|e| e.into_inner()) = Log::default();
+    }
+
+    /// Queues `d` to go out again, through the faults, as a redelivery under its own GUID.
+    pub fn redeliver(&self, mut d: Delivery) {
+        d.redelivery = true;
+        d.lost = false;
+        self.send_one(d);
     }
 
     pub fn target(&self) -> Option<String> {
@@ -149,11 +231,14 @@ impl Webhooks {
         }
     }
 
-    fn send_one(&self, d: Delivery) {
+    fn send_one(&self, mut d: Delivery) {
         let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         let due = Instant::now() + DELAY + Duration::from_millis(rules.delay_ms);
         if rules.drop > 0 {
             rules.drop -= 1;
+            // GitHub tried, and got nothing back: the attempt is logged as failed.
+            d.lost = true;
+            let _ = self.queue.send((due, d));
             return;
         }
         let copies = if rules.duplicate > 0 {
@@ -238,6 +323,22 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
         let Some(url) = w.target() else {
             continue;
         };
+        let started = std::time::Instant::now();
+        let attempt = |status: String, status_code: u16| Attempt {
+            id: 0,
+            guid: d.guid.clone(),
+            delivered_at: fake.now(),
+            redelivery: d.redelivery,
+            duration: started.elapsed().as_secs_f64(),
+            status,
+            status_code,
+            event: d.event,
+            payload: d.payload.clone(),
+        };
+        if d.lost {
+            w.record(attempt(TIMED_OUT.into(), 0));
+            continue;
+        }
         let body = serde_json::to_vec(&d.payload).expect("JSON values serialise");
         let installation = d.payload["installation"]["id"].as_i64().unwrap_or(0);
         let res = http
@@ -254,17 +355,31 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
             .send()
             .await;
         match res {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => eprintln!(
-                "fake-github: webhook {} {} (installation {installation}) got {}",
-                d.event,
-                d.guid,
-                r.status()
-            ),
-            Err(e) => eprintln!(
-                "fake-github: webhook {} {} (installation {installation}) failed: {e}",
-                d.event, d.guid
-            ),
+            Ok(r) if r.status().is_success() => {
+                w.record(attempt("OK".into(), r.status().as_u16()));
+            }
+            Ok(r) => {
+                eprintln!(
+                    "fake-github: webhook {} {} (installation {installation}) got {}",
+                    d.event,
+                    d.guid,
+                    r.status()
+                );
+                let code = r.status().as_u16();
+                w.record(attempt(format!("Invalid HTTP Response: {code}"), code));
+            }
+            Err(e) => {
+                eprintln!(
+                    "fake-github: webhook {} {} (installation {installation}) failed: {e}",
+                    d.event, d.guid
+                );
+                let status = if e.is_timeout() {
+                    TIMED_OUT
+                } else {
+                    UNREACHABLE
+                };
+                w.record(attempt(status.into(), 0));
+            }
         }
     }
 }

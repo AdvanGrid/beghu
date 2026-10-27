@@ -4,7 +4,7 @@
 //! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment.
 //! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?}`: 200
 //!   with the issue as stored afterwards.
-//! - `GET /rate_limit`: 200 with the core limits (it needs no token, as on GitHub).
+//! - `GET /rate_limit`: 200 with the caller's quotas (it needs no token, as on GitHub).
 //!
 //! A write goes through the same change as an outside edit (`edits.rs`), so it sends the same
 //! signed webhooks about a second later, with the token's user as the sender.
@@ -282,16 +282,26 @@ impl CoreLimit {
     }
 }
 
-async fn rate_limit(State(fake): State<Fake>) -> Response {
-    let c = CoreLimit::at(fake.now());
-    let core = json!({
-        "limit": c.limit,
-        "used": c.used,
-        "remaining": c.remaining(),
-        "reset": c.reset,
-    });
+/// `GET /rate_limit`: the caller's quotas (`quota.rs`), or fresh ones without a token. It
+/// costs nothing.
+async fn rate_limit(State(fake): State<Fake>, headers: axum::http::HeaderMap) -> Response {
+    let now = fake.now();
+    let fresh = || {
+        let c = CoreLimit::at(now);
+        json!({ "limit": c.limit, "used": c.used, "remaining": c.remaining(), "reset": c.reset })
+    };
+    let (core, graphql) = match crate::quota::owner(&fake, &headers).await {
+        Some(owner) => {
+            let q = &fake.state().quotas;
+            (
+                json!(q.peek(&owner, crate::quota::Resource::Core, now)),
+                json!(q.peek(&owner, crate::quota::Resource::Graphql, now)),
+            )
+        }
+        None => (fresh(), fresh()),
+    };
     axum::Json(json!({
-        "resources": { "core": core, "graphql": core, "search": core },
+        "resources": { "core": core, "graphql": graphql, "search": fresh() },
         "rate": core,
     }))
     .into_response()

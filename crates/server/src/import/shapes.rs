@@ -9,47 +9,47 @@ use serde_json::Value;
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct PageInfo {
-    pub(super) has_next_page: bool,
-    pub(super) end_cursor: Option<String>,
+pub(crate) struct PageInfo {
+    pub(crate) has_next_page: bool,
+    pub(crate) end_cursor: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Conn<T> {
-    pub(super) page_info: Option<PageInfo>,
+pub(crate) struct Conn<T> {
+    pub(crate) page_info: Option<PageInfo>,
     #[serde(default = "Vec::new")]
-    pub(super) nodes: Vec<Option<T>>,
+    pub(crate) nodes: Vec<Option<T>>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Count {
-    pub(super) total_count: i64,
+pub(crate) struct Count {
+    pub(crate) total_count: i64,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct Named {
-    pub(super) name: String,
+pub(crate) struct Named {
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct Nodes<T> {
+pub(crate) struct Nodes<T> {
     #[serde(default = "Vec::new")]
-    pub(super) nodes: Vec<Option<T>>,
+    pub(crate) nodes: Vec<Option<T>>,
 }
 
 /// A user, a bot or a deleted account (`null`); only users and bots carry a database id.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Actor {
-    pub(super) login: String,
-    pub(super) avatar_url: Option<String>,
-    pub(super) database_id: Option<i64>,
+pub(crate) struct Actor {
+    pub(crate) login: String,
+    pub(crate) avatar_url: Option<String>,
+    pub(crate) database_id: Option<i64>,
 }
 
 impl Actor {
-    pub(super) fn user(&self) -> Option<UserData> {
+    pub(crate) fn user(&self) -> Option<UserData> {
         Some(UserData {
             id: self.database_id?,
             login: self.login.clone(),
@@ -59,38 +59,38 @@ impl Actor {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub(super) struct Login {
-    pub(super) login: String,
+pub(crate) struct Login {
+    pub(crate) login: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct TargetRepo {
+pub(crate) struct TargetRepo {
     #[serde(default)]
-    pub(super) id: String,
-    pub(super) database_id: i64,
-    pub(super) name: String,
-    pub(super) owner: Login,
-    pub(super) is_private: bool,
+    pub(crate) id: String,
+    pub(crate) database_id: i64,
+    pub(crate) name: String,
+    pub(crate) owner: Login,
+    pub(crate) is_private: bool,
 }
 
 /// The issue at a relationship's other end.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Target {
+pub(crate) struct Target {
     #[serde(rename = "__typename")]
-    pub(super) typename: Option<String>,
-    pub(super) id: String,
-    pub(super) database_id: i64,
-    pub(super) number: i64,
-    pub(super) title: String,
-    pub(super) state: String,
-    pub(super) repository: TargetRepo,
+    pub(crate) typename: Option<String>,
+    pub(crate) id: String,
+    pub(crate) database_id: i64,
+    pub(crate) number: i64,
+    pub(crate) title: String,
+    pub(crate) state: String,
+    pub(crate) repository: TargetRepo,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct SubSummary {
-    pub(super) total: i64,
+pub(crate) struct SubSummary {
+    pub(crate) total: i64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -98,42 +98,42 @@ pub(super) struct SubSummary {
 /// `totalBlockedBy` and `totalBlocking` count open and closed issues alike; GitHub's
 /// `blockedBy` and `blocking` count only the open ones, and would miss one between two closed
 /// issues.
-pub(super) struct DepSummary {
-    pub(super) total_blocked_by: i64,
-    pub(super) total_blocking: i64,
+pub(crate) struct DepSummary {
+    pub(crate) total_blocked_by: i64,
+    pub(crate) total_blocking: i64,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct MilestoneRef {
-    pub(super) number: i64,
+pub(crate) struct MilestoneRef {
+    pub(crate) number: i64,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GqlIssue {
-    pub(super) id: String,
-    pub(super) database_id: i64,
-    pub(super) number: i64,
-    pub(super) title: String,
-    pub(super) body: Option<String>,
-    pub(super) state: String,
-    pub(super) state_reason: Option<String>,
+pub(crate) struct GqlIssue {
+    pub(crate) id: String,
+    pub(crate) database_id: i64,
+    pub(crate) number: i64,
+    pub(crate) title: String,
+    pub(crate) body: Option<String>,
+    pub(crate) state: String,
+    pub(crate) state_reason: Option<String>,
     #[serde(default)]
-    pub(super) locked: bool,
-    pub(super) created_at: String,
-    pub(super) updated_at: String,
-    pub(super) closed_at: Option<String>,
-    pub(super) author: Option<Actor>,
-    pub(super) milestone: Option<MilestoneRef>,
-    pub(super) issue_type: Option<Named>,
-    pub(super) comments: Count,
-    pub(super) labels: Conn<Named>,
-    pub(super) assignees: Nodes<Actor>,
-    pub(super) parent: Option<Target>,
-    pub(super) sub_issues_summary: Option<SubSummary>,
-    pub(super) issue_dependencies_summary: Option<DepSummary>,
-    pub(super) relates_to: Option<Conn<Target>>,
+    pub(crate) locked: bool,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) closed_at: Option<String>,
+    pub(crate) author: Option<Actor>,
+    pub(crate) milestone: Option<MilestoneRef>,
+    pub(crate) issue_type: Option<Named>,
+    pub(crate) comments: Count,
+    pub(crate) labels: Conn<Named>,
+    pub(crate) assignees: Nodes<Actor>,
+    pub(crate) parent: Option<Target>,
+    pub(crate) sub_issues_summary: Option<SubSummary>,
+    pub(crate) issue_dependencies_summary: Option<DepSummary>,
+    pub(crate) relates_to: Option<Conn<Target>>,
 }
 
 impl GqlIssue {
@@ -144,55 +144,55 @@ impl GqlIssue {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RelationshipLists {
-    pub(super) id: String,
-    pub(super) sub_issues: Option<Conn<Target>>,
-    pub(super) blocked_by: Option<Conn<Target>>,
-    pub(super) blocking: Option<Conn<Target>>,
+pub(crate) struct RelationshipLists {
+    pub(crate) id: String,
+    pub(crate) sub_issues: Option<Conn<Target>>,
+    pub(crate) blocked_by: Option<Conn<Target>>,
+    pub(crate) blocking: Option<Conn<Target>>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct PullDetails {
-    pub(super) id: String,
+pub(crate) struct PullDetails {
+    pub(crate) id: String,
     /// `null` for a PR GitHub can't name by database id (the PR is skipped).
-    pub(super) database_id: Option<i64>,
+    pub(crate) database_id: Option<i64>,
     #[serde(default)]
-    pub(super) is_draft: bool,
-    pub(super) merged_at: Option<String>,
-    pub(super) head_ref_name: Option<String>,
-    pub(super) base_ref_name: Option<String>,
-    pub(super) review_decision: Option<String>,
-    pub(super) closing_issues_references: Option<Conn<Target>>,
+    pub(crate) is_draft: bool,
+    pub(crate) merged_at: Option<String>,
+    pub(crate) head_ref_name: Option<String>,
+    pub(crate) base_ref_name: Option<String>,
+    pub(crate) review_decision: Option<String>,
+    pub(crate) closing_issues_references: Option<Conn<Target>>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GqlComment {
-    pub(super) id: String,
-    pub(super) database_id: i64,
+pub(crate) struct GqlComment {
+    pub(crate) id: String,
+    pub(crate) database_id: i64,
     #[serde(default)]
-    pub(super) body: String,
-    pub(super) created_at: String,
-    pub(super) updated_at: String,
-    pub(super) author: Option<Actor>,
+    pub(crate) body: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) author: Option<Actor>,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct WithComments {
-    pub(super) id: String,
-    pub(super) comments: Conn<GqlComment>,
+pub(crate) struct WithComments {
+    pub(crate) id: String,
+    pub(crate) comments: Conn<GqlComment>,
 }
 
-#[derive(Deserialize, Debug)]
-pub(super) struct RestUser {
-    pub(super) id: i64,
-    pub(super) login: String,
-    pub(super) avatar_url: Option<String>,
+#[derive(Deserialize, Debug, Clone)]
+pub(crate) struct RestUser {
+    pub(crate) id: i64,
+    pub(crate) login: String,
+    pub(crate) avatar_url: Option<String>,
 }
 
 impl RestUser {
-    pub(super) fn user(&self) -> UserData {
+    pub(crate) fn user(&self) -> UserData {
         UserData {
             id: self.id,
             login: self.login.clone(),
@@ -202,59 +202,59 @@ impl RestUser {
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct RestNamed {
-    pub(super) name: String,
+pub(crate) struct RestNamed {
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct RestMilestone {
-    pub(super) number: i64,
+pub(crate) struct RestMilestone {
+    pub(crate) number: i64,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct RestIssue {
-    pub(super) id: i64,
+pub(crate) struct RestIssue {
+    pub(crate) id: i64,
     #[serde(default)]
-    pub(super) node_id: String,
-    pub(super) number: i64,
-    pub(super) title: String,
-    pub(super) body: Option<String>,
-    pub(super) state: String,
-    pub(super) state_reason: Option<String>,
+    pub(crate) node_id: String,
+    pub(crate) number: i64,
+    pub(crate) title: String,
+    pub(crate) body: Option<String>,
+    pub(crate) state: String,
+    pub(crate) state_reason: Option<String>,
     #[serde(default)]
-    pub(super) locked: bool,
-    pub(super) user: Option<RestUser>,
+    pub(crate) locked: bool,
+    pub(crate) user: Option<RestUser>,
     #[serde(default)]
-    pub(super) labels: Vec<RestNamed>,
+    pub(crate) labels: Vec<RestNamed>,
     #[serde(default)]
-    pub(super) assignees: Vec<RestUser>,
-    pub(super) milestone: Option<RestMilestone>,
+    pub(crate) assignees: Vec<RestUser>,
+    pub(crate) milestone: Option<RestMilestone>,
     #[serde(default)]
-    pub(super) comments: i64,
-    pub(super) created_at: Option<String>,
-    pub(super) updated_at: String,
-    pub(super) closed_at: Option<String>,
-    pub(super) pull_request: Option<Value>,
+    pub(crate) comments: i64,
+    pub(crate) created_at: Option<String>,
+    pub(crate) updated_at: String,
+    pub(crate) closed_at: Option<String>,
+    pub(crate) pull_request: Option<Value>,
     #[serde(rename = "type")]
-    pub(super) issue_type: Option<RestNamed>,
+    pub(crate) issue_type: Option<RestNamed>,
 }
 
-#[derive(Deserialize, Debug)]
-pub(super) struct RestComment {
-    pub(super) id: i64,
+#[derive(Deserialize, Debug, Clone)]
+pub(crate) struct RestComment {
+    pub(crate) id: i64,
     #[serde(default)]
-    pub(super) node_id: String,
-    pub(super) user: Option<RestUser>,
-    pub(super) body: Option<String>,
-    pub(super) created_at: Option<String>,
-    pub(super) updated_at: String,
+    pub(crate) node_id: String,
+    pub(crate) user: Option<RestUser>,
+    pub(crate) body: Option<String>,
+    pub(crate) created_at: Option<String>,
+    pub(crate) updated_at: String,
     #[serde(default)]
-    pub(super) issue_url: String,
+    pub(crate) issue_url: String,
 }
 
 impl RestComment {
     /// The issue's number, from `issue_url` (`…/issues/<number>`).
-    pub(super) fn number(&self) -> Option<i64> {
+    pub(crate) fn number(&self) -> Option<i64> {
         self.issue_url.rsplit('/').next()?.parse().ok()
     }
 }
@@ -277,7 +277,7 @@ macro_rules! comment_fragment {
     };
 }
 
-pub(super) const IMPORT_ISSUES: &str = concat!(
+pub(crate) const IMPORT_ISSUES: &str = concat!(
     "query ImportIssues($owner: String!, $name: String!, $states: [IssueState!]!, $after: String) {
   repository(owner: $owner, name: $name) {
     issues(first: 100, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: ASC}) {
@@ -301,7 +301,7 @@ pub(super) const IMPORT_ISSUES: &str = concat!(
     target_fragment!()
 );
 
-pub(super) const IMPORT_RELATIONSHIPS: &str = concat!(
+pub(crate) const IMPORT_RELATIONSHIPS: &str = concat!(
     "query ImportRelationships($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on Issue {
@@ -315,7 +315,7 @@ pub(super) const IMPORT_RELATIONSHIPS: &str = concat!(
     target_fragment!()
 );
 
-pub(super) const IMPORT_RELATES_TO: &str = concat!(
+pub(crate) const IMPORT_RELATES_TO: &str = concat!(
     "query ImportRelatesTo($id: ID!, $after: String) {
   node(id: $id) {
     ... on Issue { id relatesTo(first: 50, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { ...Target } } }
@@ -324,7 +324,7 @@ pub(super) const IMPORT_RELATES_TO: &str = concat!(
     target_fragment!()
 );
 
-pub(super) const IMPORT_PULL_DETAILS: &str = concat!(
+pub(crate) const IMPORT_PULL_DETAILS: &str = concat!(
     "query ImportPullDetails($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on PullRequest {
@@ -336,13 +336,13 @@ pub(super) const IMPORT_PULL_DETAILS: &str = concat!(
     target_fragment!()
 );
 
-pub(super) const IMPORT_LABELS: &str = "query ImportLabels($id: ID!, $after: String) {
+pub(crate) const IMPORT_LABELS: &str = "query ImportLabels($id: ID!, $after: String) {
   node(id: $id) {
     ... on Issue { id labels(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { name } } }
   }
 }";
 
-pub(super) const IMPORT_CLOSING_REFS: &str = concat!(
+pub(crate) const IMPORT_CLOSING_REFS: &str = concat!(
     "query ImportClosingRefs($id: ID!, $after: String) {
   node(id: $id) {
     ... on PullRequest { id closingIssuesReferences(first: 50, after: $after) { pageInfo { hasNextPage endCursor } nodes { ...Target } } }
@@ -351,7 +351,7 @@ pub(super) const IMPORT_CLOSING_REFS: &str = concat!(
     target_fragment!()
 );
 
-pub(super) const IMPORT_COMMENTS: &str = concat!(
+pub(crate) const IMPORT_COMMENTS: &str = concat!(
     "query ImportComments($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on Issue { id comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { ...Comment } } }
@@ -361,7 +361,7 @@ pub(super) const IMPORT_COMMENTS: &str = concat!(
     comment_fragment!()
 );
 
-pub(super) const IMPORT_MORE_COMMENTS: &str = concat!(
+pub(crate) const IMPORT_MORE_COMMENTS: &str = concat!(
     "query ImportMoreComments($id: ID!, $after: String!) {
   node(id: $id) {
     ... on Issue { id comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ...Comment } } }

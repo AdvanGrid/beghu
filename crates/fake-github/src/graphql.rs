@@ -19,9 +19,16 @@
 //! - `ImportMoreComments(id, after)`: the next 100 of one item's comments.
 //! - `IssueEdges(id, sub, blocks, relates, relatesAfter)`: the relationship read-backs' query
 //!   (`issue_edges.rs`).
+//! - The sweeps' queries: `SweepCounts(ids)`, each repo's `issues` and `pullRequests`
+//!   `totalCount` (every state, as GitHub counts them); `SweepIssueIds(owner, name, after)` and
+//!   `SweepPullIds(owner, name, after)`, a repo's issue or PR database ids, 100 at a time; and
+//!   `SweepEdges(ids, sub, blocks, relates)`, `IssueEdges` for up to 100 issues at once (relates-to
+//!   its first page of 100).
 //!
 //! The control port's `/state` counts the calls made with an installation token and with a
-//! user's.
+//! user's, and the calls of each operation.
+//!
+//! Each query spends GitHub's documented cost of it from the caller's quota ([`cost`]).
 
 use crate::Fake;
 use crate::api::{self, AnyToken, Token, can_see, rfc3339};
@@ -98,6 +105,239 @@ fn excessive_first(query: &str) -> Option<(String, i64)> {
         }
     }
     None
+}
+
+/// GitHub's documented cost of a query, in points
+/// (`/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api`;
+/// docs/research/github-app-mechanics.md §1): add up the requests each connection makes, a
+/// connection nested in another making one for each record the outer one may return (its
+/// `first` or `last` as asked, as if it were maxed), divide by 100, round, at least 1. The fake
+/// reads the query only this far: a connection is a field asked with `first`, `last` or `ids`
+/// (`nodes(ids:)`, as many records as ids), or one selecting its `totalCount`; `@include` and
+/// `@skip` are honoured, and fragments are followed.
+pub(crate) fn cost(query: &str, vars: &Value) -> i64 {
+    let tokens = lex(query);
+    let mut fragments: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut operation = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "fragment" && i + 1 < tokens.len() {
+            let name = tokens[i + 1].clone();
+            let Some(open) = tokens[i..].iter().position(|t| t == "{") else {
+                break;
+            };
+            fragments.insert(name, i + open);
+            i = skip_block(&tokens, i + open);
+        } else if tokens[i] == "{" {
+            operation.get_or_insert(i);
+            i = skip_block(&tokens, i);
+        } else {
+            i += 1;
+        }
+    }
+    let Some(start) = operation else { return 1 };
+    let walk = Walk {
+        tokens: &tokens,
+        vars,
+        fragments: &fragments,
+    };
+    let requests = walk.selection(start, 1, 0).0;
+    ((requests as f64 / 100.0).round() as i64).max(1)
+}
+
+/// A query's tokens: names, numbers, `$`-variables, strings and punctuation; commas and comments
+/// dropped.
+fn lex(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = query.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '#' => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                let mut s = String::from('"');
+                while let Some(c) = chars.next() {
+                    s.push(c);
+                    if c == '\\' {
+                        if let Some(n) = chars.next() {
+                            s.push(n);
+                        }
+                    } else if c == '"' {
+                        break;
+                    }
+                }
+                out.push(s);
+            }
+            '.' => {
+                while chars.peek() == Some(&'.') {
+                    chars.next();
+                }
+                out.push("...".into());
+            }
+            c if c.is_alphanumeric() || c == '_' || c == '$' || c == '-' => {
+                let mut s = String::from(c);
+                while let Some(&n) = chars.peek() {
+                    if n.is_alphanumeric() || n == '_' {
+                        s.push(n);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                out.push(s);
+            }
+            c if c.is_whitespace() || c == ',' => {}
+            c => out.push(c.to_string()),
+        }
+    }
+    out
+}
+
+/// The index just past the bracketed block (`{…}`, `(…)` or `[…]`) opening at `at`.
+fn skip_block(tokens: &[String], at: usize) -> usize {
+    let mut depth = 0;
+    for (i, t) in tokens.iter().enumerate().skip(at) {
+        match t.as_str() {
+            "{" | "(" | "[" => depth += 1,
+            "}" | ")" | "]" => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    tokens.len()
+}
+
+struct Walk<'a> {
+    tokens: &'a [String],
+    vars: &'a Value,
+    fragments: &'a std::collections::HashMap<String, usize>,
+}
+
+impl Walk<'_> {
+    /// A value token as a number: a literal, or a variable's.
+    fn number(&self, t: &str) -> Option<i64> {
+        match t.strip_prefix('$') {
+            Some(v) => self.vars[v].as_i64(),
+            None => t.parse().ok(),
+        }
+    }
+
+    /// A value token as a boolean: a literal, or a variable's.
+    fn boolean(&self, t: &str) -> bool {
+        match t.strip_prefix('$') {
+            Some(v) => self.vars[v].as_bool().unwrap_or(false),
+            None => t == "true",
+        }
+    }
+
+    /// The requests the selection set opening at `at` makes, `mult` times over; and where it ends.
+    fn selection(&self, at: usize, mult: i64, depth: usize) -> (i64, usize) {
+        let t = self.tokens;
+        let end = skip_block(t, at);
+        if depth > 32 {
+            return (0, end);
+        }
+        let mut requests = 0;
+        let mut i = at + 1;
+        while i < end - 1 {
+            if t[i] == "..." {
+                if t.get(i + 1).is_some_and(|n| n == "on") {
+                    // An inline fragment: its type, then its selection.
+                    let open = i + 3;
+                    let (r, next) = self.selection(open, mult, depth + 1);
+                    requests += r;
+                    i = next;
+                } else {
+                    if let Some(open) = t.get(i + 1).and_then(|n| self.fragments.get(n)) {
+                        requests += self.selection(*open, mult, depth + 1).0;
+                    }
+                    i += 2;
+                }
+                continue;
+            }
+            // A field: `alias: name`, then its arguments, directives and selection.
+            i += 1;
+            if t.get(i).is_some_and(|x| x == ":") {
+                i += 2;
+            }
+            let mut size = None;
+            let mut has_ids = false;
+            if t.get(i).is_some_and(|x| x == "(") {
+                let close = skip_block(t, i);
+                let mut j = i + 1;
+                while j + 2 < close {
+                    if t[j + 1] == ":" {
+                        match t[j].as_str() {
+                            "first" | "last" => size = self.number(&t[j + 2]),
+                            "ids" => {
+                                has_ids = true;
+                                size = Some(match t[j + 2].strip_prefix('$') {
+                                    Some(v) => self.vars[v].as_array().map_or(0, Vec::len) as i64,
+                                    None => {
+                                        let list_end = skip_block(t, j + 2);
+                                        (list_end - j - 4) as i64
+                                    }
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                    j += 1;
+                }
+                i = close;
+            }
+            let mut included = true;
+            while t.get(i).is_some_and(|x| x == "@") {
+                let name = t.get(i + 1).cloned().unwrap_or_default();
+                let value = t.get(i + 5).cloned().unwrap_or_default();
+                let on = self.boolean(&value);
+                included &= if name == "skip" { !on } else { on };
+                i += 2;
+                if t.get(i).is_some_and(|x| x == "(") {
+                    i = skip_block(t, i);
+                }
+            }
+            if !t.get(i).is_some_and(|x| x == "{") {
+                continue;
+            }
+            let close = skip_block(t, i);
+            if !included {
+                i = close;
+                continue;
+            }
+            // Asked with `first`, `last` or `ids`, or a count of one (`issues { totalCount }`).
+            let connection = size.is_some() || has_ids || {
+                let mut depth = 0;
+                t[i + 1..close - 1].iter().any(|x| {
+                    match x.as_str() {
+                        "{" | "(" | "[" => depth += 1,
+                        "}" | ")" | "]" => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0 && x == "totalCount"
+                })
+            };
+            if connection {
+                requests += mult;
+                requests += self
+                    .selection(i, mult * size.unwrap_or(1).max(1), depth + 1)
+                    .0;
+            } else {
+                requests += self.selection(i, mult, depth + 1).0;
+            }
+            i = close;
+        }
+        (requests, end)
+    }
 }
 
 fn cursor(parts: &[i64]) -> String {
@@ -436,6 +676,79 @@ fn run(
             }
             json!({ "repository": { "issues": { "pageInfo": page_info(more, end), "nodes": nodes } } })
         }
+        "SweepCounts" => {
+            let mut nodes = Vec::new();
+            for (i, id) in ids.iter().enumerate() {
+                match q::repo_by_node(c, id)?.filter(|r| can_see(c, token, *r).unwrap_or(false)) {
+                    Some(repo) => nodes.push(json!({
+                        "__typename": "Repository",
+                        "id": id,
+                        "databaseId": repo,
+                        "issues": { "totalCount": q::item_count(c, repo, "issue")? },
+                        "pullRequests": { "totalCount": q::item_count(c, repo, "pr")? },
+                    })),
+                    None => {
+                        nodes.push(Value::Null);
+                        errs.push(not_found(id, vec![json!("nodes"), json!(i)]));
+                    }
+                }
+            }
+            json!({ "nodes": nodes })
+        }
+        "SweepIssueIds" | "SweepPullIds" => {
+            let (Some(owner), Some(name)) = (str_var("owner"), str_var("name")) else {
+                return Ok(Err("Variable $owner and $name are required".into()));
+            };
+            let Some(repo) =
+                q::repo_named(c, &owner, &name)?.filter(|r| can_see(c, token, *r).unwrap_or(false))
+            else {
+                return Ok(Ok((
+                    json!({ "repository": null }),
+                    vec![json!({
+                        "type": "NOT_FOUND",
+                        "path": ["repository"],
+                        "locations": [],
+                        "message": format!("Could not resolve to a Repository with the name '{owner}/{name}'."),
+                    })],
+                )));
+            };
+            let (kind, field) = if op == "SweepIssueIds" {
+                ("issue", "issues")
+            } else {
+                ("pr", "pullRequests")
+            };
+            let after = match str_var("after").as_deref().and_then(uncursor).as_deref() {
+                Some([id]) => *id,
+                _ => i64::MIN,
+            };
+            let mut rows = q::item_ids_page(c, repo, kind, after, MAX_PAGE + 1)?;
+            let more = rows.len() as i64 > MAX_PAGE;
+            rows.truncate(MAX_PAGE as usize);
+            let end = rows.last().map(|id| cursor(&[*id]));
+            let mut nodes = Vec::new();
+            for id in &rows {
+                // A PR's own database id, as GitHub's `PullRequest.databaseId` is.
+                let database_id = if kind == "pr" {
+                    q::pr_details(c, *id)?.pr_id
+                } else {
+                    Some(*id)
+                };
+                nodes.push(json!({ "databaseId": database_id }));
+            }
+            json!({ "repository": { field: {
+                "totalCount": q::item_count(c, repo, kind)?,
+                "pageInfo": page_info(more, end),
+                "nodes": nodes,
+            } } })
+        }
+        "SweepEdges" => {
+            let nodes = each_node(c, token, &ids, &mut errs, &mut |item| {
+                let mut n = crate::issue_edges::edges_node(c, token, item.id, v)?;
+                n["id"] = json!(q::target(c, item.id)?.node_id);
+                Ok(n)
+            })?;
+            json!({ "nodes": nodes })
+        }
         "ImportRelationships" => {
             let nodes = each_node(c, token, &ids, &mut errs, &mut |item| {
                 Ok(json!({
@@ -583,12 +896,14 @@ async fn graphql(
             json!({ "message": "A query attribute must be specified and must be a string." }),
         ]);
     };
+    let cost = crate::quota::Cost(cost(&req.query, &req.variables));
     let calls = &fake.state().graphql;
     match token {
         Token::Installation(_) => &calls.installation,
         Token::User(_) => &calls.user,
     }
     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    calls.count(&op);
     let vars = req.variables.clone();
     if op == "IssueEdges" {
         let done = fake
@@ -596,22 +911,26 @@ async fn graphql(
             .truth
             .read(move |c| crate::issue_edges::issue_edges(c, token, &vars))
             .await;
-        return match done {
+        let mut res = match done {
             Ok(answer) => axum::Json(answer).into_response(),
             Err(e) => api::internal(e),
         };
+        res.extensions_mut().insert(cost);
+        return res;
     }
     let answer = fake
         .state()
         .truth
         .read(move |c| run(c, token, &op, &vars))
         .await;
-    match answer {
+    let mut res = match answer {
         Ok(Ok((data, errs))) if errs.is_empty() => {
             axum::Json(json!({ "data": data })).into_response()
         }
         Ok(Ok((data, errs))) => axum::Json(json!({ "data": data, "errors": errs })).into_response(),
         Ok(Err(why)) => errors(vec![json!({ "message": why, "locations": [] })]),
         Err(e) => api::internal(e),
-    }
+    };
+    res.extensions_mut().insert(cost);
+    res
 }

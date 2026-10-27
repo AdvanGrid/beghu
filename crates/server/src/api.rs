@@ -33,6 +33,8 @@ pub struct Me {
     pub repos: Vec<Repo>,
     /// The import running, if any: the status slot's "Importing… n of m repos".
     pub import: Option<crate::import::ImportStatus>,
+    /// Sync degraded, or resyncing; `null` while sync is healthy.
+    pub sync: Option<crate::reconcile::SyncStatus>,
 }
 
 #[derive(Serialize, TS, Clone)]
@@ -129,6 +131,7 @@ pub async fn me(
             })
             .collect(),
         import: app.imports().status(s.account),
+        sync: crate::reconcile::status(&app, s.account).await,
     }))
 }
 

@@ -2,10 +2,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   DATA,
   DEFAULT_SCALE,
   DEV,
+  DEV_WEBHOOK_SECRET,
   FAKE_DB,
   LOG,
   MIRRORS,
@@ -46,7 +48,8 @@ Commands:
                               restarted. No-op if already running.
   stop                        Stop everything.
   status                      Mode, scale, URLs, each process up or down (--json: and its
-                              pid), the fake users signed in, and the active fault rules.
+                              pid, and the dev webhook secret), the fake users signed in,
+                              and the active fault rules.
                               Exit 1 if not running.
   logs [-n N] [-f] [PROC]     The last N lines (default 100) of the one log, optionally
                               only one process: ${PROCS.join(", ")}.
@@ -72,14 +75,22 @@ Commands:
             [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
             [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N]
             [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]
+            [--prioritize-sub-issue R#N] [--delete]
                               An outside edit on "GitHub" (as an agent with gh would make
-                              it); its webhooks reach the server about a second later. REPO
+                              it); its webhooks reach the server about a second later.
+                              --delete deletes the issue instead (issues deleted). REPO
                               is a fixture repo name (web) or owner/name (acme/web). R#N may
                               be in an unsynced repo (partner-sdk#100), or #N in REPO.
+                              --prioritize-sub-issue moves that sub-issue to the top, which
+                              GitHub does without a webhook (sweeps find it).
   fake webhooks drop|duplicate|reorder N
                               The next N deliveries are lost, sent twice under one GUID,
                               or (reorder, N >= 2) held and sent newest first.
   fake webhooks delay MS      Every delivery waits MS longer (0 for none).
+  fake quota N | fake quota off
+                              Every token's rate limit reads as at most N calls left, as
+                              if others had spent the rest (sweeps pause below a fifth), or
+                              as GitHub counts it again.
   fake clear                  Remove every fault rule, webhook ones included.
   fake tokens [--access-ttl T] [--refresh-ttl T]
                               Lifetimes of new tokens: 30s, 5m, 8h, 184d.
@@ -91,8 +102,8 @@ Commands:
                               or lifts it (GitHub sends installation suspend/unsuspend):
                               it still lists, but beghu reads nothing through it.
   reset [--all] [--fresh]     Restore pristine mirrors and the fake's state (sign-ins,
-                              faults, its data), keeping the control DB. Restarts the stack
-                              if it's running.
+                              faults, its data), keeping the control DB (less its Resync
+                              marks and hourly limits). Restarts the stack if it's running.
                               --all also wipes the control DB.
                               --fresh deletes the mirrors instead, so every account imports
                               its synced repos through the fake on its next use (with --all,
@@ -227,9 +238,10 @@ async function stop(): Promise<boolean> {
 // ---------------------------------------------------------------------------------------------
 // status
 
-function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["faults"]): string[] {
+function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["faults"], q?: FakeState["quota"]): string[] {
   const lines: string[] = [];
   if (f.down) lines.push("down: GitHub unreachable");
+  if (q && q.cap !== null) lines.push(`quota: at most ${q.cap} calls left`);
   if (w?.drop) lines.push(`webhooks: drop the next ${w.drop}`);
   if (w?.duplicate) lines.push(`webhooks: send the next ${w.duplicate} twice`);
   if (w?.reorder) lines.push(`webhooks: reorder the next ${w.reorder}`);
@@ -270,6 +282,8 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     mode: s?.mode,
     scale: s?.scale,
     urls: urls(),
+    // Dev data only: what the fake signs deliveries with, for a test that sends its own.
+    webhook_secret: DEV_WEBHOOK_SECRET,
     up: procs,
     signed_in: fake?.signed_in ?? null,
     tokens: fake?.tokens ?? null,
@@ -277,7 +291,7 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     webhooks: fake?.webhooks ?? null,
   };
   const word = (b: boolean) => (b ? "up" : "DOWN");
-  const faults = fake ? describeFaults(fake.faults, fake.webhooks.faults) : [];
+  const faults = fake ? describeFaults(fake.faults, fake.webhooks.faults, fake.quota) : [];
   const text = [
     `running (pid ${r.pid}, ${s?.phase ?? "unknown"}): ${s?.mode ?? "?"} mode, scale ${s?.scale ?? "?"}`,
     ...(s?.error ? [`  ${s.error}`] : []),
@@ -393,11 +407,17 @@ async function control(method: string, path: string, body?: unknown): Promise<un
 /** `./dev-ctl fake edit REPO#N …`: the control port's `POST /edit` body. */
 function editBody(target: string | undefined, opts: Record<string, string>, set: Set<string>): Record<string, unknown> {
   const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
-  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]");
+  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N] [--prioritize-sub-issue R#N] [--delete]");
   if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
   const list = (v: string | undefined) => (v === undefined ? [] : v.split(",").map((l) => l.trim()).filter(Boolean));
   const body: Record<string, unknown> = { repo: m[1], number: Number(m[2]) };
   if (opts["--as"]) body.as = opts["--as"];
+  if (set.has("--delete")) {
+    const others = [...Object.keys(opts), ...set].filter((o) => !["--as", "--delete", "--json"].includes(o));
+    if (others.length > 0) throw new Usage("--delete goes alone (with --as)");
+    body.delete = true;
+    return body;
+  }
   if (opts["--title"] !== undefined) body.title = opts["--title"];
   if (opts["--body"] !== undefined) body.body = opts["--body"];
   if (set.has("--close")) body.state = "closed";
@@ -416,6 +436,7 @@ function editBody(target: string | undefined, opts: Record<string, string>, set:
     ["--remove-blocked-by", "remove_blocked_by"],
     ["--relate", "add_relates_to"],
     ["--unrelate", "remove_relates_to"],
+    ["--prioritize-sub-issue", "prioritize_sub_issue"],
   ];
   for (const [flag, field] of links) if (opts[flag]) body[field] = opts[flag];
   if (Object.keys(body).length === 2) throw new Usage("fake edit needs something to change; see ./dev-ctl help");
@@ -451,14 +472,15 @@ async function fake(args: string[]): Promise<void> {
       "--remove-blocked-by",
       "--relate",
       "--unrelate",
+      "--prioritize-sub-issue",
     ],
-    ["--close", "--reopen"],
+    ["--close", "--reopen", "--delete"],
   );
   const done = (text: string) => print(json, { ok: true }, text);
   switch (sub) {
     case "state": {
       const s = await needFake();
-      const faults = describeFaults(s.faults, s.webhooks.faults);
+      const faults = describeFaults(s.faults, s.webhooks.faults, s.quota);
       print(
         json,
         s,
@@ -540,6 +562,15 @@ async function fake(args: string[]): Promise<void> {
       await control("POST", "/faults/webhooks", { [what]: num });
       return done(`webhooks: ${what} the next ${num}`);
     }
+    case "quota": {
+      const [n] = pos;
+      const num = Number(n);
+      if (n !== "off" && (n === undefined || !Number.isInteger(num) || num < 0)) {
+        throw new Usage("usage: ./dev-ctl fake quota N, or fake quota off");
+      }
+      await control("PUT", "/quota", { remaining: n === "off" ? null : num });
+      return done(n === "off" ? "quota: as GitHub counts it" : `quota: at most ${num} calls left`);
+    }
     case "tokens": {
       const body: Record<string, number> = {};
       if (opts["--access-ttl"]) body.access_ttl = seconds(opts["--access-ttl"], "--access-ttl");
@@ -575,6 +606,24 @@ async function fake(args: string[]): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // reset
 
+/**
+ * With pristine mirrors and a pristine fake, no account has changes to repair, and none has used
+ * its hourly Resync on them: the control DB's marks and limits go (crates/server/src/reconcile).
+ */
+function forgetResyncs(): void {
+  const path = join(DATA, "control.db");
+  if (!existsSync(path)) return;
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec("UPDATE accounts SET needs_resync = 0, needs_resync_at = NULL, resync_asked_at = NULL");
+  } catch {
+    // A control DB from before reconciliation's columns: nothing to clear.
+  } finally {
+    db.close();
+  }
+}
+
 async function reset(args: string[]): Promise<void> {
   const { set, pos, json } = parse(args, [], ["--all", "--fresh"]);
   if (pos.length) throw new Usage("usage: ./dev-ctl reset [--all] [--fresh]");
@@ -601,7 +650,8 @@ async function reset(args: string[]): Promise<void> {
     for (const f of ["control.db", "control.db-wal", "control.db-shm", "backups"]) remove(join(DATA, f));
     done.push("control DB wiped");
   } else {
-    done.push("control DB kept");
+    forgetResyncs();
+    done.push("control DB kept (its Resync marks and limits cleared)");
   }
   if (!json) console.log(done.join("; "));
   // Back on the ports it ran on.

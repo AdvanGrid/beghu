@@ -7,12 +7,15 @@
 //! to a lane per active connected account that syncs its repo. Each lane writes its account's
 //! mirror in delivery order, one transaction (one `seq`) per delivery, followed by one push to
 //! that account's streams; lanes run independently, so a slow or failing mirror holds up only its
-//! own account. A failed write marks that account `needs_resync` and its lane carries on. The
+//! own account. A failed write marks that account `needs_resync` (its status slot says sync is
+//! degraded, and a sweep repairs it: `reconcile.rs`) and its lane carries on. The
 //! last lane to finish a delivery marks it processed, which clears its payload (a relationship
 //! delivery waits first for the read-back it schedules to land or be given up, so a process that
 //! stops in between replays it at the next start); processed
 //! deliveries are kept [`Config::deliveries_kept_for`](crate::Config) (GitHub's three-day
-//! redelivery window and a day's margin) to dedupe redeliveries, then pruned.
+//! redelivery window and a day's margin) to dedupe redeliveries, then pruned. Deliveries GitHub
+//! couldn't make (beghu down, or the answer lost) come back through the redelivery job
+//! (`reconcile/redeliver.rs`).
 //!
 //! Order holds through a failing control DB: each call that decides what happens next (who a
 //! delivery fans out to, marking an account `needs_resync`) is retried until it lands, and the
@@ -637,7 +640,7 @@ async fn dispatch(
                             "webhooks: account {account}'s queue is full; dropping {} {} for it",
                             job.event, job.guid
                         );
-                        mark_for_resync(&sinks.control, account).await;
+                        mark_for_resync(&sinks.control, &sinks.hub, account).await;
                         t.finish();
                         break;
                     }
@@ -645,7 +648,7 @@ async fn dispatch(
                     Err(mpsc::error::TrySendError::Closed(t)) => {
                         eprintln!("webhooks: account {account}'s lane stopped; starting another");
                         lanes.remove(&account);
-                        mark_for_resync(&sinks.control, account).await;
+                        mark_for_resync(&sinks.control, &sinks.hub, account).await;
                         ticket = t;
                     }
                 }
@@ -678,7 +681,17 @@ async fn lane_ended(
     };
     eprintln!("webhooks: account {account}'s lane stopped ({ended:?}); starting another");
     lanes.remove(&account);
-    mark_for_resync(&sinks.control, account).await;
+    mark_for_resync(&sinks.control, &sinks.hub, account).await;
+}
+
+/// Why an account may miss a relationship change for good.
+#[derive(Clone, Copy)]
+enum Hidden {
+    /// The delivery came without an installation: nothing reads the other end back.
+    NoReadBack,
+    /// The other end is in a private repo the account syncs through another installation, which
+    /// the delivery's installation token can't see. Neither can a sweep.
+    OtherInstallation,
 }
 
 /// One account's deliveries, applied to its mirror in the order they were received.
@@ -706,12 +719,22 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
             } else if !ids.is_empty() {
                 sinks.hub.publish(account, Push::Ids(ids.into()));
             }
-            if hidden {
-                eprintln!(
-                    "webhooks: {} {} names an end no installation token shows account {account}; marking it for resync",
+            match hidden {
+                // A sweep reads with the same installation tokens and can't find the other end
+                // either: marking the account would leave it degraded for good, and its full
+                // sweeps repeating. The mirror keeps what it has of the edge.
+                Some(Hidden::OtherInstallation) => eprintln!(
+                    "webhooks: {} {} names an end in a private repo account {account} syncs through another installation; no token beghu reads with shows it",
                     job.event, job.guid
-                );
-                mark_for_resync(&sinks.control, account).await;
+                ),
+                Some(Hidden::NoReadBack) => {
+                    eprintln!(
+                        "webhooks: {} {} names an end and no installation to read it back with; marking account {account} for resync",
+                        job.event, job.guid
+                    );
+                    mark_for_resync(&sinks.control, &sinks.hub, account).await;
+                }
+                None => {}
             }
         }
         Err(e) => {
@@ -719,7 +742,7 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
                 "webhooks: delivery {} failed for account {account}: {e}",
                 job.guid
             );
-            mark_for_resync(&sinks.control, account).await;
+            mark_for_resync(&sinks.control, &sinks.hub, account).await;
         }
     }
 }
@@ -733,11 +756,30 @@ pub(crate) async fn syncing(control: &Control, repo: i64, what: &str) -> Vec<i64
     .await
 }
 
-pub(crate) async fn mark_for_resync(control: &Control, account: i64) {
-    until_ok(&format!("marking account {account} for resync"), || {
-        control.write(move |tx| control_db::q::set_needs_resync(tx, account))
-    })
-    .await;
+/// Marks the account `needs_resync`: its mirror missed a change, which a sweep will repair. Its
+/// tabs hear it as the status slot's "sync degraded" (see `reconcile`).
+/// Tried again as [`until_ok`] does, except once the drain has sealed the control DB: then the
+/// mark is left to the next start, whose redelivery and sweeps find what it was for.
+pub(crate) async fn mark_for_resync(control: &Control, hub: &Hub, account: i64) {
+    let mut waits = RETRIES.iter().copied();
+    loop {
+        let now = crate::now();
+        match control
+            .write(move |tx| control_db::q::set_needs_resync(tx, account, now))
+            .await
+        {
+            Ok(_) => break,
+            Err(control_db::Error::Sealed) => return,
+            Err(e) => {
+                let wait = waits.next().unwrap_or(RETRY_EVERY);
+                eprintln!(
+                    "webhooks: marking account {account} for resync failed, trying again in {wait:?}: {e}"
+                );
+                tokio::time::sleep(wait).await;
+            }
+        }
+    }
+    hub.publish(account, Push::Sync);
 }
 
 /// Runs `call` until the control DB lets it through: again after each of [`RETRIES`], then
@@ -966,19 +1008,19 @@ impl Relationship {
         Ok(held.then_some(e))
     }
 
-    /// Whether this account may miss the change for good. Across repos, what the delivery
-    /// doesn't apply is left to the read-back, which reads with the delivery's installation
-    /// token: blind to a private repo the account syncs through another installation (another
-    /// owner). Only a sweep can find an end there; the account's own token is never spent on it.
-    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<bool> {
+    /// Whether this account may miss the change for good, and why. Across repos, what the
+    /// delivery doesn't apply is left to the read-back, which reads with the delivery's
+    /// installation token: blind to a private repo the account syncs through another installation
+    /// (another owner). The account's own token is never spent on it.
+    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<Option<Hidden>> {
         if self.same_repo || self.applicable(tx)?.is_some() {
-            return Ok(false);
+            return Ok(None);
         }
-        match self.installation {
-            Some(i) => q::syncs_beyond_installation(tx, i),
-            // No read-back at all.
-            None => Ok(true),
-        }
+        Ok(match self.installation {
+            Some(i) if q::syncs_beyond_installation(tx, i)? => Some(Hidden::OtherInstallation),
+            Some(_) => None,
+            None => Some(Hidden::NoReadBack),
+        })
     }
 }
 
@@ -1093,12 +1135,12 @@ impl RepoChange {
         ))
     }
 
-    /// Whether this account may miss a relationship change for good, so that only a sweep can
-    /// repair it ([`Relationship::hidden`]).
-    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<bool> {
+    /// Whether this account may miss a relationship change for good, and why
+    /// ([`Relationship::hidden`]).
+    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<Option<Hidden>> {
         match &self.change {
             Change::Relationship(r) => r.hidden(tx),
-            _ => Ok(false),
+            _ => Ok(None),
         }
     }
 
@@ -1119,19 +1161,7 @@ impl RepoChange {
                     Vec::new()
                 }
             }
-            Change::IssueDeleted(id) => {
-                q::record_deleted(tx, "item", *id)?;
-                // Whatever showed something of it, before its edges go.
-                let shown = edges::with_neighbours(tx, BTreeSet::from([*id]))?;
-                let ends = edges::ends_of(tx, *id)?;
-                let gone = q::delete_item(tx, *id)? > 0;
-                q::clear_item_labels(tx, *id)?;
-                q::clear_item_assignees(tx, *id)?;
-                q::delete_item_comments(tx, *id)?;
-                q::delete_item_edges(tx, *id)?;
-                q::prune_stubs(tx, &ends)?;
-                if gone { shown } else { Vec::new() }
-            }
+            Change::IssueDeleted(id) => delete_item(tx, *id)?,
             Change::Relationship(r) => {
                 let mut ids = BTreeSet::new();
                 if upsert_issue(tx, repo, &r.subject, seq)? {
@@ -1149,24 +1179,22 @@ impl RepoChange {
             }
             Change::CommentDeleted { issue, comment } => {
                 let mut changed = upsert_issue(tx, repo, issue, seq)?;
-                q::record_deleted(tx, "comment", *comment)?;
-                if q::delete_comment(tx, *comment)? > 0 {
-                    q::recount_last_commented(tx, issue.id, seq)?;
-                    changed = true;
-                }
+                changed |= delete_comment(tx, issue.id, *comment, seq)?;
                 ids_if(changed, issue.id)
             }
             Change::Label(l) => {
-                q::upsert_label(tx, l.id, repo, &l.name, &l.color, l.description.as_deref())?;
+                q::upsert_label(
+                    tx,
+                    l.id,
+                    repo,
+                    &l.name,
+                    &l.color,
+                    l.description.as_deref(),
+                    seq,
+                )?;
                 q::label_items(tx, l.id)?
             }
-            Change::LabelDeleted(id) => {
-                q::record_deleted(tx, "label", *id)?;
-                let ids = q::label_items(tx, *id)?;
-                q::unlink_label(tx, *id)?;
-                q::delete_label(tx, *id)?;
-                ids
-            }
+            Change::LabelDeleted(id) => delete_label(tx, *id)?,
             Change::Milestone(m) => {
                 if upsert_milestone(tx, repo, m)? {
                     q::milestone_items(tx, m.id)?
@@ -1174,15 +1202,76 @@ impl RepoChange {
                     Vec::new()
                 }
             }
-            Change::MilestoneDeleted(id) => {
-                q::record_deleted(tx, "milestone", *id)?;
-                let ids = q::milestone_items(tx, *id)?;
-                q::clear_milestone(tx, *id, seq)?;
-                q::delete_milestone(tx, *id)?;
-                ids
-            }
+            Change::MilestoneDeleted(id) => delete_milestone(tx, *id, seq)?,
         })
     }
+}
+
+/// Deletes an issue or PR and everything hanging off it, for good: the id stays deleted whatever
+/// arrives after. The ids that showed something of it (none if the mirror didn't hold it).
+pub(crate) fn delete_item(tx: &Transaction, id: i64) -> rusqlite::Result<Vec<i64>> {
+    q::record_deleted(tx, "item", id)?;
+    forget_item(tx, id)
+}
+
+/// Removes an item from the mirror without recording it as deleted, so a later delivery or
+/// sweep that has it brings it back: a sweep's inference from what GitHub didn't list. What
+/// showed something of it, if the mirror held it.
+pub(crate) fn forget_item(tx: &Transaction, id: i64) -> rusqlite::Result<Vec<i64>> {
+    // Whatever showed something of it, before its edges go.
+    let shown = edges::with_neighbours(tx, BTreeSet::from([id]))?;
+    let ends = edges::ends_of(tx, id)?;
+    let gone = q::delete_item(tx, id)? > 0;
+    q::clear_item_labels(tx, id)?;
+    q::clear_item_assignees(tx, id)?;
+    q::delete_item_comments(tx, id)?;
+    q::delete_item_edges(tx, id)?;
+    q::prune_stubs(tx, &ends)?;
+    Ok(if gone { shown } else { Vec::new() })
+}
+
+/// Deletes a comment on `issue` for good; true if the mirror held it.
+pub(crate) fn delete_comment(
+    tx: &Transaction,
+    issue: i64,
+    comment: i64,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    q::record_deleted(tx, "comment", comment)?;
+    forget_comment(tx, issue, comment, seq)
+}
+
+/// Removes a comment from the mirror without recording it as deleted: a sweep's, which never
+/// keeps a later delivery of it out. True if the mirror held it.
+pub(crate) fn forget_comment(
+    tx: &Transaction,
+    issue: i64,
+    comment: i64,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    if q::delete_comment(tx, comment)? > 0 {
+        q::recount_last_commented(tx, issue, seq)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Deletes a label for good; the items that had it.
+pub(crate) fn delete_label(tx: &Transaction, id: i64) -> rusqlite::Result<Vec<i64>> {
+    q::record_deleted(tx, "label", id)?;
+    let ids = q::label_items(tx, id)?;
+    q::unlink_label(tx, id)?;
+    q::delete_label(tx, id)?;
+    Ok(ids)
+}
+
+/// Deletes a milestone for good; the items that had it.
+pub(crate) fn delete_milestone(tx: &Transaction, id: i64, seq: i64) -> rusqlite::Result<Vec<i64>> {
+    q::record_deleted(tx, "milestone", id)?;
+    let ids = q::milestone_items(tx, id)?;
+    q::clear_milestone(tx, id, seq)?;
+    q::delete_milestone(tx, id)?;
+    Ok(ids)
 }
 
 /// Writes an issue from GitHub's answer to one of beghu's own writes, as its webhook would (under
@@ -1298,7 +1387,15 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
     }
     q::clear_item_labels(tx, i.id)?;
     for l in &i.labels {
-        q::add_label(tx, l.id, repo, &l.name, &l.color, l.description.as_deref())?;
+        q::add_label(
+            tx,
+            l.id,
+            repo,
+            &l.name,
+            &l.color,
+            l.description.as_deref(),
+            seq,
+        )?;
         q::link_item_label(tx, i.id, l.id)?;
     }
     q::clear_item_assignees(tx, i.id)?;

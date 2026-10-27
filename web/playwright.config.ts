@@ -20,12 +20,13 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|writes|repos)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|relationships|writes|repos|sync)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts, repos.spec.ts):
     // their edits reach every signed-in tab, push refetches and reorder the list; writes.spec.ts
     // sets faults for the whole stack, and repos.spec.ts slows GraphQL (the read-backs' too) and
-    // installs the App, which has every account re-read its repos. So they run once the rest are
-    // done, one after the other, never beside anything else.
+    // installs the App, which has every account re-read its repos; sync.spec.ts marks accounts for
+    // a resync and sweeps their repos. So they run once the rest are done, one after the other,
+    // never beside anything else.
     //
     // Their tests wait on outside edits (Fake GitHub's webhook, then the server's mirror write) on
     // top of their own steps, and a test's cleanup waits for its close to land: one delivery's
@@ -38,5 +39,6 @@ export default defineConfig({
     { name: "relationships", testMatch: /relationships\.spec\.ts$/, dependencies: ["live"], timeout: 60_000, workers: 1 },
     { name: "writes", testMatch: /writes\.spec\.ts$/, dependencies: ["relationships"], timeout: 60_000 },
     { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["writes"], workers: 1 },
+    { name: "sync", testMatch: /sync\.spec\.ts$/, dependencies: ["repos"], timeout: 60_000 },
   ],
 });

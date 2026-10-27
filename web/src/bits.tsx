@@ -1,8 +1,24 @@
-// Small pieces the list and the detail share: an issue's state icon, a user's avatar, and
-// sub-issue progress as a ring.
+// Small pieces the list and the detail share: an issue's state icon, a user's avatar, sub-issue
+// progress as a ring, and the button that reads as a link.
 import * as stylex from "@stylexjs/stylex";
 import { Show } from "solid-js";
 import { colors } from "./tokens.stylex";
+
+/** A button that reads as a link: underlined, in the accent colour (Retry, Resync). */
+export const link = stylex.create({
+  button: {
+    font: "inherit",
+    padding: 0,
+    borderWidth: 0,
+    textDecoration: "underline",
+    backgroundColor: "transparent",
+    color: colors.accent,
+    cursor: {
+      default: "pointer",
+      ":disabled": "default",
+    },
+  },
+});
 
 export type IssueState = "open" | "done" | "notPlanned";
 

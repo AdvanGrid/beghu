@@ -142,6 +142,7 @@ pub(super) async fn round(app: App, account: i64, ids: Vec<i64>) -> Result<Outco
         repos,
         parents: Mutex::default(),
         failed: Mutex::default(),
+        began: now,
     });
     run.clone().go().await?;
     out.failed.extend(run.settle().await);
@@ -157,6 +158,8 @@ pub(super) struct Run {
     pub(super) parents: Mutex<HashSet<String>>,
     /// Repos whose part of the round failed for good, and how; later phases skip them.
     pub(super) failed: Mutex<HashMap<i64, String>>,
+    /// When the round began (Unix seconds).
+    pub(super) began: i64,
 }
 
 impl Run {
@@ -256,6 +259,29 @@ impl Run {
                 }
             })
             .await;
+        // Its repos are swept from now on.
+        self.app.reconcile().repos_changed();
+        // A repo read whole is a checkpoint for its installation's sweeps: nothing from before
+        // the round can be missing (`reconcile`).
+        let read: std::collections::BTreeSet<i64> = repos
+            .iter()
+            .filter(|r| !failed.contains_key(&r.id))
+            .map(|r| r.installation)
+            .collect();
+        let began = self.began;
+        if let Err(e) = self
+            .app
+            .control()
+            .write(move |tx| {
+                for i in read {
+                    control_db::q::set_full_sweep(tx, i, began)?;
+                }
+                Ok(())
+            })
+            .await
+        {
+            eprintln!("import: account {}: its checkpoint: {e}", self.account);
+        }
         written.unwrap_or_else(|e| {
             eprintln!("import: account {}: finishing: {e}", self.account);
             repos
@@ -420,7 +446,7 @@ impl Run {
             .all_pages(repo, &format!("{base}/milestones?state=all&per_page=100"))
             .await?;
         let id = repo.id;
-        self.write_page(repo, "labels and milestones", move |tx, _| {
+        self.write_page(repo, "labels and milestones", move |tx, seq| {
             for l in &labels {
                 let (Some(lid), Some(name)) = (l["id"].as_i64(), l["name"].as_str()) else {
                     continue;
@@ -432,6 +458,7 @@ impl Run {
                     name,
                     l["color"].as_str().unwrap_or(""),
                     l["description"].as_str(),
+                    seq,
                 )?;
             }
             for m in &milestones {

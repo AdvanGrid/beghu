@@ -150,3 +150,12 @@ SELECT x.id AS "id!: i64" FROM (
   UNION ALL
   SELECT e.src_id, e.seq FROM relationships e WHERE e.kind = 'relates' AND e.dst_id = :id
 ) x ORDER BY x.seq, x.id;
+
+-- GitHub's "reprioritize a sub-issue", to the top: the child goes before its siblings.
+-- name: move_sub_issue_first :exec
+-- param: parent_id i64
+-- param: child_id i64
+UPDATE relationships SET position = (
+  SELECT min(s.position) FROM relationships s WHERE s.kind = 'sub' AND s.src_id = :parent_id
+) - 1
+WHERE kind = 'sub' AND src_id = :parent_id AND dst_id = :child_id;

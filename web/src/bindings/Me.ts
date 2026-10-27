@@ -3,6 +3,7 @@ import type { Account } from "./Account";
 import type { CommentOrder } from "./CommentOrder";
 import type { ImportStatus } from "./ImportStatus";
 import type { Repo } from "./Repo";
+import type { SyncStatus } from "./SyncStatus";
 
 export type Me = { account: Account, 
 /**
@@ -16,4 +17,8 @@ repos: Array<Repo>,
 /**
  * The import running, if any: the status slot's "Importing… n of m repos".
  */
-import: ImportStatus | null, };
+import: ImportStatus | null, 
+/**
+ * Sync degraded, or resyncing; `null` while sync is healthy.
+ */
+sync: SyncStatus | null, };

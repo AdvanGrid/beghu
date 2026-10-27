@@ -3,9 +3,9 @@
 -- their refetches. An edge's other end may be a stub: an issue in a repo that isn't synced. An
 -- item id in `deleted` never gets an edge again.
 
--- The open blockers of each of `ids`, at most 8 per row, with what the list's chips and hover
--- card show of each: who has it, and how many open issues block it in turn. `open_total` is how
--- many open blockers the row has in all.
+-- The open blockers of each of `ids`, at most 8 per row, by id, with what the list's chips and
+-- hover card show of each: who has it, and how many open issues block it in turn. `open_total` is
+-- how many open blockers the row has in all.
 -- name: row_blockers :many
 -- param: ids &[i64]
 SELECT b.item_id AS "item_id!: i64", b.id AS "id!: i64", b.number AS "number!: i64",
@@ -20,7 +20,7 @@ FROM (
           WHERE ia.item_id = i.id ORDER BY u.login COLLATE NOCASE LIMIT 1) AS assignee,
          (SELECT count(*) FROM relationships x JOIN items xi ON xi.id = x.src_id
           WHERE x.kind = 'blocks' AND x.dst_id = i.id AND xi.state = 'open') AS open_blockers,
-         row_number() OVER (PARTITION BY j.value ORDER BY e.seq, i.id) AS n,
+         row_number() OVER (PARTITION BY j.value ORDER BY i.id) AS n,
          count(*) OVER (PARTITION BY j.value) AS open_total,
          j.key AS at
   FROM json_each(:ids) j
@@ -53,9 +53,10 @@ SELECT t.root AS "item_id!: i64", count(DISTINCT t.id) AS "total!: i64",
 FROM tree t CROSS JOIN items i ON i.id = t.id
 GROUP BY t.root;
 
--- Everything an item is related to, one row per edge, as `rel`: its `parent`, its `sub` issues
--- in GitHub's order, what it is `blocked_by` and `blocking`, and what it `relates` to. With each,
--- who has it and how many open issues block it.
+-- Everything an item is related to, one row per relationship, as `rel`: its `parent`, its `sub`
+-- issues in GitHub's order, what it is `blocked_by` and `blocking`, and what it `relates` to (these
+-- three by id: every account, and every re-import, lists them alike). With each, who has it and
+-- how many open issues block it.
 -- name: item_relationships :many
 -- param: id i64
 SELECT e.rel AS "rel!: String", i.id AS "id!: i64", i.kind AS "kind!: String",
@@ -67,22 +68,22 @@ SELECT e.rel AS "rel!: String", i.id AS "id!: i64", i.kind AS "kind!: String",
        (SELECT count(*) FROM relationships x JOIN items xi ON xi.id = x.src_id
         WHERE x.kind = 'blocks' AND x.dst_id = i.id AND xi.state = 'open') AS "open_blockers!: i64"
 FROM (
-  SELECT 'parent' AS rel, p.src_id AS other, 0.0 AS position, p.seq AS seq
+  SELECT 'parent' AS rel, p.src_id AS other, 0.0 AS position
   FROM relationships p WHERE p.kind = 'sub' AND p.dst_id = :id
   UNION ALL
-  SELECT 'sub', c.dst_id, c.position, c.seq FROM relationships c WHERE c.kind = 'sub' AND c.src_id = :id
+  SELECT 'sub', c.dst_id, c.position FROM relationships c WHERE c.kind = 'sub' AND c.src_id = :id
   UNION ALL
-  SELECT 'blocked_by', b.src_id, 0.0, b.seq FROM relationships b WHERE b.kind = 'blocks' AND b.dst_id = :id
+  SELECT 'blocked_by', b.src_id, 0.0 FROM relationships b WHERE b.kind = 'blocks' AND b.dst_id = :id
   UNION ALL
-  SELECT 'blocking', b.dst_id, 0.0, b.seq FROM relationships b WHERE b.kind = 'blocks' AND b.src_id = :id
+  SELECT 'blocking', b.dst_id, 0.0 FROM relationships b WHERE b.kind = 'blocks' AND b.src_id = :id
   UNION ALL
-  SELECT 'relates', x.dst_id, 0.0, x.seq FROM relationships x WHERE x.kind = 'relates' AND x.src_id = :id
+  SELECT 'relates', x.dst_id, 0.0 FROM relationships x WHERE x.kind = 'relates' AND x.src_id = :id
   UNION ALL
-  SELECT 'relates', x.src_id, 0.0, x.seq FROM relationships x WHERE x.kind = 'relates' AND x.dst_id = :id
+  SELECT 'relates', x.src_id, 0.0 FROM relationships x WHERE x.kind = 'relates' AND x.dst_id = :id
 ) e
 JOIN items i ON i.id = e.other
 JOIN repos r ON r.id = i.repo_id
-ORDER BY e.rel, e.position, e.seq, i.id;
+ORDER BY e.rel, e.position, i.id;
 
 -- The edges of `kind` that touch `id`, either way round.
 -- name: edges_of :many

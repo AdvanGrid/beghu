@@ -277,37 +277,7 @@ impl Stack {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
-        let mut cfg = beghu::Config {
-            build_id: BUILD.into(),
-            public_url: server.clone(),
-            data_dir: self.data.clone(),
-            token_key: b"a test key that is at least 32 bytes long".to_vec(),
-            github: beghu::GitHubConfig {
-                api_url: self.fake_api.clone(),
-                web_url: self.fake_api.clone(),
-                client_id: CLIENT_ID.into(),
-                client_secret: CLIENT_SECRET.into(),
-                app_id: fake_github::DEV_APP_ID.to_string(),
-                app_key: fake_github::DEV_APP_KEY.into(),
-                app_slug: Some(fake_github::APP_SLUG.to_owned()),
-            },
-            web_dir: Some(self.web.clone()),
-            mirrors: mirror_db_config(),
-            repo_refresh_every: Duration::from_secs(15 * 60),
-            roles_retry_after_failure: Duration::from_secs(60),
-            setup_reread_after: Duration::from_secs(60),
-            import_retry_after: Duration::from_secs(60),
-            import_give_up_after: Duration::from_secs(5 * 60),
-            webhook_secret: WEBHOOK_SECRET.into(),
-            stream_heartbeat: Duration::from_secs(15),
-            deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
-            github_probe_every: Duration::from_secs(10),
-            github_write_timeout: Duration::from_secs(30),
-            read_back_retries: beghu::default_read_back_retries(),
-            backup_every: beghu::default_backup_every(),
-            assets_kept_for: beghu::default_assets_kept_for(),
-            drain_for: beghu::default_drain_for(),
-        };
+        let mut cfg = self.config(&server);
         adjust(&mut cfg);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -386,10 +356,55 @@ impl Held {
 }
 
 impl Stack {
+    /// The server's config on this stack's data and Fake GitHub, serving at `public_url`.
+    fn config(&self, public_url: &str) -> beghu::Config {
+        beghu::Config {
+            build_id: BUILD.into(),
+            public_url: public_url.to_owned(),
+            data_dir: self.data.clone(),
+            token_key: b"a test key that is at least 32 bytes long".to_vec(),
+            github: beghu::GitHubConfig {
+                api_url: self.fake_api.clone(),
+                web_url: self.fake_api.clone(),
+                client_id: CLIENT_ID.into(),
+                client_secret: CLIENT_SECRET.into(),
+                app_id: fake_github::DEV_APP_ID.to_string(),
+                app_key: fake_github::DEV_APP_KEY.into(),
+                app_slug: Some(fake_github::APP_SLUG.to_owned()),
+            },
+            web_dir: Some(self.web.clone()),
+            mirrors: mirror_db_config(),
+            repo_refresh_every: Duration::from_secs(15 * 60),
+            roles_retry_after_failure: Duration::from_secs(60),
+            setup_reread_after: Duration::from_secs(60),
+            import_retry_after: Duration::from_secs(60),
+            import_give_up_after: Duration::from_secs(5 * 60),
+            webhook_secret: WEBHOOK_SECRET.into(),
+            stream_heartbeat: Duration::from_secs(15),
+            deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
+            github_probe_every: Duration::from_secs(10),
+            github_write_timeout: Duration::from_secs(30),
+            read_back_retries: beghu::default_read_back_retries(),
+            backup_every: beghu::default_backup_every(),
+            assets_kept_for: beghu::default_assets_kept_for(),
+            drain_for: beghu::default_drain_for(),
+            // Sweeps and periodic redelivery stay out of the way of tests about other things: a
+            // test about them sets its own schedule (tests/reconcile.rs). Redelivery still runs
+            // once at each start, and a full sweep asked for (a Resync) still runs.
+            reconcile: beghu::ReconcileConfig {
+                tick: Duration::from_secs(3600),
+                redeliver_every: Duration::from_secs(3600),
+                ..beghu::ReconcileConfig::default()
+            },
+        }
+    }
+}
+
+impl Stack {
     /// Stops the running server, if any, as a crash would: its runtime goes, and with it every
     /// task it had, at the task's next await. Blocking work already under way (a mirror
     /// transaction) runs to its end.
-    fn stop(&mut self) {
+    pub fn stop(&mut self) {
         self.held = None;
         self.signals = None;
         self.server_task = None;

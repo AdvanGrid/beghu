@@ -1,6 +1,6 @@
 //! What a deploy relies on: the previous build's assets outliving it for a day, the control DB's
-//! hourly backups and their rotation, a restore from one, and a drain that stops the jobs and
-//! leaves whole databases on the volume.
+//! hourly backups and their rotation, a restore from one (caught up with GitHub by redelivery and
+//! sweeps), and a drain that stops the jobs and leaves whole databases on the volume.
 
 mod common;
 
@@ -180,35 +180,167 @@ async fn backups_keep_the_24_newest_and_the_newest_of_each_of_the_7_days_before_
     assert!(!stale.exists());
 }
 
+/// The first fixture issues in `repo` with no relationships: `(repo, number, id)`.
+fn unlinked(repo: &str) -> Vec<(String, i64, i64)> {
+    common::summary()["unlinked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["repo"] == repo)
+        .map(|u| {
+            let n = |k: &str| u[k].as_i64().unwrap();
+            (repo.to_owned(), n("number"), n("id"))
+        })
+        .collect()
+}
+
+/// An outside edit of `u` on Fake GitHub.
+async fn edit(s: &Stack, u: &(String, i64, i64), mut fields: serde_json::Value) {
+    fields["repo"] = json!(u.0);
+    fields["number"] = json!(u.1);
+    s.edit(fields).await;
+}
+
+async fn title_of(s: &Stack, b: &Browser, id: i64) -> String {
+    let (status, d) = s.api(&mut b.clone(), &format!("/api/issues/{id}")).await;
+    assert_eq!(status, 200, "{d}");
+    d["title"].as_str().unwrap().to_owned()
+}
+
+/// The sub-issues of `id` in the detail, in order.
+async fn children(s: &Stack, b: &Browser, id: i64) -> Vec<i64> {
+    let (_, d) = s.api(&mut b.clone(), &format!("/api/issues/{id}")).await;
+    d["relationships"]["sub_issues"]
+        .as_array()
+        .map(|a| a.iter().map(|r| r["id"].as_i64().unwrap()).collect())
+        .unwrap_or_default()
+}
+
+/// Polls `f` every 50 ms until it holds, or panics after `secs`.
+async fn until_async<F, Fut>(secs: u64, what: &str, mut f: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while !f().await {
+        assert!(Instant::now() < deadline, "{what}: not within {secs} s");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// How many times Fake GitHub answered a GraphQL operation, since its start.
+async fn operation(s: &Stack, op: &str) -> u64 {
+    s.fake("GET", "/state", json!({})).await["graphql"]["operations"][op]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// Fake GitHub's count of webhook delivery attempts that are `which` ("failed", "redelivered").
+async fn deliveries(s: &Stack, which: &str) -> u64 {
+    s.fake("GET", "/state", json!({})).await["webhooks"]["deliveries"][which]
+        .as_u64()
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_restored_backup_starts_with_what_it_held() {
+async fn a_restored_backup_starts_with_what_it_held_and_catches_up_with_github() {
     let mut s = start().await;
     let dir = s.data.join("backups");
     let mut before = s.sign_in("tomsj").await;
-    // A backup taken after that sign-in.
-    let signed_in_at = std::time::SystemTime::now();
+    let web = unlinked("web");
+    let (me, parent, a, c) = (&web[3], &web[0], &web[1], &web[2]);
+    // A parent with sub-issues `a` then `c`, and a webhook landed: the installation's checkpoint,
+    // which redelivery reads the log back from.
+    let read_backs = operation(&s, "IssueEdges").await;
+    edit(
+        &s,
+        parent,
+        json!({ "add_sub_issue": format!("web#{}", a.1) }),
+    )
+    .await;
+    edit(
+        &s,
+        parent,
+        json!({ "add_sub_issue": format!("web#{}", c.1) }),
+    )
+    .await;
+    until_async(5, "both sub-issues", || async {
+        children(&s, &before, parent.2).await == [a.2, c.2]
+    })
+    .await;
+    // The deliveries' read-back (2 s after the last) has landed.
+    until_async(10, "the deliveries' read-back", || async {
+        operation(&s, "IssueEdges").await > read_backs
+    })
+    .await;
+    // A backup taken after all that.
+    let landed_at = std::time::SystemTime::now();
     s.restart_with(|c| c.backup_every = Duration::from_secs(1))
         .await;
-    let backup = until(10, "a backup after the sign-in", || {
+    let backup = until(10, "a backup after the webhooks landed", || {
         hourly(&dir).into_iter().rev().find(|n| {
             let m = std::fs::metadata(dir.join(n)).unwrap().modified().unwrap();
-            m > signed_in_at
+            m > landed_at
         })
     })
     .await;
     s.restart_with(|_| {}).await;
     let mut after = s.sign_in("ilze-k").await;
 
-    // Stop, copy the backup over the control DB, start.
+    // Stop. While beghu is down, GitHub changes a title (its webhook finds nobody) and the
+    // sub-issues' order (GitHub sends no webhook for a reorder).
     s.sigterm().await.unwrap().unwrap();
+    let (failed, redelivered) = (
+        deliveries(&s, "failed").await,
+        deliveries(&s, "redelivered").await,
+    );
+    edit(&s, me, json!({ "title": "While restoring" })).await;
+    edit(
+        &s,
+        parent,
+        json!({ "prioritize_sub_issue": format!("web#{}", c.1) }),
+    )
+    .await;
+    until_async(5, "the failed delivery", || async {
+        deliveries(&s, "failed").await > failed
+    })
+    .await;
+    // Copy the backup over the control DB, and start.
+    let order_sweeps = operation(&s, "SweepEdges").await;
     std::fs::copy(dir.join(&backup), s.control_db()).unwrap();
     for ext in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", s.control_db().display()));
     }
-    s.restart_with(|_| {}).await;
+    s.restart_with(|c| {
+        // Sweeps on a short schedule (the harness keeps them quiet).
+        c.reconcile.tick = Duration::from_millis(100);
+        c.reconcile.probe_every = Duration::from_millis(300);
+        c.reconcile.count_every = Duration::from_millis(600);
+    })
+    .await;
 
     assert_eq!(s.api(&mut before, "/api/me").await.0, 200);
     assert_eq!(s.api(&mut after, "/api/me").await.0, 401);
+    // The title by redelivery, at the start (a probe may land it first: either way GitHub was
+    // asked to send it again); the order by the order sweep, which GitHub sees asked for before
+    // anyone opens the parent (which would read its order back too).
+    until_async(10, "the downtime's delivery, redelivered", || async {
+        deliveries(&s, "redelivered").await > redelivered
+    })
+    .await;
+    until_async(10, "the title changed during the downtime", || async {
+        title_of(&s, &before, me.2).await == "While restoring"
+    })
+    .await;
+    until_async(10, "the order sweep", || async {
+        operation(&s, "SweepEdges").await > order_sweeps
+    })
+    .await;
+    until_async(10, "the order changed during the downtime", || async {
+        children(&s, &before, parent.2).await == [c.2, a.2]
+    })
+    .await;
 }
 
 /// Every file of the mirrors and the control DB, with its length and last change.

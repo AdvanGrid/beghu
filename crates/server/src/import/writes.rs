@@ -12,7 +12,7 @@ use mirror_db::{Caller, q};
 use rusqlite::Transaction;
 
 /// Sends the ids a write changed to the account's tabs (a reset past the push's cap).
-pub(super) fn publish(app: &App, account: i64, mut ids: Vec<i64>) {
+pub(crate) fn publish(app: &App, account: i64, mut ids: Vec<i64>) {
     ids.sort_unstable();
     ids.dedup();
     match ids.len() {
@@ -28,22 +28,23 @@ pub(crate) fn synced(tx: &Transaction, repo: i64) -> rusqlite::Result<bool> {
     Ok(q::repo_state(tx, repo)?.is_some_and(|r| r.synced))
 }
 
-/// One mirror transaction writing `repo`'s rows with `f`, skipped (nothing written) if the repo
-/// is no longer synced. The ids it changed.
-pub(super) async fn write_synced<F>(
+/// One mirror transaction writing `repo`'s rows with `f`, skipped (nothing written, `T`'s
+/// default) if the repo is no longer synced. What `f` says it changed.
+pub(crate) async fn write_synced<F, T>(
     app: &App,
     account: i64,
     caller: Caller,
     repo: i64,
     f: F,
-) -> Result<Vec<i64>, mirror_db::Error>
+) -> Result<T, mirror_db::Error>
 where
-    F: FnOnce(&Transaction, i64) -> rusqlite::Result<Vec<i64>> + Send + 'static,
+    F: FnOnce(&Transaction, i64) -> rusqlite::Result<T> + Send + 'static,
+    T: Default + Send + 'static,
 {
     app.mirrors()
         .write(account, caller, move |tx, seq| {
             if !synced(tx, repo)? {
-                return Ok(Vec::new());
+                return Ok(T::default());
             }
             f(tx, seq)
         })
@@ -53,48 +54,48 @@ where
 // --- writes ------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub(super) struct UserData {
-    pub(super) id: i64,
-    pub(super) login: String,
-    pub(super) avatar_url: Option<String>,
+pub(crate) struct UserData {
+    pub(crate) id: i64,
+    pub(crate) login: String,
+    pub(crate) avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct PrData {
-    pub(super) pr_id: i64,
-    pub(super) draft: bool,
-    pub(super) merged_at: Option<i64>,
-    pub(super) head_ref: Option<String>,
-    pub(super) base_ref: Option<String>,
-    pub(super) review_decision: Option<String>,
+pub(crate) struct PrData {
+    pub(crate) pr_id: i64,
+    pub(crate) draft: bool,
+    pub(crate) merged_at: Option<i64>,
+    pub(crate) head_ref: Option<String>,
+    pub(crate) base_ref: Option<String>,
+    pub(crate) review_decision: Option<String>,
 }
 
 /// An issue or PR as the import writes it, from GraphQL or REST.
 #[derive(Clone, Debug)]
-pub(super) struct ItemData {
-    pub(super) id: i64,
-    pub(super) node_id: String,
-    pub(super) number: i64,
-    pub(super) kind: &'static str,
-    pub(super) title: String,
-    pub(super) body: Option<String>,
-    pub(super) state: String,
-    pub(super) state_reason: Option<String>,
-    pub(super) locked: bool,
-    pub(super) author: Option<UserData>,
-    pub(super) milestone: Option<i64>,
-    pub(super) created: Option<i64>,
-    pub(super) updated: i64,
-    pub(super) closed: Option<i64>,
-    pub(super) comments: i64,
-    pub(super) issue_type: Option<String>,
-    pub(super) labels: Vec<String>,
-    pub(super) assignees: Vec<UserData>,
-    pub(super) pr: Option<PrData>,
+pub(crate) struct ItemData {
+    pub(crate) id: i64,
+    pub(crate) node_id: String,
+    pub(crate) number: i64,
+    pub(crate) kind: &'static str,
+    pub(crate) title: String,
+    pub(crate) body: Option<String>,
+    pub(crate) state: String,
+    pub(crate) state_reason: Option<String>,
+    pub(crate) locked: bool,
+    pub(crate) author: Option<UserData>,
+    pub(crate) milestone: Option<i64>,
+    pub(crate) created: Option<i64>,
+    pub(crate) updated: i64,
+    pub(crate) closed: Option<i64>,
+    pub(crate) comments: i64,
+    pub(crate) issue_type: Option<String>,
+    pub(crate) labels: Vec<String>,
+    pub(crate) assignees: Vec<UserData>,
+    pub(crate) pr: Option<PrData>,
 }
 
 impl ItemData {
-    pub(super) fn from_graphql(i: &GqlIssue) -> ItemData {
+    pub(crate) fn from_graphql(i: &GqlIssue) -> ItemData {
         ItemData {
             id: i.database_id,
             node_id: i.id.clone(),
@@ -130,7 +131,7 @@ impl ItemData {
         }
     }
 
-    pub(super) fn from_rest(i: &RestIssue) -> ItemData {
+    pub(crate) fn from_rest(i: &RestIssue) -> ItemData {
         let pr = i.pull_request.is_some();
         ItemData {
             id: i.id,
@@ -163,6 +164,11 @@ impl ItemData {
 
     /// The item as a relationship names it.
     pub(super) fn target(&self, repo: &Repo) -> Target {
+        self.target_at(repo.id, &repo.owner, &repo.name, repo.private)
+    }
+
+    /// The item, in repo `repo_id` (`owner/name`), as a relationship names it.
+    pub(crate) fn target_at(&self, repo_id: i64, owner: &str, name: &str, private: bool) -> Target {
         Target {
             typename: Some(
                 if self.kind == "pr" {
@@ -179,12 +185,12 @@ impl ItemData {
             state: self.state.to_uppercase(),
             repository: TargetRepo {
                 id: String::new(),
-                database_id: repo.id,
-                name: repo.name.clone(),
+                database_id: repo_id,
+                name: name.to_owned(),
                 owner: Login {
-                    login: repo.owner.clone(),
+                    login: owner.to_owned(),
                 },
-                is_private: repo.private,
+                is_private: private,
             },
         }
     }
@@ -193,7 +199,7 @@ impl ItemData {
 /// Writes an issue or PR under the webhook upserts' guards; false when the mirror already had it
 /// as new or newer, or it was deleted. A new row is inserted whole; an existing one gets only
 /// what changed (see webhooks.sql).
-pub(super) fn write_item(
+pub(crate) fn write_item(
     tx: &Transaction,
     seq: i64,
     repo: i64,
@@ -270,7 +276,7 @@ pub(super) fn write_item(
 /// Where a relationship's end lands in this mirror: the id of an item in a synced repo, of a
 /// stub (an issue in a repo the account can see or anyone can), or nowhere. The bool says
 /// whether it's inside the synced repos.
-pub(super) fn relationship_end(
+pub(crate) fn relationship_end(
     tx: &Transaction,
     seq: i64,
     t: &Target,
@@ -313,7 +319,7 @@ pub(super) fn relationship_end(
 
 /// Writes one linked PR: `pr` closes `issue`, if both land and one is inside the synced repos.
 /// The ids whose linked PRs changed.
-pub(super) fn write_linked_pr(
+pub(crate) fn write_linked_pr(
     tx: &Transaction,
     seq: i64,
     pr: &Target,
@@ -324,7 +330,7 @@ pub(super) fn write_linked_pr(
 
 /// Writes one relationship, `src` to `dst` (relates-to in id order), if both ends land and at
 /// least one is inside the synced repos. The ids whose relationships changed.
-pub(super) fn write_relationship(
+pub(crate) fn write_relationship(
     tx: &Transaction,
     seq: i64,
     kind: Kind,
@@ -358,6 +364,9 @@ fn write_pair(
     } else {
         (s, d)
     };
+    // Newer than what a sweep under way read of either end.
+    q::touch_edges(tx, s, seq)?;
+    q::touch_edges(tx, d, seq)?;
     if kind == "sub" {
         q::drop_other_parents(tx, d, s)?;
     }
@@ -371,18 +380,18 @@ fn write_pair(
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct CommentData {
-    pub(super) id: i64,
-    pub(super) node_id: String,
-    pub(super) item: i64,
-    pub(super) author: Option<UserData>,
-    pub(super) body: String,
-    pub(super) created: i64,
-    pub(super) updated: i64,
+pub(crate) struct CommentData {
+    pub(crate) id: i64,
+    pub(crate) node_id: String,
+    pub(crate) item: i64,
+    pub(crate) author: Option<UserData>,
+    pub(crate) body: String,
+    pub(crate) created: i64,
+    pub(crate) updated: i64,
 }
 
 impl CommentData {
-    pub(super) fn from_graphql(item: i64, c: GqlComment) -> CommentData {
+    pub(crate) fn from_graphql(item: i64, c: GqlComment) -> CommentData {
         CommentData {
             id: c.database_id,
             node_id: c.id,
@@ -394,7 +403,7 @@ impl CommentData {
         }
     }
 
-    pub(super) fn from_rest(item: i64, c: RestComment) -> CommentData {
+    pub(crate) fn from_rest(item: i64, c: RestComment) -> CommentData {
         let updated = time(&c.updated_at);
         CommentData {
             id: c.id,
@@ -409,7 +418,7 @@ impl CommentData {
 }
 
 /// Writes comments under the webhook upsert's guards, keeping each item's last-commented time.
-pub(super) fn write_comments(
+pub(crate) fn write_comments(
     tx: &Transaction,
     seq: i64,
     comments: &[CommentData],

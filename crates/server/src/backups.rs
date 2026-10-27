@@ -11,7 +11,7 @@
 //!
 //! Restoring: stop beghu, copy a backup over `control.db` as uid 65532 (removing `control.db-wal`
 //! and `control.db-shm`), start it (docs/deploy.md has the commands). Redelivery and sweeps
-//! (#92) catch up what changed since.
+//! (`reconcile/`) catch up what changed since.
 //!
 //! [`Config::backup_every`]: crate::Config::backup_every
 

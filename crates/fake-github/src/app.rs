@@ -153,7 +153,7 @@ struct Claims {
 /// when it wouldn't take it. The messages are unverified: docs/research doesn't record GitHub's
 /// own wording, so check them against real GitHub with `--github` (#118) before anything relies
 /// on the text.
-fn check_jwt(fake: &Fake, headers: &HeaderMap) -> Result<(), Response> {
+pub(crate) fn check_jwt(fake: &Fake, headers: &HeaderMap) -> Result<(), Response> {
     const UNREADABLE: &str = "A JSON web token could not be decoded";
     let refuse = |why: &str| api::error(StatusCode::UNAUTHORIZED, why);
     let jwt = bearer(headers).ok_or_else(|| refuse(UNREADABLE))?;

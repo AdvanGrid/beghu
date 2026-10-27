@@ -20,6 +20,7 @@ import type { Me } from "./bindings/Me";
 import type { Op } from "./bindings/Op";
 import type { OpReply } from "./bindings/OpReply";
 import type { OpRequest } from "./bindings/OpRequest";
+import type { ResyncReply } from "./bindings/ResyncReply";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
 
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply };
@@ -90,6 +91,16 @@ export class RateLimited extends Error {
 }
 /** GitHub answered the write with a conflict. */
 export class Conflict extends Error {}
+/** Asked again too soon (a Resync, once an hour): the message says when it's available. */
+export class TooSoon extends Error {
+  constructor(
+    message: string,
+    /** Seconds until it can be asked for again. */
+    readonly retryAfter: number,
+  ) {
+    super(message);
+  }
+}
 /** GitHub couldn't be reached for the write: it's down, or kept failing. */
 export class GitHubDown extends Error {}
 /**
@@ -156,6 +167,8 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
       return new RateLimited(said, retryAfter);
     case "conflict":
       return new Conflict(said);
+    case "too_soon":
+      return new TooSoon(said, retryAfter);
     case "github_down":
       return new GitHubDown(said);
     case "lost":
@@ -267,6 +280,14 @@ export async function sendOp(op_id: string, op: Op): Promise<OpReply> {
       throw e;
     }
   }
+}
+
+/**
+ * Asks for a Resync: a full sweep of the account's synced repos. Its answer is the sync state as
+ * the sweep starts; a second within the hour is refused with `TooSoon`.
+ */
+export function resync(): Promise<ResyncReply> {
+  return request<ResyncReply>("/api/resync", { method: "POST" });
 }
 
 /**

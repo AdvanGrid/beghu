@@ -347,6 +347,8 @@ pub async fn reconcile(app: &App, account: i64) -> Result<bool, ApiError> {
             eprintln!("account {account}: unsyncing panicked: {e}");
         }
     }
+    // What the sweeps read may have changed.
+    app.reconcile().repos_changed();
     Ok(pushes)
 }
 

@@ -42,8 +42,8 @@
 //! stored. Linked PRs (`closes`) are kept in the same table, under the same rule.
 
 mod paging;
-mod shapes;
-mod writes;
+pub(crate) mod shapes;
+pub(crate) mod writes;
 
 use crate::App;
 use crate::github::CallError;

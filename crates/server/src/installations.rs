@@ -1,6 +1,7 @@
 //! The App's own credentials: a JWT signed with its private key (RS256), read once for the App's
-//! install page (`GET /app`) and traded for installation tokens. Installation tokens serve the
-//! work no user asked for: the import, webhook follow-up read-backs, and later the sweeps. Each
+//! install page (`GET /app`), used for its webhook deliveries (the redelivery job), and traded
+//! for installation tokens. Installation tokens serve the work no user asked for: the import,
+//! webhook follow-up read-backs, and the sweeps. Each
 //! is asked for with only the permissions its work needs ([`Scope`]), so an installation has at
 //! most one token per scope. GitHub's last an hour; one is reused until 5 minutes before it
 //! expires, and concurrent callers share one request for a new one, and its answer, a refusal
@@ -29,8 +30,8 @@ pub const READS_PER_INSTALLATION: usize = 4;
 pub enum Scope {
     /// Webhook follow-up read-backs of an issue's relationships: issues only.
     ReadBack,
-    /// The import: issues, and PRs with their details. Metadata (the repo itself) GitHub grants
-    /// every token; it's named so the token says what the import reads.
+    /// The import and the sweeps: issues, and PRs with their details. Metadata (the repo
+    /// itself) GitHub grants every token; it's named so the token says what they read.
     Import,
 }
 
@@ -135,7 +136,7 @@ impl Installations {
     }
 
     /// The App's JWT, good for 9 minutes.
-    fn jwt(&self) -> Result<String, github::Error> {
+    pub fn jwt(&self) -> Result<String, github::Error> {
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let now = crate::now();
         let claims = serde_json::json!({

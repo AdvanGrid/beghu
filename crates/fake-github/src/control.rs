@@ -2,8 +2,10 @@
 //! runtime. JSON in and out.
 //!
 //! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules,
-//!   how many refresh tokens were honoured and how many arrived already spent, and each
-//!   installation token minted with its permissions.
+//!   how many refresh tokens were honoured and how many arrived already spent, each
+//!   installation token minted with its permissions, and how many delivery attempts the App's
+//!   log holds (failed and redelivered among them), each token owner's quota used, and how many
+//!   conditional requests were answered 304.
 //! - `POST /faults/latency {endpoint, ms, count?}`: delay calls to `endpoint` (only the next
 //!   `count`, with one); `ms: 0` removes the rule.
 //! - `POST /faults/fail {endpoint, count, status?, retry_after?, limit?, reset?}`: the next
@@ -24,11 +26,15 @@
 //! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
-//!   remove_blocked_by?, add_relates_to?, remove_relates_to?}`: an outside edit (see `edits.rs`
+//!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see `edits.rs`
 //!   and `relationships.rs`), with its webhooks.
 //! - `PUT /tokens {access_ttl?, refresh_ttl?}`: token lifetimes in seconds, for new tokens.
+//! - `POST /label {repo, name, rename | color}`: renames or creates a repo's label, with its
+//!   `label` delivery (`edits.rs`).
 //! - `PUT /clock {offset}`: run the fake's clock `offset` seconds ahead of the real one, so
 //!   tokens and codes expire without waiting.
+//! - `PUT /quota {remaining}`: every token owner's primary rate limit reads as at most
+//!   `remaining` left, as if other clients had spent the rest; `null` lifts it (`quota.rs`).
 //! - `POST /revoke {login}`: the user revokes the App's authorization in GitHub's settings.
 //! - `PUT /permissions {login, repo, role}`: an admin gives the account `role` on the repo
 //!   (`read` … `admin`), or with `role: null` removes its access, as removing a collaborator or
@@ -41,7 +47,7 @@
 //!   own account is suspended, or no longer; GitHub sends `installation` `suspend` or
 //!   `unsuspend`.
 //! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
-//!   real clock.
+//!   real clock, no deliveries logged.
 
 use crate::faults::{self, Fail};
 use crate::{Fake, Ttl, api, edits, webhooks};
@@ -65,8 +71,10 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/faults", delete(clear))
         .route("/webhooks", put(webhook_target))
         .route("/edit", post(edits::edit))
+        .route("/label", post(edits::label))
         .route("/tokens", put(tokens))
         .route("/clock", put(clock))
+        .route("/quota", put(quota))
         .route("/revoke", post(revoke))
         .route("/permissions", put(permissions))
         .route("/setup-url", put(setup_url))
@@ -115,11 +123,18 @@ async fn state(State(fake): State<Fake>) -> Response {
         "webhooks": {
             "url": fake.state().webhooks.target(),
             "faults": fake.state().webhooks.rules(),
+            "deliveries": fake.state().webhooks.log(now, |all| json!({
+                "attempts": all.len(),
+                "failed": all.iter().filter(|a| !(200..400).contains(&a.status_code)).count(),
+                "redelivered": all.iter().filter(|a| a.redelivery).count(),
+            })),
         },
         "refreshes": fake.state().refreshes.snapshot(),
         "graphql": fake.state().graphql.snapshot(),
         "installation_tokens": fake.state().app_tokens.minted(),
         "clock": { "offset": fake.clock_offset() },
+        "quota": fake.state().quotas.snapshot(),
+        "not_modified": fake.state().not_modified.load(std::sync::atomic::Ordering::Relaxed),
         "setup_url": fake.setup_url(),
     }))
     .into_response()
@@ -360,6 +375,19 @@ async fn clock(State(fake): State<Fake>, axum::Json(r): axum::Json<ClockReq>) ->
 }
 
 #[derive(Deserialize)]
+struct QuotaReq {
+    remaining: Option<i64>,
+}
+
+async fn quota(State(fake): State<Fake>, axum::Json(r): axum::Json<QuotaReq>) -> Response {
+    if r.remaining.is_some_and(|n| n < 0) {
+        return bad_request("remaining is at least 0, or null to lift the cap");
+    }
+    fake.state().quotas.set_cap(r.remaining);
+    ok()
+}
+
+#[derive(Deserialize)]
 struct RevokeReq {
     login: String,
 }
@@ -434,9 +462,14 @@ async fn reset(State(fake): State<Fake>) -> Response {
         Ok(Ok(())) => {
             fake.state().faults.clear();
             fake.state().webhooks.clear();
+            fake.state().webhooks.clear_log();
             fake.state().refreshes.clear();
             fake.state().graphql.clear();
             fake.state().app_tokens.clear();
+            fake.state().quotas.clear();
+            fake.state()
+                .not_modified
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             fake.set_clock_offset(0);
             *fake.state().ttl.lock().unwrap_or_else(|e| e.into_inner()) =
                 Ttl::of(&fake.state().cfg);

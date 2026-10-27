@@ -58,6 +58,8 @@ pub struct Config {
     /// in all). Past the last, the accounts syncing the issue's repo are marked `needs_resync`
     /// for a sweep to repair.
     pub read_back_retries: Vec<Duration>,
+    /// How sweeps and redelivery keep the mirrors in step when webhooks are lost.
+    pub reconcile: ReconcileConfig,
     /// How often the control DB is backed up (an hour; see `backups.rs`).
     pub backup_every: Duration,
     /// How long a superseded build's assets stay on the volume (a day): open tabs, cached shells
@@ -67,6 +69,72 @@ pub struct Config {
     /// its WAL checkpoint (22 s), which gets 3 s more: 25 s in all, inside the 30 s stop grace
     /// period docs/deploy.md ("Stopping") asks for.
     pub drain_for: Duration,
+}
+
+/// The schedules of reconciliation (`reconcile.rs`): GitHub's own figures and the spec's.
+#[derive(Clone, Debug)]
+pub struct ReconcileConfig {
+    /// How often the scheduler looks at what's due (15 s).
+    pub tick: Duration,
+    /// Each repo's `since` ETag probes of its issues and PRs, and of its comments (5 min).
+    pub probe_every: Duration,
+    /// Each repo's count check (with an id sweep on a mismatch) and its sub-issue order sweep
+    /// (15 min).
+    pub count_every: Duration,
+    /// Each installation's full sweep with diff (nightly: once a day, at a time of day of its own
+    /// that a hash of its id spreads over the day).
+    pub full_every: Duration,
+    /// At most this many full sweeps run at once, across installations (2): installations overdue
+    /// at startup take turns.
+    pub full_sweeps_at_once: usize,
+    /// The redelivery job, after its run at startup (5 min).
+    pub redeliver_every: Duration,
+    /// How far before where the last check ended each check reads the delivery log again: a
+    /// delivery can land in the log a little out of order (5 min).
+    pub redeliver_overlap: Duration,
+    /// At most this many redeliveries per run, and per installation: an installation with more
+    /// unrecovered deliveries than this gets a full sweep instead, rather than a storm of
+    /// redeliveries (200).
+    pub redeliver_cap: usize,
+    /// An installation whose oldest unrecovered delivery (or unchecked stretch) is older than
+    /// this gets a full sweep instead of redeliveries (2.5 days: inside GitHub's 3-day window).
+    pub outage_after: Duration,
+    /// How long after an account is marked `needs_resync` its repair sweep runs (10 min): a
+    /// burst of misses costs one sweep, and meanwhile the status slot offers Resync.
+    pub repair_after: Duration,
+    /// How often an account may ask for a Resync (an hour).
+    pub resync_every: Duration,
+    /// How long a repair waits before sweeping a repo whose full sweep failed again (10 min,
+    /// doubling with each failure in a row, at most a day): a repo GitHub keeps refusing (a 404
+    /// after a transfer, say) isn't swept every round.
+    pub failure_backoff: Duration,
+    /// A change a sweep finds that GitHub made more recently than this (by `updated_at`) may
+    /// still have its webhook on the way, so repairing it doesn't count as a miss (a minute). A
+    /// relationship carries no time: an edge a sweep adds or removes counts as a miss only if no
+    /// delivery for it lands within this after the sweep wrote it. A sub-issue reorder never
+    /// does: GitHub sends no webhook for it.
+    pub webhook_grace: Duration,
+}
+
+impl Default for ReconcileConfig {
+    fn default() -> Self {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        ReconcileConfig {
+            tick: Duration::from_secs(15),
+            probe_every: min(5),
+            count_every: min(15),
+            full_every: min(24 * 60),
+            full_sweeps_at_once: 2,
+            redeliver_every: min(5),
+            redeliver_overlap: min(5),
+            redeliver_cap: 200,
+            outage_after: min(60 * 60),
+            repair_after: min(10),
+            resync_every: min(60),
+            failure_backoff: min(10),
+            webhook_grace: min(1),
+        }
+    }
 }
 
 /// [`Config::read_back_retries`]: doubling from a second, then every minute, 15 tries in all.
@@ -161,6 +229,7 @@ impl Config {
             github_probe_every: Duration::from_secs(10),
             github_write_timeout: Duration::from_secs(30),
             read_back_retries: default_read_back_retries(),
+            reconcile: ReconcileConfig::default(),
             backup_every: default_backup_every(),
             assets_kept_for: default_assets_kept_for(),
             drain_for: default_drain_for(),

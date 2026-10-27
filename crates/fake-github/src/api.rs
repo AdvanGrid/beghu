@@ -187,7 +187,7 @@ pub(crate) const EVENTS: [&str; 10] = [
 ];
 
 /// `secs` since the Unix epoch as an RFC 3339 UTC timestamp, as GitHub writes times.
-pub(crate) fn rfc3339(secs: i64) -> String {
+pub fn rfc3339(secs: i64) -> String {
     // Days from the civil calendar (Howard Hinnant's algorithm).
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);

@@ -1014,6 +1014,135 @@ async fn webhook_faults_drop_duplicate_delay_and_reorder_the_next_deliveries() {
     assert!(got[0].at.duration_since(sent) < Duration::from_millis(1800));
 }
 
+impl Fake {
+    /// A page of `GET /app/hook/deliveries` with the App's JWT: the items and the `Link` header.
+    async fn deliveries(&self, query: &str) -> (Vec<Value>, Option<String>) {
+        self.deliveries_as(&dev_jwt(), query).await
+    }
+
+    async fn deliveries_as(&self, jwt: &str, query: &str) -> (Vec<Value>, Option<String>) {
+        let res = self
+            .http
+            .get(format!("{}/app/hook/deliveries{query}", self.api))
+            .bearer_auth(jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let link = res
+            .headers()
+            .get("link")
+            .map(|l| l.to_str().unwrap().to_owned());
+        (res.json().await.unwrap(), link)
+    }
+}
+
+#[tokio::test]
+async fn the_apps_deliveries_list_every_attempt_and_a_failed_one_can_be_redelivered() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let title = |t: &str| json!({ "repo": "web", "number": 1, "title": t });
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/webhooks",
+        json!({ "drop": 1 }),
+    )
+    .await;
+    fake.edit(title("lost")).await;
+    fake.edit(title("delivered")).await;
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(got.len(), 1);
+
+    // Newest first, in GitHub's shape; the lost one failed.
+    let (items, _) = fake.deliveries("?per_page=100").await;
+    assert_eq!(items.len(), 2, "{items:?}");
+    let (ok, failed) = (&items[0], &items[1]);
+    assert_eq!(ok["guid"], got[0].guid.as_str());
+    assert_eq!(ok["status"], "OK");
+    assert_eq!(ok["status_code"], 202);
+    assert_eq!(ok["redelivery"], false);
+    assert_eq!(ok["event"], "issues");
+    assert_eq!(ok["action"], "edited");
+    assert_eq!(ok["installation_id"], 41000001);
+    assert!(ok["repository_id"].is_i64());
+    assert!(ok["delivered_at"].as_str().unwrap().ends_with('Z'));
+    assert_ne!(failed["status"], "OK");
+    assert_eq!(
+        fake.deliveries("?status=failure").await.0,
+        vec![failed.clone()]
+    );
+
+    // Redelivered under its own GUID, with its payload as first sent.
+    let res = fake
+        .http
+        .post(format!(
+            "{}/app/hook/deliveries/{}/attempts",
+            fake.api, failed["id"]
+        ))
+        .bearer_auth(dev_jwt())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    let again = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].guid, failed["guid"].as_str().unwrap());
+    assert_eq!(again[0].payload()["issue"]["title"], "lost");
+    let (items, _) = fake.deliveries("").await;
+    assert_eq!(items[0]["redelivery"], true);
+    assert_eq!(items[0]["status"], "OK");
+
+    // Without the App's JWT, nothing.
+    let res = fake
+        .http
+        .get(format!("{}/app/hook/deliveries", fake.api))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn deliveries_page_by_cursor_and_are_kept_for_three_days() {
+    let fake = start().await;
+    let _rx = receiver(&fake).await;
+    for n in 0..3 {
+        fake.edit(json!({ "repo": "web", "number": 1, "title": format!("t{n}") }))
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    let (first, link) = fake.deliveries("?per_page=2").await;
+    assert_eq!(first.len(), 2);
+    let next = link.expect("a next page");
+    let url = next.split(['<', '>']).nth(1).unwrap();
+    let cursor = query_param(url, "cursor").unwrap();
+    let (rest, link) = fake
+        .deliveries(&format!("?per_page=2&cursor={cursor}"))
+        .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(link, None);
+    assert!(rest[0]["id"].as_i64() < first[1]["id"].as_i64());
+
+    // Three days on, they're gone, and so is redelivering them. (The App's clock moves on too.)
+    let offset = 3 * 24 * 3600 + 60;
+    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": offset }))
+        .await;
+    let now = unix_now() + offset;
+    let jwt = app_jwt(now - 60, now + 540, fake_github::DEV_APP_KEY);
+    assert_eq!(fake.deliveries_as(&jwt, "").await.0, Vec::<Value>::new());
+    let res = fake
+        .http
+        .post(format!(
+            "{}/app/hook/deliveries/{}/attempts",
+            fake.api, first[0]["id"]
+        ))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
 /// A JWT for the dev App, good for 9 minutes, as an App makes one.
 fn dev_jwt() -> String {
     let now = unix_now();
@@ -1255,6 +1384,118 @@ async fn rest_since_is_exclusive_as_githubs_is() {
         !ids(&after).contains(&first[0]["id"].as_i64().unwrap()),
         "{at}"
     );
+}
+
+impl Fake {
+    /// A token for the fixture's first installation, minted with the App's JWT.
+    async fn installation_token_value(&self) -> Value {
+        self.http
+            .post(format!(
+                "{}/app/installations/41000001/access_tokens",
+                self.api
+            ))
+            .bearer_auth(dev_jwt())
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["token"]
+            .clone()
+    }
+}
+
+fn header_i64(res: &reqwest::Response, name: &str) -> i64 {
+    res.headers()[name].to_str().unwrap().parse().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unchanged_answer_to_a_conditional_request_is_a_304_that_costs_nothing() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    // What changed since the fixture's "now": nothing yet, as a sweep's probe asks.
+    let path = "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100&since=2026-10-02T00:00:00Z";
+    let first = fake.get(path, &token).await;
+    assert_eq!(first.status(), 200);
+    assert_eq!(first.headers()["x-ratelimit-resource"], "core");
+    assert_eq!(header_i64(&first, "x-ratelimit-limit"), 5000);
+    let used = header_i64(&first, "x-ratelimit-used");
+    let tag = first.headers()["etag"].to_str().unwrap().to_owned();
+    assert!(tag.starts_with("W/\""), "{tag}");
+    let again = fake
+        .http
+        .get(format!("{}{path}", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .header("if-none-match", &tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 304);
+    assert_eq!(header_i64(&again, "x-ratelimit-used"), used);
+    assert_eq!(again.bytes().await.unwrap().len(), 0);
+    assert_eq!(fake.state().await["not_modified"], 1);
+    // A change makes it a 200 again, which costs a call.
+    fake.edit(json!({ "repo": "web", "number": 1, "title": "changed" }))
+        .await;
+    let changed = fake
+        .http
+        .get(format!("{}{path}", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .header("if-none-match", &tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), 200);
+    assert_eq!(header_i64(&changed, "x-ratelimit-used"), used + 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_tokens_owner_spends_its_own_quota_and_rate_limit_reports_it() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let rate = |t: Value| {
+        let fake = &fake;
+        async move {
+            fake.get("/rate_limit", &t)
+                .await
+                .json::<Value>()
+                .await
+                .unwrap()["resources"]
+                .clone()
+        }
+    };
+    let before = rate(token.clone()).await;
+    fake.get("/repos/acme/web/labels?per_page=1", &token).await;
+    let after = rate(token.clone()).await;
+    assert_eq!(
+        after["core"]["used"].as_i64().unwrap(),
+        before["core"]["used"].as_i64().unwrap() + 1
+    );
+    // `/rate_limit` itself costs nothing, and GraphQL is its own resource.
+    assert_eq!(after["graphql"]["used"], before["graphql"]["used"]);
+
+    // As if others had spent most of it: every owner reads at most what's left.
+    fake.control(reqwest::Method::PUT, "/quota", json!({ "remaining": 900 }))
+        .await;
+    let res = fake.get("/repos/acme/web/labels?per_page=1", &token).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(header_i64(&res, "x-ratelimit-remaining"), 900);
+    assert_eq!(rate(token.clone()).await["graphql"]["remaining"], 900);
+    // None left: GitHub's primary rate limit.
+    fake.control(reqwest::Method::PUT, "/quota", json!({ "remaining": 0 }))
+        .await;
+    let res = fake.get("/repos/acme/web/labels?per_page=1", &token).await;
+    assert_eq!(res.status(), 403);
+    assert_eq!(header_i64(&res, "x-ratelimit-remaining"), 0);
+    // In GitHub's words, naming the owner.
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["message"],
+        "API rate limit exceeded for installation ID 41000001."
+    );
+    fake.control(reqwest::Method::PUT, "/quota", json!({ "remaining": null }))
+        .await;
+    let res = fake.get("/repos/acme/web/labels?per_page=1", &token).await;
+    assert_eq!(res.status(), 200);
 }
 
 #[tokio::test]
@@ -2199,11 +2440,13 @@ async fn graphql_shows_an_issues_edges_only_where_the_token_can_see_the_other_en
     assert_eq!(got["data"]["node"], Value::Null);
     assert_eq!(got["errors"][0]["type"], "NOT_FOUND");
 
-    // The control port counts the calls by the kind of token they came with.
+    // The control port counts the calls by the kind of token they came with, and by operation.
+    let calls = &fake.state().await["graphql"];
     assert_eq!(
-        fake.state().await["graphql"],
-        json!({ "installation": 1, "user": 3 })
+        (&calls["installation"], &calls["user"]),
+        (&json!(1), &json!(3))
     );
+    assert_eq!(calls["operations"], json!({ "IssueEdges": 4 }));
 }
 
 #[tokio::test]
@@ -2336,4 +2579,390 @@ async fn an_installation_token_gets_the_permissions_asked_for_within_the_apps() 
         .map(|t| &t["permissions"])
         .collect();
     assert_eq!(minted, [&all["permissions"], &narrow["permissions"]]);
+}
+
+impl Fake {
+    /// A GraphQL operation with an installation token: the whole answer.
+    async fn query(&self, token: &Value, op: &str, variables: Value) -> Value {
+        let res = self
+            .http
+            .post(format!("{}/graphql", self.api))
+            .bearer_auth(token.as_str().unwrap())
+            .json(&json!({ "query": format!("query {op} {{ … }}"), "operationName": op, "variables": variables }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json().await.unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sweeps_queries_count_list_ids_and_read_edges_in_batches() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let web = unlinked_in("web");
+    let (parent, a, b) = (&web[0], &web[1], &web[2]);
+    let mut rx = receiver(&fake).await;
+    fake.edit(edit_of(&parent.0, json!({ "add_sub_issue": a.0 })))
+        .await;
+    fake.edit(edit_of(&parent.0, json!({ "add_sub_issue": b.0 })))
+        .await;
+
+    let ids = |v: &Value, field: &str| -> Vec<i64> {
+        v["data"]["repository"][field]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["databaseId"].as_i64().unwrap())
+            .collect()
+    };
+    let mut issues = Vec::new();
+    let mut after = Value::Null;
+    loop {
+        let page = fake
+            .query(
+                &token,
+                "SweepIssueIds",
+                json!({ "owner": "acme", "name": "web", "after": after }),
+            )
+            .await;
+        issues.extend(ids(&page, "issues"));
+        let info = &page["data"]["repository"]["issues"]["pageInfo"];
+        if info["hasNextPage"] != true {
+            assert_eq!(
+                page["data"]["repository"]["issues"]["totalCount"]
+                    .as_u64()
+                    .unwrap() as usize,
+                issues.len()
+            );
+            break;
+        }
+        after = info["endCursor"].clone();
+    }
+    assert!(
+        issues.contains(&parent.1) && issues.len() > 100,
+        "{}",
+        issues.len()
+    );
+    let prs = fake
+        .query(
+            &token,
+            "SweepPullIds",
+            json!({ "owner": "acme", "name": "web", "after": null }),
+        )
+        .await;
+    assert!(!ids(&prs, "pullRequests").is_empty());
+    assert!(
+        ids(&prs, "pullRequests")
+            .iter()
+            .all(|id| !issues.contains(id))
+    );
+
+    // Counts: every state, issues and PRs apart, by the repo's node id.
+    let user = &fake.sign_in("tomsj").await["access_token"];
+    let repo: Value = fake
+        .get("/repos/acme/web", user)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let counts = fake
+        .query(&token, "SweepCounts", json!({ "ids": [repo["node_id"]] }))
+        .await;
+    let n = &counts["data"]["nodes"][0];
+    assert_eq!(n["databaseId"], repo["id"]);
+    assert_eq!(
+        n["issues"]["totalCount"].as_u64().unwrap() as usize,
+        issues.len()
+    );
+    assert!(n["pullRequests"]["totalCount"].as_u64().unwrap() > 0);
+
+    // Edges, for many issues at once; a reorder moves a child up and sends no webhook.
+    let vars = json!({ "ids": [parent.2, a.2], "sub": true, "blocks": false, "relates": false });
+    let got = fake.query(&token, "SweepEdges", vars.clone()).await;
+    let children = |v: &Value| -> Vec<i64> {
+        v["data"]["nodes"][0]["subIssues"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["databaseId"].as_i64().unwrap())
+            .collect()
+    };
+    assert_eq!(children(&got), [a.1, b.1]);
+    assert_eq!(got["data"]["nodes"][0]["id"], parent.2.as_str());
+    assert_eq!(got["data"]["nodes"][1]["parent"]["databaseId"], parent.1);
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let sent = fake
+        .edit(edit_of(&parent.0, json!({ "prioritize_sub_issue": b.0 })))
+        .await;
+    assert_eq!(sent["deliveries"], 0);
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        children(&fake.query(&token, "SweepEdges", vars).await),
+        [b.1, a.1]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comment_label_and_milestone_read_by_their_own_urls_are_404s_once_gone() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let list = |path: &'static str| {
+        let (fake, token) = (&fake, &token);
+        async move { fake.get(path, token).await.json::<Value>().await.unwrap() }
+    };
+    let comment = list("/repos/acme/web/issues/comments?sort=updated&direction=asc&per_page=1")
+        .await[0]
+        .clone();
+    let label = list("/repos/acme/web/labels?per_page=1").await[0].clone();
+    let milestone = list("/repos/acme/web/milestones?state=all&per_page=1").await[0].clone();
+    let one = |path: String| {
+        let (fake, token) = (&fake, &token);
+        async move {
+            let res = fake.get(&path, token).await;
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let id = comment["id"].as_i64().unwrap();
+    assert_eq!(
+        one(format!("/repos/acme/web/issues/comments/{id}")).await,
+        (200, comment)
+    );
+    // Labels are found by name, whatever its case, escaped as a path segment.
+    let name = label["name"]
+        .as_str()
+        .unwrap()
+        .to_uppercase()
+        .replace(' ', "%20");
+    assert_eq!(
+        one(format!("/repos/acme/web/labels/{name}")).await,
+        (200, label)
+    );
+    let number = milestone["number"].as_i64().unwrap();
+    assert_eq!(
+        one(format!("/repos/acme/web/milestones/{number}")).await,
+        (200, milestone)
+    );
+    for path in [
+        "/repos/acme/web/issues/comments/1",
+        "/repos/acme/web/labels/no-such-label",
+        "/repos/acme/web/milestones/9999",
+    ] {
+        assert_eq!(one(path.to_owned()).await.0, 404, "{path}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_label_created_or_renamed_sends_its_label_delivery() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let created = fake
+        .control(
+            reqwest::Method::POST,
+            "/label",
+            json!({ "repo": "web", "name": "needs-design", "color": "112233" }),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+    fake.control(
+        reqwest::Method::POST,
+        "/label",
+        json!({ "repo": "web", "name": "needs-design", "rename": "needs-ux" }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_millis(2500)).await;
+    let said: Vec<(String, Value, Value, Value)> = got
+        .iter()
+        .map(|r| {
+            let p = r.payload();
+            (
+                r.event.clone(),
+                p["action"].clone(),
+                json!([p["label"]["id"], p["label"]["name"], p["label"]["color"]]),
+                p["changes"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                "label".to_owned(),
+                json!("created"),
+                json!([id, "needs-design", "112233"]),
+                Value::Null
+            ),
+            (
+                "label".to_owned(),
+                json!("edited"),
+                json!([id, "needs-ux", "112233"]),
+                json!({ "name": { "from": "needs-design" } })
+            ),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_item_updated_between_pages_slides_the_next_one_past_the_page_boundary() {
+    // GitHub's `updated` lists page by offset: the fake's do too, so a sweep can be shown the
+    // skip it has to survive.
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let base = "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100";
+    let ids = |v: Value| -> Vec<i64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_i64().unwrap())
+            .collect()
+    };
+    let page = |n: u32| {
+        let (fake, token) = (&fake, &token);
+        async move {
+            ids(fake
+                .get(&format!("{base}&page={n}"), token)
+                .await
+                .json::<Value>()
+                .await
+                .unwrap())
+        }
+    };
+    let (first, second) = (page(1).await, page(2).await);
+    let number = fake.get(base, &token).await.json::<Value>().await.unwrap()[0]["number"]
+        .as_i64()
+        .unwrap();
+    fake.edit(json!({ "repo": "web", "number": number, "title": "Updated between pages" }))
+        .await;
+    let after = page(2).await;
+    assert_eq!(after[..99], second[1..], "the second page moved up by one");
+    assert!(!first.contains(&second[0]) && !after.contains(&second[0]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_graphql_query_costs_what_githubs_formula_says() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let used = |query: &'static str, vars: Value| {
+        let (fake, token) = (&fake, &token);
+        async move {
+            let res = fake
+                .http
+                .post(format!("{}/graphql", fake.api))
+                .bearer_auth(token.as_str().unwrap())
+                .json(&json!({ "query": query, "variables": vars }))
+                .send()
+                .await
+                .unwrap();
+            header_i64(&res, "x-ratelimit-used")
+        }
+    };
+    let ids: Vec<String> = (0..100).map(|n| format!("I_{n}")).collect();
+    let mut last = 0;
+    // The research's worked examples (docs/research/mirror-import-and-reconciliation.md §1).
+    for (query, vars, cost) in [
+        // One connection of 100: 1 request, rounded up to the minimum of 1.
+        (
+            "query ImportIssues($owner: String!, $name: String!, $after: String) {
+              repository(owner: $owner, name: $name) {
+                issues(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id } }
+              }
+            }",
+            json!({ "owner": "acme", "name": "web" }),
+            1,
+        ),
+        // Labels and assignees under each of 100 issues: 1 + 200 = 201 requests, 2 points.
+        (
+            "query ImportIssues($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                issues(first: 100) { nodes { id labels(first: 20) { nodes { name } }
+                  assignees(first: 10) { nodes { login } } } }
+              }
+            }",
+            json!({ "owner": "acme", "name": "web" }),
+            2,
+        ),
+        // `nodes(ids:)` of 100 with three edge lists, one left out: 1 + 300 = 301, 3 points.
+        (
+            "query SweepEdges($ids: [ID!]!, $relates: Boolean!) {
+              nodes(ids: $ids) { ... on Issue { ...Ends relatesTo(first: 100) @include(if: $relates) { nodes { id } } } }
+            }
+            fragment Ends on Issue { subIssues(first: 100) { nodes { id } } blocking(first: 50) { nodes { id } } blockedBy(first: 50) { nodes { id } } }",
+            json!({ "ids": ids, "relates": false }),
+            3,
+        ),
+    ] {
+        let now = used(query, vars).await;
+        assert_eq!(now - last, cost, "{query}");
+        last = now;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_an_issue_sends_issues_deleted_and_github_no_longer_counts_it_or_links_it() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let web = unlinked_in("web");
+    let (parent, doomed) = (&web[0], &web[1]);
+    let mut rx = receiver(&fake).await;
+    fake.edit(edit_of(&parent.0, json!({ "add_sub_issue": doomed.0 })))
+        .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let user = &fake.sign_in("tomsj").await["access_token"];
+    let repo: Value = fake
+        .get("/repos/acme/web", user)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let issues = || async {
+        fake.query(&token, "SweepCounts", json!({ "ids": [repo["node_id"]] }))
+            .await["data"]["nodes"][0]["issues"]["totalCount"]
+            .as_i64()
+            .unwrap()
+    };
+    let before = issues().await;
+
+    let sent = fake
+        .edit(edit_of(&doomed.0, json!({ "delete": true })))
+        .await;
+    assert_eq!(sent["deliveries"], 1, "{sent}");
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(
+        shapes(&got),
+        [(
+            "issues".into(),
+            "deleted".into(),
+            "web".into(),
+            keys(&["issue"])
+        )]
+    );
+    assert_eq!(got[0].payload()["issue"]["id"], doomed.1);
+    assert_eq!(issues().await, before - 1);
+    let edges = fake
+        .query(
+            &token,
+            "SweepEdges",
+            json!({ "ids": [parent.2], "sub": true, "blocks": false, "relates": false }),
+        )
+        .await;
+    assert_eq!(
+        edges["data"]["nodes"][0]["subIssues"]["nodes"],
+        json!([]),
+        "{edges}"
+    );
+    // Gone: a second delete has nothing to delete.
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&edit_of(&doomed.0, json!({ "delete": true })))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
 }

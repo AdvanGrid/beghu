@@ -3,4 +3,4 @@
 /**
  * What kind of failure: the client maps each kind to one of its named error classes.
  */
-export type ErrorKind = "signed_out" | "bad_request" | "forbidden" | "not_found" | "gone" | "no_access" | "unavailable" | "internal" | "refused" | "rate_limited" | "conflict" | "github_down" | "lost" | "maybe_posted";
+export type ErrorKind = "signed_out" | "bad_request" | "forbidden" | "not_found" | "gone" | "no_access" | "unavailable" | "internal" | "refused" | "rate_limited" | "conflict" | "too_soon" | "github_down" | "lost" | "maybe_posted";

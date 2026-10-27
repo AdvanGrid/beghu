@@ -82,6 +82,21 @@ UPDATE items SET issue_type = :issue_type, updated_at = :updated_at WHERE id = :
 SELECT l.id, l.name, l.color, l.description FROM labels l
 WHERE l.repo_id = :repo_id AND l.name = :name COLLATE NOCASE;
 
+-- name: next_label_id :one
+SELECT coalesce(max(l.id), 0) + 1 AS "x!: i64" FROM labels l;
+
+-- name: create_label :exec
+-- param: id i64
+-- param: repo_id i64
+-- param: name &str
+-- param: color &str
+INSERT INTO labels (id, repo_id, name, color, description) VALUES (:id, :repo_id, :name, :color, NULL);
+
+-- name: rename_label :exec
+-- param: id i64
+-- param: name &str
+UPDATE labels SET name = :name WHERE id = :id;
+
 -- name: add_issue_label :exec
 -- param: item_id i64
 -- param: label_id i64
@@ -110,3 +125,25 @@ VALUES (:id, :node_id, :item_id, :author_id, :body, :at, :at, 0);
 -- param: at i64
 UPDATE items SET comments_count = comments_count + 1, last_commented_at = :at, updated_at = :at
 WHERE id = :item_id;
+
+-- An issue deleted (GitHub's `deleteIssue`): it, its labels, assignees, comments and
+-- relationships go.
+-- name: delete_issue :exec
+-- param: id i64
+DELETE FROM items WHERE id = :id;
+
+-- name: delete_issue_labels :exec
+-- param: id i64
+DELETE FROM item_labels WHERE item_id = :id;
+
+-- name: delete_issue_assignees :exec
+-- param: id i64
+DELETE FROM item_assignees WHERE item_id = :id;
+
+-- name: delete_issue_comments :exec
+-- param: id i64
+DELETE FROM comments WHERE item_id = :id;
+
+-- name: delete_issue_relationships :exec
+-- param: id i64
+DELETE FROM relationships WHERE src_id = :id OR dst_id = :id;

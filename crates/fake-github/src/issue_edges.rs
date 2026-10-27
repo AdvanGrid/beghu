@@ -1,5 +1,7 @@
 //! `IssueEdges($id, $sub, $blocks, $relates, $relatesAfter)`, the relationship read-backs' query
-//! (crates/server/src/edges.rs): an issue's relationships of the kinds asked for
+//! (crates/server/src/edges.rs), and `SweepEdges($ids, $sub, $blocks, $relates)`, the sweeps'
+//! batch of the same for up to 100 issues (`nodes(ids:)`): an issue's relationships of the kinds
+//! asked for
 //! (`@include(if: …)`), each end with its repository. `relatesTo` is a page of at most 100
 //! (GitHub's largest page), newest first as GitHub orders it by default, with its `pageInfo`;
 //! `$relatesAfter` is the `endCursor` of the page before. The other lists are whole: GitHub caps
@@ -78,6 +80,17 @@ pub(crate) fn issue_edges(c: &Connection, caller: Token, vars: &Value) -> rusqli
     if !visible(c, caller, issue.repo_id)? {
         return Ok(not_found());
     }
+    Ok(json!({ "data": { "node": edges_node(c, caller, id, vars)? } }))
+}
+
+/// Issue `id` with the relationships `vars` asks for (`sub`, `blocks`, `relates`, and
+/// `relatesAfter` for the page of relates-to after a cursor), each end the caller can see.
+pub(crate) fn edges_node(
+    c: &Connection,
+    caller: Token,
+    id: i64,
+    vars: &Value,
+) -> rusqlite::Result<Value> {
     let mut node = json!({ "__typename": "Issue", "databaseId": id });
     let flag = |k: &str| vars[k].as_bool().unwrap_or(false);
     if flag("sub") {
@@ -119,7 +132,7 @@ pub(crate) fn issue_edges(c: &Connection, caller: Token, vars: &Value) -> rusqli
             "nodes": page,
         });
     }
-    Ok(json!({ "data": { "node": node } }))
+    Ok(node)
 }
 
 /// An opaque cursor past the first `n` nodes of a list, as GitHub's look (base64).

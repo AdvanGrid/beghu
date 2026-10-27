@@ -308,8 +308,7 @@ async fn graphql_calls(s: &Stack) -> (u64, u64) {
 async fn a_dependency_between_private_repos_of_two_installations_applies_by_the_ids_its_deliveries_name()
  {
     let s = start_on(twin_repo_fixture(), |_| {}).await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let me = &unlinked("web")[0];
     // acme/web and acme-labs/web are both private, each in its own org's installation: neither
     // installation's token sees the other repo, so no read-back can find this dependency. Each
@@ -355,12 +354,12 @@ async fn a_dependency_between_private_repos_of_two_installations_applies_by_the_
         }),
     )
     .await;
-    until(
-        5.0,
-        "both deliveries settled after their read-backs",
-        || async { (processed(&s, "dep-1") && processed(&s, "dep-2")).then_some(()) },
-    )
+    until(5.0, "both read-backs answered", || async {
+        (issue_edges(&s).await >= 2).then_some(())
+    })
     .await;
+    // Their writes land a moment after the answers.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let d = detail(&s, &b, me.2).await;
     assert_eq!(only(&d, "blocked_by"), Some(("acme-labs".into(), 1)));
     assert_eq!(d["relationships"]["blocked_by"][0]["stub"], false);
@@ -391,28 +390,26 @@ async fn a_dependency_between_private_repos_of_two_installations_applies_by_the_
     })
     .await;
     // Nothing missed, and nothing read with tomsj's own token.
-    assert!(!needs_resync(&s, account));
+    assert!(!degraded(&s, &b).await);
     assert_eq!(graphql_calls(&s).await.1, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_relates_to_between_private_repos_of_two_installations_marks_the_account_for_resync() {
+async fn a_relates_to_between_private_repos_of_two_installations_leaves_sync_healthy() {
     let s = start_on(twin_repo_fixture(), |_| {}).await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let me = &unlinked("web")[0];
     // Each repo's delivery names only its own issue, and neither installation's token sees the
-    // other private repo: only a sweep can find the other end.
+    // other private repo. No sweep can find the other end either (it reads with the same
+    // tokens), so marking the account would leave sync degraded for good: it's only logged.
     edit_acme_web(&s, me, json!({ "add_relates_to": "acme-labs/web#1" })).await;
-    until(5.0, "the account marked for resync", || async {
-        needs_resync(&s, account).then_some(())
-    })
-    .await;
     // Both sides were read back with their installations' tokens, never with tomsj's.
     until(5.0, "both read-backs", || async {
         (graphql_calls(&s).await.0 >= 2).then_some(())
     })
     .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!degraded(&s, &b).await);
     assert_eq!(graphql_calls(&s).await.1, 0);
 }
 
@@ -578,6 +575,31 @@ async fn two_accounts_with_different_access_see_different_relationships_for_the_
     })
     .await;
     assert_eq!(rel_ids(&theirs, "blocked_by"), [near.2, far.2, both.2]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dependencies_are_listed_in_one_order_whatever_order_they_arrived_in() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let web = unlinked("web");
+    let (me, first, second) = (&web[0], &web[1], &web[2]);
+    assert!(first.2 < second.2);
+    // Added the other way round.
+    edit(&s, me, json!({ "add_blocked_by": reference(second) })).await;
+    edit(&s, me, json!({ "add_blocked_by": reference(first) })).await;
+    let d = until(5.0, "both blockers", || async {
+        let d = detail(&s, &b, me.2).await;
+        (rel_ids(&d, "blocked_by").len() == 2).then_some(d)
+    })
+    .await;
+    assert_eq!(rel_ids(&d, "blocked_by"), [first.2, second.2]);
+    let chips: Vec<i64> = row(&s, &b, me.2).await["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(chips, [first.2, second.2]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -911,12 +933,9 @@ async fn graphql_failures(s: &Stack) -> u64 {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_back_github_never_answers_marks_every_account_syncing_the_repo_for_resync() {
     let s = start_with(|c| c.read_back_retries = vec![Duration::from_millis(50); 2]).await;
-    let mut owner = s.sign_in("tomsj").await;
-    let mut member = s.sign_in("ilze-k").await;
-    let accounts = [
-        account_id(&s, &mut owner).await,
-        account_id(&s, &mut member).await,
-    ];
+    let owner = s.sign_in("tomsj").await;
+    let member = s.sign_in("ilze-k").await;
+    let browsers = [&owner, &member];
     let (web, api) = (unlinked("web"), unlinked("api"));
     s.fake(
         "POST",
@@ -924,11 +943,17 @@ async fn a_read_back_github_never_answers_marks_every_account_syncing_the_repo_f
         json!({ "endpoint": "POST /graphql", "count": 1000, "status": 502 }),
     )
     .await;
-    assert!(accounts.iter().all(|a| !needs_resync(&s, *a)));
+    for b in browsers {
+        assert!(!degraded(&s, b).await);
+    }
 
     edit(&s, &web[0], json!({ "add_blocked_by": reference(&api[0]) })).await;
     until(5.0, "both accounts marked for resync", || async {
-        accounts.iter().all(|a| needs_resync(&s, *a)).then_some(())
+        let mut all = true;
+        for b in browsers {
+            all &= degraded(&s, b).await;
+        }
+        all.then_some(())
     })
     .await;
 }
@@ -936,8 +961,7 @@ async fn a_read_back_github_never_answers_marks_every_account_syncing_the_repo_f
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_back_github_answers_with_no_issue_marks_the_accounts_for_resync() {
     let s = start().await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let web = unlinked("web");
     let repo = summary_repo_id(&s, &b, "web").await;
     // A node id GitHub doesn't know: deleted, transferred, or out of the installation's sight.
@@ -957,7 +981,7 @@ async fn a_read_back_github_answers_with_no_issue_marks_the_accounts_for_resync(
     )
     .await;
     until(5.0, "the account marked for resync", || async {
-        needs_resync(&s, account).then_some(())
+        degraded(&s, &b).await.then_some(())
     })
     .await;
 }
@@ -965,8 +989,7 @@ async fn a_read_back_github_answers_with_no_issue_marks_the_accounts_for_resync(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_back_of_an_issue_deleted_since_marks_nothing_for_resync() {
     let s = start().await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let web = unlinked("web");
     let gone = &web[0];
     let repo = summary_repo_id(&s, &b, "web").await;
@@ -989,18 +1012,19 @@ async fn a_read_back_of_an_issue_deleted_since_marks_nothing_for_resync() {
         ),
     )
     .await;
+    // TODO(#92 follow-up): a public sync point. Nothing outside shows that this read-back has
+    // ended (it changes nothing), so the test reads the control DB.
     until(5.0, "the delivery settled after its read-back", || async {
         processed(&s, "late-1").then_some(())
     })
     .await;
-    assert!(!needs_resync(&s, account));
+    assert!(!degraded(&s, &b).await);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_back_for_a_removed_installation_gives_up_at_once() {
     let s = start().await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let web = unlinked("web");
     let repo = summary_repo_id(&s, &b, "web").await;
     // An installation GitHub no longer has: its token request is a 404, and no retry (the
@@ -1009,7 +1033,7 @@ async fn a_read_back_for_a_removed_installation_gives_up_at_once() {
     d["installation"]["id"] = json!(41009999);
     s.deliver("issue_dependencies", "gone-1", &d).await;
     until(3.0, "the account marked for resync", || async {
-        needs_resync(&s, account).then_some(())
+        degraded(&s, &b).await.then_some(())
     })
     .await;
 }
@@ -1044,6 +1068,7 @@ async fn a_delivery_within_a_repo_never_holds_off_a_read_back_due_at_once() {
     )
     .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = issue_edges(&s).await;
     let sent = Instant::now();
     s.deliver(
         "issue_dependencies",
@@ -1058,9 +1083,10 @@ async fn a_delivery_within_a_repo_never_holds_off_a_read_back_due_at_once() {
         &envelope(repo, "blocked_by_added", blocked_by(me, &web[1])),
     )
     .await;
-    // x-2's read-back starts as soon as the first ends, about 0.8 s on, and takes a second.
-    until(5.0, "x-2 settled after its read-back", || async {
-        processed(&s, "x-2").then_some(())
+    // x-2's read-back starts as soon as the first ends, about 0.8 s on, and takes a second:
+    // GitHub answers it once the latency is through.
+    until(5.0, "x-2's read-back answered", || async {
+        (issue_edges(&s).await >= before + 2).then_some(())
     })
     .await;
     assert!(
@@ -1073,8 +1099,7 @@ async fn a_delivery_within_a_repo_never_holds_off_a_read_back_due_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn deliveries_during_a_failing_read_back_do_not_restart_its_retries() {
     let s = start_with(|c| c.read_back_retries = vec![Duration::from_millis(500); 2]).await;
-    let mut b = s.sign_in("tomsj").await;
-    let account = account_id(&s, &mut b).await;
+    let b = s.sign_in("tomsj").await;
     let me = &unlinked("web")[0];
     let repo = summary_repo_id(&s, &b, "web").await;
     s.fake(
@@ -1087,7 +1112,7 @@ async fn deliveries_during_a_failing_read_back_do_not_restart_its_retries() {
     // failure is the last, however many deliveries keep coming.
     let started = Instant::now();
     for n in 0.. {
-        if needs_resync(&s, account) {
+        if degraded(&s, &b).await {
             break;
         }
         assert!(
@@ -1227,10 +1252,13 @@ async fn read_backs_waiting_on_a_token_that_github_refuses_share_the_one_refusal
         );
         s.deliver("issue_dependencies", guid, &d).await;
     }
-    until(5.0, "every read-back given up", || async {
-        guids.iter().all(|g| processed(&s, g)).then_some(())
+    // Each read-back gives up at the token's refusal, which marks the account.
+    until(5.0, "the read-backs given up", || async {
+        degraded(&s, &b).await.then_some(())
     })
     .await;
+    // Any read-back still to ask for a token of its own would have by now.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     let state = s.fake("GET", "/state", json!({})).await;
     let rule = &state["faults"]["fail"][0];
     assert_eq!(rule["endpoint"], tokens);
@@ -1240,26 +1268,22 @@ async fn read_backs_waiting_on_a_token_that_github_refuses_share_the_one_refusal
     );
 }
 
-async fn account_id(s: &Stack, b: &mut Browser) -> i64 {
-    s.api(b, "/api/me").await.1["account"]["id"]
-        .as_i64()
-        .unwrap()
+/// Whether the account's sync shows as degraded: what a missed change (an account marked for a
+/// sweep to repair) looks like from outside.
+async fn degraded(s: &Stack, b: &Browser) -> bool {
+    s.api(&mut b.clone(), "/api/me").await.1["sync"]["degraded"] == true
 }
 
-/// Whether the account is marked for a sweep to repair. No HTTP seam shows it until sweeps
-/// exist, so the test reads the control DB.
-// TODO: move to a public seam once sweeps expose it.
-fn needs_resync(s: &Stack, account: i64) -> bool {
-    let db = rusqlite::Connection::open(s.control_db()).unwrap();
-    control_db::q::account(&db, account)
-        .unwrap()
-        .unwrap()
-        .needs_resync
+/// How many `IssueEdges` read-backs GitHub has answered (after any latency the test set).
+async fn issue_edges(s: &Stack) -> u64 {
+    s.fake("GET", "/state", json!({})).await["graphql"]["operations"]["IssueEdges"]
+        .as_u64()
+        .unwrap_or(0)
 }
 
 /// Whether the delivery is marked processed: applied, and its read-back landed or given up. No
-/// HTTP seam shows it, so the test reads the control DB.
-// TODO: move to a public seam once sweeps expose it.
+/// HTTP seam shows it (redelivery reads GitHub's log, not this), so the test reads the control
+/// DB: only where nothing else can say the read-back is over.
 fn processed(s: &Stack, guid: &str) -> bool {
     let db = rusqlite::Connection::open(s.control_db()).unwrap();
     control_db::q::pending_delivery(&db, guid)

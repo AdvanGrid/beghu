@@ -52,7 +52,9 @@ import {
 } from "./api";
 import { githubDown, reconnecting, refetchShown } from "./live";
 import { setOverlay, type ShownComment, type ShownDetail } from "./overlay";
+import { link } from "./bits";
 import { colors } from "./tokens.stylex";
+import { Background } from "./WhileSyncing";
 
 // --- the pending writes --------------------------------------------------------------------------
 
@@ -368,7 +370,7 @@ function Actions(props: { p: Pending; open?: string; edit?: () => void }) {
     <>
       <Show when={howFailed(props.p).retry}>
         {" · "}
-        <button type="button" {...stylex.attrs(s.link)} disabled={githubDown()} onClick={() => retry(props.p)}>
+        <button type="button" {...stylex.attrs(link.button)} disabled={githubDown()} onClick={() => retry(props.p)}>
           Retry
         </button>
       </Show>
@@ -376,7 +378,7 @@ function Actions(props: { p: Pending; open?: string; edit?: () => void }) {
         {(edit) => (
           <>
             {" · "}
-            <button type="button" {...stylex.attrs(s.link)} onClick={() => edit()()}>
+            <button type="button" {...stylex.attrs(link.button)} onClick={() => edit()()}>
               Edit
             </button>
           </>
@@ -386,14 +388,14 @@ function Actions(props: { p: Pending; open?: string; edit?: () => void }) {
         {(href) => (
           <>
             {" · "}
-            <a href={href()} noscroll {...stylex.attrs(s.link)}>
+            <a href={href()} noscroll {...stylex.attrs(link.button)}>
               Open
             </a>
           </>
         )}
       </Show>
       {" · "}
-      <button type="button" {...stylex.attrs(s.link)} onClick={() => drop(props.p.id)}>
+      <button type="button" {...stylex.attrs(link.button)} onClick={() => drop(props.p.id)}>
         {props.p.op.kind === "comment" ? "Discard" : "Dismiss"}
       </button>
     </>
@@ -459,6 +461,7 @@ function CommentNote(props: { op: string; at: number }) {
  * time out: one shows whole, with Retry, Open and Dismiss; two or more collapse to "n changes
  * failed", which opens the list. The quiet states (sending, reconnecting) show alone, or behind an
  * icon beside a failure, which shows them; hidden, their text is still there for screen readers.
+ * With neither, the import's progress or the sync state shows, as without the writes code.
  */
 function Status() {
   const location = useLocation();
@@ -479,10 +482,10 @@ function Status() {
     </>
   );
   return (
-    <Show when={failed().length > 0} fallback={quiet()}>
+    <Show when={failed().length > 0} fallback={quiet() ?? <Background />}>
       <Show when={failed().length > 1} fallback={line(failed()[0]!)}>
         <span {...stylex.attrs(s.split)}>
-        <button type="button" {...stylex.attrs(s.link, s.failed)} aria-expanded={listing() ? "true" : "false"} onClick={() => setListing((v) => !v)}>
+        <button type="button" {...stylex.attrs(link.button, s.failed)} aria-expanded={listing() ? "true" : "false"} onClick={() => setListing((v) => !v)}>
           {failed().length} changes failed
         </button>
         <Show when={listing()}>
@@ -503,7 +506,7 @@ function Status() {
           <span {...stylex.attrs(s.quiet)} data-perf="quiet">
             <button
               type="button"
-              {...stylex.attrs(s.link, s.icon)}
+              {...stylex.attrs(link.button, s.icon)}
               aria-label={q()}
               title={q()}
               aria-expanded={showQuiet() ? "true" : "false"}
@@ -705,15 +708,6 @@ const s = stylex.create({
     borderBottomColor: colors.line,
     borderBottomStyle: "solid",
     borderBottomWidth: 1,
-  },
-  link: {
-    font: "inherit",
-    padding: 0,
-    borderWidth: 0,
-    textDecoration: "underline",
-    backgroundColor: "transparent",
-    color: colors.accent,
-    cursor: "pointer",
   },
   failure: {
     paddingBlock: 4,

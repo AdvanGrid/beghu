@@ -12,13 +12,22 @@
 //! Relationship changes name the other issue (`repo#n`, `owner/repo#n` or `#n`), which may be in
 //! a repo the App isn't installed on: `add_sub_issue`/`remove_sub_issue` (the edited issue is the
 //! parent), `add_blocked_by`/`remove_blocked_by` and `add_relates_to`/`remove_relates_to` (see
-//! `relationships.rs` for GitHub's rules and deliveries).
+//! `relationships.rs` for GitHub's rules and deliveries). `prioritize_sub_issue` moves one of the
+//! edited issue's sub-issues before its siblings, which GitHub does without a webhook.
+//!
+//! `"delete": true` deletes the issue instead (GitHub's `deleteIssue` mutation), with its comments
+//! and relationships, and sends `issues` `deleted`.
 //!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
 //! (`untyped`), as GitHub's `PATCH /repos/{owner}/{repo}/issues/{number}` takes it. A PR has no
 //! type.
 //! Each delivery carries the issue as it is after the whole edit.
+//!
+//! `POST /label` on the control port changes a repo's labels, with GitHub's `label` deliveries:
+//! `{ "repo": "web", "name": "bug", "rename": "defect" }` renames one (`edited`, with
+//! `changes.name.from`), and `{ "repo": "web", "name": "needs-design", "color": "ededed" }`
+//! creates one (`created`).
 
 use crate::Fake;
 use crate::api::{self, rfc3339};
@@ -54,6 +63,9 @@ pub(crate) struct Edit {
     /// Sub-issue, dependency and relates-to changes (see `relationships.rs`).
     #[serde(flatten)]
     relationships: relationships::Asks,
+    /// The issue is deleted, and nothing else in the edit is made.
+    #[serde(default)]
+    delete: bool,
 }
 
 /// A field that's present, `null` included: `Some(None)` for `null`, so absent stays `None`.
@@ -138,8 +150,15 @@ fn apply(
         &sender_row.login,
         sender_row.avatar_url.as_deref(),
     );
+    if e.delete {
+        return delete(tx, &repo, id, &sender_json).map(Ok);
+    }
     let links = match relationships::plan(tx, id, repo.id, &e.relationships)? {
         Ok(links) => links,
+        Err(why) => return refuse(why),
+    };
+    let reorder = match relationships::plan_reorder(tx, id, repo.id, &e.relationships)? {
+        Ok(child) => child,
         Err(why) => return refuse(why),
     };
     if e.issue_type.is_some() && q::issue(tx, id)?.kind == "pr" {
@@ -178,9 +197,33 @@ fn apply(
     };
     let mut deliveries = done.deliveries;
     deliveries.extend(relationships::apply(tx, &links, &sender_json)?);
+    if let Some(child) = reorder {
+        // Silent: GitHub sends nothing for a reorder.
+        q::move_sub_issue_first(tx, id, child)?;
+    }
     // A relationship change doesn't touch the issue's own fields, so the issue `done` read back
     // is still the issue afterwards.
     Ok(Ok((done.issue, deliveries)))
+}
+
+/// Deletes issue `id` of `repo`, as GitHub's `deleteIssue` does: it, its comments and its
+/// relationships go, with one `issues` `deleted` delivery carrying the issue as it was.
+fn delete(
+    tx: &rusqlite::Transaction,
+    repo: &q::RepoRow,
+    id: i64,
+    sender: &Value,
+) -> rusqlite::Result<Edited> {
+    let issue = issue_json(tx, id)?;
+    q::delete_issue_labels(tx, id)?;
+    q::delete_issue_assignees(tx, id)?;
+    q::delete_issue_comments(tx, id)?;
+    q::delete_issue_relationships(tx, id)?;
+    q::delete_issue(tx, id)?;
+    let mut p = envelope(repo, sender);
+    p["action"] = json!("deleted");
+    p["issue"] = issue.clone();
+    Ok((issue, vec![Delivery::new("issues", p)]))
 }
 
 /// One change to an issue, made by `sender`: an outside edit, or a REST write beghu makes. Each
@@ -369,5 +412,84 @@ impl Change {
             comment,
             deliveries: out,
         }))
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LabelChange {
+    repo: String,
+    name: String,
+    rename: Option<String>,
+    color: Option<String>,
+}
+
+/// `POST /label`: creates or renames a repo's label, as GitHub's web UI would.
+pub(crate) async fn label(
+    State(fake): State<Fake>,
+    axum::Json(l): axum::Json<LabelChange>,
+) -> Response {
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let repo = match find_repo(tx, &l.repo)? {
+                Ok(id) => q::repo(tx, id)?,
+                Err(why) => return Ok(Err(why)),
+            };
+            let Some(sender) = q::accounts(tx)?.first().map(|a| a.id) else {
+                return Ok(Err("the fixture has no accounts".to_owned()));
+            };
+            let Some(u) = q::user_row(tx, sender)? else {
+                return Ok(Err("the sender isn't a user".to_owned()));
+            };
+            let sender = user_json(u.id, &u.login, u.avatar_url.as_deref());
+            let held = q::label_by_name(tx, repo.id, &l.name)?;
+            let (action, row, changes) = match (held, &l.rename) {
+                (Some(h), Some(to)) => {
+                    q::rename_label(tx, h.id, to)?;
+                    let from = h.name.clone();
+                    let row = q::LabelByNameRow {
+                        name: to.clone(),
+                        ..h
+                    };
+                    ("edited", row, Some(json!({ "name": { "from": from } })))
+                }
+                (None, None) => {
+                    let id = q::next_label_id(tx)?;
+                    let color = l.color.clone().unwrap_or_else(|| "ededed".into());
+                    q::create_label(tx, id, repo.id, &l.name, &color)?;
+                    let row = q::LabelByNameRow {
+                        id,
+                        name: l.name.clone(),
+                        color,
+                        description: None,
+                    };
+                    ("created", row, None)
+                }
+                (Some(_), None) => return Ok(Err(format!("{} has a label {}", l.repo, l.name))),
+                (None, Some(_)) => return Ok(Err(format!("{} has no label {}", l.repo, l.name))),
+            };
+            let mut p = envelope(&repo, &sender);
+            p["action"] = json!(action);
+            p["label"] = label_json(
+                &repo,
+                row.id,
+                &row.name,
+                &row.color,
+                row.description.as_deref(),
+            );
+            if let Some(c) = changes {
+                p["changes"] = c;
+            }
+            Ok(Ok((row.id, Delivery::new("label", p))))
+        })
+        .await;
+    match done {
+        Ok(Ok((id, d))) => {
+            fake.state().webhooks.send(vec![d]);
+            axum::Json(json!({ "ok": true, "id": id })).into_response()
+        }
+        Ok(Err(why)) => bad_request(why),
+        Err(e) => api::internal(e),
     }
 }

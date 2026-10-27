@@ -4,9 +4,11 @@
 //! - `reset`: refetch everything shown. Every stream opens with one, so a change that landed
 //!   between the tab's data response and the stream opening is never missed; a stream that falls
 //!   more than [`BUFFER`] events behind gets one in place of what it missed.
-//! - `status` (`{"import":…}`): what the status slot shows, whenever it changes: the import's
-//!   phase and progress, `null` once it's done. Every `reset` is followed by the current one,
-//!   `null` included, so a tab that missed the change (it was reconnecting) catches up.
+//! - `status` (`{"import":…,"sync":…}`): what the status slot shows, whenever it changes: the
+//!   import's phase and progress, `null` once it's done; and the sync state ("sync degraded ·
+//!   Resync", "resyncing…"), `null` while sync is healthy. Every `reset` is followed by the
+//!   current one, `null`s included, so a tab that missed the change (it was reconnecting) catches
+//!   up.
 //! - `github` (`{"state":"up"|"down"}`): whether GitHub is answering, process-wide. Sent right
 //!   after the opening `reset` and its `status`, then on every change; while it's down the tab
 //!   pauses writes.
@@ -19,6 +21,7 @@ use crate::App;
 use crate::auth::Session;
 use crate::error::ApiError;
 use crate::import::ImportStatus;
+use crate::reconcile::SyncStatus;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -40,8 +43,10 @@ pub enum Push {
     Ids(Arc<[i64]>),
     /// Refetch everything shown.
     Reset,
-    /// The status slot's state changed.
+    /// The import's status changed: this is it now.
     Status(Option<ImportStatus>),
+    /// The sync state changed: the stream reads it as the event goes out.
+    Sync,
 }
 
 /// The `status` event's data.
@@ -50,6 +55,8 @@ pub enum Push {
 pub struct StreamStatus {
     /// The import running, if any.
     pub import: Option<ImportStatus>,
+    /// Sync degraded, or resyncing; `null` while sync is healthy.
+    pub sync: Option<SyncStatus>,
 }
 
 /// The `ids` event's data.
@@ -157,13 +164,21 @@ fn event(push: &Push) -> Event {
             .data(serde_json::to_string(&StreamIds { ids: ids.to_vec() }).expect("plain struct")),
         // An event with no data is never dispatched by EventSource.
         Push::Reset => Event::default().event("reset").data("{}"),
-        Push::Status(import) => Event::default().event("status").data(
-            serde_json::to_string(&StreamStatus {
-                import: import.clone(),
-            })
-            .expect("plain struct"),
-        ),
+        // Sent through `status_event`, which reads the sync state.
+        Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
     }
+}
+
+/// The status slot's state for `account`: the `status` event, with `import` as pushed (each of
+/// the import's steps is told, in order), or as it is now.
+async fn status_event(app: &App, account: i64, import: Option<Option<ImportStatus>>) -> Event {
+    let status = StreamStatus {
+        import: import.unwrap_or_else(|| app.imports().status(account)),
+        sync: crate::reconcile::status(app, account).await,
+    };
+    Event::default()
+        .event("status")
+        .data(serde_json::to_string(&status).expect("plain struct"))
 }
 
 pub async fn stream(
@@ -208,24 +223,35 @@ pub async fn stream(
                 let (ev, next) = match step {
                     Step::Reset => (event(&Push::Reset), Step::Status { opening: true }),
                     Step::Status { opening } => (
-                        event(&Push::Status(imports.imports().status(account))),
+                        status_event(&imports, account, None).await,
                         if opening { Step::GitHub } else { Step::Live },
                     ),
                     Step::GitHub => (github_event(*health.borrow_and_update()), Step::Live),
-                    Step::Live => tokio::select! {
-                        push = sub.next() => {
-                            let next = match push {
-                                Push::Reset => Step::Status { opening: false },
-                                _ => Step::Live,
-                            };
-                            (event(&push), next)
+                    Step::Live => {
+                        let push = tokio::select! {
+                            push = sub.next() => Some(push),
+                            // A closed channel (never, while the app lives) leaves only the pushes.
+                            Ok(()) = health.changed() => None,
+                            _ = draining.wait_for(|d| *d) => return None,
+                        };
+                        match push {
+                            Some(Push::Status(import)) => (
+                                status_event(&imports, account, Some(import)).await,
+                                Step::Live,
+                            ),
+                            Some(Push::Sync) => {
+                                (status_event(&imports, account, None).await, Step::Live)
+                            }
+                            Some(Push::Reset) => {
+                                (event(&Push::Reset), Step::Status { opening: false })
+                            }
+                            Some(p) => (event(&p), Step::Live),
+                            None => {
+                                let down = *health.borrow_and_update();
+                                (github_event(down), Step::Live)
+                            }
                         }
-                        // A closed channel (never, while the app lives) leaves only the pushes.
-                        Ok(()) = health.changed() => {
-                            (github_event(*health.borrow_and_update()), Step::Live)
-                        }
-                        _ = draining.wait_for(|d| *d) => return None,
-                    },
+                    }
                 };
                 Some((Ok::<_, Infallible>(ev), (sub, health, draining, next)))
             }

@@ -3,8 +3,7 @@
 beghu runs as one container with one block-storage volume, configured from the environment only.
 Exactly one instance runs per deployment: each account's mirror is a SQLite file and the GitHub App
 has one webhook URL. A deploy stops the old container, then starts the new one. Tabs reconnect
-within a few seconds, and webhooks GitHub sent meanwhile are caught up by redelivery and sweeps
-(from #92, not built yet).
+within a few seconds, and webhooks GitHub sent meanwhile are caught up by redelivery and sweeps.
 
 This page is the recipe: the image, its environment, the volume, the stop grace period, the edge
 in front of it, backups and restore. `deploy/compose.yaml` is a worked example and
@@ -128,14 +127,16 @@ The spec's startup order (#86) is:
 3. Delete dormant accounts' mirror files.
 4. Listen.
 5. Resume the webhook deliveries that were acknowledged but never processed, ahead of any that
-   arrived since step 4, then redeliver the ones GitHub sent during the downtime.
+   arrived since step 4, then start reconciliation: its first redelivery run asks GitHub again for
+   the deliveries it sent during the downtime, and its sweeps follow. Both run in the background,
+   so readiness doesn't wait on GitHub.
 6. Start the migration walker, which migrates active mirrors one at a time.
 
 Then the other jobs start: the hourly backup, asset pruning, and the accounts' repo re-reads. An
 import a restart cut short resumes at its account's next re-read of its repos.
 
-Not built yet: step 3 and step 6 come with dormancy and the walker (#114), and step 5's
-redelivery with #92. Their places in the startup code are marked.
+Not built yet: step 3 and step 6 come with dormancy and the walker (#114). Their places in the
+startup code are marked.
 
 `/healthz` answers 200 with `{"build": "<build id>"}` whenever the process answers. It never
 touches a database, so use it for liveness. `/readyz` answers 503 while the startup after
@@ -255,7 +256,7 @@ The control DB is now as of the backup. Sign-ins and repo picks made since are g
 accounts sign in or pick again. If a token refresh happened since the backup, its account is asked to sign
 in again. GitHub refresh tokens are single-use, and the backup holds the spent one. Webhooks
 GitHub delivered since are caught up by redelivery, and anything redelivery can't reach is caught
-up by sweeps (both from #92). The mirrors stay as they are.
+up by sweeps. The mirrors stay as they are.
 
 Losing both the control DB and its backups costs every account a sign-in and a re-import.
 

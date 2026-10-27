@@ -39,6 +39,11 @@ pub enum ApiError {
     },
     /// A write GitHub answered with a conflict.
     Conflict(String),
+    /// Asked again too soon (a Resync, once an hour): try again after `retry_after`.
+    TooSoon {
+        retry_after: Duration,
+        why: String,
+    },
     /// A write that couldn't reach GitHub: it's down, or kept failing.
     GitHubDown(String),
     /// A resent write the server has no record of: it restarted, or forgot it. The first send
@@ -121,6 +126,8 @@ pub enum ErrorKind {
     RateLimited,
     /// 409: a write GitHub answered with a conflict.
     Conflict,
+    /// 429: asked again too soon (a Resync, once an hour); try again after `retry-after` seconds.
+    TooSoon,
     /// 503 (beghu's own answer, with this body; never a proxy's 502): a write that couldn't reach
     /// GitHub.
     GithubDown,
@@ -215,6 +222,13 @@ impl IntoResponse for ApiError {
                 )
             }
             ApiError::Conflict(m) => (StatusCode::CONFLICT, ErrorKind::Conflict, m),
+            ApiError::TooSoon {
+                retry_after: r,
+                why,
+            } => {
+                retry_after = Some(r);
+                (StatusCode::TOO_MANY_REQUESTS, ErrorKind::TooSoon, why)
+            }
             ApiError::GitHubDown(m) => (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::GithubDown, m),
             // These two are the words the tab shows: it says what the write was.
             ApiError::Lost { kind, digest: d } => {

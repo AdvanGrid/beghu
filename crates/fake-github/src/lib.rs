@@ -9,7 +9,8 @@
 //!   webhook drops, delays, duplicates and reorders), outside edits, token lifetimes,
 //!   revocations and a reset, and reports the fake's state.
 //! - About a second after each change, the fake POSTs the matching webhook, signed, to the App's
-//!   webhook URL (`webhook_url`, or the one set on the control port).
+//!   webhook URL (`webhook_url`, or the one set on the control port), and logs the attempt for
+//!   the App's delivery listing and redelivery (`hook_deliveries.rs`).
 //!
 //! GitHub's truth is the fake's own copy of a fixture mirror (`fake_db::Truth`).
 
@@ -23,14 +24,17 @@ mod control;
 mod edits;
 mod faults;
 mod graphql;
+mod hook_deliveries;
 mod issue_edges;
 mod oauth;
+mod quota;
 mod relationships;
 mod repos;
 mod webhooks;
 mod writes;
 
 pub use accounts::{ACCOUNTS, Role, pristine_mirrors};
+pub use api::rfc3339;
 pub use app::{DEV_APP_ID, DEV_APP_KEY, SLUG as APP_SLUG};
 pub use webhooks::{DELAY as WEBHOOK_DELAY, sign as sign_webhook};
 
@@ -77,6 +81,10 @@ pub(crate) struct State {
     webhooks: webhooks::Webhooks,
     /// Each installation token minted, with its permissions.
     app_tokens: app::Minted,
+    /// Each token owner's primary rate limit.
+    quotas: quota::Quotas,
+    /// How many conditional requests were answered 304 since the start (or the last reset).
+    not_modified: std::sync::atomic::AtomicU64,
     /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
     /// expiry, and the times edits stamp, follow it.
     clock: std::sync::atomic::AtomicI64,
@@ -105,19 +113,30 @@ impl Refreshes {
 }
 
 /// How many GraphQL calls came with an installation token, and how many with a user's, since the
-/// start (or the last reset).
+/// start (or the last reset); and how many of each operation.
 #[derive(Default)]
 pub(crate) struct GraphqlCalls {
     pub installation: std::sync::atomic::AtomicU64,
     pub user: std::sync::atomic::AtomicU64,
+    pub operations: Mutex<std::collections::BTreeMap<String, u64>>,
 }
 
 impl GraphqlCalls {
+    pub(crate) fn count(&self, op: &str) {
+        *self
+            .operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(op.to_owned())
+            .or_default() += 1;
+    }
+
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         use std::sync::atomic::Ordering::Relaxed;
         serde_json::json!({
             "installation": self.installation.load(Relaxed),
             "user": self.user.load(Relaxed),
+            "operations": *self.operations.lock().unwrap_or_else(|e| e.into_inner()),
         })
     }
 
@@ -125,6 +144,10 @@ impl GraphqlCalls {
         use std::sync::atomic::Ordering::Relaxed;
         self.installation.store(0, Relaxed);
         self.user.store(0, Relaxed);
+        self.operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -157,6 +180,8 @@ impl Fake {
             refreshes: Refreshes::default(),
             graphql: GraphqlCalls::default(),
             app_tokens: app::Minted::default(),
+            quotas: quota::Quotas::default(),
+            not_modified: Default::default(),
             clock: Default::default(),
         })))
     }
@@ -172,9 +197,14 @@ impl Fake {
             .merge(api::router())
             .merge(writes::router())
             .merge(app::router())
+            .merge(hook_deliveries::router())
             .merge(graphql::router())
             .merge(repos::router())
             .fallback(api::not_found)
+            .layer(axum::middleware::from_fn_with_state(
+                self.clone(),
+                quota::middleware,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),
                 faults::middleware,

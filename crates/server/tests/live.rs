@@ -650,11 +650,13 @@ async fn one_accounts_failed_write_marks_it_for_resync_without_holding_up_the_ot
     assert_eq!(s.deliver("issues", "g-stuck-1", &first).await, 202);
     // The other account has it at once, while the stuck one waits on its mirror.
     assert_eq!(ids_of(&other.event_within(2 * SECS).await.unwrap()), [id]);
-    // Its write gives up after the busy timeout; then the mirror is free again.
-    assert_eq!(
-        stuck.events_for(5 * SECS + SECS / 2).await,
-        Vec::<Sse>::new()
-    );
+    // Its write gives up after the busy timeout, and its tabs hear that sync is degraded (the
+    // account is marked for a sweep to repair); then the mirror is free again.
+    let events = stuck.events_for(5 * SECS + SECS / 2).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].event, "status");
+    let status: Value = serde_json::from_str(&events[0].data).unwrap();
+    assert_eq!(status["sync"]["degraded"], true, "{status}");
     drop(lock);
 
     // The stuck account's deliveries carry on.
@@ -967,7 +969,7 @@ async fn every_stream_opens_with_a_reset_then_the_status_slot_even_when_nothing_
         st.event_within(SECS).await,
         Some(Sse {
             event: "status".into(),
-            data: r#"{"import":null}"#.into()
+            data: r#"{"import":null,"sync":null}"#.into()
         })
     );
 }

@@ -37,6 +37,32 @@ pub(crate) struct Asks {
     remove_blocked_by: Option<String>,
     add_relates_to: Option<String>,
     remove_relates_to: Option<String>,
+    /// Moves this sub-issue of the edited issue before its siblings, as GitHub's
+    /// "reprioritize sub-issue" does. GitHub sends nothing for it: no webhook, no feed event
+    /// (measured, spec #86: silent reorders).
+    prioritize_sub_issue: Option<String>,
+}
+
+/// The sub-issue `asks` moves to the top of issue `id`'s, if any; why not, if GitHub would refuse.
+pub(crate) fn plan_reorder(
+    c: &Connection,
+    id: i64,
+    repo: i64,
+    asks: &Asks,
+) -> rusqlite::Result<Result<Option<i64>, String>> {
+    let Some(target) = &asks.prioritize_sub_issue else {
+        return Ok(Ok(None));
+    };
+    let child = match find_issue(c, target, repo)? {
+        Ok(child) => child,
+        Err(why) => return Ok(Err(why)),
+    };
+    if q::parent_of(c, child)? != Some(id) {
+        return Ok(Err(
+            "Not Found: that issue isn't a sub-issue of this one".into()
+        ));
+    }
+    Ok(Ok(Some(child)))
 }
 
 #[derive(Clone, Copy, PartialEq)]

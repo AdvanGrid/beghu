@@ -4,8 +4,8 @@
 //! and each round's per-repo tasks), the relationship read-backs, the webhook dispatcher with its
 //! lanes, settles, requeue and pruning, the accounts' re-reads of their repos and roles, the
 //! unsyncs and reconciles a repo pick starts, writes (ops) and the role re-reads they start,
-//! token refreshes, the hourly control-DB backup and asset pruning; and, as they land, sweeps and
-//! probes (#92). Once the drain calls [`Jobs::stop`], no job starts, each running one is dropped
+//! token refreshes, the hourly control-DB backup and asset pruning; and reconciliation's
+//! redelivery, the sweeps' scheduler and each installation's sweeps and probes. Once the drain calls [`Jobs::stop`], no job starts, each running one is dropped
 //! at its next await, and the drain waits until all of them have ended (or its deadline).
 //!
 //! Stopping a job doesn't stop a database transaction it has under way: that runs whole on a
@@ -14,14 +14,17 @@
 //! (any later write fails with `Error::Sealed`), lets the write in flight finish, and only then
 //! folds the WAL (`serve_until`).
 //!
-//! # The contract every job keeps (#92's sweeps and probes included)
+//! # The contract every job keeps (reconciliation's sweeps and probes included)
 //!
 //! - **A job is cancelled at any await.** Nothing it holds between two awaits may need finishing
 //!   that the next start can't pick up.
 //! - **A job saves its cursor in the same transaction as its data.** A job that works through
 //!   something in steps (pages, repos, deliveries) records how far it got in the transaction
 //!   that writes the step, so a stop between two steps resumes at the right place, and a stop
-//!   mid-step leaves the step undone, whole.
+//!   mid-step leaves the step undone, whole. Where the cursor and its data are in different
+//!   databases (a sweep's probe keeps its `since` in the control DB, what it read in the
+//!   mirrors), the data is written first and the cursor after: a stop between the two only
+//!   reads the step again.
 //! - **A job's children use the tracked spawn**: [`Jobs::spawn`], or [`Jobs::set`] for a
 //!   `JoinSet`. A plain `tokio::spawn` outlives the drain, which then neither stops nor waits for
 //!   it. [`Jobs::spawn_whole`] is for the rare child that mustn't be cut at an await (a token

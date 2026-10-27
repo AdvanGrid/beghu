@@ -9,7 +9,7 @@ ON CONFLICT (github_user_id) DO UPDATE SET login = excluded.login, last_active_a
 -- name: account :opt
 -- param: github_user_id i64
 SELECT a.github_user_id, a.login, a.status, a.last_active_at, a.dormant_at, a.needs_resync AS "needs_resync: bool",
-       p.comment_order
+       a.resync_asked_at, p.comment_order
 FROM accounts a
 LEFT JOIN preferences p ON p.github_user_id = a.github_user_id
 WHERE a.github_user_id = :github_user_id;

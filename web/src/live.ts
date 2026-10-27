@@ -10,8 +10,9 @@
 // it's true.
 //
 // `status` events say what the status slot shows besides: `importing()` is the account's import
-// while one runs. Every `reset` (each stream open sends one) clears it and is followed by the
-// current status, `null` included, so a tab that was reconnecting when an import ended hears it.
+// while one runs, and `sync()` its sync state while it's degraded or resyncing. Every `reset`
+// (each stream open sends one) clears both and is followed by the current status, `null`s
+// included, so a tab that was reconnecting when an import or a resync ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { forgetRemembered } from "./api";
@@ -19,6 +20,7 @@ import type { ImportStatus } from "./bindings/ImportStatus";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
 import type { StreamStatus } from "./bindings/StreamStatus";
+import type { SyncStatus } from "./bindings/SyncStatus";
 
 export type Push = { kind: "ids"; ids: number[] } | { kind: "reset" };
 
@@ -28,12 +30,15 @@ const RECONNECTING_AFTER_MS = 3000;
 const listeners = new Set<(p: Push) => void>();
 const [reconnecting, setReconnecting] = createSignal(false);
 const [importing, setImporting] = createSignal<ImportStatus | null>(null);
+const [sync, setSync] = createSignal<SyncStatus | null>(null);
 const [githubDown, setGithubDown] = createSignal(false);
 
 /** True while the stream has been down for 3 s or more. */
 export { reconnecting };
 /** The account's import while one runs: its phase and how many repos are through it. */
 export { importing };
+/** The account's sync while it's degraded or resyncing. */
+export { sync };
 /** True while the server finds GitHub unreachable. */
 export { githubDown };
 
@@ -90,10 +95,13 @@ export function connectLive(): () => void {
     });
     es.addEventListener("reset", () => {
       setImporting(null);
+      setSync(null);
       emit({ kind: "reset" });
     });
     es.addEventListener("status", (e) => {
-      setImporting((JSON.parse((e as MessageEvent<string>).data) as StreamStatus).import);
+      const status = JSON.parse((e as MessageEvent<string>).data) as StreamStatus;
+      setImporting(status.import);
+      setSync(status.sync);
     });
     es.addEventListener("github", (e) => setGithubDown((JSON.parse((e as MessageEvent<string>).data) as StreamGitHub).state === "down"));
     es.addEventListener("ids", (e) => {

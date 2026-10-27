@@ -129,11 +129,12 @@ ON CONFLICT (id) DO UPDATE SET login = excluded.login,
 -- param: name &str
 -- param: color &str
 -- param: description Option<&str>
-INSERT INTO labels (id, repo_id, name, color, description)
-SELECT :id, :repo_id, :name, :color, :description
+-- param: seq i64
+INSERT INTO labels (id, repo_id, name, color, description, seq)
+SELECT :id, :repo_id, :name, :color, :description, :seq
 WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'label' AND d.id = :id)
 ON CONFLICT (id) DO UPDATE SET repo_id = excluded.repo_id, name = excluded.name,
-  color = excluded.color, description = excluded.description;
+  color = excluded.color, description = excluded.description, seq = excluded.seq;
 
 -- A label on an issue payload: added if the mirror lacks it, never renamed. The payload may be
 -- older than a rename the mirror already has, and only `label` deliveries say what a label is
@@ -144,8 +145,9 @@ ON CONFLICT (id) DO UPDATE SET repo_id = excluded.repo_id, name = excluded.name,
 -- param: name &str
 -- param: color &str
 -- param: description Option<&str>
-INSERT INTO labels (id, repo_id, name, color, description)
-SELECT :id, :repo_id, :name, :color, :description
+-- param: seq i64
+INSERT INTO labels (id, repo_id, name, color, description, seq)
+SELECT :id, :repo_id, :name, :color, :description, :seq
 WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'label' AND d.id = :id)
 ON CONFLICT (id) DO NOTHING;
 

@@ -152,6 +152,14 @@ FROM comments c JOIN items i ON i.id = c.item_id
 WHERE i.repo_id = :repo_id AND i.is_stub = 0 AND c.updated_at > :since
 ORDER BY c.updated_at, c.id LIMIT :limit OFFSET :offset;
 
+-- One of a repo's comments, by id, as `GET /repos/{owner}/{repo}/issues/comments/{id}` reads it.
+-- name: repo_comment :opt
+-- param: repo_id i64
+-- param: id i64
+SELECT c.id, c.node_id, c.author_id, c.body, c.created_at, c.updated_at, i.number
+FROM comments c JOIN items i ON i.id = c.item_id
+WHERE i.repo_id = :repo_id AND i.is_stub = 0 AND c.id = :id;
+
 -- name: repo_labels :many
 -- param: repo_id i64
 -- param: limit i64
@@ -159,9 +167,36 @@ ORDER BY c.updated_at, c.id LIMIT :limit OFFSET :offset;
 SELECT l.id, l.name, l.color, l.description FROM labels l WHERE l.repo_id = :repo_id
 ORDER BY l.name, l.id LIMIT :limit OFFSET :offset;
 
+-- name: repo_milestone :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT m.id, m.number, m.title, m.state, m.due_on, m.updated_at FROM milestones m
+WHERE m.repo_id = :repo_id AND m.number = :number;
+
 -- name: repo_milestones :many
 -- param: repo_id i64
 -- param: limit i64
 -- param: offset i64
 SELECT m.id, m.number, m.title, m.state, m.due_on, m.updated_at FROM milestones m
 WHERE m.repo_id = :repo_id ORDER BY m.number LIMIT :limit OFFSET :offset;
+
+-- The sweeps' reads (`SweepCounts`, `SweepIssueIds`, `SweepPullIds`).
+-- name: repo_by_node :opt
+-- param: node_id &str
+SELECT r.id FROM repos r WHERE r.node_id = :node_id;
+
+-- name: item_count :one
+-- param: repo_id i64
+-- param: kind &str
+SELECT count(*) AS "n!: i64" FROM items i
+WHERE i.repo_id = :repo_id AND i.kind = :kind AND i.is_stub = 0;
+
+-- A repo's issues (or PRs) by id, after `after_id`.
+-- name: item_ids_page :many
+-- param: repo_id i64
+-- param: kind &str
+-- param: after_id i64
+-- param: limit i64
+SELECT i.id FROM items i
+WHERE i.repo_id = :repo_id AND i.kind = :kind AND i.is_stub = 0 AND i.id > :after_id
+ORDER BY i.id LIMIT :limit;

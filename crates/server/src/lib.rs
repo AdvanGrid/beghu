@@ -1,8 +1,9 @@
 //! The beghu server: sign-in, the browser session, the shell, the JSON API, webhooks (with the
-//! relationship read-backs that follow them), the live stream, and the jobs: the import, the
-//! hourly control-DB backup and asset pruning. Jobs land here as later slices add them. Every
-//! background task is spawned through [`jobs::Jobs`], so the drain stops it and waits for it;
-//! `jobs.rs` has the contract a job keeps, and the few tasks outside it.
+//! relationship read-backs that follow them), the live stream, reconciliation (redelivery and
+//! sweeps) and the jobs: the import, the hourly control-DB backup and asset pruning. Jobs land
+//! here as later slices add them. Every background task is spawned through [`jobs::Jobs`], so the
+//! drain stops it and waits for it; `jobs.rs` has the contract a job keeps, and the few tasks
+//! outside it.
 
 mod api;
 mod assets;
@@ -22,6 +23,7 @@ mod live;
 mod markdown;
 mod ops;
 mod query;
+mod reconcile;
 mod relationships;
 mod repos;
 mod shell;
@@ -30,8 +32,8 @@ mod volume;
 mod webhook;
 
 pub use config::{
-    Config, GitHubConfig, MirrorsConfig, default_assets_kept_for, default_backup_every,
-    default_drain_for, default_read_back_retries,
+    Config, GitHubConfig, MirrorsConfig, ReconcileConfig, default_assets_kept_for,
+    default_backup_every, default_drain_for, default_read_back_retries,
 };
 
 use axum::Router;
@@ -70,6 +72,10 @@ struct Inner {
     imports: import::Imports,
     /// Writes in flight and lately done.
     ops: ops::Ops,
+    /// Redelivery, sweeps and each account's sync state.
+    reconcile: reconcile::Reconcile,
+    /// The relationship read-backs (webhooks', sweeps', and an opened parent's).
+    edges: Arc<edges::Refetcher>,
     /// Rendered bodies and comments.
     renders: markdown::Cache,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
@@ -165,12 +171,15 @@ impl App {
             mirrors: mirrors.clone(),
             hub: hub.clone(),
             installs,
-            edges,
+            edges: edges.clone(),
             jobs: jobs.clone(),
         };
         let notices = mirrors.notices();
         let assets_dir = cfg.web_dir.is_some().then(|| assets.dir.clone());
+        let reconcile = reconcile::Reconcile::new(cfg.reconcile.clone());
         let app = App(Arc::new(Inner {
+            reconcile,
+            edges,
             cfg,
             control,
             mirrors,
@@ -257,6 +266,14 @@ impl App {
         &self.0.ops
     }
 
+    fn reconcile(&self) -> &reconcile::Reconcile {
+        &self.0.reconcile
+    }
+
+    fn edges(&self) -> &edges::Refetcher {
+        &self.0.edges
+    }
+
     fn jobs(&self) -> &jobs::Jobs {
         &self.0.jobs
     }
@@ -303,9 +320,10 @@ impl Opened {
         webhook::resume(app.webhooks(), sinks, app.cfg().deliveries_kept_for)
             .await
             .map_err(|e| format!("can't read the unprocessed webhook deliveries: {e}"))?;
-        // TODO(#92): redelivery for the downtime, then the reconciliation start, go here. Spawn
-        // them through `jobs`, never await them here: `start` isn't a job, so the drain couldn't
-        // stop what it awaits, and readiness and the jobs below would wait on GitHub.
+        // Then redelivery for the downtime (its first run) and the sweeps' scheduler: jobs,
+        // spawned and never awaited here. `start` isn't a job, so the drain couldn't stop what it
+        // awaits, and readiness and the jobs below would wait on GitHub.
+        reconcile::start(&app);
         // Step 6. TODO(#114): start the migration walker here.
         app.spawn(backups::job);
         if let Some((assets, next)) = assets {
@@ -397,6 +415,7 @@ pub fn router(app: App) -> Router {
         .route("/repos", get(repos::list).put(repos::pick))
         .route("/stream", get(live::stream))
         .route("/ops", post(ops::post))
+        .route("/resync", post(reconcile::resync))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,

@@ -3,13 +3,20 @@
 //! comments. Pages are GitHub's: `per_page` (at most 100, default 30), `page`, and `Link`
 //! headers. A repo the token can't see is a 404, as on GitHub.
 //!
-//! - `GET /repos/{owner}/{repo}/labels`
-//! - `GET /repos/{owner}/{repo}/milestones?state=open|closed|all`
+//! - `GET /repos/{owner}/{repo}/labels`, and `GET /repos/{owner}/{repo}/labels/{name}` (one, by
+//!   name, case-insensitively; 404 without one)
+//! - `GET /repos/{owner}/{repo}/milestones?state=open|closed|all`, and
+//!   `GET /repos/{owner}/{repo}/milestones/{milestone_number}` (one; 404 without one)
 //! - `GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=updated&direction=asc&since=`:
 //!   only `sort=updated` ascending, the order the import pages in. `since` is exclusive, as
 //!   GitHub's: only what was updated after it.
 //! - `GET /repos/{owner}/{repo}/issues/{number}/comments`
 //! - `GET /repos/{owner}/{repo}/issues/comments?sort=updated&direction=asc&since=` (exclusive)
+//! - `GET /repos/{owner}/{repo}/issues/comments/{comment_id}`: one comment; 404 when the repo has
+//!   no such comment (deleted, say).
+//!
+//! The lists page by offset, as GitHub's do: an item updated while they're read moves to the end
+//! of an `updated` list, and the item after a page boundary slides onto a page already read.
 
 use crate::Fake;
 use crate::api::{self, AnyToken, can_see, rfc3339};
@@ -26,9 +33,18 @@ use serde_json::{Value, json};
 pub(crate) fn router() -> Router<Fake> {
     Router::new()
         .route("/repos/{owner}/{repo}/labels", get(labels))
+        .route("/repos/{owner}/{repo}/labels/{name}", get(one_label))
         .route("/repos/{owner}/{repo}/milestones", get(milestones))
+        .route(
+            "/repos/{owner}/{repo}/milestones/{number}",
+            get(one_milestone),
+        )
         .route("/repos/{owner}/{repo}/issues", get(issues))
         .route("/repos/{owner}/{repo}/issues/comments", get(repo_comments))
+        .route(
+            "/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            get(one_comment),
+        )
         .route(
             "/repos/{owner}/{repo}/issues/{number}/comments",
             get(issue_comments),
@@ -192,28 +208,87 @@ async fn milestones(
                 .filter(|m| st == "all" || m.state == st)
                 .skip(offset as usize)
                 .take(limit as usize)
-                .map(|m| {
-                    let full = format!("{o}/{n}");
-                    json!({
-                        "id": m.id,
-                        "node_id": format!("MI_kw{}", m.id),
-                        "number": m.number,
-                        "title": m.title,
-                        "description": null,
-                        "state": m.state,
-                        "due_on": m.due_on.map(rfc3339),
-                        "created_at": m.updated_at.map(rfc3339),
-                        "updated_at": m.updated_at.map(rfc3339),
-                        "closed_at": null,
-                        "url": format!("https://api.github.com/repos/{full}/milestones/{}", m.number),
-                        "html_url": format!("https://github.com/{full}/milestone/{}", m.number),
-                    })
-                })
+                .map(|m| milestone_json(&format!("{o}/{n}"), &m))
                 .collect::<Vec<_>>())
         })
         .await;
     match read {
         Ok(items) => paged(&headers, &path, &p, items, &[("state", state)]),
+        Err(e) => api::internal(e),
+    }
+}
+
+/// A milestone as GitHub's REST API serialises it.
+fn milestone_json(full: &str, m: &q::RepoMilestonesRow) -> Value {
+    json!({
+        "id": m.id,
+        "node_id": format!("MI_kw{}", m.id),
+        "number": m.number,
+        "title": m.title,
+        "description": null,
+        "state": m.state,
+        "due_on": m.due_on.map(rfc3339),
+        "created_at": m.updated_at.map(rfc3339),
+        "updated_at": m.updated_at.map(rfc3339),
+        "closed_at": null,
+        "url": format!("https://api.github.com/repos/{full}/milestones/{}", m.number),
+        "html_url": format!("https://github.com/{full}/milestone/{}", m.number),
+    })
+}
+
+async fn one_label(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    Path((owner, name, label)): Path<(String, String, String)>,
+) -> Response {
+    let repo = match visible_repo(&fake, token, owner, name).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let r = q::repo(c, repo)?;
+            Ok(q::label_by_name(c, repo, &label)?
+                .map(|l| label_json(&r, l.id, &l.name, &l.color, l.description.as_deref())))
+        })
+        .await;
+    match read {
+        Ok(Some(v)) => axum::Json(v).into_response(),
+        Ok(None) => api::not_found().await,
+        Err(e) => api::internal(e),
+    }
+}
+
+async fn one_milestone(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    Path((owner, name, number)): Path<(String, String, i64)>,
+) -> Response {
+    let full = format!("{owner}/{name}");
+    let repo = match visible_repo(&fake, token, owner, name).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| q::repo_milestone(c, repo, number))
+        .await;
+    match read {
+        Ok(Some(m)) => {
+            let m = q::RepoMilestonesRow {
+                id: m.id,
+                number: m.number,
+                title: m.title,
+                state: m.state,
+                due_on: m.due_on,
+                updated_at: m.updated_at,
+            };
+            axum::Json(milestone_json(&full, &m)).into_response()
+        }
+        Ok(None) => api::not_found().await,
         Err(e) => api::internal(e),
     }
 }
@@ -416,6 +491,46 @@ async fn repo_comments(
     }
     match read {
         Ok(items) => paged(&headers, &path, &p, items, &query),
+        Err(e) => api::internal(e),
+    }
+}
+
+async fn one_comment(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    Path((owner, name, id)): Path<(String, String, i64)>,
+) -> Response {
+    let repo = match visible_repo(&fake, token, owner, name).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let Some(x) = q::repo_comment(c, repo, id)? else {
+                return Ok(None);
+            };
+            let r = q::repo(c, repo)?;
+            comment_json(
+                c,
+                &r,
+                CommentRow {
+                    number: x.number,
+                    id: x.id,
+                    node_id: &x.node_id,
+                    author: x.author_id,
+                    body: &x.body,
+                    created: x.created_at,
+                    updated: x.updated_at,
+                },
+            )
+            .map(Some)
+        })
+        .await;
+    match read {
+        Ok(Some(v)) => axum::Json(v).into_response(),
+        Ok(None) => api::not_found().await,
         Err(e) => api::internal(e),
     }
 }
