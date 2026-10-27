@@ -19,6 +19,7 @@ mod import;
 mod installations;
 mod jobs;
 mod live;
+mod markdown;
 mod ops;
 mod query;
 mod relationships;
@@ -69,6 +70,8 @@ struct Inner {
     imports: import::Imports,
     /// Writes in flight and lately done.
     ops: ops::Ops,
+    /// Rendered bodies and comments.
+    renders: markdown::Cache,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
     draining: tokio::sync::watch::Sender<bool>,
     /// True once the startup is done ([`Opened::start`]): `/readyz` answers 503 until then.
@@ -181,6 +184,7 @@ impl App {
             installations,
             imports: import::Imports::default(),
             ops: ops::Ops::default(),
+            renders: markdown::Cache::new(markdown::CACHE_BYTES),
             draining: tokio::sync::watch::channel(false).0,
             started: Default::default(),
             jobs,
@@ -207,6 +211,10 @@ impl App {
 
     fn mirrors(&self) -> &Mirrors {
         &self.0.mirrors
+    }
+
+    fn renders(&self) -> &markdown::Cache {
+        &self.0.renders
     }
 
     fn github(&self) -> &github::GitHub {

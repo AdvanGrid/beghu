@@ -102,9 +102,14 @@ async fn comments_saying(s: &Stack, b: &mut Browser, id: i64, body: &str) -> Vec
         .as_array()
         .unwrap()
         .iter()
-        .filter(|c| c["body"] == body)
+        .filter(|c| c["body"] == paragraph(body))
         .cloned()
         .collect()
+}
+
+/// The AST a one-line comment renders to.
+fn paragraph(text: &str) -> Value {
+    json!([["p", 0, text]])
 }
 
 /// A pull request `b` can see: GitHub's issue endpoints take PRs too, but beghu writes only to
@@ -139,7 +144,7 @@ async fn a_comment_is_on_github_and_in_the_detail_when_the_reply_comes_and_its_e
         .await;
     assert_eq!(status, 200, "{reply}");
     assert_eq!(reply["issue"], id);
-    assert_eq!(reply["comment"]["body"], "Posted from beghu");
+    assert_eq!(reply["comment"]["body"], paragraph("Posted from beghu"));
     assert_eq!(reply["comment"]["author"]["login"], "tomsj");
     // In the mirror before the reply: a read now has it, and the push has gone out.
     let now = comments_saying(&s, &mut b, id, "Posted from beghu").await;
@@ -577,9 +582,11 @@ async fn a_resend_the_server_has_no_record_of_is_lost_and_never_sent_again() {
         err["message"],
         "May or may not have been sent; check the thread"
     );
+    let lost = err;
     let close = json!({ "kind": "close", "issue": id, "reason": "completed" });
     let (_, err) = s.resend(&b, &uuid(), close).await;
     assert_eq!(err["message"], "May or may not have reached GitHub");
+    assert_eq!(err.get("digest"), None, "a close has no Markdown: {err}");
     assert_eq!(s.fail_rules().await[0]["remaining"], 1);
     // And it stays lost: the resend didn't start it.
     let (status, err) = s.resend(&b, &op_id, op.clone()).await;
@@ -589,14 +596,11 @@ async fn a_resend_the_server_has_no_record_of_is_lost_and_never_sent_again() {
         "{err}"
     );
 
-    // The first send did reach GitHub: one comment.
+    // The first send did reach GitHub: one comment, whose digest the lost write named.
     tokio::time::sleep(3 * SECS).await;
-    assert_eq!(
-        comments_saying(&s, &mut b, id, "Across a restart")
-            .await
-            .len(),
-        1
-    );
+    let posted = comments_saying(&s, &mut b, id, "Across a restart").await;
+    assert_eq!(posted.len(), 1);
+    assert_eq!(lost["digest"], posted[0]["digest"], "{lost}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -619,7 +623,7 @@ async fn a_comment_github_keeps_in_its_own_words_is_posted_as_github_keeps_it() 
         .await;
     // GitHub answered 201: the comment is posted, whatever its text came back as.
     assert_eq!(status, 200, "{reply}");
-    assert_eq!(reply["comment"]["body"], "Normalised by GitHub");
+    assert_eq!(reply["comment"]["body"], paragraph("Normalised by GitHub"));
     let shown = comments_saying(&s, &mut b, id, "Normalised by GitHub").await;
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0]["id"], reply["comment"]["id"]);
@@ -688,6 +692,9 @@ async fn a_maybe_posted_comment_names_the_newest_comment_the_mirror_had_as_it_wa
         "{err}"
     );
     assert_eq!(err["after"], reply["comment"]["id"], "{err}");
+    // And the digest of its own Markdown, which the tab compares with the thread's comments
+    // without hashing anything itself.
+    assert_eq!(err["digest"], reply["comment"]["digest"], "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

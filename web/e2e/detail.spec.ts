@@ -193,7 +193,7 @@ test("nothing in the panel moves when a value changes length", async ({ page }) 
       return {
         badge: [badge.left, badge.width],
         ref: box('[data-perf="badge"] + span').left,
-        title: box("h2").top,
+        title: box('[data-perf="title"]').top,
         keys: [...el.querySelectorAll("dt")].map((d) => [d.getBoundingClientRect().left, d.getBoundingClientRect().top]),
         values: [...el.querySelectorAll("dd")].map((d) => d.getBoundingClientRect().left),
         order: box('[data-perf="comment-order"]').left,
@@ -334,7 +334,7 @@ async function watchTitles(page: Page): Promise<() => Promise<string[]>> {
     const w = window as unknown as { titles: string[] };
     w.titles = [];
     const frame = () => {
-      const t = document.querySelector('[data-perf="detail"] h2')?.textContent;
+      const t = document.querySelector('[data-perf="detail"] [data-perf="title"]')?.textContent;
       if (t && w.titles.at(-1) !== t) w.titles.push(t);
       requestAnimationFrame(frame);
     };
@@ -349,7 +349,7 @@ test("a revisit shows the issue as it is now, never what an earlier visit fetche
   const id = await x.getAttribute("data-id");
   await x.click();
   await expect(detail(page)).toHaveAttribute("data-id", id!);
-  const was = (await detail(page).locator("h2").textContent())!;
+  const was = (await detail(page).locator('[data-perf="title"]').textContent())!;
   await y.click();
   await expect(detail(page)).not.toHaveAttribute("data-id", id!);
 
@@ -364,7 +364,7 @@ test("a revisit shows the issue as it is now, never what an earlier visit fetche
   });
   const titles = await watchTitles(page);
   await x.click();
-  await expect(detail(page).locator("h2")).toHaveText("Renamed since the last visit");
+  await expect(detail(page).locator('[data-perf="title"]')).toHaveText("Renamed since the last visit");
   expect(await titles()).not.toContain(was);
 });
 
@@ -414,7 +414,7 @@ test("another view on an open issue's URL forgets what a hover fetched", async (
   await expect(row).toHaveAttribute("href", `/issues/${id}?view=other`);
   const titles = await watchTitles(page);
   await row.click();
-  await expect(detail(page).locator("h2")).toHaveText("Renamed since the hover");
+  await expect(detail(page).locator('[data-perf="title"]')).toHaveText("Renamed since the hover");
   expect(await titles()).not.toContain(was);
 });
 

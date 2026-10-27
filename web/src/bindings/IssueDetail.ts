@@ -3,6 +3,7 @@ import type { CommentOrder } from "./CommentOrder";
 import type { CommentPage } from "./CommentPage";
 import type { Label } from "./Label";
 import type { Milestone } from "./Milestone";
+import type { RefTarget } from "./RefTarget";
 import type { Relationships } from "./Relationships";
 import type { User } from "./User";
 
@@ -12,9 +13,13 @@ export type IssueDetail = { id: number,
  */
 kind: string, owner: string, repo: string, number: number, title: string, 
 /**
- * Raw Markdown.
+ * The body, rendered.
  */
-body: string, 
+body: import("../md/ast").Md, 
+/**
+ * The items in the mirror that the body refers to; `comments.refs` has the comments'.
+ */
+refs: { [key in string]: RefTarget }, 
 /**
  * `open` or `closed`.
  */

@@ -15,7 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { claimBelowTheTop, exclusive, fiveHundreds, shared, type Issue } from "./claims";
+import { claimBelowTheTop, exclusive, fiveHundreds, shared, type Issue, type Row } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -221,6 +221,38 @@ test("a comment shows at once as pending, then confirmed, with no flicker while 
   }
 });
 
+test("a comment's Markdown shows as typed while it's sending, and rendered once GitHub has it", async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
+  // Any other issue in its repo, to refer to.
+  const q = encodeURIComponent(`is:any repo:${issue.repo}`);
+  const { rows } = (await (await page.request.get(`/api/issues?q=${q}`)).json()) as { rows: Row[] };
+  const other = rows.find((r) => r.id !== issue.id && r.owner === issue.owner && r.repo === issue.repo);
+  if (!other) throw new Error(`no other issue in ${issue.owner}/${issue.repo}`);
+  try {
+    await open(page, issue.id);
+    await fake("/faults/latency", { endpoint: COMMENTS(issue), ms: 1500 });
+    const text = unique("Rendered");
+    await box(page).fill(`${text} **bold**, after #${other.number}`);
+    await button(page, "Comment").click();
+
+    // Sending: the text as typed, with nothing parsed in the browser.
+    const mine = commentSaying(page, text);
+    await expect(mine).toContainText("**bold**", { timeout: 200 });
+    // GitHub has it: the server's rendering, its reference in-app.
+    await expect(mine.locator("strong")).toHaveText("bold", { timeout: SHOWS_WITHIN_MS });
+    await expect(mine).not.toContainText("**");
+    const ref = mine.locator("a[data-ref]");
+    await expect(ref).toHaveText(`#${other.number}`);
+    await expect(ref).toHaveAttribute("href", `/issues/${other.id}`);
+    // And the same once the thread's own read shows the comment.
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
+    await expect(mine.locator("strong")).toHaveText("bold");
+    await expect(mine.locator("a[data-ref]")).toHaveAttribute("href", `/issues/${other.id}`);
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
 type Sent = { op_id: string; resend?: boolean };
 
 test("a dropped connection resends the same op_id, and the comment is posted once", async ({ page }) => {
@@ -330,6 +362,59 @@ test("a comment GitHub posted but whose answer was lost finds itself in the thre
   }
 });
 
+/** As on a page served over plain http from a LAN address: no `crypto.subtle` to hash with. */
+async function withoutSubtleCrypto(page: Page): Promise<void> {
+  await page.addInitScript(() => Object.defineProperty(crypto, "subtle", { value: undefined }));
+}
+
+test("without crypto.subtle, a comment GitHub posted but whose answer was lost still finds itself in the thread", async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
+  try {
+    await withoutSubtleCrypto(page);
+    await open(page, issue.id);
+    expect(await page.evaluate(() => crypto.subtle)).toBeUndefined();
+    await fake("/faults/rewrite", { endpoint: COMMENTS(issue), raw: "{" });
+    const text = unique("Posted, unhashed");
+    await box(page).fill(text);
+    await button(page, "Comment").click();
+    const mine = commentSaying(page, text);
+    await expect(mine).toContainText("May have been posted");
+    // The server named its digest: no hashing needed to find it.
+    await expect(mine.filter({ hasText: "May have been posted" })).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
+    await expect(mine).toHaveCount(1);
+    expect(Number(await mine.getAttribute("data-id"))).toBeGreaterThan(0);
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
+test("without crypto.subtle, a write beghu never answered can't look for itself, so it never offers Retry", async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
+  try {
+    await withoutSubtleCrypto(page);
+    await page.clock.install();
+    await open(page, issue.id);
+    await page.route("**/api/ops", (r) => r.abort("connectionreset"));
+    const text = unique("Never answered, unhashed");
+    await box(page).fill(text);
+    await button(page, "Comment").click();
+    const mine = commentSaying(page, text);
+    await page.clock.fastForward("09:10");
+    await expect(mine).toContainText("May or may not have been sent; check the thread");
+    // Past every look in the thread (each scheduled once the last one's read is back): whether it
+    // was posted stays unknown, and Retry could post it twice.
+    for (let i = 0; i < 4; i++) {
+      await page.clock.fastForward("00:03");
+      await page.waitForTimeout(500);
+    }
+    await expect(mine.getByRole("button", { name: "Edit" })).toBeVisible();
+    await expect(mine.getByRole("button", { name: "Discard" })).toBeVisible();
+    await expect(mine.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
 test("a second +1 GitHub fails on never takes the first one for itself: it offers Retry", { tag: "@5xx" }, async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
@@ -360,7 +445,9 @@ test("a maybe-posted comment two newer comments could be stays unsure, with Retr
     const text = unique("Said twice");
     const said = async () => {
       const res = await page.request.get(`/api/issues/${issue.id}/comments?order=newest`);
-      return ((await res.json()) as { comments: { body: string }[] }).comments.filter((c) => c.body === text).length;
+      // A one-line comment renders to one paragraph.
+      const said = JSON.stringify([["p", 0, text]]);
+      return ((await res.json()) as { comments: { body: unknown }[] }).comments.filter((c) => JSON.stringify(c.body) === said).length;
     };
     await fail(COMMENTS(issue), 502);
     await page.route("**/api/ops", async (r) => {

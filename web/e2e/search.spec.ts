@@ -1,12 +1,25 @@
 // Search in a real browser against the ./dev-ctl stack: the hint bar's syntax while the box has
 // focus, the matched-field icons on rows, the Match dropdown and its `match:` token, and the
 // detail marking the words and scrolling to the first match, on opening, on a new search and
-// once comment page 2 brings it. Words come from the fixture's own text, so nothing is edited.
+// once comment page 2 brings it, in rendered Markdown too. Words come from the fixture's own
+// text, so nothing is edited but where a test says so.
 import { expect, test, type Page } from "@playwright/test";
 import type { CommentPage } from "../src/bindings/CommentPage";
 import type { IssueDetail } from "../src/bindings/IssueDetail";
 import type { IssuePage } from "../src/bindings/IssuePage";
 import { matchSpans, searchOf } from "../src/highlight";
+import type { Md, MdNode } from "../src/md/ast";
+
+/** A post's text nodes, as the walker marks them: one by one. */
+function texts(md: Md): string[] {
+  const out: string[] = [];
+  const todo: MdNode[] = [...md];
+  for (let n = todo.pop(); n !== undefined; n = todo.pop()) {
+    if (typeof n === "string") out.push(n);
+    else if (n[0] !== "ref") todo.push(...(n.slice(2) as MdNode[]));
+  }
+  return out;
+}
 
 const q = (page: Page) => new URL(page.url()).searchParams.get("q");
 
@@ -142,11 +155,14 @@ async function matchOnPage2(page: Page): Promise<{ id: number; word: string }> {
     const d = await get<IssueDetail>(`/api/issues/${row.id}`);
     if (d.comments.next === null) continue;
     const more = await get<CommentPage>(`/api/issues/${row.id}/comments?order=${d.comment_order}&after=${d.comments.next}`);
-    const first = d.comments.comments.map((c) => c.body).join("\n");
-    const pairs = more.comments.flatMap((c) => {
-      const w = c.body.toLowerCase().match(/\p{L}+/gu) ?? [];
-      return w.slice(1).map((b, i) => `"${w[i]} ${b}"`);
-    });
+    const first = d.comments.comments.flatMap((c) => texts(c.body)).join("\n");
+    // Phrases within one text node: the walker marks no phrase across two.
+    const pairs = more.comments.flatMap((c) =>
+      texts(c.body).flatMap((t) => {
+        const w = t.toLowerCase().match(/\p{L}+/gu) ?? [];
+        return w.slice(1).map((b, i) => `"${w[i]} ${b}"`);
+      }),
+    );
     for (const word of new Set(pairs)) {
       const terms = searchOf(word).terms;
       if (matchSpans(first, terms).length === 0) return { id: row.id, word };
@@ -185,4 +201,30 @@ test("a new search on the open issue scrolls to its first match", async ({ page 
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/issues/${id}`);
   await expect(detail.locator('[data-perf="match"]').first()).toBeInViewport({ timeout: VIEW_LANDS_WITHIN_MS });
   expect(await detail.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+});
+
+test("the detail marks the search's words inside a rendered body's markup, and scrolls to the first", async ({ page }) => {
+  const list = (await (await page.request.get("/api/issues")).json()) as IssuePage;
+  const t = list.rows[0]!;
+  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+    const res = await route.fetch();
+    const d = await res.json();
+    // Far enough down that the first match starts off screen.
+    d.body = [
+      ...Array.from({ length: 150 }, () => ["p", 0, "filler"]),
+      ["p", 0, "A ", ["strong", 0, "Spinner"], " in bold, ", ["code", 0, "spinner()"], " in code, and ", ["a", { href: "https://example.com" }, "a spinner link"]],
+      ["ul", 0, ["li", 0, "a spinner in a list"]],
+      // A reference's label is never the author's text: never marked.
+      ["p", 0, "the ", ["em", 0, "spinner"], ["ref", { u: "spinner" }]],
+    ];
+    await route.fulfill({ response: res, json: d });
+  });
+  await page.goto(`/issues/${t.id}?q=` + encodeURIComponent("spinner in:body"));
+  const body = page.locator('[data-perf="detail"] [data-perf="body"]');
+  const marks = body.locator('[data-perf="match"]');
+  await expect(marks).toHaveCount(5);
+  for (const m of await marks.allTextContents()) expect(m.toLowerCase()).toBe("spinner");
+  for (const inside of ["strong", "code", "a", "li", "em"]) await expect(body.locator(`${inside} [data-perf="match"]`)).toHaveCount(1);
+  await expect(body.getByRole("link", { name: "@spinner ↗" }).locator('[data-perf="match"]')).toHaveCount(0);
+  await expect(marks.first()).toBeInViewport();
 });

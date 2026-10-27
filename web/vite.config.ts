@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import solid from "@solidjs/vite-plugin";
 import stylex from "@stylexjs/unplugin";
+import { parserIn } from "./markdown-parsers.ts";
 
 const server = process.env.BEGHU_SERVER ?? "http://localhost:3000";
 const proxy = Object.fromEntries(
@@ -180,10 +181,31 @@ function firstLoadInEntry(): { plugin: Plugin; test: (id: string) => boolean } {
   };
 }
 
+/**
+ * Fails the build if any chunk holds a Markdown parser or an HTML sanitiser, or if first-load
+ * JS holds the Markdown code (src/md/), which only the lazily loaded issue panel needs.
+ */
+function noMarkdownParser(): Plugin {
+  return {
+    name: "beghu-no-markdown-parser",
+    apply: "build",
+    generateBundle(_options, bundle) {
+      for (const c of Object.values(bundle)) {
+        if (c.type !== "chunk") continue;
+        const ids = Object.keys(c.modules).map((id) => id.replace(/\\/g, "/"));
+        const parser = ids.map(parserIn).find((p) => p !== undefined);
+        if (parser) this.error(`no-markdown-parser: ${c.fileName} bundles ${parser}: Markdown is rendered on the server`);
+        const md = ids.find((id) => id.includes("/src/md/"));
+        if (c.isEntry && md) this.error(`no-markdown-parser: first-load JS (${c.fileName}) holds ${md}: keep it in the issue panel's chunk`);
+      }
+    },
+  };
+}
+
 const firstLoad = firstLoadInEntry();
 
 export default defineConfig({
-  plugins: [unchangedUpdatesNothing(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin],
+  plugins: [unchangedUpdatesNothing(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser()],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
   // out of first-load JS (see src/no-server-functions.ts). Exact match only, so the router's
   // lazy `…/server-functions/server` import is untouched.

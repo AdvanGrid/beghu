@@ -10,12 +10,15 @@
 //! shifts a page boundary: nothing is skipped or repeated. A comment deleted since its cursor was
 //! handed out still marks where its page ends, as does any other position no comment holds.
 //!
-//! The body goes out as raw Markdown, shown as plain text until rendering lands (#98).
+//! Bodies and comments go out as the compact Markdown AST (markdown.rs), each response with the
+//! `refs` map for the items its posts refer to. A request reads the posts' Markdown, renders it
+//! once the mirror connection is back in the pool (through the cache), and then reads `refs`.
 
 use crate::App;
 use crate::api::{CommentOrder, Label, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
+use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
 use crate::relationships::{self, Relationships};
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
@@ -39,8 +42,11 @@ pub struct IssueDetail {
     pub repo: String,
     pub number: i64,
     pub title: String,
-    /// Raw Markdown.
-    pub body: String,
+    /// The body, rendered.
+    #[ts(type = "import(\"../md/ast\").Md")]
+    pub body: Md,
+    /// The items in the mirror that the body refers to; `comments.refs` has the comments'.
+    pub refs: Refs,
     /// `open` or `closed`.
     pub state: String,
     /// `completed`, `not_planned`, … once closed.
@@ -81,6 +87,8 @@ pub struct Milestone {
 #[ts(export)]
 pub struct CommentPage {
     pub comments: Vec<Comment>,
+    /// The items in the mirror that these comments refer to.
+    pub refs: Refs,
     /// Pass as `after` for the next page: a position, `<created_at>.<id>`. A page's is its last
     /// comment's; `through=`'s is the position it went through. `null` when nothing follows.
     pub next: Option<String>,
@@ -92,8 +100,13 @@ pub struct Comment {
     pub id: i64,
     /// `null` for a deleted GitHub account.
     pub author: Option<User>,
-    /// Raw Markdown.
-    pub body: String,
+    /// The comment, rendered.
+    #[ts(type = "import(\"../md/ast\").Md")]
+    pub body: Md,
+    /// Its digest (the SHA-256 of its Markdown, hex): a tab looking for its own maybe-posted
+    /// comment compares it.
+    #[ts(type = "string")]
+    pub digest: Digest,
     /// Unix seconds.
     pub created_at: i64,
     /// Unix seconds.
@@ -135,15 +148,6 @@ impl FromStr for Cursor {
 impl fmt::Display for Cursor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}.{}", self.created_at, self.id)
-    }
-}
-
-impl From<&Comment> for Cursor {
-    fn from(c: &Comment) -> Cursor {
-        Cursor {
-            created_at: c.created_at,
-            id: c.id,
-        }
     }
 }
 
@@ -208,16 +212,24 @@ pub async fn issue(
                 Err(e) => return Ok(Err(e)),
             };
             Ok(Ok((
-                item,
                 q::hydrate_labels(c, &[id])?,
                 q::hydrate_assignees(c, &[id])?,
-                comments(c, id, order, span)?,
+                thread(c, id, order, span)?,
                 q::comment_total(c, id)?,
                 relationships::for_item(c, id)?,
+                item,
             )))
         })
         .await??;
-    let (item, labels, assignees, comments, comment_total, relationships) = read;
+    let (labels, assignees, thread, comment_total, relationships, mut item) = read;
+    let body = Post {
+        kind: PostKind::Body,
+        id,
+        md: item.body.take().unwrap_or_default(),
+    };
+    let (body, comments) =
+        rendered(&app, s.account, Place::from(&item), Some(body), thread).await?;
+    let (body, refs) = body.expect("a body was given, so one is rendered");
     let milestone = match (item.milestone_title, item.milestone_state) {
         (Some(title), Some(state)) => Some(Milestone {
             title,
@@ -233,7 +245,8 @@ pub async fn issue(
         repo: item.repo,
         number: item.number,
         title: item.title,
-        body: item.body.unwrap_or_default(),
+        body,
+        refs,
         state: item.state,
         state_reason: item.state_reason,
         locked: item.locked,
@@ -277,34 +290,44 @@ pub async fn comments_page(
         Some(a) => Span::After(a.parse()?),
         None => Span::First,
     };
-    let page = app
+    let (place, thread) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
             Ok(match readable(c, id)? {
-                Ok(_) => Ok(comments(c, id, order, span)?),
+                Ok(item) => Ok((Place::from(&item), thread(c, id, order, span)?)),
                 Err(e) => Err(e),
             })
         })
         .await??;
+    let (_, page) = rendered(&app, s.account, place, None, thread).await?;
     Ok(Json(page))
 }
 
+/// A comment as the mirror holds it, its Markdown not rendered yet.
+struct RawComment {
+    id: i64,
+    author: Option<String>,
+    body: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
 /// The comments of `item` matching `filter`, in `order`, at most `limit` (`-1`: all).
-fn thread(
+fn rows(
     c: &Reader,
     item: i64,
     order: CommentOrder,
     filter: &Filter,
     limit: i64,
-) -> QueryResult<Vec<Comment>> {
+) -> QueryResult<Vec<RawComment>> {
     // The two orders are two queries with the same columns: one mapping for both.
-    macro_rules! to_comments {
+    macro_rules! raw {
         ($rows:expr) => {
             $rows
                 .into_iter()
-                .map(|r| Comment {
+                .map(|r| RawComment {
                     id: r.id,
-                    author: r.author.map(|login| User { login }),
+                    author: r.author,
                     body: r.body,
                     created_at: r.created_at,
                     updated_at: r.updated_at,
@@ -313,8 +336,8 @@ fn thread(
         };
     }
     Ok(match order {
-        CommentOrder::Newest => to_comments!(q::comments_newest(c, filter, item, limit)?),
-        CommentOrder::Oldest => to_comments!(q::comments_oldest(c, filter, item, limit)?),
+        CommentOrder::Newest => raw!(q::comments_newest(c, filter, item, limit)?),
+        CommentOrder::Oldest => raw!(q::comments_oldest(c, filter, item, limit)?),
     })
 }
 
@@ -336,38 +359,109 @@ impl CommentOrder {
     }
 }
 
-/// A span of `item`'s thread in `order`.
-fn comments(c: &Reader, item: i64, order: CommentOrder, span: Span) -> QueryResult<CommentPage> {
-    Ok(match span {
+/// A span of a thread as the mirror holds it, and where the next page starts.
+struct RawPage {
+    comments: Vec<RawComment>,
+    next: Option<String>,
+}
+
+/// A span of `item`'s thread in `order`, not rendered yet.
+fn thread(c: &Reader, item: i64, order: CommentOrder, span: Span) -> QueryResult<RawPage> {
+    let position = |r: &RawComment| {
+        Cursor {
+            created_at: r.created_at,
+            id: r.id,
+        }
+        .to_string()
+    };
+    let (comments, next) = match span {
         // One more than a page, to know whether another follows.
         Span::First | Span::After(_) => {
             let filter = match span {
                 Span::After(at) => order.split_at(at).1,
                 _ => Filter::True,
             };
-            let mut rows = thread(c, item, order, &filter, COMMENTS_PAGE + 1)?;
+            let mut rows = rows(c, item, order, &filter, COMMENTS_PAGE + 1)?;
             let more = rows.len() as i64 > COMMENTS_PAGE;
             rows.truncate(COMMENTS_PAGE as usize);
-            let next = rows
-                .last()
-                .filter(|_| more)
-                .map(|r| Cursor::from(r).to_string());
-            CommentPage {
-                comments: rows,
-                next,
-            }
+            let next = rows.last().filter(|_| more).map(position);
+            (rows, next)
         }
         // No page size: every comment up to the position, then a look past it. The thread goes
         // on from the position itself, so paging continues even when no comment is left
         // before it (every loaded one deleted).
         Span::Through(at) => {
             let (through, after) = order.split_at(at);
-            let rows = thread(c, item, order, &through, -1)?;
-            let more = !thread(c, item, order, &after, 1)?.is_empty();
-            CommentPage {
-                comments: rows,
-                next: more.then(|| at.to_string()),
-            }
+            let rows_through = rows(c, item, order, &through, -1)?;
+            let more = !rows(c, item, order, &after, 1)?.is_empty();
+            (rows_through, more.then(|| at.to_string()))
         }
-    })
+    };
+    Ok(RawPage { comments, next })
+}
+
+/// `body` (an issue's, if given) and `page`'s comments rendered, each with the `refs` its posts
+/// need, read from the account's mirror once the rendering is done.
+async fn rendered(
+    app: &App,
+    account: i64,
+    place: Place,
+    body: Option<Post>,
+    page: RawPage,
+) -> Result<(Option<(Md, Refs)>, CommentPage), ApiError> {
+    let has_body = body.is_some();
+    let posts = body
+        .into_iter()
+        .chain(page.comments.iter().map(|r| Post {
+            kind: PostKind::Comment,
+            id: r.id,
+            md: r.body.clone(),
+        }))
+        .collect();
+    let mut posts = markdown::render(app, place, posts).await.into_iter();
+    let body = if has_body { posts.next() } else { None };
+    let comments: Vec<Comment> = page
+        .comments
+        .into_iter()
+        .zip(posts)
+        .map(|(r, p)| Comment {
+            id: r.id,
+            author: r.author.map(|login| User { login }),
+            body: p.md,
+            digest: p.digest,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect();
+    let (body_md, comment_mds): (Option<Md>, Vec<Md>) = (
+        body.map(|b| b.md),
+        comments.iter().map(|c| c.body.clone()).collect(),
+    );
+    let refers = body_md
+        .iter()
+        .chain(&comment_mds)
+        .any(|m| !m.items().is_empty());
+    let (body_refs, comment_refs) = if refers {
+        let ask = (body_md.clone(), comment_mds);
+        app.mirrors()
+            .read(account, Caller::Request, move |c| {
+                let (body, comments) = &ask;
+                Ok((
+                    body.as_ref().map(|b| markdown::refs(c, [b])).transpose()?,
+                    markdown::refs(c, comments)?,
+                ))
+            })
+            .await?
+    } else {
+        // Nothing to look up: no second read.
+        (body_md.as_ref().map(|_| Refs::new()), Refs::new())
+    };
+    Ok((
+        body_md.zip(body_refs),
+        CommentPage {
+            comments,
+            refs: comment_refs,
+            next: page.next,
+        },
+    ))
 }

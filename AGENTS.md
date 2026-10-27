@@ -55,6 +55,10 @@ CI runs all of these; run them before you commit:
   data dir with the 1k fixture), Fake GitHub's own HTTP and control surfaces, and the browser
   (`web/e2e/`, Playwright against the `./dev-ctl` stack). Set state up through Fake GitHub or the
   fixture, never by writing to a mirror directly.
+- **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
+  (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
+  (`crates/md-ast/src/scaling.rs`), and the server's render cache tests (the `tests`
+  module of `crates/server/src/markdown.rs`), which count renders no HTTP answer shows.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
 

@@ -25,6 +25,14 @@ import { LOST_MESSAGE } from "./bindings/lostMessage";
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply };
 export type { IssueRow } from "./bindings/IssueRow";
 
+/** A `refs` map: what the mirror holds of the items some posts refer to. */
+export type Refs = IssueDetail["refs"];
+
+/** `refs` maps of posts shown together, as one; where two read the same item, the later wins. */
+export function mergeRefs(...maps: Refs[]): Refs {
+  return Object.assign({}, ...maps) as Refs;
+}
+
 /** beghu can't be reached: offline, or the server is down. */
 export class Unreachable extends Error {}
 /** No session, or it ended: the user must sign in. */
@@ -88,7 +96,15 @@ export class GitHubDown extends Error {}
  * The write may or may not have reached GitHub: beghu has no record of it (it restarted, or
  * forgot it), or didn't answer its resends for 9 minutes, so it was never sent again.
  */
-export class Lost extends Error {}
+export class Lost extends Error {
+  constructor(
+    message: string,
+    /** For a comment, if beghu said: its Markdown's digest (see `ErrorBody`). */
+    readonly digest?: string,
+  ) {
+    super(message);
+  }
+}
 /**
  * GitHub failed on a comment, answered it with a 2xx beghu couldn't read, or didn't answer: it may
  * have been posted all the same.
@@ -98,6 +114,8 @@ export class MaybePosted extends Error {
     message: string,
     /** Only a comment with a greater id can be it (see `ErrorBody`), if beghu said. */
     readonly after?: number,
+    /** Its Markdown's digest (see `ErrorBody`), if beghu said. */
+    readonly digest?: string,
   ) {
     super(message);
   }
@@ -141,9 +159,9 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
     case "github_down":
       return new GitHubDown(said);
     case "lost":
-      return new Lost(said);
+      return new Lost(said, body.digest);
     case "maybe_posted":
-      return new MaybePosted(said, body.after);
+      return new MaybePosted(said, body.after, body.digest);
     case undefined:
       break;
     default:

@@ -1,6 +1,7 @@
 //! How a failed API request answers: a status, a JSON body naming the failure kind (the client
 //! maps it to its named error classes), and `retry-after` when trying again later will work.
 
+use crate::markdown::Digest;
 use crate::ops::OpKind;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -41,15 +42,19 @@ pub enum ApiError {
     /// A write that couldn't reach GitHub: it's down, or kept failing.
     GitHubDown(String),
     /// A resent write the server has no record of: it restarted, or forgot it. The first send
-    /// may or may not have reached GitHub. `kind`: what the write was.
+    /// may or may not have reached GitHub. `kind`: what the write was. `digest`: a comment's, as
+    /// in [`ErrorBody::digest`].
     Lost {
         kind: OpKind,
+        digest: Option<Digest>,
     },
     /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or didn't answer: it
     /// may have been posted. `after`: the newest comment id the mirror held on the issue as it
-    /// was sent; only a comment with a greater id can be it.
+    /// was sent; only a comment with a greater id can be it. `digest`: as in
+    /// [`ErrorBody::digest`].
     MaybePosted {
         after: i64,
+        digest: Option<Digest>,
     },
 }
 
@@ -68,6 +73,13 @@ pub struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub after: Option<i64>,
+    /// With `maybe_posted` or `lost` for a comment: the comment's digest (the SHA-256 of its
+    /// Markdown, hex), as a thread's comments carry theirs (`Comment.digest`). The tab compares
+    /// it with them to find the comment, without hashing anything itself (a page on plain http
+    /// has no `crypto.subtle`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub digest: Option<Digest>,
 }
 
 /// An issue beghu doesn't hold, named well enough to link out to it on GitHub.
@@ -159,7 +171,7 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (mut retry_after, mut issue, mut after) = (None, None, None);
+        let (mut retry_after, mut issue, mut after, mut digest) = (None, None, None, None);
         let (status, kind, message) = match self {
             ApiError::SignedOut => (
                 StatusCode::UNAUTHORIZED,
@@ -205,13 +217,20 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(m) => (StatusCode::CONFLICT, ErrorKind::Conflict, m),
             ApiError::GitHubDown(m) => (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::GithubDown, m),
             // These two are the words the tab shows: it says what the write was.
-            ApiError::Lost { kind } => (
-                StatusCode::GONE,
-                ErrorKind::Lost,
-                kind.lost_message().to_owned(),
-            ),
-            ApiError::MaybePosted { after: a } => {
+            ApiError::Lost { kind, digest: d } => {
+                digest = d;
+                (
+                    StatusCode::GONE,
+                    ErrorKind::Lost,
+                    kind.lost_message().to_owned(),
+                )
+            }
+            ApiError::MaybePosted {
+                after: a,
+                digest: d,
+            } => {
                 after = Some(a);
+                digest = d;
                 (
                     StatusCode::FAILED_DEPENDENCY,
                     ErrorKind::MaybePosted,
@@ -234,6 +253,7 @@ impl IntoResponse for ApiError {
                 message,
                 issue,
                 after,
+                digest,
             }),
         )
             .into_response();

@@ -4,7 +4,7 @@
 // word matches the start of a word, a quoted phrase its words in a row, case folded and Latin
 // letters' diacritics too. Words split where the index splits them, at anything that isn't a
 // letter or a digit.
-// Plain text until Markdown rendering lands (#98); its walker will mark the same spans.
+// The Markdown walker marks them in posts, text node by text node (md/walker.ts).
 import type { SearchField } from "./bindings/SearchField";
 import { tokenize, wordOf } from "./query";
 

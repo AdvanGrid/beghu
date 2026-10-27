@@ -12,8 +12,11 @@ base64 = "0.22"
 control-db = { workspace = true }
 dbrt = { workspace = true }
 futures-util = { version = "0.3", default-features = false }
+# The rendered-Markdown cache's LRU order: already in the build through rusqlite.
+hashlink = "0.12"
 hkdf = "0.12"
 hmac = "0.12"
+md-ast = { path = "../md-ast" }
 mirror-db = { workspace = true }
 rand = "0.9"
 reqwest = { workspace = true, features = ["rustls-tls"] }
@@ -21,7 +24,8 @@ reqwest = { workspace = true, features = ["rustls-tls"] }
 ring = "0.17"
 rusqlite = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# `raw_value`: a cached post goes out as the JSON it was stored as.
+serde_json = { workspace = true, features = ["raw_value"] }
 serde_urlencoded = "0.7"
 sha2 = "0.10"
 tokio = { workspace = true, features = ["net", "signal"] }

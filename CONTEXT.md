@@ -52,6 +52,22 @@ _Avoid_: Dropped write, orphaned op
 A comment GitHub may have posted though beghu can't confirm it: GitHub answered with a 5xx or an answer beghu couldn't read, or didn't answer at all. It's never sent again on its own. It looks for itself in the thread, among the comments newer than any it could be confused with: exactly one by the same account with its text, and it shows as posted; none, or more than one, and it offers Retry.
 _Avoid_: Unconfirmed comment, ghost comment
 
+**Post**:
+An issue's or PR's body, or one of its comments: Markdown written on GitHub, which beghu renders on the server and sends as a compact tree, never as HTML.
+_Avoid_: Message, entry, content
+
+**Place**:
+The issue or PR a post belongs to, which is all its rendering depends on besides its text: a bare `#n` in it means an issue in that repo, and its relative links resolve against that issue's page on GitHub.
+_Avoid_: Context, location
+
+**Ref**:
+An issue, PR, comment, user or team a post refers to (`#12`, `acme/web#12`, a link to an issue, `@ilze-k`, `@acme/core`), which links when shown. Beside a post goes its refs map: what the viewer's mirror holds of the issues and PRs it refers to, which open in-app with their state; every other ref links to GitHub.
+_Avoid_: Mention (for issues), link, cross-reference
+
+**Digest**:
+The SHA-256 of a post's Markdown. A comment's digest is how a maybe-posted or lost comment finds itself in the thread without the thread carrying every comment's text.
+_Avoid_: Hash, checksum, fingerprint
+
 **Fake GitHub**:
 A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fixture, answers the API calls beghu makes, signs in fixture users and sends webhooks back, with latency and failures set at runtime. Never used in production.
 _Avoid_: Mock GitHub, GitHub stub, stand-in

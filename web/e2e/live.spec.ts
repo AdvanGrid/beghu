@@ -381,7 +381,7 @@ async function watchTitles(page: Page): Promise<() => Promise<string[]>> {
     const w = window as unknown as { titles: string[] };
     w.titles = [];
     const frame = () => {
-      const t = document.querySelector('[data-perf="detail"] h2')?.textContent;
+      const t = document.querySelector('[data-perf="detail"] [data-perf="title"]')?.textContent;
       if (t && w.titles.at(-1) !== t) w.titles.push(t);
       requestAnimationFrame(frame);
     };
@@ -498,7 +498,7 @@ test("a push naming a hovered issue makes its click read it afresh", async ({ pa
   await expect(row).toContainText(title, { timeout: SHOWS_WITHIN_MS });
   const titles = await watchTitles(page);
   await row.click();
-  await expect(detail(page).locator("h2")).toHaveText(title);
+  await expect(detail(page).locator('[data-perf="title"]')).toHaveText(title);
   expect(await titles()).not.toContain(was);
 });
 
@@ -534,6 +534,6 @@ test("a hover read still on its way when a push names its issue is never shown",
   await page.waitForTimeout(6_000);
   const titles = await watchTitles(page);
   await row.click();
-  await expect(detail(page).locator("h2")).toHaveText(title);
+  await expect(detail(page).locator('[data-perf="title"]')).toHaveText(title);
   expect(await titles()).not.toContain(was);
 });

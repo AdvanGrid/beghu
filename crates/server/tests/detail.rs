@@ -98,7 +98,7 @@ async fn the_detail_holds_the_issues_properties_body_and_newest_15_comments() {
     ] {
         assert_eq!(d[key], row[key], "{key}");
     }
-    assert!(!d["body"].as_str().unwrap().is_empty());
+    assert!(!d["body"].as_array().unwrap().is_empty(), "the body's AST");
     assert!(d["author"]["login"].is_string(), "{}", d["author"]);
     assert!(d["created_at"].as_i64().unwrap() <= d["updated_at"].as_i64().unwrap());
     assert!(
@@ -120,7 +120,10 @@ async fn the_detail_holds_the_issues_properties_body_and_newest_15_comments() {
     );
     let c = &page[0];
     assert!(c["author"]["login"].is_string());
-    assert!(!c["body"].as_str().unwrap().is_empty());
+    assert!(
+        !c["body"].as_array().unwrap().is_empty(),
+        "the comment's AST"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

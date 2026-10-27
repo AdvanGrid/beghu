@@ -21,6 +21,7 @@ import {
   getComments,
   getIssue,
   issueId,
+  mergeRefs,
   readAt,
   readBefore,
   refetchIssue,
@@ -35,11 +36,14 @@ import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
 import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
-import { matchSpans, searchOf, type Term } from "./highlight";
+import { searchOf, type Term } from "./highlight";
 import { coalesced, onPush, resetAt } from "./live";
-import { overlay, type ShownComment } from "./overlay";
+import { overlay, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
 import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
+import { Markdown } from "./md/Markdown";
+import { marked } from "./md/walker";
+import type { Links } from "./md/links";
 import { IssueNotice, resetOnChange } from "./Root";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
@@ -278,7 +282,8 @@ function Detail(props: { id: number; search: string }) {
       const now = d();
       // Only onto the end it was asked for: a refetch may have replaced the thread meanwhile.
       if (now.id !== have.id || now.comments.next !== after) return;
-      setD(stamp({ ...now, comments: { comments: merge(now.comments.comments, page.comments), next: page.next } }, readAt(now)));
+      const comments = { comments: merge(now.comments.comments, page.comments), next: page.next, refs: mergeRefs(now.comments.refs, page.refs) };
+      setD(stamp({ ...now, comments }, readAt(now)));
     } catch (e) {
       // A failed page never replaces what's on screen; the next scroll asks again.
       if (e instanceof SessionEnded) signIn();
@@ -322,7 +327,11 @@ function Detail(props: { id: number; search: string }) {
       stamp(
         {
           ...fresh,
-          comments: { comments: merge(got, tail), next: tail.length > 0 ? now.comments.next : fresh.comments.next },
+          comments: {
+            comments: merge(got, tail),
+            next: tail.length > 0 ? now.comments.next : fresh.comments.next,
+            refs: tail.length > 0 ? mergeRefs(now.comments.refs, fresh.comments.refs) : fresh.comments.refs,
+          },
         },
         readAt(fresh),
       ),
@@ -402,7 +411,8 @@ function merge(have: Comment[], more: Comment[]): Comment[] {
  * undefined for none.
  */
 function scrollToMatch(scroller: HTMLDivElement): number | undefined {
-  const mark = scroller.querySelector("mark");
+  // The walker's marks only: a post may have `<mark>`s of its own.
+  const mark = scroller.querySelector('mark[data-perf="match"]');
   if (!mark) return undefined;
   const box = mark.getBoundingClientRect();
   const view = scroller.getBoundingClientRect();
@@ -411,32 +421,10 @@ function scrollToMatch(scroller: HTMLDivElement): number | undefined {
   return NaN;
 }
 
-/** `text`, with the spans the search's terms match marked. */
-function Marked(props: { text: string; terms: Term[] }) {
-  const parts = createMemo(() => {
-    const spans = matchSpans(props.text, props.terms);
-    if (spans.length === 0) return [props.text];
-    const out: Element[] = [];
-    let at = 0;
-    for (const [start, end] of spans) {
-      if (start > at) out.push(props.text.slice(at, start));
-      out.push(
-        <mark data-perf="match" {...stylex.attrs(s.mark)}>
-          {props.text.slice(start, end)}
-        </mark>,
-      );
-      at = end;
-    }
-    if (at < props.text.length) out.push(props.text.slice(at));
-    return out;
-  });
-  return <>{parts()}</>;
-}
-
 function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivElement) => void; onScroll: () => void }) {
   /** When the detail's read began: the tab's writes show over anything older. */
   const at = () => readAt(props.d);
-  const d = createMemo(() => overlay()?.detailWithWrites(props.d, at()) ?? props.d);
+  const d = createMemo((): ShownDetail => overlay()?.detailWithWrites(props.d, at()) ?? props.d);
   // The writes code learns which read the detail shows, so it can drop the writes it has caught
   // up with.
   createEffect(
@@ -470,8 +458,8 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           </a>
         </div>
         <ParentCrumb rels={d().relationships} search={props.search} />
-        <h2 {...stylex.attrs(s.title)}>
-          <Marked text={d().title} terms={terms("title")} />
+        <h2 {...stylex.attrs(s.title)} data-perf="title">
+          {marked(d().title, terms("title"))}
         </h2>
         <dl {...stylex.attrs(s.props)}>
           <dt {...stylex.attrs(s.key)}>Assignees</dt>
@@ -508,10 +496,9 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         <Byline author={d().author} top>
           opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
         </Byline>
-        {/* Plain text until Markdown rendering lands (#98). */}
         <div {...stylex.attrs(s.text, s.body)} data-perf="body">
-          <Show when={d().body.trim()} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
-            <Marked text={d().body} terms={terms("body")} />
+          <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
+            <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
           </Show>
         </div>
         <SubIssues rels={d().relationships} search={props.search} />
@@ -521,7 +508,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </h3>
         <div data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>
-            {(c) => <CommentView c={c()} at={at()} terms={terms("comments")} />}
+            {(c) => <CommentView c={c()} at={at()} links={links(d(), d().comments.refs, props.search)} terms={terms("comments")} />}
           </For>
         </div>
         <Show when={d().comments.next !== null}>
@@ -553,16 +540,28 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   );
 }
 
-function CommentView(props: { c: ShownComment; at: number; terms: Term[] }) {
+/** What the links in `d`'s posts resolve against: their place, the list's view, and `refs`. */
+function links(d: Pick<IssueDetail, "owner" | "repo" | "number">, refs: IssueDetail["refs"], search: string): Links {
+  return { place: { owner: d.owner, repo: d.repo, number: d.number }, search, refs: (key) => refs[key] };
+}
+
+function CommentView(props: { c: ShownComment; at: number; links: Links; terms: Term[] }) {
+  const body = () => ("body" in props.c ? props.c.body : undefined);
+  const typed = () => ("typed" in props.c ? props.c.typed : undefined);
   return (
-    <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id} data-op={props.c.op}>
+    <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id} data-comment-id={props.c.id} data-op={props.c.op}>
       <Byline author={props.c.author}>
         <Ago at={props.c.created_at} />
         <Show when={props.c.op}>{(op) => <Dynamic component={overlay()?.CommentNote} op={op()} at={props.at} />}</Show>
       </Byline>
-      <div {...stylex.attrs(s.text)}>
-        <Marked text={props.c.body} terms={props.terms} />
-      </div>
+      {/* A comment GitHub hasn't confirmed has no AST yet: its text shows as typed. */}
+      <Show when={body()} fallback={<div {...stylex.attrs(s.text, s.plain)}>{marked(typed() ?? "", props.terms)}</div>}>
+        {(md) => (
+          <div {...stylex.attrs(s.text)}>
+            <Markdown md={md()} links={props.links} terms={props.terms} />
+          </div>
+        )}
+      </Show>
     </article>
   );
 }
@@ -677,12 +676,6 @@ function writeWidth(px: number | undefined) {
 const BADGE_TEXT: Record<IssueState, string> = { open: "Open", done: "Closed", notPlanned: "Not planned" };
 
 const s = stylex.create({
-  // A search's match in the text.
-  mark: {
-    borderRadius: 2,
-    backgroundColor: colors.mark,
-    color: "inherit",
-  },
   divider: {
     backgroundColor: {
       default: colors.line,
@@ -840,8 +833,11 @@ const s = stylex.create({
   },
   text: {
     overflowWrap: "anywhere",
-    whiteSpace: "pre-wrap",
     paddingTop: 6,
+  },
+  // A comment's text as typed, before GitHub confirms it.
+  plain: {
+    whiteSpace: "pre-wrap",
   },
   body: {
     paddingInline: 16,

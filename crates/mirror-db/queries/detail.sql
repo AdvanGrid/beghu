@@ -72,3 +72,18 @@ LIMIT :limit;
 -- param: created_at i64
 -- param: id i64
 (c.created_at, c.id) <= (:created_at, :id)
+
+-- The items in the account's synced repos that a body or comment refers to, for the detail's
+-- `refs` map. `refs` is a JSON array of `[owner, repo, number]`, as written: GitHub's names are
+-- case-insensitive. A stub, or an item in a repo the account doesn't sync, isn't one: those link
+-- out to GitHub.
+-- name: referenced_items :many
+-- param: refs &str
+SELECT r.owner AS "owner!: String", r.name AS "repo!: String", i.number AS "number!: i64",
+       i.id AS "id!: i64", i.kind AS "kind!: String", i.title AS "title!: String",
+       i.state AS "state!: String", i.state_reason AS "state_reason?: String"
+FROM json_each(:refs) j
+JOIN repos r ON r.owner = json_extract(j.value, '$[0]') COLLATE NOCASE
+            AND r.name = json_extract(j.value, '$[1]') COLLATE NOCASE
+JOIN items i ON i.repo_id = r.id AND i.number = json_extract(j.value, '$[2]')
+WHERE r.synced = 1 AND i.is_stub = 0;

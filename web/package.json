@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "e2e": "playwright test",
-    "test:lint": "node --test eslint-rules.test.js"
+    "test:lint": "node --test eslint-rules.test.js markdown-parsers.test.ts"
   },
   "dependencies": {
     "@solidjs/router": "2.0.0-next.41",

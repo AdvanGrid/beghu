@@ -101,6 +101,47 @@ from a `POST /markdown` render of every feature (`github/probe.md` → `probe.ht
 | Mermaid, math | no | `<section class="js-render-needs-enrichment" data-src=…viewscreen…>`, `<math-renderer>`; both need GitHub's JS | not v1: show the source as a code block |
 | Per-repo custom autolinks | no | configured per repo (autolinked references doc) | not v1; a local renderer can't know about them |
 
+**Mentions: GitHub's patterns [source].** github.com's own mention filters are private; their
+public descendants are html-pipeline's `MentionFilter` and `TeamMentionFilter` (v2.14.3,
+[`lib/html/pipeline/@mention_filter.rb:42-58`](https://github.com/gjtorikian/html-pipeline/blob/v2.14.3/lib/html/pipeline/%40mention_filter.rb#L42-L58),
+[`@team_mention_filter.rb:41-47`](https://github.com/gjtorikian/html-pipeline/blob/v2.14.3/lib/html/pipeline/%40team_mention_filter.rb#L41-L47)).
+Both skip text inside `pre`, `code`, `a`, `style` and `script`. A user, with `UsernamePattern`
+`/[a-z0-9][a-z0-9-]*/` as `key`:
+
+```ruby
+/
+  (?:^|\W)                    # beginning of string or non-word char
+  @((?>#{key}))               # @username
+  (?!\/)                      # without a trailing slash
+  (?=
+    \.+[ \t\W]|               # dots followed by space or non-word character
+    \.+$|                     # dots at end of line
+    [^0-9a-zA-Z_.]|           # non-word character except dot
+    $                         # end of line
+  )
+/ix
+```
+
+A team:
+
+```ruby
+/
+  (?<=^|\W)                  # beginning of string or non-word char
+  @([a-z0-9][a-z0-9-]*)      # @organization
+    \/                       # dividing slash
+    ([a-z0-9][a-z0-9\-_]*)   # team
+    \b
+/ix
+```
+
+What follows for beghu's pass (`crates/md-ast/src/refs.rs`) **[inferred]**: the atomic group
+takes every hyphen, so `@ilze-` is no mention (not `@ilze`), and `@acme-/core` is neither a user
+(the slash) nor, since no login ends with a hyphen, a team; dots then a word end nothing
+(`@ilze.k`), while `@ilze.` is `@ilze`; a team's name gives back trailing hyphens to reach `\b`
+(`@acme/core-` is `@acme/core`). Where beghu differs: it links a mention whether or not the user
+exists (GitHub checks), and it reads Enterprise Managed Users' logins (`handle_shortcode`),
+which the public pattern predates.
+
 **References: synced repo vs stub [inferred].**
 - The renderer emits a reference node, `["ref", {o, r, n}]` for an issue or `["ref", {u}]` for a
   user. It doesn't emit a finished link, because the target depends on mirror state that changes
@@ -166,8 +207,29 @@ markdown-rs claims "100% GFM" (`markdown-1.0.0/README.md:18-21`) **[source]**.
 | micromark + gfm | 747 ms | 0.57 MB/s |
 | mdast + gfm → hast | 726 ms | 0.59 MB/s |
 
-So on the server comrak + ammonia render the 12 KB a detail response carries in well under 1 ms.
-Rendering per request instead of storing the output is cheap **[inferred from measured]**.
+This section first concluded that "comrak + ammonia render the 12 KB a detail response carries
+in well under 1 ms". That holds for the two alone on this corpus, but not for the renderer beghu
+built: with its allowlist, the tree and AST passes and the bounds, and on the inputs that cost
+most, it's several times slower. Measured through `md_ast::render`, release build, best of 5
+**[measured, #98]**:
+
+| Input | Time |
+|---|---|
+| The 13 docs in `docs/research/` (301 KB of Markdown) | 64 ms (4.7 MB/s) |
+| 12 KB of them, a detail's worth | 2.7 ms |
+| 64 KB of them | 15 ms |
+| A 4-column table of 1,110 rows (20 KB) | 38 ms |
+| A 4-column table of 3,500 rows (64 KB), before the bounds | 124–180 ms |
+| The same table now: past the bounds, so plain text | 0.06 ms |
+
+Tables cost the most per byte, and before #98 nothing bounded them, nor nesting: 10,000 nested
+`<details>` took 1.7 s in ammonia alone (html5ever's tree builder is quadratic in depth), and 16,000
+nested `>` 0.3 s in comrak. A debug build is about 13× slower: in the dev stack, a detail with 11
+posts of 1,000-row tables took 5.6 s to open the first time.
+
+So rendering per request is not cheap enough on its own: beghu renders each post once and caches
+it (crates/server/src/markdown.rs), and bounds what a post may cost (crates/md-ast/src/bounds.rs).
+The same detail opened again took 33 ms, debug build, from the cache.
 
 **Sanitisation.**
 - **Server.** ammonia 4.2.4 (html5ever-based) has an allowlist builder. It adds
@@ -381,8 +443,10 @@ StyleX classes.**
 2. **Render per request** in the detail handler with comrak 0.57. Turn on `table`,
    `strikethrough`, `autolink`, `tasklist`, `footnotes` and `alerts`, plus `render.gfm_quirks`.
    Turn on `render.unsafe` and let ammonia own the raw-HTML allowlist, modelled on html-pipeline's.
-   This costs well under 1 ms per detail. An optional cache keyed by (comment id, `updated_at`,
-   renderer version) is easy, because nothing in the output depends on mirror state.
+   This costs about 3 ms for a 12 KB detail and up to tens of ms for a large table (see the
+   measurements above), so cache the AST keyed by (post kind, id, renderer version, place,
+   digest of the Markdown): nothing in the output depends on mirror state, nor on the post's
+   `updated_at` (the digest changes with its text).
 3. **Run the post-passes on the AST.**
    - `#n` / `owner/repo#n` / issue URLs → `ref` nodes, with links resolved on the client against
      the account's synced repos (in-app route vs GitHub link + stub).
@@ -419,8 +483,7 @@ StyleX classes.**
 - **Task-list toggling** in v1. It needs comrak's `sourcepos` in the AST to rewrite the right line,
   plus the body-edit conflict rule from #54.
 - **References.** Check existence in the mirror for synced repos (GitHub leaves nonexistent numbers
-  as plain text)? Should `@user` link to github.com or to an in-app "by author" view? Team mentions
-  are unhandled.
+  as plain text)? Should `@user` link to github.com or to an in-app "by author" view?
 - **Highlight languages.** Is #54's ten-language set enough? The corpus also had python, cpp, toml
   and Caddyfile, and 47% of fenced blocks had no language. Chunk per language or one bundle?
 - **Laptop check.** Re-measure render time on the i5-1135G7 laptop. This host was loaded, and the

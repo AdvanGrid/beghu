@@ -37,6 +37,7 @@ use crate::detail::Comment;
 use crate::error::ApiError;
 use crate::github::{Access, Role};
 use crate::live::Push;
+use crate::markdown::{self, Digest, Place, Post, PostKind, Refs};
 use crate::{App, github, repos, tokens, webhook};
 use axum::Json;
 use axum::extract::{Extension, State};
@@ -155,6 +156,15 @@ impl Op {
         self.kind() == OpKind::Comment
     }
 
+    /// A comment's digest, which goes with a failure that may have posted it (see
+    /// [`ErrorBody::digest`](crate::error::ErrorBody::digest)).
+    fn digest(&self) -> Option<Digest> {
+        match self {
+            Op::Comment { body, .. } => Some(Digest::of(body)),
+            Op::Close { .. } | Op::Reopen { .. } => None,
+        }
+    }
+
     /// Whether a 5xx, timeout or reset is tried again: not for a comment, which GitHub may have
     /// posted before failing.
     fn retries(&self) -> bool {
@@ -184,6 +194,8 @@ pub struct OpReply {
     pub issue: i64,
     /// A comment op's comment, as the thread will show it.
     pub comment: Option<Comment>,
+    /// The items in the mirror that the comment refers to.
+    pub refs: Refs,
 }
 
 /// How a write ended: kept for resends, so it's cloneable (unlike [`ApiError`]).
@@ -198,9 +210,10 @@ enum Failure {
     /// GitHub answered 403: [`run`] words it as a [`Failure::Refused`] from the role.
     Forbidden,
     /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or not at all: it may
-    /// have been posted. `after`: as in [`ApiError::MaybePosted`].
+    /// have been posted. `after` and `digest`: as in [`ApiError::MaybePosted`].
     MaybePosted {
         after: i64,
+        digest: Option<Digest>,
     },
     /// The drain stopped the jobs before the write's token could be refreshed: nothing was sent.
     Restarting,
@@ -217,7 +230,7 @@ impl From<Failure> for ApiError {
             Failure::RateLimited(retry_after) => ApiError::RateLimited { retry_after },
             Failure::Conflict(m) => ApiError::Conflict(m),
             Failure::GitHubDown(m) => ApiError::GitHubDown(m),
-            Failure::MaybePosted { after } => ApiError::MaybePosted { after },
+            Failure::MaybePosted { after, digest } => ApiError::MaybePosted { after, digest },
             Failure::Restarting => ApiError::restarting(),
             Failure::Internal(m) => ApiError::Internal(m),
         }
@@ -311,7 +324,10 @@ impl Ops {
             return Ok(s.outcome.clone());
         }
         if resend {
-            return Err(ApiError::Lost { kind: op.kind() });
+            return Err(ApiError::Lost {
+                kind: op.kind(),
+                digest: op.digest(),
+            });
         }
         if app.draining() {
             return Err(ApiError::Unavailable {
@@ -341,7 +357,10 @@ impl Ops {
             issue,
             turn,
             comment: op.is_comment(),
-            sending: Sending::default(),
+            sending: Sending {
+                digest: op.digest(),
+                ..Sending::default()
+            },
             tx,
             _done: done,
         };
@@ -407,12 +426,11 @@ struct End {
 impl Drop for End {
     fn drop(&mut self) {
         let maybe_posted = self.comment && self.sending.sent.load(Ordering::SeqCst);
-        let after = self.sending.after();
         self.tx.send_if_modified(|o| {
             o.is_none()
                 .then(|| {
                     *o = Some(Err(if maybe_posted {
-                        Failure::MaybePosted { after }
+                        self.sending.maybe_posted()
                     } else {
                         Failure::Internal("the write's task ended without an outcome".into())
                     }));
@@ -437,11 +455,17 @@ struct Sending {
     sent: AtomicBool,
     /// For a comment: the newest comment id the mirror held on the issue as the call went out.
     after: AtomicI64,
+    /// For a comment: its digest ([`Op::digest`]).
+    digest: Option<Digest>,
 }
 
 impl Sending {
-    fn after(&self) -> i64 {
-        self.after.load(Ordering::SeqCst)
+    /// The comment may have been posted.
+    fn maybe_posted(&self) -> Failure {
+        Failure::MaybePosted {
+            after: self.after.load(Ordering::SeqCst),
+            digest: self.digest,
+        }
     }
 }
 
@@ -542,7 +566,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             json!({ "state": "open" }),
         ),
     };
-    let place = Place {
+    let on = IssueRepo {
         repo_id: target.repo_id,
         owner: target.owner.clone(),
         repo: target.repo.clone(),
@@ -560,9 +584,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
     }
     let answer = match call(app, account, op, method, &path, &body, sending).await {
         Err(Failure::Forbidden) => {
-            return Err(Failure::Refused(
-                refused_why(app, account, &place, op).await,
-            ));
+            return Err(Failure::Refused(refused_why(app, account, &on, op).await));
         }
         answer => answer?,
     };
@@ -574,27 +596,51 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             // GitHub posted it, but an answer beghu can't read doesn't say as what.
             let c: webhook::Comment = serde_json::from_value(answer).map_err(|e| {
                 eprintln!("ops: account {account}: GitHub's 2xx for a comment: {e}");
-                Failure::MaybePosted {
-                    after: sending.after(),
-                }
+                sending.maybe_posted()
             })?;
-            let reply = OpReply {
-                issue: id,
-                comment: Some(Comment {
-                    id: c.id,
-                    author: c.user.as_ref().map(|u| User {
-                        login: u.login.clone(),
-                    }),
-                    body: c.body.clone(),
-                    created_at: c.created_at.as_deref().map_or(0, webhook::time),
-                    updated_at: webhook::time(&c.updated_at),
-                }),
-            };
+            let (comment_id, md) = (c.id, c.body.clone());
+            let author = c.user.as_ref().map(|u| User {
+                login: u.login.clone(),
+            });
+            let created_at = c.created_at.as_deref().map_or(0, webhook::time);
+            let updated_at = webhook::time(&c.updated_at);
             store(app, account, id, move |tx, seq| {
                 webhook::write_comment(tx, id, &c, seq)
             })
             .await;
-            Ok(reply)
+            let post = Post {
+                kind: PostKind::Comment,
+                id: comment_id,
+                md,
+            };
+            // Posted and stored: rendered, or as plain text if that failed, never a failure.
+            let rendered = markdown::render(app, Place::from(&target), vec![post])
+                .await
+                .remove(0);
+            let comment = Comment {
+                id: comment_id,
+                author,
+                body: rendered.md,
+                digest: rendered.digest,
+                created_at,
+                updated_at,
+            };
+            // Which of its references the mirror holds; none if that can't be read now (the
+            // thread's refetch reads them again).
+            let ask = comment.body.clone();
+            let refs = app
+                .mirrors()
+                .read(account, Caller::Request, move |c| markdown::refs(c, [&ask]))
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("ops: account {account}: the refs of comment {comment_id}: {e}");
+                    Refs::new()
+                });
+            Ok(OpReply {
+                issue: id,
+                comment: Some(comment),
+                refs,
+            })
         }
         Op::Close { .. } | Op::Reopen { .. } => {
             let issue: webhook::Issue = serde_json::from_value(answer)
@@ -611,13 +657,12 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             })
             .await;
             if !applied {
-                return Err(Failure::Refused(
-                    refused_why(app, account, &place, op).await,
-                ));
+                return Err(Failure::Refused(refused_why(app, account, &on, op).await));
             }
             Ok(OpReply {
                 issue: id,
                 comment: None,
+                refs: Refs::new(),
             })
         }
     }
@@ -635,9 +680,7 @@ async fn call(
 ) -> Result<serde_json::Value, Failure> {
     let mut retries = if op.retries() { &RETRIES[..] } else { &[] }.iter();
     let mut quiet_waits = 0;
-    let maybe_posted = || Failure::MaybePosted {
-        after: sending.after(),
-    };
+    let maybe_posted = || sending.maybe_posted();
     loop {
         let gh = app.github().clone();
         let answer = app
@@ -701,7 +744,7 @@ async fn call(
 
 /// The repo an op's issue is in, and whether the account opened the issue.
 #[derive(Clone)]
-struct Place {
+struct IssueRepo {
     repo_id: i64,
     owner: String,
     repo: String,
@@ -721,7 +764,7 @@ fn allows(role: Role, op: &Op, own: bool) -> bool {
 /// on the repo, re-read from GitHub at once and stored for the next write and the next
 /// `/api/me`. Only the wait for it is bounded (by [`REREAD_WAIT`]): a slower re-read is still
 /// stored when it comes. Just the reason: the tab says what couldn't be done.
-async fn refused_why(app: &App, account: i64, at: &Place, op: &Op) -> String {
+async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String {
     // The repo by its bare name, as the user knows it.
     let repo = &at.repo;
     let reread = {
@@ -753,7 +796,7 @@ async fn refused_why(app: &App, account: i64, at: &Place, op: &Op) -> String {
 
 /// The account's access to `at`'s repo, from GitHub now; a known role is written to the
 /// mirror. With no access, a full re-read of its repos follows, to stop syncing the repo.
-async fn reread_role(app: &App, account: i64, at: &Place) -> Result<Access, String> {
+async fn reread_role(app: &App, account: i64, at: &IssueRepo) -> Result<Access, String> {
     let gh = app.github().clone();
     let access = app
         .tokens()

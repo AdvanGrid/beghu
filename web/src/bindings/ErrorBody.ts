@@ -14,4 +14,11 @@ issue?: IssueRef,
  * With `maybe_posted`: the newest comment id the mirror held on the issue as the comment
  * was sent. Only a comment with a greater id can be it.
  */
-after?: number, };
+after?: number, 
+/**
+ * With `maybe_posted` or `lost` for a comment: the comment's digest (the SHA-256 of its
+ * Markdown, hex), as a thread's comments carry theirs (`Comment.digest`). The tab compares
+ * it with them to find the comment, without hashing anything itself (a page on plain http
+ * has no `crypto.subtle`).
+ */
+digest?: string, };

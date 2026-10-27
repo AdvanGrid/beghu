@@ -20,7 +20,10 @@
 //   comment (GitHub failed on it, answered it unreadably or didn't answer) may have reached GitHub
 //   all the same, and say so. Such a comment looks for itself in the thread: one comment by the
 //   same account with its text, newer than any it could be confused with, settles it as posted;
-//   none, or more than one, and it offers Retry. Until then it offers only Edit.
+//   none, or more than one, and it offers Retry. Until then it offers only Edit. It knows its text
+//   by its digest, which the server sends with the failure; failing that (a write the server never
+//   answered) the tab hashes it, and where it can't (no `crypto.subtle` on plain http) whether it
+//   was posted stays unknown: it never offers Retry, which could post it twice.
 //
 // Leaving the page asks first only while there's unsaved text: a draft, or a comment not sent.
 import * as stylex from "@stylexjs/stylex";
@@ -41,14 +44,14 @@ import {
   issueId,
   sendOp,
   signIn,
-  type Comment,
+  mergeRefs,
   type IssueDetail,
   type IssueRow,
   type Op,
   type OpReply,
 } from "./api";
 import { githubDown, reconnecting, refetchShown } from "./live";
-import { setOverlay, type ShownComment } from "./overlay";
+import { setOverlay, type ShownComment, type ShownDetail } from "./overlay";
 import { colors } from "./tokens.stylex";
 
 // --- the pending writes --------------------------------------------------------------------------
@@ -73,6 +76,8 @@ interface Pending {
   /** A comment that may have been posted has looked for itself in the thread, and didn't find
    * itself there as one comment. */
   looked?: boolean;
+  /** A comment that may have been posted can't look for itself: it has no digest to look with. */
+  unknowable?: boolean;
   /** No answer for 15 s. */
   slow: boolean;
   /** When the confirmation came (`performance.now()`): reads that began after it show the write. */
@@ -182,24 +187,47 @@ function confirm(id: string, reply: OpReply): void {
  * (which can't be told apart), and it offers Retry.
  */
 async function lookInThread(id: string): Promise<void> {
+  const first = find(id);
+  if (first?.phase !== "failed" || first.op.kind !== "comment") return;
+  const e = first.error;
+  const digest = (e instanceof MaybePosted || e instanceof Lost ? e.digest : undefined) ?? (await sha256(first.op.body));
+  if (digest === undefined) {
+    if (find(id)?.phase === "failed") patch(id, { unknowable: true });
+    return;
+  }
   let waited = 0;
   for (const at of LOOK_AFTER_MS) {
     await new Promise((r) => setTimeout(r, at - waited));
     waited = at;
     const p = find(id);
     if (p?.phase !== "failed" || p.op.kind !== "comment") return;
-    const { issue, body } = p.op;
+    const { issue } = p.op;
     const after = (p.error instanceof MaybePosted ? p.error.after : undefined) ?? p.seen;
     try {
       const page = await getComments(issue, "newest");
-      const could = page.comments.filter((c) => c.id > after && !claimed.has(c.id) && c.author?.login === p.author && c.body === body);
-      if (could.length === 1) return confirm(id, { issue, comment: could[0]! });
+      const could = page.comments.filter((c) => c.id > after && !claimed.has(c.id) && c.author?.login === p.author && c.digest === digest);
+      if (could.length === 1) return confirm(id, { issue, comment: could[0]!, refs: page.refs });
       if (could.length > 1) break;
     } catch {
       // The next look, or Retry.
     }
   }
   if (find(id)?.phase === "failed") patch(id, { looked: true });
+}
+
+/**
+ * The digest of `text` (its SHA-256, hex), as each comment in a thread carries its own
+ * (`Comment.digest`); or undefined where the page can't hash (`crypto.subtle` is only there in a
+ * secure context).
+ */
+async function sha256(text: string): Promise<string | undefined> {
+  if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) return undefined;
+  try {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return undefined;
+  }
 }
 
 /** Sends a failed write again, as a new op: the server remembers the old one's failure. */
@@ -254,28 +282,37 @@ function detailShown(issue: number, at: number): void {
   sweep();
 }
 
-function detailWithWrites(d: IssueDetail, at: number): IssueDetail {
+function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
   for (const c of d.comments.comments) if (c.id > (newestSeen.get(d.id) ?? 0)) newestSeen.set(d.id, c.id);
   const out = withState(d, at);
   const real = new Set(d.comments.comments.map((c) => c.id));
   const mine: ShownComment[] = [];
+  let refs = d.comments.refs;
   for (const p of ops()) {
     if (p.op.kind !== "comment" || p.op.issue !== d.id) continue;
     // Once the thread has the real comment, it shows instead, whatever the read's age.
     const confirmed = p.reply?.comment;
     if (confirmed && real.has(confirmed.id)) continue;
     if (p.phase !== "failed" && !shows(p, at)) continue;
-    mine.push({ ...pendingComment(p), op: p.id });
+    mine.push(pendingComment(p));
+    if (p.reply) refs = mergeRefs(refs, p.reply.refs);
   }
   if (mine.length === 0) return out;
   const comments: ShownComment[] =
     d.comment_order === "newest" ? [...mine.reverse(), ...d.comments.comments] : [...d.comments.comments, ...mine];
-  return { ...out, comments: { ...d.comments, comments } };
+  return { ...out, comments: { ...d.comments, comments, refs } };
 }
 
-function pendingComment(p: Pending): Comment {
-  const body = p.op.kind === "comment" ? p.op.body : "";
-  return { id: p.commentId, author: { login: p.author }, body, created_at: p.createdAt, updated_at: p.createdAt };
+/**
+ * A comment write as the thread shows it. Once GitHub has it, the server's reply carries it
+ * rendered, so it shows as it will in the thread; until then (sending, or failed) its text shows
+ * as typed: the browser has no Markdown parser.
+ */
+function pendingComment(p: Pending): ShownComment {
+  const confirmed = p.reply?.comment;
+  if (confirmed) return { ...confirmed, id: p.commentId, op: p.id };
+  const typed = p.op.kind === "comment" ? p.op.body : "";
+  return { op: p.id, id: p.commentId, author: { login: p.author }, typed, created_at: p.createdAt, updated_at: p.createdAt };
 }
 
 // Text the tab would lose: a draft, or a comment GitHub never got.
@@ -307,7 +344,7 @@ function howFailed(p: Pending): { unsure: boolean; why: string; retry: boolean }
     e instanceof Conflict ||
     e instanceof GitHubDown ||
     e instanceof Unreachable;
-  const retry = e instanceof Refused ? e.retry : !(unsure && p.op.kind === "comment" && !p.looked);
+  const retry = e instanceof Refused ? e.retry : !(unsure && p.op.kind === "comment" && (!p.looked || p.unknowable));
   return { unsure, why: known ? e.message : "Something went wrong", retry };
 }
 
@@ -502,7 +539,7 @@ function Banner() {
  * as not planned from its menu) or Reopen. While GitHub is unreachable, Comment, Close and
  * Reopen are disabled and the text stays. A button stays disabled while its write is pending.
  */
-export function Composer(props: { d: IssueDetail }) {
+export function Composer(props: { d: ShownDetail }) {
   const me = createMemo(() => getMe());
   const issue = () => props.d.id;
   const ref = () => `${props.d.repo}#${props.d.number}`;

@@ -1,0 +1,18 @@
+[package]
+name = "md-ast"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Markdown to beghu's compact AST: comrak, then ammonia, then the reference and footnote passes."
+
+[dependencies]
+ammonia = "4.2"
+comrak = { version = "0.57", default-features = false }
+html5ever = "0.40"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+
+[lints]
+workspace = true

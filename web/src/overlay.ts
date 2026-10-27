@@ -5,9 +5,21 @@
 // it came.
 import { createSignal, type Element } from "solid-js";
 import type { Comment, IssueDetail, IssueRow } from "./api";
+import type { User } from "./bindings/User";
 
-/** A comment as the thread shows it: a pending or failed write's comment carries its `op_id`. */
-export type ShownComment = Comment & { op?: string };
+/**
+ * A comment as the thread shows it: as the server rendered it (a write's comment GitHub has
+ * carries the write's `op_id`), or a pending or failed write's comment GitHub doesn't have, which
+ * shows its text as typed, plain.
+ */
+export type ShownComment =
+  | (Comment & { op?: string })
+  | { op: string; id: number; author: User; typed: string; created_at: number; updated_at: number };
+
+/** The detail as it shows, the tab's pending comments among its own. */
+export type ShownDetail = Omit<IssueDetail, "comments"> & {
+  comments: Omit<IssueDetail["comments"], "comments"> & { comments: ShownComment[] };
+};
 
 export interface Overlay {
   /** A list row with the tab's pending writes on it; `at` is when its page's read began. */
@@ -15,7 +27,7 @@ export interface Overlay {
   /** The list now shows a page whose read began at `at`. */
   listShown(at: number): void;
   /** The detail with the tab's pending writes on it; its comments are `ShownComment`s. Pure. */
-  detailWithWrites(d: IssueDetail, at: number): IssueDetail;
+  detailWithWrites(d: IssueDetail, at: number): ShownDetail;
   /** The detail of `issue` now shows a read that began at `at`. */
   detailShown(issue: number, at: number): void;
   /** The status slot's content. */

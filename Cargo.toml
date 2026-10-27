@@ -8,6 +8,7 @@ members = [
   "crates/fake-db",
   "crates/fake-github",
   "crates/server",
+  "crates/md-ast",
   "perf/fixture",
 ]
 # The benchmark candidates are throwaway projects with their own manifests.
@@ -37,6 +38,25 @@ fixture = { path = "perf/fixture" }
 
 # SQLite's C at -O0 makes debug tests and fixture generation several times slower.
 [profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Markdown rendering at -O0 is several times slower: a thread page the bounds let through in tens
+# of milliseconds would take seconds on the dev stack, and tests that wait on one time out. To step
+# through md-ast in a debugger, build it unoptimised for the session:
+# `CARGO_PROFILE_DEV_PACKAGE_MD_AST_OPT_LEVEL=0 cargo test -p md-ast` (or `cargo build`).
+[profile.dev.package.md-ast]
+opt-level = 3
+
+[profile.dev.package.comrak]
+opt-level = 3
+
+[profile.dev.package.ammonia]
+opt-level = 3
+
+[profile.dev.package.html5ever]
+opt-level = 3
+
+[profile.dev.package.markup5ever]
 opt-level = 3
 
 [workspace.lints.clippy]

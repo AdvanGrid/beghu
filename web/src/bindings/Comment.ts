@@ -7,9 +7,14 @@ export type Comment = { id: number,
  */
 author: User | null, 
 /**
- * Raw Markdown.
+ * The comment, rendered.
  */
-body: string, 
+body: import("../md/ast").Md, 
+/**
+ * Its digest (the SHA-256 of its Markdown, hex): a tab looking for its own maybe-posted
+ * comment compares it.
+ */
+digest: string, 
 /**
  * Unix seconds.
  */
