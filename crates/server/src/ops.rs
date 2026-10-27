@@ -1,10 +1,12 @@
 //! Writes: `POST /api/ops` with `{op_id, op}`. Each op is one GitHub call, made with the user's
-//! token in a task of its own, so a client that goes away mid-write doesn't cancel it. A close or
-//! reopen's answer is compared with the request field by field (a comment's 201 is enough: GitHub
-//! may keep its text its own way). GitHub's answer is written to the mirror on the account's
+//! token in a task of its own, so a client that goes away mid-write doesn't cancel it. Every
+//! answer but a comment's is compared with the request field by field (a comment's 201 is enough:
+//! GitHub may keep its text its own way), since GitHub answers some refusals with a 2xx that
+//! changed nothing. GitHub's answer is written to the mirror on the account's
 //! writer lane (which pushes the issue's id to its tabs), and only then is the reply sent: a
-//! fetch the tab starts after the reply sees the change. The webhook GitHub sends back for the
-//! write meets the `updated_at` guard and changes nothing more.
+//! fetch the tab starts after the reply sees the change. GitHub's answer carries the issue with
+//! its `updated_at` (a label write's doesn't, so the issue is read after it, one GET), so the
+//! webhook GitHub sends back for the write finds it in place and is a no-op.
 //!
 //! - `(account, op_id)` is remembered for [`REMEMBER`]: a resend joins the call in flight or gets
 //!   its stored outcome, and never makes a second GitHub call.
@@ -14,12 +16,16 @@
 //!   is forgotten.
 //! - A rate limit that lifts within [`QUIET_WAIT`] is waited out quietly; a longer one fails with
 //!   "try again in N s".
+//! - A label removal GitHub answers 404 "Label does not exist" is done: the label is off the
+//!   issue, which is what was asked (a retry after a 5xx that GitHub had acted on meets this).
+//!   Any other 404 (GitHub's "Not Found": the issue or repo is out of sight), or a 410, is Gone.
 //! - 5xx answers, timeouts and resets are tried again after 1 s and then 3 s, except for a
 //!   comment, which is never sent twice: GitHub may have posted it before failing, and the
 //!   failure says so ("maybe posted").
 //! - A refusal, or a close or reopen GitHub didn't apply, re-reads the account's role on that
 //!   repo at once and says why in its terms.
 //! - Only issues take writes: a PR, a stub or an issue outside the synced repos is refused.
+//! - A label is added only by a name the mirror's repo has (GitHub would create one it lacks).
 //! - While GitHub is down (see `github.rs`) a write fails at once, without a call.
 //!
 //! - A comment that may have been posted says which comments can be it: those newer than the
@@ -34,6 +40,7 @@
 use crate::api::User;
 use crate::auth::Session;
 use crate::detail::Comment;
+use crate::edges::{ReadBack, Subject};
 use crate::error::ApiError;
 use crate::github::{Access, Role};
 use crate::live::Push;
@@ -78,6 +85,16 @@ pub enum Op {
     Close { issue: i64, reason: CloseReason },
     /// Reopen the issue.
     Reopen { issue: i64 },
+    /// Add one of the repo's labels, by name, to the issue.
+    LabelAdd { issue: i64, label: String },
+    /// Take a label, by name, off the issue.
+    LabelRemove { issue: i64, label: String },
+    /// Assign a user, by login.
+    AssigneeAdd { issue: i64, login: String },
+    /// Unassign a user, by login.
+    AssigneeRemove { issue: i64, login: String },
+    /// Put the issue in one of the repo's milestones, by its number, or in none (`null`).
+    MilestoneSet { issue: i64, milestone: Option<i64> },
 }
 
 #[derive(Deserialize, Serialize, TS, Clone, Copy, PartialEq, Debug)]
@@ -123,6 +140,11 @@ pub enum OpKind {
     Comment,
     Close,
     Reopen,
+    LabelAdd,
+    LabelRemove,
+    AssigneeAdd,
+    AssigneeRemove,
+    MilestoneSet,
 }
 
 impl OpKind {
@@ -132,7 +154,13 @@ impl OpKind {
     pub fn lost_message(self) -> &'static str {
         match self {
             OpKind::Comment => "May or may not have been sent; check the thread",
-            OpKind::Close | OpKind::Reopen => "May or may not have reached GitHub",
+            OpKind::Close
+            | OpKind::Reopen
+            | OpKind::LabelAdd
+            | OpKind::LabelRemove
+            | OpKind::AssigneeAdd
+            | OpKind::AssigneeRemove
+            | OpKind::MilestoneSet => "May or may not have reached GitHub",
         }
     }
 }
@@ -140,7 +168,14 @@ impl OpKind {
 impl Op {
     fn issue(&self) -> i64 {
         match self {
-            Op::Comment { issue, .. } | Op::Close { issue, .. } | Op::Reopen { issue } => *issue,
+            Op::Comment { issue, .. }
+            | Op::Close { issue, .. }
+            | Op::Reopen { issue }
+            | Op::LabelAdd { issue, .. }
+            | Op::LabelRemove { issue, .. }
+            | Op::AssigneeAdd { issue, .. }
+            | Op::AssigneeRemove { issue, .. }
+            | Op::MilestoneSet { issue, .. } => *issue,
         }
     }
 
@@ -149,6 +184,11 @@ impl Op {
             Op::Comment { .. } => OpKind::Comment,
             Op::Close { .. } => OpKind::Close,
             Op::Reopen { .. } => OpKind::Reopen,
+            Op::LabelAdd { .. } => OpKind::LabelAdd,
+            Op::LabelRemove { .. } => OpKind::LabelRemove,
+            Op::AssigneeAdd { .. } => OpKind::AssigneeAdd,
+            Op::AssigneeRemove { .. } => OpKind::AssigneeRemove,
+            Op::MilestoneSet { .. } => OpKind::MilestoneSet,
         }
     }
 
@@ -161,14 +201,37 @@ impl Op {
     fn digest(&self) -> Option<Digest> {
         match self {
             Op::Comment { body, .. } => Some(Digest::of(body)),
-            Op::Close { .. } | Op::Reopen { .. } => None,
+            Op::Close { .. }
+            | Op::Reopen { .. }
+            | Op::LabelAdd { .. }
+            | Op::LabelRemove { .. }
+            | Op::AssigneeAdd { .. }
+            | Op::AssigneeRemove { .. }
+            | Op::MilestoneSet { .. } => None,
         }
     }
 
     /// Whether a 5xx, timeout or reset is tried again: not for a comment, which GitHub may have
-    /// posted before failing.
+    /// posted before failing. Every other op leaves the issue as it asks however often it's made.
     fn retries(&self) -> bool {
         !self.is_comment()
+    }
+
+    /// What the op names besides its issue that must not be blank: a label or a login.
+    fn blank_name(&self) -> Option<&'static str> {
+        match self {
+            Op::LabelAdd { label, .. } | Op::LabelRemove { label, .. }
+                if label.trim().is_empty() =>
+            {
+                Some("a label needs a name")
+            }
+            Op::AssigneeAdd { login, .. } | Op::AssigneeRemove { login, .. }
+                if login.trim().is_empty() =>
+            {
+                Some("an assignee needs a login")
+            }
+            _ => None,
+        }
     }
 }
 
@@ -209,6 +272,8 @@ enum Failure {
     GitHubDown(String),
     /// GitHub answered 403: [`run`] words it as a [`Failure::Refused`] from the role.
     Forbidden,
+    /// GitHub answered a label removal 404 "Label does not exist": [`run`] takes it as done.
+    NoSuchLabel,
     /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or not at all: it may
     /// have been posted. `after` and `digest`: as in [`ApiError::MaybePosted`].
     MaybePosted {
@@ -217,13 +282,18 @@ enum Failure {
     },
     /// The drain stopped the jobs before the write's token could be refreshed: nothing was sent.
     Restarting,
+    /// A mirror said to try again later (at its connection cap, or migrating): nothing was sent.
+    Unavailable {
+        retry_after: Duration,
+        why: String,
+    },
     Internal(String),
 }
 
 impl From<Failure> for ApiError {
     fn from(f: Failure) -> ApiError {
         match f {
-            Failure::Gone => ApiError::Gone,
+            Failure::Gone | Failure::NoSuchLabel => ApiError::Gone,
             Failure::SignedOut => ApiError::SignedOut,
             Failure::Refused(m) => ApiError::Refused(m),
             Failure::Forbidden => ApiError::Refused("GitHub didn't apply this change".into()),
@@ -232,7 +302,24 @@ impl From<Failure> for ApiError {
             Failure::GitHubDown(m) => ApiError::GitHubDown(m),
             Failure::MaybePosted { after, digest } => ApiError::MaybePosted { after, digest },
             Failure::Restarting => ApiError::restarting(),
+            Failure::Unavailable { retry_after, why } => ApiError::Unavailable { retry_after, why },
             Failure::Internal(m) => ApiError::Internal(m),
+        }
+    }
+}
+
+impl From<dbrt::Error> for Failure {
+    /// A mirror read the drain's seal refused (it can't open a mirror any more): beghu is
+    /// restarting, and nothing was sent. One that says to try again later is a 503 with
+    /// `retry-after`, as `From<dbrt::Error> for ApiError` makes it.
+    fn from(e: dbrt::Error) -> Failure {
+        match (&e, e.retry_after()) {
+            (dbrt::Error::Sealed, _) => Failure::Restarting,
+            (_, Some(retry_after)) => Failure::Unavailable {
+                retry_after,
+                why: e.to_string(),
+            },
+            _ => Failure::Internal(e.to_string()),
         }
     }
 }
@@ -338,7 +425,7 @@ impl Ops {
         make_room(&mut book.seen, account)?;
         let (tx, rx) = watch::channel(None);
         book.seen.insert(
-            key,
+            key.clone(),
             Seen {
                 op: op.clone(),
                 at: Instant::now(),
@@ -375,6 +462,11 @@ impl Ops {
             let outcome = run(&end.app, account, &op, &end.sending).await;
             if let Err(f) = &outcome {
                 eprintln!("ops: account {account}: {op:?} failed: {f:?}");
+            }
+            if let Err(Failure::Unavailable { .. }) = &outcome {
+                // Nothing was sent: the tab's resend after `retry-after` starts it afresh, rather
+                // than being answered the same 503.
+                end.app.ops().book().seen.remove(&key);
             }
             let _ = end.tx.send(Some(outcome));
         });
@@ -481,6 +573,9 @@ pub async fn post(
             "op_id must be a UUID, like crypto.randomUUID() makes".into(),
         ));
     }
+    if let Some(why) = req.op.blank_name() {
+        return Err(ApiError::BadRequest(why.into()));
+    }
     if let Op::Comment { body, .. } = &req.op
         && body.trim().is_empty()
     {
@@ -528,7 +623,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
         .mirrors()
         .read(account, Caller::Request, move |c| q::op_target(c, id))
         .await
-        .map_err(|e| Failure::Internal(e.to_string()))?
+        .map_err(Failure::from)?
         .ok_or(Failure::Gone)?;
     if target.is_stub || !target.synced {
         return Err(Failure::Refused(
@@ -565,6 +660,50 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             issue_path,
             json!({ "state": "open" }),
         ),
+        // GitHub creates a label it's asked to add by a name the repo doesn't have: a name the
+        // tab read before a rename would make a second label. Only a label the mirror has is
+        // added, by the name the mirror has for it.
+        Op::LabelAdd { label, .. } => {
+            let (repo, name) = (target.repo_id, label.clone());
+            let named = app
+                .mirrors()
+                .read(account, Caller::Request, move |c| {
+                    q::repo_label_named(c, repo, &name)
+                })
+                .await
+                .map_err(Failure::from)?
+                .ok_or_else(|| {
+                    Failure::Refused(format!(
+                        "{} has no label called {label}; it may have been renamed or deleted",
+                        target.repo
+                    ))
+                })?;
+            (
+                reqwest::Method::POST,
+                format!("{issue_path}/labels"),
+                json!({ "labels": [named.name] }),
+            )
+        }
+        Op::LabelRemove { label, .. } => (
+            reqwest::Method::DELETE,
+            format!("{issue_path}/labels/{}", path_segment(label)),
+            serde_json::Value::Null,
+        ),
+        Op::AssigneeAdd { login, .. } => (
+            reqwest::Method::POST,
+            format!("{issue_path}/assignees"),
+            json!({ "assignees": [login] }),
+        ),
+        Op::AssigneeRemove { login, .. } => (
+            reqwest::Method::DELETE,
+            format!("{issue_path}/assignees"),
+            json!({ "assignees": [login] }),
+        ),
+        Op::MilestoneSet { milestone, .. } => (
+            reqwest::Method::PATCH,
+            issue_path,
+            json!({ "milestone": milestone }),
+        ),
     };
     let on = IssueRepo {
         repo_id: target.repo_id,
@@ -579,13 +718,15 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 q::newest_comment_id(c, id)
             })
             .await
-            .map_err(|e| Failure::Internal(e.to_string()))?;
+            .map_err(Failure::from)?;
         sending.after.store(after, Ordering::SeqCst);
     }
     let answer = match call(app, account, op, method, &path, &body, sending).await {
         Err(Failure::Forbidden) => {
             return Err(Failure::Refused(refused_why(app, account, &on, op).await));
         }
+        // The label isn't on the issue: what the removal asked for.
+        Err(Failure::NoSuchLabel) => serde_json::json!([]),
         answer => answer?,
     };
     let repo = target.repo_id;
@@ -604,7 +745,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             });
             let created_at = c.created_at.as_deref().map_or(0, webhook::time);
             let updated_at = webhook::time(&c.updated_at);
-            store(app, account, id, move |tx, seq| {
+            store(app, account, &target, move |tx, seq| {
                 webhook::write_comment(tx, id, &c, seq)
             })
             .await;
@@ -642,17 +783,57 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 refs,
             })
         }
-        Op::Close { .. } | Op::Reopen { .. } => {
+        // GitHub answers with the labels the issue has afterwards, but not the issue's
+        // `updated_at`. The change asked for is written at once (a newer change by someone else
+        // may be in the mirror already); then the issue is read, one GET, and written as GitHub
+        // has it, so the `labeled` or `unlabeled` delivery that follows finds itself in place.
+        Op::LabelAdd { label, .. } | Op::LabelRemove { label, .. } => {
+            let labels: Vec<webhook::Label> = serde_json::from_value(answer)
+                .map_err(|e| Failure::Internal(format!("GitHub's labels: {e}")))?;
+            let has = labels.iter().find(|l| l.name.eq_ignore_ascii_case(label));
+            let add = matches!(op, Op::LabelAdd { .. });
+            if add != has.is_some() {
+                return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+            }
+            let (label, has) = (label.clone(), has.cloned());
+            store(app, account, &target, move |tx, seq| match has {
+                Some(l) => webhook::link_label(tx, repo, id, &l, seq),
+                None => webhook::unlink_label(tx, repo, id, &label, seq),
+            })
+            .await;
+            read_back(app, account, &target).await;
+            Ok(OpReply {
+                issue: id,
+                comment: None,
+                refs: Refs::new(),
+            })
+        }
+        Op::Close { .. }
+        | Op::Reopen { .. }
+        | Op::AssigneeAdd { .. }
+        | Op::AssigneeRemove { .. }
+        | Op::MilestoneSet { .. } => {
             let issue: webhook::Issue = serde_json::from_value(answer)
                 .map_err(|e| Failure::Internal(format!("GitHub's issue: {e}")))?;
+            let assigned = |login: &str| {
+                issue
+                    .assignees
+                    .iter()
+                    .any(|u| u.login.eq_ignore_ascii_case(login))
+            };
             let applied = match op {
                 Op::Close { reason, .. } => {
                     issue.state == "closed"
                         && issue.state_reason.as_deref() == Some(reason.github())
                 }
+                Op::AssigneeAdd { login, .. } => assigned(login),
+                Op::AssigneeRemove { login, .. } => !assigned(login),
+                Op::MilestoneSet { milestone, .. } => {
+                    issue.milestone.as_ref().map(|m| m.number) == *milestone
+                }
                 _ => issue.state == "open",
             };
-            store(app, account, id, move |tx, seq| {
+            store(app, account, &target, move |tx, seq| {
                 webhook::write_issue(tx, repo, &issue, seq)
             })
             .await;
@@ -726,7 +907,13 @@ async fn call(
             // A 401 with the token the refresh brought: the grant is gone.
             github::Error::Unauthorized => return Err(Failure::SignedOut),
             github::Error::Status(403) => return Err(Failure::Forbidden),
-            github::Error::Status(404 | 410) => return Err(Failure::Gone),
+            // A label the issue doesn't have; any other 404 is out of sight.
+            github::Error::NoSuchLabel if matches!(op, Op::LabelRemove { .. }) => {
+                return Err(Failure::NoSuchLabel);
+            }
+            github::Error::NoSuchLabel | github::Error::Status(404 | 410) => {
+                return Err(Failure::Gone);
+            }
             github::Error::Status(409) => {
                 return Err(Failure::Conflict(
                     "GitHub reported a conflict; try again".into(),
@@ -752,11 +939,19 @@ struct IssueRepo {
 }
 
 /// Whether `role` allows `op` on an issue the account opened (`own`) or not: anyone can
-/// comment; Triage and up close and reopen any issue, Read only its own.
+/// comment; Triage and up close and reopen any issue, Read only its own; labels, assignees and
+/// the milestone take Triage, even on the account's own issue.
+///
+/// The roles rule module (#106) takes this over, with the archived and locked flags.
 fn allows(role: Role, op: &Op, own: bool) -> bool {
     match op {
         Op::Comment { .. } => true,
         Op::Close { .. } | Op::Reopen { .. } => own || role >= Role::Triage,
+        Op::LabelAdd { .. }
+        | Op::LabelRemove { .. }
+        | Op::AssigneeAdd { .. }
+        | Op::AssigneeRemove { .. }
+        | Op::MilestoneSet { .. } => role >= Role::Triage,
     }
 }
 
@@ -776,10 +971,13 @@ async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String
         Ok(Ok(Some(Ok(Access::Role(role))))) if allows(role, op, at.own) => {
             "GitHub didn't apply this change".into()
         }
-        Ok(Ok(Some(Ok(Access::Role(role))))) => format!(
-            "you have {} on {repo}, which closes or reopens only issues you opened",
-            role.name()
-        ),
+        Ok(Ok(Some(Ok(Access::Role(role))))) => match op {
+            Op::Close { .. } | Op::Reopen { .. } => format!(
+                "you have {} on {repo}, which closes or reopens only issues you opened",
+                role.name()
+            ),
+            _ => format!("you have {} on {repo}", role.name()),
+        },
         Ok(Ok(Some(Ok(Access::None)))) => format!("you no longer have access to {repo}"),
         Ok(Ok(Some(Ok(Access::Unknown)))) | Ok(Ok(None)) => unknown(),
         Ok(Ok(Some(Err(e)))) => {
@@ -824,22 +1022,112 @@ async fn reread_role(app: &App, account: i64, at: &IssueRepo) -> Result<Access, 
     Ok(access)
 }
 
-/// Writes GitHub's answer to the mirror and pushes the issue's id if a row changed. A failed
-/// write is logged, not failed: GitHub has the change, and its webhook brings it to the mirror.
-async fn store<F>(app: &App, account: i64, id: i64, write: F)
+/// `s` as one segment of a URL path: everything but unreserved characters percent-encoded, so a
+/// label called `needs review/ui` stays one segment.
+fn path_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Reads the op's issue from GitHub with the user's token and writes it as GitHub has it. A
+/// failure is logged, not failed: GitHub has the change, and the mirror has it too.
+async fn read_back(app: &App, account: i64, t: &q::OpTargetRow) {
+    let gh = app.github().clone();
+    let read = app
+        .tokens()
+        .with_token(account, |token| {
+            let (gh, owner, repo) = (gh.clone(), t.owner.clone(), t.repo.clone());
+            let number = t.number;
+            async move { gh.issue(&token, &owner, &repo, number).await }
+        })
+        .await;
+    let (id, repo) = (t.id, t.repo_id);
+    match read {
+        Ok(Some(issue)) if issue.id() == id => {
+            store(app, account, t, move |tx, seq| {
+                webhook::write_issue(tx, repo, &issue, seq)
+            })
+            .await;
+        }
+        Ok(_) => eprintln!("ops: account {account}: issue {id} is gone from GitHub"),
+        Err(e) => eprintln!("ops: account {account}: reading issue {id} back: {e}"),
+    }
+}
+
+/// Writes GitHub's answer to the mirror and pushes the issue's id if a row changed. An answer
+/// that overwrote a row of its own second saying otherwise has the issue read again once the
+/// second has settled (see `webhook::write_issue`). A failed write is logged, not failed: GitHub
+/// has the change, and its webhook brings it to the mirror.
+async fn store<F, R>(app: &App, account: i64, t: &q::OpTargetRow, write: F)
 where
-    F: FnOnce(&rusqlite::Transaction, i64) -> rusqlite::Result<bool> + Send + 'static,
+    F: FnOnce(&rusqlite::Transaction, i64) -> rusqlite::Result<R> + Send + 'static,
+    R: Into<webhook::Wrote> + Send + 'static,
 {
-    match app.mirrors().write(account, Caller::Request, write).await {
-        Ok(true) => app.hub().publish(account, Push::Ids(Arc::from([id]))),
-        Ok(false) => {}
-        Err(e) => eprintln!("ops: account {account}: writing issue {id} to the mirror: {e}"),
+    let id = t.id;
+    let wrote = app
+        .mirrors()
+        .write(account, Caller::Request, move |tx, seq| {
+            write(tx, seq).map(Into::into)
+        })
+        .await;
+    let w: webhook::Wrote = match wrote {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("ops: account {account}: writing issue {id} to the mirror: {e}");
+            return;
+        }
+    };
+    if w.changed {
+        app.hub().publish(account, Push::Ids(Arc::from([id])));
+    }
+    if !w.reread {
+        return;
+    }
+    match t.installation_id {
+        Some(installation) => drop(app.edges().schedule(
+            Subject {
+                id,
+                node_id: t.node_id.clone(),
+                number: t.number,
+                repo: t.repo_id,
+                installation,
+            },
+            ReadBack::Issue,
+            false,
+        )),
+        None => eprintln!(
+            "ops: account {account}: issue {id}'s repo names no installation; it can't be read again"
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::OpKind;
+    use super::{Failure, OpKind};
+    use crate::error::ApiError;
+    use std::time::Duration;
+
+    /// A mirror at its connection cap, or still migrating, fails a write's read as the routes
+    /// do: 503 with `retry-after`, for the tab to try again, not an internal error.
+    #[test]
+    fn a_mirror_saying_try_again_later_is_a_503_with_retry_after() {
+        let e = dbrt::Error::Unavailable {
+            retry_after: Duration::from_secs(3),
+            reason: dbrt::Unavailable::AtCapacity,
+        };
+        match ApiError::from(Failure::from(e)) {
+            ApiError::Unavailable { retry_after, .. } => {
+                assert_eq!(retry_after, Duration::from_secs(3));
+            }
+            other => panic!("not a 503: {other:?}"),
+        }
+    }
 
     /// Writes `lostMessage.ts` beside ts-rs's bindings (`TS_RS_EXPORT_DIR`): the words of a lost
     /// write, for the tab's own.
@@ -850,6 +1138,11 @@ mod tests {
             ("comment", OpKind::Comment),
             ("close", OpKind::Close),
             ("reopen", OpKind::Reopen),
+            ("label_add", OpKind::LabelAdd),
+            ("label_remove", OpKind::LabelRemove),
+            ("assignee_add", OpKind::AssigneeAdd),
+            ("assignee_remove", OpKind::AssigneeRemove),
+            ("milestone_set", OpKind::MilestoneSet),
         ]
         .map(|(name, kind)| {
             let words = serde_json::to_string(kind.lost_message()).unwrap();

@@ -2,8 +2,9 @@
 //! while GitHub is down:
 //!
 //! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment.
-//! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?}`: 200
-//!   with the issue as stored afterwards.
+//! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?,
+//!   milestone?}`: 200 with the issue as stored afterwards. `milestone` is the milestone's number
+//!   in the repo, or `null` for none; a number the repo doesn't have is a 422.
 //! - `GET /rate_limit`: 200 with the caller's quotas (it needs no token, as on GitHub).
 //!
 //! A write goes through the same change as an outside edit (`edits.rs`), so it sends the same
@@ -13,9 +14,11 @@
 //! anyone who can see the repo may comment; closing and reopening needs Triage or authorship,
 //! and Read on someone else's issue gets 403; a title or body edit needs Write or authorship,
 //! is a 403 for Read on someone else's issue, and is silently dropped (200, unchanged) for
-//! Triage. A repo the user can't see is a 404, and an archived repo refuses every write with
-//! 403. Fields the fake doesn't model yet (labels, assignees, milestone, type) are a loud 422
-//! rather than a silent guess.
+//! Triage. A milestone needs Triage: Read gets 403 on someone else's issue, and on its own the
+//! milestone is silently dropped (200, unchanged). A repo the user can't see is a 404, and an
+//! archived repo refuses every write with 403. Fields the fake doesn't model on an update
+//! (labels, assignees, type) are a loud 422 rather than a silent guess; labels and assignees have
+//! their own endpoints (`triage.rs`).
 
 use crate::Fake;
 use crate::accounts::Role;
@@ -36,13 +39,16 @@ pub(crate) fn router() -> Router<Fake> {
             "/repos/{owner}/{repo}/issues/{number}/comments",
             post(create_comment),
         )
-        .route("/repos/{owner}/{repo}/issues/{number}", patch(update_issue))
+        .route(
+            "/repos/{owner}/{repo}/issues/{number}",
+            patch(update_issue).get(crate::repos::issue),
+        )
         .route("/rate_limit", get(rate_limit))
 }
 
 /// GitHub's 403 for a write the user's role doesn't allow: the same body and header as an
 /// App-side denial.
-fn not_accessible() -> Response {
+pub(crate) fn not_accessible() -> Response {
     let mut res = error(
         StatusCode::FORBIDDEN,
         "Resource not accessible by integration",
@@ -54,12 +60,12 @@ fn not_accessible() -> Response {
     res
 }
 
-fn unprocessable(message: &str) -> Response {
+pub(crate) fn unprocessable(message: &str) -> Response {
     error(StatusCode::UNPROCESSABLE_ENTITY, message)
 }
 
 /// The request body as JSON, or GitHub's 400 for one that isn't.
-fn json_body(body: &Bytes) -> Result<serde_json::Map<String, Value>, Response> {
+pub(crate) fn json_body(body: &Bytes) -> Result<serde_json::Map<String, Value>, Response> {
     match serde_json::from_slice::<Value>(body) {
         Ok(Value::Object(m)) => Ok(m),
         _ => Err(error(StatusCode::BAD_REQUEST, "Problems parsing JSON")),
@@ -68,12 +74,12 @@ fn json_body(body: &Bytes) -> Result<serde_json::Map<String, Value>, Response> {
 
 /// The issue a write names, as the user sees it: the repo, the issue's id, and the user's role
 /// and authorship. `Err` is the answer GitHub gives instead.
-struct Target {
-    repo: q::RepoRow,
-    issue: i64,
+pub(crate) struct Target {
+    pub repo: q::RepoRow,
+    pub issue: i64,
     /// None: no collaborator role (only possible on a public repo).
-    role: Option<Role>,
-    own: bool,
+    pub role: Option<Role>,
+    pub own: bool,
 }
 
 fn target(
@@ -112,13 +118,15 @@ fn target(
     }))
 }
 
-/// Runs `change` (built from the target) as `user` and sends its webhooks; the change's result
-/// as `answer` makes it, or the refusal `change` returned.
-async fn write(
+/// Runs `change` (built from the target, inside the truth's transaction) as `user` and sends its
+/// webhooks; the change's result as `answer` makes it, or the refusal `change` returned.
+pub(crate) async fn write(
     fake: &Fake,
     user: i64,
     path: (String, String, i64),
-    change: impl FnOnce(&Target) -> Result<Change, Response> + Send + 'static,
+    change: impl FnOnce(&rusqlite::Transaction, &Target) -> rusqlite::Result<Result<Change, Response>>
+    + Send
+    + 'static,
     answer: impl FnOnce(&crate::edits::Changed) -> Response + Send + 'static,
 ) -> Response {
     let now = fake.now();
@@ -131,7 +139,7 @@ async fn write(
                 Ok(t) => t,
                 Err(res) => return Ok(Err(res)),
             };
-            let change = match change(&t) {
+            let change = match change(tx, &t)? {
                 Ok(c) => c,
                 Err(res) => return Ok(Err(res)),
             };
@@ -169,11 +177,11 @@ async fn create_comment(
         &fake,
         user,
         path,
-        move |_| {
-            Ok(Change {
+        move |_, _| {
+            Ok(Ok(Change {
                 comment: Some(text),
                 ..Change::default()
-            })
+            }))
         },
         |changed| {
             let c = changed.comment.clone().unwrap_or(Value::Null);
@@ -188,7 +196,7 @@ async fn create_comment(
 }
 
 /// The fields of an issue update the fake models.
-const MODELLED: [&str; 4] = ["state", "state_reason", "title", "body"];
+const MODELLED: [&str; 5] = ["state", "state_reason", "title", "body", "milestone"];
 
 async fn update_issue(
     State(fake): State<Fake>,
@@ -224,6 +232,15 @@ async fn update_issue(
         Ok(f) => f,
         Err(res) => return res,
     };
+    // Absent: unchanged; `null`: none; else a milestone number.
+    let milestone = match body.get("milestone") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => match v.as_i64() {
+            Some(n) => Some(Some(n)),
+            None => return unprocessable("Validation Failed"),
+        },
+    };
     if state
         .as_deref()
         .is_some_and(|s| !matches!(s, "open" | "closed"))
@@ -237,24 +254,33 @@ async fn update_issue(
         &fake,
         user,
         path,
-        move |t| {
+        move |tx, t| {
             let triage = t.role >= Some(Role::Triage);
             let write = t.role >= Some(Role::Write);
             let touches_state = state.is_some() || state_reason.is_some();
             let touches_text = title.is_some() || issue_body.is_some();
             // Read on someone else's issue: refused outright.
-            if !t.own && !triage && (touches_state || touches_text) {
-                return Err(not_accessible());
+            if !t.own && !triage && (touches_state || touches_text || milestone.is_some()) {
+                return Ok(Err(not_accessible()));
             }
-            // Triage on someone else's issue: the text is silently dropped.
+            let milestone = match milestone {
+                Some(Some(n)) => match q::milestone_by_number(tx, t.repo.id, n)? {
+                    Some(id) => Some(Some(id)),
+                    None => return Ok(Err(unprocessable("Validation Failed"))),
+                },
+                m => m.map(|_| None),
+            };
+            // Triage on someone else's issue: the text is silently dropped. Read on its own
+            // issue: the milestone is.
             let text_applies = t.own || write;
-            Ok(Change {
+            Ok(Ok(Change {
                 state,
                 state_reason,
                 title: title.filter(|_| text_applies),
                 body: issue_body.filter(|_| text_applies),
+                milestone: milestone.filter(|_| triage),
                 ..Change::default()
-            })
+            }))
         },
         |changed| axum::Json(&changed.issue).into_response(),
     )

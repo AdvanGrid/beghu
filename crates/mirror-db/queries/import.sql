@@ -90,11 +90,6 @@ WHERE id = :id AND (pr_id IS NOT :pr_id OR draft IS NOT :draft OR merged_at IS N
 -- param: number i64
 SELECT m.id FROM milestones m WHERE m.repo_id = :repo_id AND m.number = :number;
 
--- name: label_by_name :opt
--- param: repo_id i64
--- param: name &str
-SELECT l.id FROM labels l WHERE l.repo_id = :repo_id AND l.name = :name;
-
 -- A comment from the repo-wide REST pass names its issue by number.
 -- name: item_by_number :opt
 -- param: repo_id i64

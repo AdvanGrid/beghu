@@ -187,13 +187,15 @@ async fn an_older_updated_at_never_overwrites_a_newer_row() {
         "newer"
     );
 
-    // Equal wins: a second delivery at the same time is applied.
+    // The same time saying something else can't be ordered: it isn't applied, and the issue is
+    // read again from GitHub, whose answer (older than the deliveries' made-up time) changes
+    // nothing either.
     let same = issues_payload("edited", repo, &r, "same time", "2030-01-01T00:02:00Z");
     assert_eq!(s.deliver("issues", "same", &same).await, 202);
-    assert_eq!(ids_of(&st.event_within(2 * SECS).await.unwrap()), [id]);
+    assert_eq!(st.events_for(3 * SECS).await, Vec::<Sse>::new());
     assert_eq!(
         row(&s.api(&mut b, "/api/issues").await.1, id).unwrap()["title"],
-        "same time"
+        "newer"
     );
 }
 
@@ -677,31 +679,42 @@ async fn a_delivery_whose_processed_mark_fails_is_marked_on_a_retry_not_reapplie
         .join("mirrors")
         .join(format!("{}.db", account_id(&s, &mut b).await));
     let r = top(&s, &mut b).await;
-    let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
+    // A label delivery carries no `updated_at`: the last one applied wins, so one applied again
+    // would show.
+    let label = |name: &str| {
+        json!({
+            "action": "edited",
+            "label": { "id": 9_990_001, "name": name, "color": "ededed", "description": null },
+            "repository": { "id": repo },
+        })
+    };
 
     // The apply waits on the mirror until the control DB is held too, so marking the delivery
     // processed meets a busy control DB.
     let mirror_lock = WriteLock::take(&mirror);
-    let at = "2030-01-01T00:00:00Z";
-    let first = issues_payload("edited", repo, &r, "first", at);
-    assert_eq!(s.deliver("issues", "g-mark-1", &first).await, 202);
+    assert_eq!(s.deliver("label", "g-mark-1", &label("first")).await, 202);
     let control_lock = WriteLock::take(&s.control_db());
     tokio::time::sleep(Duration::from_millis(300)).await;
     drop(mirror_lock);
-    assert_eq!(ids_of(&st.event_within(3 * SECS).await.unwrap()), [id]);
+    assert!(st.event_within(3 * SECS).await.is_some());
     // Past the busy timeout: the first try to mark it fails.
     tokio::time::sleep(5 * SECS + SECS / 2).await;
     drop(control_lock);
 
-    // Same `updated_at`, so if the first were applied again it would win back.
-    let second = issues_payload("edited", repo, &r, "second", at);
-    assert_eq!(s.deliver("issues", "g-mark-2", &second).await, 202);
-    assert_eq!(ids_of(&st.event_within(8 * SECS).await.unwrap()), [id]);
+    assert_eq!(s.deliver("label", "g-mark-2", &label("second")).await, 202);
+    assert!(st.event_within(8 * SECS).await.is_some());
     s.restart_with(|_| {}).await;
-    assert_eq!(
-        row(&s.api(&mut b, "/api/issues").await.1, id).unwrap()["title"],
-        "second"
+    let (_, labels) = s.api(&mut b, &format!("/api/repos/{repo}/labels")).await;
+    let names: Vec<&str> = labels
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"second") && !names.contains(&"first"),
+        "{names:?}"
     );
 }
 
@@ -972,4 +985,291 @@ async fn every_stream_opens_with_a_reset_then_the_status_slot_even_when_nothing_
             data: r#"{"import":null,"sync":null}"#.into()
         })
     );
+}
+
+/// Two label changes to each of two issues within one second, their four deliveries sent newest
+/// first: on one issue a label put on and taken off again, on the other two labels put on. Picks
+/// share an `updated_at` within a second, so the order can't come from it. The mirror ends as
+/// GitHub has both issues.
+#[tokio::test(flavor = "multi_thread")]
+async fn same_second_label_deliveries_sent_in_reverse_leave_the_mirror_as_github_has_it() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (_, page) = s.api(&mut b, "/api/issues").await;
+    let rows = page["rows"].as_array().unwrap();
+    let (toggled, added) = (rows[0].clone(), rows[1].clone());
+    let names = |r: &Value| -> Vec<String> {
+        r["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let free = |r: &Value| -> Vec<&'static str> {
+        ["p0", "p1", "p2", "ux", "question", "backend", "frontend"]
+            .into_iter()
+            .filter(|l| !names(r).iter().any(|h| h == l))
+            .collect()
+    };
+    let x = free(&toggled)[0];
+    let (a, z) = (free(&added)[0], free(&added)[1]);
+    let edit = |r: &Value, key: &str, label: &str| json!({ "repo": r["repo"], "number": r["number"], key: [label] });
+    let at = |v: &Value| v["issue"]["updated_at"].as_str().unwrap().to_owned();
+    for tries in 1.. {
+        s.fake("POST", "/faults/webhooks", json!({ "reorder": 4 }))
+            .await;
+        let on = s.edit(edit(&toggled, "add_labels", x)).await;
+        let off = s.edit(edit(&toggled, "remove_labels", x)).await;
+        let first = s.edit(edit(&added, "add_labels", a)).await;
+        let second = s.edit(edit(&added, "add_labels", z)).await;
+        if at(&on) == at(&off) && at(&first) == at(&second) {
+            break;
+        }
+        // A second ticked over between them: put things back and try again.
+        assert!(tries < 5, "no two edits fell within one second");
+        tokio::time::sleep(2 * SECS).await;
+        s.edit(edit(&added, "remove_labels", a)).await;
+        s.edit(edit(&added, "remove_labels", z)).await;
+        tokio::time::sleep(2 * SECS).await;
+    }
+    // The batch goes out about a second later; anything read back after it lands within a few.
+    tokio::time::sleep(6 * SECS).await;
+    let (_, page) = s.api(&mut b, "/api/issues").await;
+    assert!(
+        !names(row(&page, toggled["id"].as_i64().unwrap()).unwrap()).contains(&x.to_owned()),
+        "{x} is still on the issue it was taken off"
+    );
+    let now = names(row(&page, added["id"].as_i64().unwrap()).unwrap());
+    assert!(
+        now.contains(&a.to_owned()) && now.contains(&z.to_owned()),
+        "{a} and {z} should both be on, have {now:?}"
+    );
+}
+
+/// Two comments on a pull request within one second, their deliveries sent newest first: the
+/// older can't be ordered by `updated_at`, so the PR is read again, with the App's read-back
+/// token. GitHub may refuse `GET /issues/{n}` for a PR to a token with only `issues: read`, so
+/// that token holds `pull_requests: read` too. The mirror ends with both comments.
+#[tokio::test(flavor = "multi_thread")]
+async fn same_second_comments_on_a_pr_are_read_again_with_a_token_that_covers_prs() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (_, page) = s.api(&mut b, "/api/issues?q=is%3Apr").await;
+    let pr = page["rows"][0].clone();
+    assert_eq!(pr["kind"], "pr", "{pr}");
+    let id = pr["id"].as_i64().unwrap();
+    let at = |v: &Value| v["issue"]["updated_at"].as_str().unwrap().to_owned();
+    let mut said = Vec::new();
+    for tries in 1.. {
+        s.fake("POST", "/faults/webhooks", json!({ "reorder": 2 }))
+            .await;
+        let comment = |n: usize| json!({ "repo": pr["repo"], "number": pr["number"], "comment": format!("same second {tries}.{n}") });
+        let first = s.edit(comment(1)).await;
+        let second = s.edit(comment(2)).await;
+        said = vec![
+            format!("same second {tries}.1"),
+            format!("same second {tries}.2"),
+        ];
+        if at(&first) == at(&second) {
+            break;
+        }
+        assert!(tries < 5, "no two comments fell within one second");
+        tokio::time::sleep(2 * SECS).await;
+    }
+    // The batch goes out about a second later; the read-back follows its 2 s debounce.
+    tokio::time::sleep(6 * SECS).await;
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    // Each body as the AST a one-line comment renders to.
+    let bodies: Vec<&Value> = d["comments"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["body"])
+        .collect();
+    for body in &said {
+        assert!(
+            bodies.contains(&&json!([["p", 0, body]])),
+            "{body} missing: {bodies:?}"
+        );
+    }
+    let state = s.fake("GET", "/state", json!({})).await;
+    assert_eq!(
+        state["installation_tokens"],
+        json!([{
+            "installation": 41000001,
+            "permissions": { "issues": "read", "pull_requests": "read" },
+        }]),
+    );
+}
+
+/// The answers still to come from Fake GitHub's rewrite rules for `endpoint`.
+async fn rewrites_left(s: &Stack, endpoint: &str) -> u64 {
+    let state = s.fake("GET", "/state", json!({})).await;
+    state["faults"]["rewrite"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["endpoint"] == endpoint)
+        .map(|w| w["remaining"].as_u64().unwrap())
+        .sum()
+}
+
+/// Whether the account is marked for a sweep to repair (the control DB: no HTTP seam shows it).
+fn needs_resync(s: &Stack, account: i64) -> bool {
+    let db = rusqlite::Connection::open(s.control_db()).unwrap();
+    control_db::q::account(&db, account)
+        .unwrap()
+        .unwrap()
+        .needs_resync
+}
+
+/// Polls `f` every 50 ms until it holds, for up to `secs`.
+async fn until_holds<F, Fut>(secs: u64, what: &str, mut f: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while !f().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} didn't happen within {secs} s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// An issue the mirror has at `AT`, titled "Tagged", and the endpoint its read-back GETs.
+async fn issue_at(s: &Stack, b: &mut Browser, labels: Value, milestone: Value) -> (Value, String) {
+    let r = top(s, b).await;
+    let id = r["id"].as_i64().unwrap();
+    let repo = repo_id(s, b, r["repo"].as_str().unwrap()).await;
+    let mut p = issues_payload("labeled", repo, &r, "Tagged", AT);
+    p["issue"]["labels"] = labels;
+    p["issue"]["milestone"] = milestone;
+    assert_eq!(s.deliver("issues", &format!("g-at-{id}"), &p).await, 202);
+    let deadline = std::time::Instant::now() + 5 * SECS;
+    while !row(&s.api(b, "/api/issues").await.1, id).is_some_and(|r| r["title"] == "Tagged") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the issue never written"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let endpoint = format!(
+        "GET /repos/acme/{}/issues/{}",
+        r["repo"].as_str().unwrap(),
+        r["number"]
+    );
+    (p, endpoint)
+}
+
+const AT: &str = "2030-01-01T00:00:00Z";
+
+/// GitHub's answer still names a label and a milestone whose deletes the mirror already has.
+/// The mirror never takes them back, so they're no difference to read the issue again for: one
+/// read settles it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_back_naming_a_deleted_label_and_milestone_settles_at_once() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (p, endpoint) = issue_at(
+        &s,
+        &mut b,
+        json!([{ "id": 77, "name": "triage-me", "color": "ededed" }]),
+        json!({ "id": 88, "number": 9, "title": "v9", "state": "open", "due_on": null }),
+    )
+    .await;
+    let id = p["issue"]["id"].as_i64().unwrap();
+    let repo = &p["repository"];
+    let label = json!({
+        "action": "deleted",
+        "label": { "id": 77, "name": "triage-me", "color": "ededed", "description": null },
+        "repository": repo,
+    });
+    assert_eq!(s.deliver("label", "g-label-gone", &label).await, 202);
+    let milestone =
+        json!({ "action": "deleted", "milestone": p["issue"]["milestone"], "repository": repo });
+    assert_eq!(
+        s.deliver("milestone", "g-milestone-gone", &milestone).await,
+        202
+    );
+    let deadline = std::time::Instant::now() + 5 * SECS;
+    loop {
+        let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+        if d["labels"] == json!([]) && d["milestone"].is_null() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the label and milestone never went: {d}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Every read of the issue answers with both still on it, at the mirror's own `updated_at`.
+    s.fake(
+        "POST",
+        "/faults/rewrite",
+        json!({ "endpoint": endpoint, "count": 10, "raw": p["issue"].to_string() }),
+    )
+    .await;
+    // A delivery of that second saying otherwise has the issue read again.
+    let other = issues_payload(
+        "edited",
+        p["repository"]["id"].as_i64().unwrap(),
+        &json!({ "id": id, "number": p["issue"]["number"], "repo": p["repository"]["name"] }),
+        "Other",
+        AT,
+    );
+    assert_eq!(s.deliver("issues", "g-other", &other).await, 202);
+    until_holds(8, "the read-back", || async {
+        rewrites_left(&s, &endpoint).await < 10
+    })
+    .await;
+    // Two debounces later, still the one read.
+    tokio::time::sleep(5 * SECS).await;
+    assert_eq!(rewrites_left(&s, &endpoint).await, 9);
+}
+
+/// GitHub answers each read of an issue with another title at the same `updated_at`, so no
+/// read finds the mirror as GitHub says: after five read-backs in a row the issue is left to a
+/// sweep, its accounts marked for resync, rather than read forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issue_read_again_five_times_in_a_row_is_left_to_a_resync() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let account = s.api(&mut b, "/api/me").await.1["account"]["id"]
+        .as_i64()
+        .unwrap();
+    let (p, endpoint) = issue_at(&s, &mut b, json!([]), Value::Null).await;
+    let id = p["issue"]["id"].as_i64().unwrap();
+    assert!(!needs_resync(&s, account));
+    for n in 0..12 {
+        let mut answer = p["issue"].clone();
+        answer["title"] = json!(if n % 2 == 0 { "A" } else { "B" });
+        s.fake(
+            "POST",
+            "/faults/rewrite",
+            json!({ "endpoint": endpoint, "count": 1, "raw": answer.to_string() }),
+        )
+        .await;
+    }
+    let other = issues_payload(
+        "edited",
+        p["repository"]["id"].as_i64().unwrap(),
+        &json!({ "id": id, "number": p["issue"]["number"], "repo": p["repository"]["name"] }),
+        "Other",
+        AT,
+    );
+    assert_eq!(s.deliver("issues", "g-other", &other).await, 202);
+    until_holds(25, "the account marked for resync", || async {
+        needs_resync(&s, account)
+    })
+    .await;
+    assert_eq!(rewrites_left(&s, &endpoint).await, 7);
+    // And no read after it.
+    tokio::time::sleep(4 * SECS).await;
+    assert_eq!(rewrites_left(&s, &endpoint).await, 7);
 }

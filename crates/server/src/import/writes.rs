@@ -230,6 +230,8 @@ pub(crate) fn write_item(
         it.comments,
         it.issue_type.as_deref(),
         seq,
+        // A read from GitHub: newer than any delivery of its second.
+        true,
     )? > 0;
     if !applied {
         return Ok(false);
@@ -261,8 +263,8 @@ pub(crate) fn write_item(
     }
     q::clear_item_labels(tx, it.id)?;
     for name in &it.labels {
-        if let Some(l) = q::label_by_name(tx, repo, name)? {
-            q::link_item_label(tx, it.id, l)?;
+        if let Some(l) = q::repo_label_named(tx, repo, name)? {
+            q::link_item_label(tx, it.id, l.id)?;
         }
     }
     q::clear_item_assignees(tx, it.id)?;

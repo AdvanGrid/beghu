@@ -13,6 +13,10 @@
 //! once a read-back that started after it has landed or been given up, so one still waiting when
 //! the process stops is replayed, and read back, at the next start.
 //!
+//! The same read-backs, one per issue, also read an issue itself (`GET …/issues/{n}`, one call)
+//! after a delivery a mirror couldn't order against what it has (`webhook.rs`, `upsert_issue`):
+//! GitHub's answer is written to every account syncing the repo, as the issue is now.
+//!
 //! A read-back GitHub fails is tried again on [`Config::read_back_retries`](crate::Config);
 //! past the last of them, or when no try can do better (the installation is gone, or the issue
 //! has more relates-to than a read-back follows), every account syncing the repo is marked
@@ -56,6 +60,11 @@ pub const REFETCH_AFTER: Duration = Duration::from_secs(2);
 /// The longest a steady stream of deliveries holds a read-back off, from the first of them.
 const MAX_DEBOUNCE: Duration = Duration::from_secs(10);
 
+/// How many times in a row an issue is read again because GitHub's answer still says otherwise
+/// than the mirror. Past it the read-back is given up, its accounts marked for resync: answers
+/// that never settle (one the mirror can't take, say) aren't read forever.
+const MAX_REREADS: usize = 5;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Kind {
     /// Parent → child.
@@ -76,13 +85,32 @@ impl Kind {
     }
 }
 
-/// The issue whose edges a read-back reads.
+/// The issue a read-back reads.
 #[derive(Clone, Debug)]
 pub struct Subject {
     pub id: i64,
     pub node_id: String,
+    pub number: i64,
     pub repo: i64,
     pub installation: i64,
+}
+
+/// What a read-back reads of its issue.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ReadBack {
+    /// Its edges of one kind.
+    Edges(Kind),
+    /// The issue itself: its fields, labels and assignees.
+    Issue,
+}
+
+impl std::fmt::Display for ReadBack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadBack::Edges(k) => write!(f, "{} edges", k.name()),
+            ReadBack::Issue => f.write_str("fields"),
+        }
+    }
 }
 
 /// One edge a delivery names: `src → dst` of `kind`, added or removed.
@@ -157,8 +185,8 @@ struct Inner {
     retries: Vec<Duration>,
     /// Where the workers run, so the drain stops them (see `jobs.rs`).
     jobs: Jobs,
-    /// The read-backs waiting or running, by issue and kind.
-    pending: Mutex<HashMap<(i64, Kind), Pending>>,
+    /// The read-backs waiting or running, by issue and what they read.
+    pending: Mutex<HashMap<(i64, ReadBack), Pending>>,
 }
 
 struct Pending {
@@ -175,6 +203,9 @@ struct Pending {
     /// How many tries in a row GitHub has failed. A delivery may bring the next try forward but
     /// doesn't start the count again: only a read-back that lands does.
     failures: usize,
+    /// How many issue read-backs in a row found the mirror still saying otherwise than GitHub
+    /// (see [`MAX_REREADS`]).
+    rereads: usize,
     /// Wakes the worker when a delivery brings `due` forward while it waits.
     wake: Arc<Notify>,
     /// The deliveries the next read-back answers for: each hears once it has landed or been
@@ -213,64 +244,76 @@ impl Refetcher {
         }))
     }
 
-    /// Reads `subject`'s edges of `kind` back from GitHub: at once, or after
-    /// [`REFETCH_AFTER`] (each new call within it starts the delay again, up to
-    /// [`MAX_DEBOUNCE`] from the first). One read-back per issue and kind runs at a time; a call
-    /// while one runs queues one more after it. The receiver hears once a read-back that started
-    /// after this call has landed or been given up; it errs if the refetcher stops first.
-    pub fn schedule(&self, subject: Subject, kind: Kind, at_once: bool) -> oneshot::Receiver<()> {
-        let (done, heard) = oneshot::channel();
-        let now = Instant::now();
-        let key = (subject.id, kind);
-        let mut all = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = all.get_mut(&key) {
-            if p.due.is_none() {
-                p.first = now;
-            }
-            let due = if at_once {
-                now
-            } else {
-                (now + REFETCH_AFTER).min(p.first + MAX_DEBOUNCE)
-            };
-            let (next, debounced) = match p.due {
-                Some(d) if (at_once || !p.debounced) && d <= due => (d, p.debounced),
-                _ => (due, !at_once),
-            };
-            let sooner = p.due.is_some_and(|d| next < d);
-            p.due = Some(next);
-            p.debounced = debounced;
-            p.subject = subject;
-            p.waiting.push(done);
-            if sooner {
-                p.wake.notify_one();
-            }
-            return heard;
-        }
-        let due = if at_once { now } else { now + REFETCH_AFTER };
-        let worker = self
-            .0
-            .jobs
-            .spawn(worker(self.0.clone(), key))
-            .abort_handle();
-        all.insert(
-            key,
-            Pending {
-                due: Some(due),
-                debounced: !at_once,
-                first: now,
-                subject,
-                failures: 0,
-                wake: Arc::default(),
-                waiting: vec![done],
-                worker: Some(worker),
-            },
-        );
-        heard
+    /// Reads `what` of `subject` back from GitHub: at once, or after [`REFETCH_AFTER`] (each new
+    /// call within it starts the delay again, up to [`MAX_DEBOUNCE`] from the first). One
+    /// read-back per issue and `what` runs at a time; a call while one runs queues one more after
+    /// it. The receiver hears once a read-back that started after this call has landed or been
+    /// given up; it errs if the refetcher stops first.
+    pub fn schedule(
+        &self,
+        subject: Subject,
+        kind: ReadBack,
+        at_once: bool,
+    ) -> oneshot::Receiver<()> {
+        schedule(&self.0, subject, kind, at_once)
     }
 }
 
-/// Runs the read-backs for one issue and kind until none is due.
-async fn worker(inner: Arc<Inner>, key: (i64, Kind)) {
+/// [`Refetcher::schedule`], from inside a read-back too.
+fn schedule(
+    inner: &Arc<Inner>,
+    subject: Subject,
+    kind: ReadBack,
+    at_once: bool,
+) -> oneshot::Receiver<()> {
+    let (done, heard) = oneshot::channel();
+    let now = Instant::now();
+    let key = (subject.id, kind);
+    let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = all.get_mut(&key) {
+        if p.due.is_none() {
+            p.first = now;
+        }
+        let due = if at_once {
+            now
+        } else {
+            (now + REFETCH_AFTER).min(p.first + MAX_DEBOUNCE)
+        };
+        let (next, debounced) = match p.due {
+            Some(d) if (at_once || !p.debounced) && d <= due => (d, p.debounced),
+            _ => (due, !at_once),
+        };
+        let sooner = p.due.is_some_and(|d| next < d);
+        p.due = Some(next);
+        p.debounced = debounced;
+        p.subject = subject;
+        p.waiting.push(done);
+        if sooner {
+            p.wake.notify_one();
+        }
+        return heard;
+    }
+    let due = if at_once { now } else { now + REFETCH_AFTER };
+    let worker = inner.jobs.spawn(worker(inner.clone(), key)).abort_handle();
+    all.insert(
+        key,
+        Pending {
+            due: Some(due),
+            debounced: !at_once,
+            first: now,
+            subject,
+            failures: 0,
+            rereads: 0,
+            wake: Arc::default(),
+            waiting: vec![done],
+            worker: Some(worker),
+        },
+    );
+    heard
+}
+
+/// Runs the read-backs for one issue and `what` until none is due.
+async fn worker(inner: Arc<Inner>, key: (i64, ReadBack)) {
     loop {
         let (due, subject, wake, answers) = {
             let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +331,10 @@ async fn worker(inner: Arc<Inner>, key: (i64, Kind)) {
             }
         };
         let Some(due) = due else {
-            let tried = refetch(&inner, &subject, key.1).await;
+            let tried = match key.1 {
+                ReadBack::Edges(kind) => refetch(&inner, &subject, kind).await,
+                ReadBack::Issue => reread(&inner, &subject).await,
+            };
             conclude(&inner, key, &subject, tried, answers).await;
             continue;
         };
@@ -315,7 +361,7 @@ enum Failure {
 /// landed or was given up tells the deliveries it answers for.
 async fn conclude(
     inner: &Inner,
-    key: (i64, Kind),
+    key: (i64, ReadBack),
     s: &Subject,
     tried: Result<(), Failure>,
     answers: Vec<oneshot::Sender<()>>,
@@ -338,9 +384,8 @@ async fn conclude(
                     }
                     p.waiting.extend(answers);
                     eprintln!(
-                        "edges: reading issue {}'s {} edges failed, trying again in {wait:?}: {why}",
-                        s.id,
-                        key.1.name()
+                        "edges: reading issue {}'s {} failed, trying again in {wait:?}: {why}",
+                        s.id, key.1
                     );
                     return;
                 }
@@ -357,10 +402,8 @@ async fn conclude(
     };
     if let Some(why) = why {
         eprintln!(
-            "edges: giving up reading issue {}'s {} edges ({why}); marking the accounts syncing repo {} for resync",
-            s.id,
-            key.1.name(),
-            s.repo
+            "edges: giving up reading issue {}'s {} ({why}); marking the accounts syncing repo {} for resync",
+            s.id, key.1, s.repo
         );
         let repo = s.repo;
         let what = format!("reading who syncs repo {repo}");
@@ -479,24 +522,137 @@ pub(crate) struct Fetched {
     edges: Vec<(i64, i64, End)>,
 }
 
-/// Reads `s`'s edges of `kind` with the App's installation token: what the installation sees.
-async fn fetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<Option<Fetched>, Failure> {
-    let _turn = inner.installations.read_turn(s.installation).await;
-    let token = match inner
+/// A read-back token for `s`'s installation.
+async fn token(inner: &Inner, s: &Subject) -> Result<String, Failure> {
+    match inner
         .installations
         .token(s.installation, Scope::ReadBack)
         .await
     {
-        Ok(t) => t,
+        Ok(t) => Ok(t),
         // The installation is gone (GitHub answers 404 for its token): no try will do better.
-        Err(crate::github::Error::Status(404)) => {
-            return Err(Failure::GiveUp(format!(
-                "installation {} is gone",
-                s.installation
-            )));
+        Err(crate::github::Error::Status(404)) => Err(Failure::GiveUp(format!(
+            "installation {} is gone",
+            s.installation
+        ))),
+        Err(e) => Err(Failure::Retry(e.to_string())),
+    }
+}
+
+/// The accounts syncing `repo`, or a failure worth trying again.
+async fn targets(inner: &Inner, repo: i64) -> Result<Vec<i64>, Failure> {
+    inner
+        .control
+        .read(move |c| control_db::q::fan_out_targets(c, repo))
+        .await
+        .map_err(|e| Failure::Retry(format!("reading who syncs repo {repo} failed: {e}")))
+}
+
+/// Reads issue `s` itself with the App's installation token (one `GET`) and writes it to every
+/// account syncing its repo, as GitHub has it now: over the mirror's row unless that is newer, a
+/// deleted item never written again, a repo no longer synced not written at all. One that
+/// overwrote a row of its own second is read again after the debounce (a change of that second
+/// may have come after GitHub answered), until a read finds the mirror as it says, or for
+/// [`MAX_REREADS`] reads in a row: then it's given up, its accounts marked for resync.
+async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
+    let repo = s.repo;
+    let targets = targets(inner, repo).await?;
+    // Where the repo is, as a mirror syncing it names it.
+    let mut place = None;
+    for &account in &targets {
+        if let Ok(Some(r)) = inner
+            .mirrors
+            .read(account, Caller::Webhook, move |c| q::repo_state(c, repo))
+            .await
+        {
+            place = Some((r.owner, r.name));
+            break;
         }
-        Err(e) => return Err(Failure::Retry(e.to_string())),
+    }
+    let Some((owner, name)) = place else {
+        // No mirror syncs it any more: nothing to write.
+        return Ok(());
     };
+    let issue = {
+        let _turn = inner.installations.read_turn(s.installation).await;
+        let token = token(inner, s).await?;
+        let gh = inner.installations.github();
+        match gh.issue(&token, &owner, &name, s.number).await {
+            Ok(i) => i,
+            Err(e) => {
+                if matches!(e, crate::github::Error::Unauthorized) {
+                    inner
+                        .installations
+                        .drop_token(s.installation, Scope::ReadBack, &token);
+                }
+                return Err(Failure::Retry(e.to_string()));
+            }
+        }
+    };
+    // Deleted, transferred (a number GitHub now answers with another issue), or out of sight.
+    let Some(issue) = issue.filter(|i| i.id() == s.id) else {
+        unseen_subject(inner, s, &targets).await;
+        return Ok(());
+    };
+    let issue = Arc::new(issue);
+    let mut again = false;
+    for account in targets {
+        let read = issue.clone();
+        let written = inner
+            .mirrors
+            .write(account, Caller::Webhook, move |tx, seq| {
+                if !crate::import::synced(tx, repo)? {
+                    return Ok((Vec::new(), false));
+                }
+                let w = webhook::write_issue(tx, repo, &read, seq)?;
+                if !w.changed {
+                    return Ok((Vec::new(), w.reread));
+                }
+                Ok((with_neighbours(tx, BTreeSet::from([read.id()]))?, w.reread))
+            })
+            .await;
+        if let Ok((_, true)) = &written {
+            again = true;
+        }
+        match written.map(|(ids, _)| ids) {
+            Ok(ids) if ids.is_empty() => {}
+            Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
+            Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            Err(e) => {
+                eprintln!(
+                    "edges: writing issue {} as read again failed for account {account}: {e}",
+                    s.id
+                );
+                webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
+            }
+        }
+    }
+    let settled_never = {
+        let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        all.get_mut(&(s.id, ReadBack::Issue)).is_some_and(|p| {
+            p.rereads = if again { p.rereads + 1 } else { 0 };
+            let over = p.rereads >= MAX_REREADS;
+            if over {
+                p.rereads = 0;
+            }
+            over
+        })
+    };
+    if settled_never {
+        return Err(Failure::GiveUp(format!(
+            "GitHub's answer still said otherwise than the mirror after {MAX_REREADS} reads in a row"
+        )));
+    }
+    if again {
+        drop(schedule(inner, s.clone(), ReadBack::Issue, false));
+    }
+    Ok(())
+}
+
+/// Reads `s`'s edges of `kind` with the App's installation token: what the installation sees.
+async fn fetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<Option<Fetched>, Failure> {
+    let _turn = inner.installations.read_turn(s.installation).await;
+    let token = token(inner, s).await?;
     read_edges(s, kind, |vars| {
         let token = &token;
         async move {
@@ -610,19 +766,7 @@ pub(crate) fn fetched(me: i64, kind: Kind, node: Node) -> Fetched {
 /// Reads the edges back and writes them to every account syncing the issue's repo.
 async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> {
     let fetched = fetch(inner, s, kind).await?;
-    let repo = s.repo;
-    let targets = match inner
-        .control
-        .read(move |c| control_db::q::fan_out_targets(c, repo))
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            return Err(Failure::Retry(format!(
-                "reading who syncs repo {repo} failed: {e}"
-            )));
-        }
-    };
+    let targets = targets(inner, s.repo).await?;
     let Some(fetched) = fetched else {
         unseen_subject(inner, s, &targets).await;
         return Ok(());

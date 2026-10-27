@@ -18,7 +18,7 @@ mod relationships;
 
 use super::{Budget, Error, Touched};
 use crate::App;
-use crate::edges::{self, Kind, Subject};
+use crate::edges::{self, Kind, ReadBack, Subject};
 use crate::github::{CallError, Fetched, Quota};
 use crate::import::shapes::{
     Conn, GqlIssue, IMPORT_ISSUES, IMPORT_LABELS, IMPORT_PULL_DETAILS, Named, PullDetails,

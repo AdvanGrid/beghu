@@ -83,6 +83,10 @@ Commands:
                               be in an unsynced repo (partner-sdk#100), or #N in REPO.
                               --prioritize-sub-issue moves that sub-issue to the top, which
                               GitHub does without a webhook (sweeps find it).
+  fake label REPO NAME [--rename NEW] [--color HEX] [--as USER]
+                              Someone renames or recolours one of REPO's labels on
+                              "GitHub", or creates it if REPO has none called NAME: its
+                              label webhook (edited or created) follows.
   fake webhooks drop|duplicate|reorder N
                               The next N deliveries are lost, sent twice under one GUID,
                               or (reorder, N >= 2) held and sent newest first.
@@ -472,6 +476,8 @@ async function fake(args: string[]): Promise<void> {
       "--remove-blocked-by",
       "--relate",
       "--unrelate",
+      "--rename",
+      "--color",
       "--prioritize-sub-issue",
     ],
     ["--close", "--reopen", "--delete"],
@@ -545,6 +551,16 @@ async function fake(args: string[]): Promise<void> {
         out,
         `${pos[0]} edited (id ${out.issue.id}): ${out.deliveries} webhook(s) on the way`,
       );
+    }
+    case "label": {
+      const [repo, name] = pos;
+      const color = opts["--color"];
+      if (!repo || !name || (opts["--rename"] === undefined && color === undefined)) {
+        throw new Usage("usage: ./dev-ctl fake label REPO NAME [--rename NEW] [--color HEX] [--as USER]");
+      }
+      if (color !== undefined && !/^[0-9a-f]{6}$/i.test(color)) throw new Usage("--color takes 6 hex digits, without #");
+      await control("POST", "/label", { repo, name, rename: opts["--rename"], color, as: opts["--as"] });
+      return done(`${repo}'s label ${name} edited: its webhook is on the way`);
     }
     case "webhooks": {
       const [what, n] = pos;

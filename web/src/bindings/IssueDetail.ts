@@ -11,7 +11,11 @@ export type IssueDetail = { id: number,
 /**
  * `issue` or `pr`.
  */
-kind: string, owner: string, repo: string, number: number, title: string, 
+kind: string, 
+/**
+ * The repo's id: what its pickers' reads name (`/api/repos/:id/labels`, …).
+ */
+repo_id: number, owner: string, repo: string, number: number, title: string, 
 /**
  * The body, rendered.
  */

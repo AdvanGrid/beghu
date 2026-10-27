@@ -22,6 +22,7 @@ mod jobs;
 mod live;
 mod markdown;
 mod ops;
+mod pickers;
 mod query;
 mod reconcile;
 mod relationships;
@@ -72,9 +73,12 @@ struct Inner {
     imports: import::Imports,
     /// Writes in flight and lately done.
     ops: ops::Ops,
+    /// Who can be assigned, per repo, as GitHub last listed it (see `pickers.rs`).
+    assignable: pickers::Assignable,
     /// Redelivery, sweeps and each account's sync state.
     reconcile: reconcile::Reconcile,
-    /// The relationship read-backs (webhooks', sweeps', and an opened parent's).
+    /// The read-backs from GitHub, debounced per issue: relationships (webhooks', sweeps', and
+    /// an opened parent's) and the issues themselves (a same-second re-read).
     edges: Arc<edges::Refetcher>,
     /// Rendered bodies and comments.
     renders: markdown::Cache,
@@ -193,6 +197,7 @@ impl App {
             installations,
             imports: import::Imports::default(),
             ops: ops::Ops::default(),
+            assignable: pickers::Assignable::default(),
             renders: markdown::Cache::new(markdown::CACHE_BYTES),
             draining: tokio::sync::watch::channel(false).0,
             started: Default::default(),
@@ -264,6 +269,10 @@ impl App {
 
     fn ops(&self) -> &ops::Ops {
         &self.0.ops
+    }
+
+    fn assignable(&self) -> &pickers::Assignable {
+        &self.0.assignable
     }
 
     fn reconcile(&self) -> &reconcile::Reconcile {
@@ -413,6 +422,9 @@ pub fn router(app: App) -> Router {
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/repos", get(repos::list).put(repos::pick))
+        .route("/repos/{id}/labels", get(pickers::labels))
+        .route("/repos/{id}/milestones", get(pickers::milestones))
+        .route("/repos/{id}/assignees", get(pickers::assignees))
         .route("/stream", get(live::stream))
         .route("/ops", post(ops::post))
         .route("/resync", post(reconcile::resync))

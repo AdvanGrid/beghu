@@ -28,7 +28,9 @@ pub const READS_PER_INSTALLATION: usize = 4;
 /// What a token is for, and so the permissions it's narrowed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
-    /// Webhook follow-up read-backs of an issue's relationships: issues only.
+    /// Webhook follow-up read-backs of an issue (a PR among them) and its relationships: issues
+    /// and PRs. GitHub may refuse `GET /issues/{n}` for a PR to a token with issues alone (to
+    /// verify on the dev App, #118), and the App holds `pull_requests: read` anyway.
     ReadBack,
     /// The import and the sweeps: issues, and PRs with their details. Metadata (the repo
     /// itself) GitHub grants every token; it's named so the token says what they read.
@@ -39,7 +41,7 @@ impl Scope {
     /// The permissions, in GitHub's shape.
     fn permissions(self) -> serde_json::Value {
         match self {
-            Scope::ReadBack => serde_json::json!({ "issues": "read" }),
+            Scope::ReadBack => serde_json::json!({ "issues": "read", "pull_requests": "read" }),
             Scope::Import => serde_json::json!({
                 "issues": "read",
                 "metadata": "read",

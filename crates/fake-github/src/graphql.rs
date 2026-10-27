@@ -22,8 +22,8 @@
 //! - The sweeps' queries: `SweepCounts(ids)`, each repo's `issues` and `pullRequests`
 //!   `totalCount` (every state, as GitHub counts them); `SweepIssueIds(owner, name, after)` and
 //!   `SweepPullIds(owner, name, after)`, a repo's issue or PR database ids, 100 at a time; and
-//!   `SweepEdges(ids, sub, blocks, relates)`, `IssueEdges` for up to 100 issues at once (relates-to
-//!   its first page of 100).
+//!   `SweepEdges(ids, sub, blocks, relates)`, `IssueEdges` for up to 100 issues at once, each
+//!   with its `number` (relates-to its first page of 100).
 //!
 //! The control port's `/state` counts the calls made with an installation token and with a
 //! user's, and the calls of each operation.
@@ -744,7 +744,9 @@ fn run(
         "SweepEdges" => {
             let nodes = each_node(c, token, &ids, &mut errs, &mut |item| {
                 let mut n = crate::issue_edges::edges_node(c, token, item.id, v)?;
-                n["id"] = json!(q::target(c, item.id)?.node_id);
+                let t = q::target(c, item.id)?;
+                n["id"] = json!(t.node_id);
+                n["number"] = json!(t.number);
                 Ok(n)
             })?;
             json!({ "nodes": nodes })

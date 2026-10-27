@@ -71,7 +71,7 @@ ORDER BY i.id;
 -- order.
 -- name: item_sweep_info :opt
 -- param: id i64
-SELECT i.node_id, i.repo_id, r.installation_id AS "installation_id?: i64",
+SELECT i.node_id, i.number, i.repo_id, r.installation_id AS "installation_id?: i64",
        EXISTS (SELECT 1 FROM relationships e WHERE e.kind = 'sub' AND e.src_id = i.id) AS "parent!: bool"
 FROM items i JOIN repos r ON r.id = i.repo_id
 WHERE i.id = :id AND i.is_stub = 0 AND r.synced = 1;

@@ -6,4 +6,9 @@ export const LOST_MESSAGE: Record<Op["kind"], string> = {
   comment: "May or may not have been sent; check the thread",
   close: "May or may not have reached GitHub",
   reopen: "May or may not have reached GitHub",
+  label_add: "May or may not have reached GitHub",
+  label_remove: "May or may not have reached GitHub",
+  assignee_add: "May or may not have reached GitHub",
+  assignee_remove: "May or may not have reached GitHub",
+  milestone_set: "May or may not have reached GitHub",
 };

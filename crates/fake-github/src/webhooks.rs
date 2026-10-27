@@ -518,19 +518,7 @@ pub(crate) fn issue_json(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<
         .map(|u| user_json(u.id, &u.login, u.avatar_url.as_deref()))
         .collect();
     let milestone = match i.milestone_id {
-        Some(m) => match q::milestone(c, m)? {
-            Some(m) => json!({
-                "id": m.id,
-                "node_id": format!("MI_kw{}", m.id),
-                "number": m.number,
-                "title": m.title,
-                "state": m.state,
-                "due_on": m.due_on.map(rfc3339),
-                "url": format!("https://api.github.com/repos/{full}/milestones/{}", m.number),
-                "html_url": format!("https://github.com/{full}/milestone/{}", m.number),
-            }),
-            None => Value::Null,
-        },
+        Some(m) => milestone_json(c, &r, m)?,
         None => Value::Null,
     };
     let path = if i.kind == "pr" { "pull" } else { "issues" };
@@ -570,6 +558,29 @@ pub(crate) fn issue_json(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<
         });
     }
     Ok(issue)
+}
+
+/// A milestone of `r` as GitHub's REST API and webhooks serialise it; `null` if the truth
+/// doesn't have it.
+pub(crate) fn milestone_json(
+    c: &rusqlite::Connection,
+    r: &q::RepoRow,
+    id: i64,
+) -> rusqlite::Result<Value> {
+    let full = format!("{}/{}", r.owner, r.name);
+    Ok(match q::milestone(c, id)? {
+        Some(m) => json!({
+            "id": m.id,
+            "node_id": format!("MI_kw{}", m.id),
+            "number": m.number,
+            "title": m.title,
+            "state": m.state,
+            "due_on": m.due_on.map(rfc3339),
+            "url": format!("https://api.github.com/repos/{full}/milestones/{}", m.number),
+            "html_url": format!("https://github.com/{full}/milestone/{}", m.number),
+        }),
+        None => Value::Null,
+    })
 }
 
 /// The fields every delivery carries besides its event's own.

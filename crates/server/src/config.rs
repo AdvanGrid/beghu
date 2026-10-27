@@ -35,6 +35,9 @@ pub struct Config {
     /// Any site can send a browser there, so this bounds what it can make beghu ask GitHub; a
     /// user back from installing sooner sees the new repos when the installation's webhook lands.
     pub setup_reread_after: Duration,
+    /// How long who can be assigned to a repo's issues is served as GitHub last listed it before
+    /// an open asks GitHub again, in the background (a minute).
+    pub assignees_recheck_after: Duration,
     /// How long after a repo's import fails (GitHub refusing a call for good) it's tried again (a
     /// minute), doubling with each failure in a row up to six hours.
     pub import_retry_after: Duration,
@@ -221,6 +224,7 @@ impl Config {
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),
+            assignees_recheck_after: Duration::from_secs(60),
             import_retry_after: Duration::from_secs(60),
             import_give_up_after: Duration::from_secs(5 * 60),
             webhook_secret: secret("GITHUB_WEBHOOK_SECRET")?,

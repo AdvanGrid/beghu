@@ -30,6 +30,7 @@ mod oauth;
 mod quota;
 mod relationships;
 mod repos;
+mod triage;
 mod webhooks;
 mod writes;
 
@@ -78,6 +79,7 @@ pub(crate) struct State {
     faults: faults::Faults,
     refreshes: Refreshes,
     graphql: GraphqlCalls,
+    assignees: AssigneeCalls,
     webhooks: webhooks::Webhooks,
     /// Each installation token minted, with its permissions.
     app_tokens: app::Minted,
@@ -151,6 +153,30 @@ impl GraphqlCalls {
     }
 }
 
+/// How `GET /repos/{o}/{r}/assignees` was answered since the start (or the last reset): in full,
+/// which GitHub counts against the rate limit, or 304 to the client's own ETag, which it doesn't.
+#[derive(Default)]
+pub(crate) struct AssigneeCalls {
+    pub full: std::sync::atomic::AtomicU64,
+    pub not_modified: std::sync::atomic::AtomicU64,
+}
+
+impl AssigneeCalls {
+    pub(crate) fn snapshot(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        serde_json::json!({
+            "full": self.full.load(Relaxed),
+            "not_modified": self.not_modified.load(Relaxed),
+        })
+    }
+
+    pub(crate) fn clear(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.full.store(0, Relaxed);
+        self.not_modified.store(0, Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub(crate) struct Ttl {
     access_ttl: u64,
@@ -179,6 +205,7 @@ impl Fake {
             faults: faults::Faults::default(),
             refreshes: Refreshes::default(),
             graphql: GraphqlCalls::default(),
+            assignees: AssigneeCalls::default(),
             app_tokens: app::Minted::default(),
             quotas: quota::Quotas::default(),
             not_modified: Default::default(),
@@ -196,6 +223,7 @@ impl Fake {
             .merge(oauth::router())
             .merge(api::router())
             .merge(writes::router())
+            .merge(triage::router())
             .merge(app::router())
             .merge(hook_deliveries::router())
             .merge(graphql::router())

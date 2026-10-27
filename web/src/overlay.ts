@@ -7,6 +7,9 @@ import { createSignal, type Element } from "solid-js";
 import type { Comment, IssueDetail, IssueRow } from "./api";
 import type { User } from "./bindings/User";
 
+/** A property row of the detail that a pick changes. */
+export type Prop = "labels" | "assignees" | "milestone";
+
 /**
  * A comment as the thread shows it: as the server rendered it (a write's comment GitHub has
  * carries the write's `op_id`), or a pending or failed write's comment GitHub doesn't have, which
@@ -38,6 +41,8 @@ export interface Overlay {
   StateNote: (p: { issue: number; at: number }) => Element;
   /** On a pending or failed comment: sending, or "not sent" with Retry, Edit and Discard. */
   CommentNote: (p: { op: string; at: number }) => Element;
+  /** At the end of a property row: a pending pick's dot, or a failed pick with Retry and Dismiss. */
+  PropNote: (p: { issue: number; prop: Prop; at: number }) => Element;
 }
 
 const [overlay, setOverlay] = createSignal<Overlay>();

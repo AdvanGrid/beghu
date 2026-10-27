@@ -33,14 +33,24 @@ function claim(id: number): boolean {
   }
 }
 
-export type Row = { id: number; owner: string; repo: string; number: number; comments: number; state: string; labels: { name: string }[] };
+export type Row = {
+  id: number;
+  owner: string;
+  repo: string;
+  number: number;
+  comments: number;
+  state: string;
+  labels: { name: string }[];
+  assignees: { login: string }[];
+};
 export type Issue = Row & { ref: string; index: number };
 
 /**
  * Open issues below the default list's top 40 rows (the browser specs rely on those), with 1 to
- * 15 comments (one page), and where each sits in the list.
+ * 15 comments (one page), and where each sits in the list: of its first `depth` rows (a test
+ * after a few issues of one repo looks further).
  */
-export async function issuesBelowTheTop(page: Page): Promise<Issue[]> {
+export async function issuesBelowTheTop(page: Page, depth = 200): Promise<Issue[]> {
   const all: Row[] = [];
   let after: string | null = null;
   do {
@@ -48,7 +58,7 @@ export async function issuesBelowTheTop(page: Page): Promise<Issue[]> {
     const p = (await res.json()) as { rows: Row[]; next: string | null };
     all.push(...p.rows);
     after = p.next;
-  } while (after && all.length < 200);
+  } while (after && all.length < depth);
   return all
     .map((r, index) => ({ ...r, index, ref: `${r.owner}/${r.repo}#${r.number}` }))
     .slice(40)
@@ -59,8 +69,8 @@ export async function issuesBelowTheTop(page: Page): Promise<Issue[]> {
  * The first issue below the top (and passing `fits`) that no other test has claimed, claimed for
  * this one: tests running side by side, or one run's `--repeat-each` copies, never share one.
  */
-export async function claimBelowTheTop(page: Page, fits: (r: Issue) => boolean = () => true): Promise<Issue> {
-  const issue = (await issuesBelowTheTop(page)).find((r) => fits(r) && claim(r.id));
+export async function claimBelowTheTop(page: Page, fits: (r: Issue) => boolean = () => true, depth?: number): Promise<Issue> {
+  const issue = (await issuesBelowTheTop(page, depth)).find((r) => fits(r) && claim(r.id));
   if (!issue) throw new Error("no unclaimed issue below the top of the default list");
   return issue;
 }

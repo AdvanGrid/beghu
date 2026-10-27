@@ -325,6 +325,10 @@ pub async fn reconcile(app: &App, account: i64) -> Result<bool, ApiError> {
             Ok((joined, resumed, unsynced, unfinished))
         })
         .await?;
+    // Who can be assigned is read afresh if the repo is picked again.
+    for &repo in &unsynced {
+        app.assignable().forget(repo);
+    }
     // One request, so the resumed repos go through the phases with the ones that joined. Before
     // the unsync, so a slow or failing one never keeps a picked repo from importing.
     crate::import::request(app, account, joined, resumed);

@@ -119,6 +119,16 @@ pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
         }
     }
     q::add_permission(tx, NEWCOMER_ID, NOTES_REPO, Role::Admin.as_str())?;
+    // The fixture's teammates: the users it assigns to a repo's issues, who can't sign in, had
+    // Write there to be assigned at all.
+    for r in &repos {
+        for u in q::repo_assigned_users(tx, r.id)? {
+            let account = ACCOUNTS.iter().any(|a| a.login == u.login);
+            if !account && q::permission(tx, u.id, r.id)?.is_none() {
+                q::add_permission(tx, u.id, r.id, Role::Write.as_str())?;
+            }
+        }
+    }
     Ok(())
 }
 

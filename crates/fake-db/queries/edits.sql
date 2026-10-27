@@ -90,12 +90,9 @@ SELECT coalesce(max(l.id), 0) + 1 AS "x!: i64" FROM labels l;
 -- param: repo_id i64
 -- param: name &str
 -- param: color &str
-INSERT INTO labels (id, repo_id, name, color, description) VALUES (:id, :repo_id, :name, :color, NULL);
-
--- name: rename_label :exec
--- param: id i64
--- param: name &str
-UPDATE labels SET name = :name WHERE id = :id;
+-- param: description Option<&str>
+INSERT INTO labels (id, repo_id, name, color, description)
+VALUES (:id, :repo_id, :name, :color, :description);
 
 -- name: add_issue_label :exec
 -- param: item_id i64
@@ -125,6 +122,59 @@ VALUES (:id, :node_id, :item_id, :author_id, :body, :at, :at, 0);
 -- param: at i64
 UPDATE items SET comments_count = comments_count + 1, last_commented_at = :at, updated_at = :at
 WHERE id = :item_id;
+
+-- name: add_issue_assignee :exec
+-- param: item_id i64
+-- param: user_id i64
+INSERT OR IGNORE INTO item_assignees (item_id, user_id) VALUES (:item_id, :user_id);
+
+-- name: remove_issue_assignee :exec
+-- param: item_id i64
+-- param: user_id i64
+DELETE FROM item_assignees WHERE item_id = :item_id AND user_id = :user_id;
+
+-- A repo's milestone by its number, as GitHub's REST API names it.
+-- name: milestone_by_number :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT m.id FROM milestones m WHERE m.repo_id = :repo_id AND m.number = :number;
+
+-- name: set_issue_milestone :exec
+-- param: id i64
+-- param: milestone_id Option<i64>
+UPDATE items SET milestone_id = :milestone_id WHERE id = :id;
+
+-- The users with a role on the repo, and the role.
+-- name: repo_members :many
+-- param: repo_id i64
+SELECT u.id, u.login, u.avatar_url, p.role
+FROM fake_permissions p JOIN users u ON u.id = p.user_id
+WHERE p.repo_id = :repo_id ORDER BY u.login;
+
+-- The users assigned to an issue or PR of the repo.
+-- name: repo_assigned_users :many
+-- param: repo_id i64
+SELECT DISTINCT u.id, u.login, u.avatar_url
+FROM items i JOIN item_assignees ia ON ia.item_id = i.id JOIN users u ON u.id = ia.user_id
+WHERE i.repo_id = :repo_id AND i.is_stub = 0 ORDER BY u.login;
+
+-- name: update_label :exec
+-- param: id i64
+-- param: name &str
+-- param: color &str
+-- param: description Option<&str>
+UPDATE labels SET name = :name, color = :color, description = :description WHERE id = :id;
+
+-- An issue deleted (by an admin, in its sidebar): its rows go, its number is remembered.
+-- name: record_deleted_issue :exec
+-- param: repo_id i64
+-- param: number i64
+INSERT OR IGNORE INTO fake_deleted_issues (repo_id, number) VALUES (:repo_id, :number);
+
+-- name: deleted_issue :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT d.number FROM fake_deleted_issues d WHERE d.repo_id = :repo_id AND d.number = :number;
 
 -- An issue deleted (GitHub's `deleteIssue`): it, its labels, assignees, comments and
 -- relationships go.

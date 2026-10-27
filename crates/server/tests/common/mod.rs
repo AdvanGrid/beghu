@@ -377,6 +377,7 @@ impl Stack {
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),
+            assignees_recheck_after: Duration::from_secs(60),
             import_retry_after: Duration::from_secs(60),
             import_give_up_after: Duration::from_secs(5 * 60),
             webhook_secret: WEBHOOK_SECRET.into(),

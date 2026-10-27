@@ -1,6 +1,8 @@
 //! Live push: `GET /api/stream`, one server-sent event stream per tab.
 //!
 //! - `ids` (`{"ids":[…]}`): one per mirror transaction that changed what the account sees.
+//! - `defs` (`{}`): a repo's labels or milestones changed while no item carrying them did: what
+//!   offers them (the filter bar, the detail's pickers) reads again; rows needn't.
 //! - `reset`: refetch everything shown. Every stream opens with one, so a change that landed
 //!   between the tab's data response and the stream opening is never missed; a stream that falls
 //!   more than [`BUFFER`] events behind gets one in place of what it missed.
@@ -43,6 +45,9 @@ pub enum Push {
     Ids(Arc<[i64]>),
     /// Refetch everything shown.
     Reset,
+    /// A label or milestone itself changed, and no item carrying it: what offers them reads
+    /// again.
+    Defs,
     /// The import's status changed: this is it now.
     Status(Option<ImportStatus>),
     /// The sync state changed: the stream reads it as the event goes out.
@@ -164,6 +169,7 @@ fn event(push: &Push) -> Event {
             .data(serde_json::to_string(&StreamIds { ids: ids.to_vec() }).expect("plain struct")),
         // An event with no data is never dispatched by EventSource.
         Push::Reset => Event::default().event("reset").data("{}"),
+        Push::Defs => Event::default().event("defs").data("{}"),
         // Sent through `status_event`, which reads the sync state.
         Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
     }

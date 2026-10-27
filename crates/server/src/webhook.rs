@@ -29,9 +29,13 @@
 //! unprocessed for over 30 s and not in flight is queued again, so nothing waits for a restart.
 //!
 //! Handled here: `issues`, `issue_comment`, `label`, `milestone`, and the relationship events
-//! `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`). Items, comments and
+//! `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`). Comments and
 //! milestones are guarded by `updated_at` (newer or equal wins), so a replay or an older delivery
-//! that arrives late changes nothing. A webhook delete is recorded, and an older delivery that
+//! that arrives late changes nothing. Items too, but `updated_at` is in whole seconds and picks
+//! made within one share it, so an equal one is applied only when it says what the mirror has (a
+//! replay: nothing to do); `labeled`, `unlabeled`, `assigned` and `unassigned` apply only the one
+//! label or assignee they name; and what can't be ordered is read again from GitHub (see
+//! [`upsert_issue`]). A webhook delete is recorded, and an older delivery that
 //! arrives after it never brings the row back. Labels carry no `updated_at`: a `label` delivery
 //! sets the label as it is now (the last one applied wins), and an issue's payload only adds the
 //! labels the mirror lacks, never renames one, since it may predate a rename. Two renames of one
@@ -41,7 +45,7 @@
 //! slices handle them.
 
 use crate::App;
-use crate::edges::{self, Edge, Kind, Refetcher, Subject};
+use crate::edges::{self, Edge, Kind, ReadBack, Refetcher, Subject};
 use crate::jobs::Jobs;
 use crate::live::{Hub, Push};
 use axum::body::Bytes;
@@ -462,8 +466,11 @@ struct Job {
     started: Instant,
     control: Arc<Control>,
     in_flight: Arc<InFlight>,
-    /// Reads a relationship delivery's edges back once every account has applied it.
+    /// Reads a relationship delivery's edges back once every account has applied it, and its
+    /// issue when a mirror couldn't order it ([`Written::reread`]).
     edges: Arc<Refetcher>,
+    /// Some account's mirror couldn't order the delivery's issue: it's read again.
+    reread: AtomicBool,
     /// What its settle runs as.
     jobs: Jobs,
 }
@@ -502,10 +509,19 @@ impl Drop for Ticket {
                 // Only now, with the delivery in every account's mirror (or given up there), so
                 // no lagging lane can apply it over the read-back. Each lane applies in delivery
                 // order, so whatever came before it is in too.
-                let read_back = job
+                let mut read_backs: Vec<_> = job
                     .change
                     .refetch()
-                    .map(|(subject, kind, at_once)| job.edges.schedule(subject, kind, at_once));
+                    .map(|(subject, kind, at_once)| {
+                        job.edges.schedule(subject, ReadBack::Edges(kind), at_once)
+                    })
+                    .into_iter()
+                    .collect();
+                if job.reread.load(Ordering::Acquire)
+                    && let Some(subject) = job.change.reread()
+                {
+                    read_backs.push(job.edges.schedule(subject, ReadBack::Issue, false));
+                }
                 let jobs = job.jobs.clone();
                 jobs.spawn(async move {
                     if job.given_up.load(Ordering::Acquire) {
@@ -525,9 +541,11 @@ impl Drop for Ticket {
                     );
                     // Settled only once its read-back has landed or been given up: a process
                     // that stops first leaves it unprocessed, and the next start replays it.
-                    if let Some(read_back) = read_back
-                        && read_back.await.is_err()
-                    {
+                    let mut stopped = false;
+                    for r in read_backs {
+                        stopped |= r.await.is_err();
+                    }
+                    if stopped {
                         eprintln!(
                             "webhooks: {} {} stopped before its read-back finished; it waits for the next start",
                             job.event, job.guid
@@ -623,6 +641,7 @@ async fn dispatch(
             control: sinks.control.clone(),
             in_flight: in_flight.clone(),
             edges: sinks.edges.clone(),
+            reread: AtomicBool::new(false),
             jobs: sinks.jobs.clone(),
         });
         for account in targets {
@@ -713,11 +732,25 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
         })
         .await;
     match written {
-        Ok((ids, hidden)) => {
+        Ok((
+            Written {
+                ids,
+                defined,
+                reread,
+            },
+            hidden,
+        )) => {
+            if reread {
+                job.reread.store(true, Ordering::Release);
+            }
             if ids.len() > MAX_IDS {
                 sinks.hub.publish(account, Push::Reset);
             } else if !ids.is_empty() {
                 sinks.hub.publish(account, Push::Ids(ids.into()));
+            } else if defined {
+                // A label or milestone that no item carries still changes what the filter bar
+                // and the detail's pickers offer.
+                sinks.hub.publish(account, Push::Defs);
             }
             match hidden {
                 // A sweep reads with the same installation tokens and can't find the other end
@@ -825,19 +858,19 @@ pub(crate) struct User {
     avatar_url: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct Label {
+#[derive(Deserialize, Clone)]
+pub(crate) struct Label {
     id: i64,
-    name: String,
+    pub name: String,
     #[serde(default)]
     color: String,
     description: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct Milestone {
+pub(crate) struct Milestone {
     id: i64,
-    number: i64,
+    pub number: i64,
     title: String,
     state: String,
     due_on: Option<String>,
@@ -861,8 +894,8 @@ pub(crate) struct Issue {
     #[serde(default)]
     labels: Vec<Label>,
     #[serde(default)]
-    assignees: Vec<User>,
-    milestone: Option<Milestone>,
+    pub assignees: Vec<User>,
+    pub milestone: Option<Milestone>,
     #[serde(default)]
     comments: i64,
     created_at: Option<String>,
@@ -874,6 +907,12 @@ pub(crate) struct Issue {
     /// The GitHub issue type: `null` (or, from an older payload, absent) when untyped.
     #[serde(rename = "type")]
     issue_type: Option<IssueType>,
+}
+
+impl Issue {
+    pub(crate) fn id(&self) -> i64 {
+        self.id
+    }
 }
 
 /// An issue's `type` (GitHub's issue-type object); only its name is kept.
@@ -903,6 +942,8 @@ struct Payload {
     issue: Option<Issue>,
     comment: Option<Comment>,
     label: Option<Label>,
+    /// An `assigned` or `unassigned` delivery's user.
+    assignee: Option<User>,
     milestone: Option<Milestone>,
     installation: Option<Installation>,
     // Relationship deliveries: `sub_issues`, `issue_dependencies` and `issue_relates_to`.
@@ -921,14 +962,27 @@ struct Payload {
 /// One delivery's change to a repo, ready to write to each account's mirror.
 struct RepoChange {
     repo: i64,
+    /// The installation it came through: an issue read again after it is read with its token.
+    installation: Option<i64>,
     change: Change,
 }
 
 enum Change {
-    Issue(Issue),
+    /// The issue as the action left it, and the one label or assignee the action put on or took
+    /// off, if it's one that does.
+    Issue {
+        issue: Issue,
+        delta: Option<Delta>,
+    },
     IssueDeleted(i64),
-    Comment { issue: Issue, comment: Comment },
-    CommentDeleted { issue: Issue, comment: i64 },
+    Comment {
+        issue: Issue,
+        comment: Comment,
+    },
+    CommentDeleted {
+        issue: Issue,
+        comment: i64,
+    },
     Label(Label),
     LabelDeleted(i64),
     Milestone(Milestone),
@@ -1024,6 +1078,28 @@ impl Relationship {
     }
 }
 
+/// What a change wrote to one account's mirror.
+#[derive(Debug, PartialEq)]
+struct Written {
+    /// The items whose rows read differently now.
+    ids: Vec<i64>,
+    /// A label or milestone itself changed: what the pickers and the filter bar offer.
+    defined: bool,
+    /// The delivery's issue disagrees with the mirror in a way `updated_at` can't settle: it's
+    /// to be read again from GitHub.
+    reread: bool,
+}
+
+impl From<Vec<i64>> for Written {
+    fn from(ids: Vec<i64>) -> Written {
+        Written {
+            ids,
+            defined: false,
+            reread: false,
+        }
+    }
+}
+
 impl RepoChange {
     /// The change a delivery carries; `None` for events and actions not handled here.
     fn parse(event: &str, payload: &[u8]) -> Result<Option<RepoChange>, serde_json::Error> {
@@ -1045,6 +1121,18 @@ impl RepoChange {
         };
         let action = std::mem::take(&mut p.action);
         let installation = p.installation.as_ref().map(|i| i.id);
+        // The one label or assignee the action names; a payload without it is taken whole.
+        let delta = match action.as_str() {
+            "labeled" | "unlabeled" => p.label.take().map(|label| Delta::Label {
+                label,
+                on: action == "labeled",
+            }),
+            "assigned" | "unassigned" => p.assignee.take().map(|user| Delta::Assignee {
+                user,
+                on: action == "assigned",
+            }),
+            _ => None,
+        };
         let add = action.ends_with("_added");
         let rel = add || action.ends_with("_removed");
         let change = match (event, action.as_str()) {
@@ -1087,9 +1175,9 @@ impl RepoChange {
             // Transfers re-point relationships and come with their own slice.
             ("issues", "transferred") => None,
             ("issues", "deleted") => p.issue.map(|i| Change::IssueDeleted(i.id)),
-            // Every other action carries the whole issue as it is now: `typed` and `untyped`
-            // too, whose `issue.type` is the new type (null once untyped).
-            ("issues", _) => p.issue.map(Change::Issue),
+            // Every other action carries the whole issue as that action left it: `typed` and
+            // `untyped` too, whose `issue.type` is the new type (null once untyped).
+            ("issues", _) => p.issue.map(|issue| Change::Issue { issue, delta }),
             ("issue_comment", "deleted") => match (p.issue, p.comment) {
                 (Some(issue), Some(c)) => Some(Change::CommentDeleted {
                     issue,
@@ -1107,7 +1195,38 @@ impl RepoChange {
             ("milestone", _) => p.milestone.map(Change::Milestone),
             _ => None,
         };
-        Ok(change.map(|change| RepoChange { repo, change }))
+        Ok(change.map(|change| RepoChange {
+            repo,
+            installation,
+            change,
+        }))
+    }
+
+    /// The issue to read again from GitHub when the delivery disagreed with a mirror in a way
+    /// `updated_at` can't settle (see [`upsert_issue`]): the delivery's issue, read with its
+    /// installation's token.
+    fn reread(&self) -> Option<Subject> {
+        let issue = match &self.change {
+            Change::Issue { issue, .. }
+            | Change::Comment { issue, .. }
+            | Change::CommentDeleted { issue, .. } => issue,
+            Change::Relationship(r) => &r.subject,
+            _ => return None,
+        };
+        let Some(installation) = self.installation else {
+            eprintln!(
+                "webhooks: a delivery for issue {} names no installation; it can't be read again",
+                issue.id
+            );
+            return None;
+        };
+        Some(Subject {
+            id: issue.id,
+            node_id: issue.node_id.clone(),
+            number: issue.number,
+            repo: self.repo,
+            installation,
+        })
     }
 
     /// The read-back a relationship delivery calls for: its repo's issue, the kind, and whether
@@ -1127,6 +1246,7 @@ impl RepoChange {
             Subject {
                 id: r.subject.id,
                 node_id: r.subject.node_id.clone(),
+                number: r.subject.number,
                 repo: self.repo,
                 installation,
             },
@@ -1146,44 +1266,60 @@ impl RepoChange {
 
     /// Writes the change in one account's transaction; the ids of the items whose rows it
     /// changed (none when the guard kept everything as it was), and of the items that show
-    /// something of them (an ancestor's progress, a blocked issue's chips). A repo the mirror no
-    /// longer syncs (a pick unsynced it after the fan-out) gets nothing: the import's own check.
-    fn write(&self, tx: &Transaction, seq: i64) -> rusqlite::Result<Vec<i64>> {
+    /// something of them (an ancestor's progress, a blocked issue's chips), and whether a label
+    /// or milestone itself changed. A repo the mirror no longer syncs (a pick unsynced it after
+    /// the fan-out) gets nothing: the import's own check.
+    fn write(&self, tx: &Transaction, seq: i64) -> rusqlite::Result<Written> {
         let repo = self.repo;
         if !crate::import::synced(tx, repo)? {
-            return Ok(Vec::new());
+            return Ok(Vec::new().into());
         }
+        let definition = |ids: Vec<i64>, defined: bool| Written {
+            ids,
+            defined,
+            reread: false,
+        };
+        let issue_ids = |w: Wrote, ids: Vec<i64>| Written {
+            ids,
+            defined: false,
+            reread: w.reread,
+        };
         Ok(match &self.change {
-            Change::Issue(i) => {
-                if upsert_issue(tx, repo, i, seq)? {
-                    edges::with_neighbours(tx, BTreeSet::from([i.id]))?
+            Change::Issue { issue, delta } => {
+                let source = delta.as_ref().map_or(Source::Delivery, Source::Delta);
+                let w = upsert_issue(tx, repo, issue, seq, source)?;
+                let ids = if w.changed {
+                    edges::with_neighbours(tx, BTreeSet::from([issue.id]))?
                 } else {
                     Vec::new()
-                }
+                };
+                issue_ids(w, ids)
             }
-            Change::IssueDeleted(id) => delete_item(tx, *id)?,
+            Change::IssueDeleted(id) => delete_item(tx, *id)?.into(),
             Change::Relationship(r) => {
                 let mut ids = BTreeSet::new();
-                if upsert_issue(tx, repo, &r.subject, seq)? {
+                let w = upsert_issue(tx, repo, &r.subject, seq, Source::Delivery)?;
+                if w.changed {
                     ids.extend(edges::with_neighbours(tx, BTreeSet::from([r.subject.id]))?);
                 }
                 if let Some(e) = r.applicable(tx)? {
                     ids.extend(edges::apply_delivery(tx, seq, e)?);
                 }
-                ids.into_iter().collect()
+                issue_ids(w, ids.into_iter().collect())
             }
             Change::Comment { issue, comment } => {
-                let issue_changed = upsert_issue(tx, repo, issue, seq)?;
+                let w = upsert_issue(tx, repo, issue, seq, Source::Delivery)?;
                 let comment_changed = write_comment(tx, issue.id, comment, seq)?;
-                ids_if(issue_changed || comment_changed, issue.id)
+                let ids = ids_if(w.changed || comment_changed, issue.id);
+                issue_ids(w, ids)
             }
             Change::CommentDeleted { issue, comment } => {
-                let mut changed = upsert_issue(tx, repo, issue, seq)?;
-                changed |= delete_comment(tx, issue.id, *comment, seq)?;
-                ids_if(changed, issue.id)
+                let w = upsert_issue(tx, repo, issue, seq, Source::Delivery)?;
+                let changed = delete_comment(tx, issue.id, *comment, seq)? || w.changed;
+                issue_ids(w, ids_if(changed, issue.id))
             }
             Change::Label(l) => {
-                q::upsert_label(
+                let written = q::upsert_label(
                     tx,
                     l.id,
                     repo,
@@ -1191,18 +1327,24 @@ impl RepoChange {
                     &l.color,
                     l.description.as_deref(),
                     seq,
-                )?;
-                q::label_items(tx, l.id)?
+                )? > 0;
+                definition(q::label_items(tx, l.id)?, written)
             }
-            Change::LabelDeleted(id) => delete_label(tx, *id)?,
+            Change::LabelDeleted(id) => {
+                let (ids, gone) = delete_label(tx, *id)?;
+                definition(ids, gone)
+            }
             Change::Milestone(m) => {
                 if upsert_milestone(tx, repo, m)? {
-                    q::milestone_items(tx, m.id)?
+                    definition(q::milestone_items(tx, m.id)?, true)
                 } else {
-                    Vec::new()
+                    Vec::new().into()
                 }
             }
-            Change::MilestoneDeleted(id) => delete_milestone(tx, *id, seq)?,
+            Change::MilestoneDeleted(id) => {
+                let (ids, gone) = delete_milestone(tx, *id, seq)?;
+                definition(ids, gone)
+            }
         })
     }
 }
@@ -1256,33 +1398,40 @@ pub(crate) fn forget_comment(
     Ok(false)
 }
 
-/// Deletes a label for good; the items that had it.
-pub(crate) fn delete_label(tx: &Transaction, id: i64) -> rusqlite::Result<Vec<i64>> {
+/// Deletes a label for good; the items that had it, and whether the mirror held it.
+pub(crate) fn delete_label(tx: &Transaction, id: i64) -> rusqlite::Result<(Vec<i64>, bool)> {
     q::record_deleted(tx, "label", id)?;
     let ids = q::label_items(tx, id)?;
     q::unlink_label(tx, id)?;
-    q::delete_label(tx, id)?;
-    Ok(ids)
+    let gone = q::delete_label(tx, id)? > 0;
+    Ok((ids, gone))
 }
 
-/// Deletes a milestone for good; the items that had it.
-pub(crate) fn delete_milestone(tx: &Transaction, id: i64, seq: i64) -> rusqlite::Result<Vec<i64>> {
+/// Deletes a milestone for good; the items that had it, and whether the mirror held it.
+pub(crate) fn delete_milestone(
+    tx: &Transaction,
+    id: i64,
+    seq: i64,
+) -> rusqlite::Result<(Vec<i64>, bool)> {
     q::record_deleted(tx, "milestone", id)?;
     let ids = q::milestone_items(tx, id)?;
     q::clear_milestone(tx, id, seq)?;
-    q::delete_milestone(tx, id)?;
-    Ok(ids)
+    let gone = q::delete_milestone(tx, id)? > 0;
+    Ok((ids, gone))
 }
 
-/// Writes an issue from GitHub's answer to one of beghu's own writes, as its webhook would (under
-/// the `updated_at` guard): false if the mirror already had it as new or newer.
+/// Writes an issue GitHub answered with, to a read or to one of beghu's own writes: the issue as
+/// it is, so it wins over the mirror's unless the mirror's is newer (see [`upsert_issue`]). Its
+/// webhooks then find it in place: an equal `updated_at` saying the same is a no-op. One that
+/// overwrote a row of its own second saying otherwise asks for the issue to be read again
+/// ([`Wrote::reread`]): a change of that second may have come after GitHub answered.
 pub(crate) fn write_issue(
     tx: &Transaction,
     repo: i64,
     issue: &Issue,
     seq: i64,
-) -> rusqlite::Result<bool> {
-    upsert_issue(tx, repo, issue, seq)
+) -> rusqlite::Result<Wrote> {
+    upsert_issue(tx, repo, issue, seq, Source::Read)
 }
 
 /// Writes a comment on `issue` from GitHub's answer to one of beghu's own writes, as its
@@ -1316,6 +1465,51 @@ pub(crate) fn write_comment(
     Ok(written)
 }
 
+/// Puts `label` (from GitHub's answer to one of beghu's own writes) on `item`: the label is added
+/// to the repo's if the mirror lacks it, never renamed (as from an issue payload). False if the
+/// item had it already.
+pub(crate) fn link_label(
+    tx: &Transaction,
+    repo: i64,
+    item: i64,
+    label: &Label,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    q::add_label(
+        tx,
+        label.id,
+        repo,
+        &label.name,
+        &label.color,
+        label.description.as_deref(),
+        seq,
+    )?;
+    let linked = q::link_item_label(tx, item, label.id)? > 0;
+    if linked {
+        q::touch_item(tx, item, seq)?;
+    }
+    Ok(linked)
+}
+
+/// Takes the repo's label called `name` (as GitHub compares names, ignoring case) off `item`,
+/// after GitHub did at beghu's request. False if the item didn't have it.
+pub(crate) fn unlink_label(
+    tx: &Transaction,
+    repo: i64,
+    item: i64,
+    name: &str,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    let Some(label) = q::repo_label_named(tx, repo, name)? else {
+        return Ok(false);
+    };
+    let unlinked = q::unlink_item_label(tx, item, label.id)? > 0;
+    if unlinked {
+        q::touch_item(tx, item, seq)?;
+    }
+    Ok(unlinked)
+}
+
 /// `[id]` if its row changed, else nothing.
 fn ids_if(changed: bool, id: i64) -> Vec<i64> {
     if changed { vec![id] } else { Vec::new() }
@@ -1328,18 +1522,126 @@ fn upsert_milestone(tx: &Transaction, repo: i64, m: &Milestone) -> rusqlite::Res
     Ok(q::upsert_milestone(tx, m.id, repo, m.number, &m.title, &m.state, due, updated)? > 0)
 }
 
-/// Writes the issue under the `updated_at` guard; with it, its labels, assignees, author and
-/// milestone. False when the mirror already had it as new or newer. An update SETs only the
+/// A delivery's one change to an issue's labels or assignees (`labeled`, `unlabeled`,
+/// `assigned`, `unassigned`), from its `label` or `assignee`.
+pub(crate) enum Delta {
+    Label { label: Label, on: bool },
+    Assignee { user: User, on: bool },
+}
+
+/// Where an issue payload comes from, which decides how it meets the mirror's row.
+#[derive(Clone, Copy)]
+pub(crate) enum Source<'a> {
+    /// A delivery whose action carries the whole issue as that action left it.
+    Delivery,
+    /// A delivery naming the one label or assignee its action put on or took off.
+    Delta(&'a Delta),
+    /// GitHub's answer to a read or to one of beghu's own writes: the issue as it is.
+    Read,
+}
+
+/// What writing an issue payload did to one mirror.
+#[derive(Default, Debug, PartialEq, Clone, Copy)]
+pub(crate) struct Wrote {
+    /// The item's row reads differently.
+    pub changed: bool,
+    /// The payload disagrees with the mirror in a way `updated_at` can't settle.
+    pub reread: bool,
+}
+
+impl From<bool> for Wrote {
+    /// A write that settles itself: changed or not, nothing to read again.
+    fn from(changed: bool) -> Wrote {
+        Wrote {
+            changed,
+            reread: false,
+        }
+    }
+}
+
+/// Writes an issue payload against the mirror's row, by `updated_at` (in whole seconds, so picks
+/// made within one second share it, and their deliveries may arrive in any order):
+///
+/// - Newer (or an item the mirror lacks): written. A `Delta` delivery writes the issue's own
+///   fields and its one change; its other labels and assignees are as of its action, maybe before
+///   a change of the same second the mirror already has, so they're only compared, and a
+///   difference has the issue read again. Picks of different labels or people commute.
+/// - Equal: a payload saying what the mirror has (for a `Delta`, its one change is in place) is a
+///   replay, a no-op. One that says otherwise can't be ordered: it's not written, and the issue
+///   is read again ([`Wrote::reread`]): a milestone set twice, a label toggled, two edits within
+///   one second. A `Read` is GitHub's answer, maybe from before a change of its own second that
+///   the mirror already has: written, and the issue read again once the second has settled, so
+///   a later read converges on GitHub's last word for that second.
+/// - Older: nothing, unless it's a `Delta` whose change the mirror lacks (a newer `Delta`
+///   delivery carries only its own change): read again.
+///
+/// A deleted item is never written again (the upserts' own check). An update SETs only the
 /// columns whose values changed, so it rewrites only their indexes (see `webhooks.sql`).
-fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::Result<bool> {
-    let pr = i.pull_request.is_some();
-    let kind = if pr { "pr" } else { "issue" };
-    // Never on a PR, as the import leaves it.
-    let issue_type = i
-        .issue_type
+fn upsert_issue(
+    tx: &Transaction,
+    repo: i64,
+    i: &Issue,
+    seq: i64,
+    source: Source,
+) -> rusqlite::Result<Wrote> {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let order = match q::item_version(tx, i.id)? {
+        Some(v) if !v.is_stub => v.updated_at.map(|t| time(&i.updated_at).cmp(&t)),
+        _ => None,
+    };
+    let unchanged = |reread: bool| Wrote {
+        changed: false,
+        reread,
+    };
+    match (order, source) {
+        (Some(Greater), Source::Delta(d)) => {
+            if !write_fields(tx, repo, i, seq, false)? {
+                return Ok(unchanged(false));
+            }
+            apply_delta(tx, repo, i.id, d, seq)?;
+            Ok(Wrote {
+                changed: true,
+                reread: !same_sets(tx, i)?,
+            })
+        }
+        (None | Some(Greater), _) => write_whole(tx, repo, i, seq, false),
+        (Some(Equal), Source::Read) if !same_content(tx, i)? => {
+            let w = write_whole(tx, repo, i, seq, true)?;
+            Ok(Wrote {
+                reread: w.changed,
+                ..w
+            })
+        }
+        (Some(Equal), Source::Delivery) => Ok(unchanged(!same_content(tx, i)?)),
+        (Some(Equal | Less), Source::Delta(d)) => Ok(unchanged(!applied(tx, i.id, d)?)),
+        (Some(Equal | Less), _) => Ok(unchanged(false)),
+    }
+}
+
+/// The payload's issue type: never a PR's, as the import leaves it.
+fn issue_type(i: &Issue) -> Option<&str> {
+    i.issue_type
         .as_ref()
-        .filter(|_| !pr)
-        .map(|t| t.name.as_str());
+        .filter(|_| i.pull_request.is_none())
+        .map(|t| t.name.as_str())
+}
+
+/// Writes the issue's own fields (`same_wins`: over an equal `updated_at` too), with its author
+/// and milestone, not its labels or assignees. False when the guard kept the row as it was, or
+/// the item was deleted.
+fn write_fields(
+    tx: &Transaction,
+    repo: i64,
+    i: &Issue,
+    seq: i64,
+    same_wins: bool,
+) -> rusqlite::Result<bool> {
+    let kind = if i.pull_request.is_some() {
+        "pr"
+    } else {
+        "issue"
+    };
+    let issue_type = issue_type(i);
     let author = i.user.as_ref().map(|u| u.id);
     let created = i.created_at.as_deref().map(time);
     let updated = time(&i.updated_at);
@@ -1364,6 +1666,7 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
         i.comments,
         issue_type,
         seq,
+        same_wins,
     )? > 0;
     if !applied {
         return Ok(false);
@@ -1385,6 +1688,20 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
     if let Some(m) = &i.milestone {
         upsert_milestone(tx, repo, m)?;
     }
+    Ok(true)
+}
+
+/// Writes the whole issue, its labels and assignees replaced by the payload's.
+fn write_whole(
+    tx: &Transaction,
+    repo: i64,
+    i: &Issue,
+    seq: i64,
+    same_wins: bool,
+) -> rusqlite::Result<Wrote> {
+    if !write_fields(tx, repo, i, seq, same_wins)? {
+        return Ok(Wrote::default());
+    }
     q::clear_item_labels(tx, i.id)?;
     for l in &i.labels {
         q::add_label(
@@ -1403,7 +1720,99 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
         q::upsert_user(tx, a.id, &a.login, a.avatar_url.as_deref())?;
         q::add_item_assignee(tx, i.id, a.id)?;
     }
-    Ok(true)
+    Ok(Wrote {
+        changed: true,
+        reread: false,
+    })
+}
+
+/// Puts a delivery's one label or assignee on the item, or takes it off.
+fn apply_delta(
+    tx: &Transaction,
+    repo: i64,
+    item: i64,
+    d: &Delta,
+    seq: i64,
+) -> rusqlite::Result<()> {
+    match d {
+        Delta::Label { label: l, on: true } => {
+            q::add_label(
+                tx,
+                l.id,
+                repo,
+                &l.name,
+                &l.color,
+                l.description.as_deref(),
+                seq,
+            )?;
+            q::link_item_label(tx, item, l.id)?;
+        }
+        Delta::Label { label, on: false } => {
+            q::unlink_item_label(tx, item, label.id)?;
+        }
+        Delta::Assignee { user: u, on: true } => {
+            q::upsert_user(tx, u.id, &u.login, u.avatar_url.as_deref())?;
+            q::add_item_assignee(tx, item, u.id)?;
+        }
+        Delta::Assignee { user, on: false } => {
+            q::remove_item_assignee(tx, item, user.id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether the mirror has the delivery's one change in place.
+fn applied(tx: &Transaction, item: i64, d: &Delta) -> rusqlite::Result<bool> {
+    Ok(match d {
+        Delta::Label { label, on } => q::item_label_ids(tx, item)?.contains(&label.id) == *on,
+        Delta::Assignee { user, on } => q::item_assignee_ids(tx, item)?.contains(&user.id) == *on,
+    })
+}
+
+/// Whether the mirror's labels and assignees for the item are the payload's. A label a webhook
+/// deleted is left out: the mirror never takes it back, so an answer still naming it (GitHub's,
+/// from before the delete) differs in nothing a read again could settle.
+fn same_sets(tx: &Transaction, i: &Issue) -> rusqlite::Result<bool> {
+    let mut labels = Vec::with_capacity(i.labels.len());
+    for l in &i.labels {
+        if !q::is_deleted(tx, "label", l.id)? {
+            labels.push(l.id);
+        }
+    }
+    let ids = |mut v: Vec<i64>| -> Vec<i64> {
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    Ok(q::item_label_ids(tx, i.id)? == ids(labels)
+        && q::item_assignee_ids(tx, i.id)? == ids(i.assignees.iter().map(|u| u.id).collect()))
+}
+
+/// The payload's milestone as the mirror can have it: none for one a webhook deleted.
+fn live_milestone(tx: &Transaction, i: &Issue) -> rusqlite::Result<Option<i64>> {
+    match &i.milestone {
+        Some(m) if !q::is_deleted(tx, "milestone", m.id)? => Ok(Some(m.id)),
+        _ => Ok(None),
+    }
+}
+
+/// Whether the mirror's row says what the payload says: its own fields, labels and assignees.
+fn same_content(tx: &Transaction, i: &Issue) -> rusqlite::Result<bool> {
+    let Some(m) = q::item_content(tx, i.id)? else {
+        return Ok(false);
+    };
+    let same = m.title == i.title
+        && m.body.as_deref() == i.body.as_deref()
+        && m.state == i.state
+        && m.state_reason.as_deref() == i.state_reason.as_deref()
+        && m.locked == i.locked
+        && m.author_id == i.user.as_ref().map(|u| u.id)
+        && m.milestone_id == live_milestone(tx, i)?
+        && m.created_at == i.created_at.as_deref().map(time)
+        && m.closed_at == i.closed_at.as_deref().map(time)
+        && m.comments_count == i.comments
+        && m.issue_type.as_deref() == issue_type(i);
+    Ok(same && same_sets(tx, i)?)
 }
 
 /// GitHub's RFC 3339 timestamps (`2026-10-13T08:22:19Z`, or with an offset or fractional
@@ -1474,7 +1883,7 @@ pub(crate) fn parse_time(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepoChange, parse_time, rfc3339};
+    use super::{RepoChange, Written, parse_time, rfc3339};
     use mirror_db::q;
 
     // An exception to "tests go through public seams" (AGENTS.md): a delivery is fanned out from
@@ -1511,7 +1920,15 @@ mod tests {
             let change = RepoChange::parse(event, &serde_json::to_vec(&payload).unwrap())
                 .unwrap()
                 .unwrap();
-            assert_eq!(change.write(&tx, 99).unwrap(), Vec::<i64>::new(), "{event}");
+            assert_eq!(
+                change.write(&tx, 99).unwrap(),
+                Written {
+                    ids: Vec::new(),
+                    defined: false,
+                    reread: false,
+                },
+                "{event}"
+            );
         }
         assert!(
             q::item_by_number(&tx, PARTNER_SDK, 9_999)
@@ -1519,7 +1936,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            q::label_by_name(&tx, PARTNER_SDK, "late")
+            q::repo_label_named(&tx, PARTNER_SDK, "late")
                 .unwrap()
                 .is_none()
         );

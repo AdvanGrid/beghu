@@ -249,7 +249,18 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         return crate::api::internal("reading an answer to tag");
     };
     let tag = etag(&bytes);
+    // Who can be assigned: how each answer went, for the pickers' cache to be checked against.
+    let assignees = {
+        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        matches!(parts.as_slice(), ["repos", _, _, "assignees"])
+    };
     let mut res = if matches(&asked, &tag) {
+        if assignees {
+            fake.state()
+                .assignees
+                .not_modified
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         // Unchanged: nothing sent, nothing spent.
         let mut r = StatusCode::NOT_MODIFIED.into_response();
         r.headers_mut()
@@ -261,6 +272,12 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return r;
     } else {
+        if assignees {
+            fake.state()
+                .assignees
+                .full
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         parts.headers.remove(header::CONTENT_LENGTH);
         Response::from_parts(parts, bytes.into())
     };

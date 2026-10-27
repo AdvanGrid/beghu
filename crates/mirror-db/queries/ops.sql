@@ -3,8 +3,9 @@
 
 -- name: op_target :opt
 -- param: id i64
-SELECT i.id, i.kind, i.is_stub AS "is_stub: bool", r.synced AS "synced: bool", i.repo_id,
-       r.owner, r.name AS repo, i.number, i.author_id AS "author_id?"
+SELECT i.id, i.node_id, i.kind, i.is_stub AS "is_stub: bool", r.synced AS "synced: bool",
+       i.repo_id, r.installation_id AS "installation_id?", r.owner, r.name AS repo, i.number,
+       i.author_id AS "author_id?"
 FROM items i JOIN repos r ON r.id = i.repo_id
 WHERE i.id = :id;
 
@@ -13,3 +14,10 @@ WHERE i.id = :id;
 -- name: newest_comment_id :one
 -- param: item_id i64
 SELECT coalesce(max(c.id), 0) AS "id!: i64" FROM comments c WHERE c.item_id = :item_id;
+
+-- A label GitHub took off an item at beghu's request: the issue's own `unlabeled` delivery
+-- follows with the whole set.
+-- name: unlink_item_label :exec
+-- param: item_id i64
+-- param: label_id i64
+DELETE FROM item_labels WHERE item_id = :item_id AND label_id = :label_id;

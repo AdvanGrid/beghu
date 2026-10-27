@@ -1,7 +1,8 @@
--- Webhook applies. Items, comments and milestones are guarded by `updated_at`: newer or equal
--- wins, so a replay or an out-of-order older delivery never overwrites a newer row. An id in
--- `deleted` is never written again. Each `:exec` upsert reports 0 rows when a guard kept the
--- row as it was.
+-- Webhook applies. Comments and milestones are guarded by `updated_at`: newer or equal wins,
+-- so a replay or an out-of-order older delivery never overwrites a newer row. Items are guarded
+-- by `updated_at` too, but what an equal one does is decided in `crates/server/src/webhook.rs`
+-- (`upsert_issue`): picks within one second share it. An id in `deleted` is never written
+-- again. Each `:exec` upsert reports 0 rows when a guard kept the row as it was.
 
 -- An issue or PR as a REST payload has it, in two steps so that an update rewrites only the
 -- indexes over columns whose values changed. An UPDATE rewrites every index over a column it
@@ -14,6 +15,9 @@
 -- column group, each of which matches no row (and so writes nothing) when its values are
 -- already the payload's. `crates/server/src/webhook.rs` (`upsert_issue`) runs them all; a
 -- column added to `items` belongs in exactly one of the two steps.
+--
+-- The guard lets a newer `updated_at` through, and an equal one only with `same_wins` (GitHub's
+-- answer to a read, which is newer than any delivery of that second).
 --
 -- `issue_type` is the REST payload's `issue.type.name` (`type` is null for an untyped issue),
 -- NULL for a PR: see 0004_issue_type.rebuild.sql.
@@ -36,6 +40,7 @@
 -- param: comments_count i64
 -- param: issue_type Option<&str>
 -- param: seq i64
+-- param: same_wins bool
 INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, body, state, state_reason,
   locked, author_id, milestone_id, created_at, updated_at, closed_at, comments_count,
   issue_type, seq)
@@ -49,7 +54,44 @@ WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'item' AND d.id = :id)
 ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id,
   state_reason = excluded.state_reason, locked = excluded.locked,
   milestone_id = excluded.milestone_id, seq = excluded.seq
-WHERE items.updated_at IS NULL OR excluded.updated_at >= items.updated_at;
+WHERE items.updated_at IS NULL OR excluded.updated_at > items.updated_at
+  OR (:same_wins AND excluded.updated_at = items.updated_at);
+
+-- The mirror's `updated_at` for an item, to order a payload against: none for an item it
+-- lacks; a stub's is never compared.
+-- name: item_version :opt
+-- param: id i64
+SELECT i.updated_at AS "updated_at?", i.is_stub AS "is_stub: bool" FROM items i WHERE i.id = :id;
+
+-- An item's own fields as a payload carries them, to tell one with the mirror's `updated_at`
+-- that says the same from one that doesn't.
+-- name: item_content :opt
+-- param: id i64
+SELECT i.title, i.body AS "body?", i.state, i.state_reason AS "state_reason?",
+       i.locked AS "locked: bool", i.author_id AS "author_id?",
+       i.milestone_id AS "milestone_id?", i.created_at AS "created_at?",
+       i.closed_at AS "closed_at?", i.comments_count, i.issue_type AS "issue_type?"
+FROM items i WHERE i.id = :id;
+
+-- name: item_label_ids :many
+-- param: item_id i64
+SELECT il.label_id FROM item_labels il WHERE il.item_id = :item_id ORDER BY il.label_id;
+
+-- name: item_assignee_ids :many
+-- param: item_id i64
+SELECT ia.user_id FROM item_assignees ia WHERE ia.item_id = :item_id ORDER BY ia.user_id;
+
+-- An `unassigned` delivery, or GitHub's answer to beghu's own unassign.
+-- name: remove_item_assignee :exec
+-- param: item_id i64
+-- param: user_id i64
+DELETE FROM item_assignees WHERE item_id = :item_id AND user_id = :user_id;
+
+-- A change to an item's labels or assignees alone: its row reads differently from `seq` on.
+-- name: touch_item :exec
+-- param: id i64
+-- param: seq i64
+UPDATE items SET seq = :seq WHERE id = :id;
 
 -- The UNIQUE (repo_id, number) index.
 -- name: set_item_place :exec
@@ -263,3 +305,9 @@ DELETE FROM relationships WHERE src_id = :item_id OR dst_id = :item_id;
 -- param: kind &str
 -- param: id i64
 INSERT OR IGNORE INTO deleted (kind, id) VALUES (:kind, :id);
+
+-- Whether a webhook deleted the id: the mirror never takes it back, whatever GitHub's answers say.
+-- name: is_deleted :one
+-- param: kind &str
+-- param: id i64
+SELECT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = :kind AND d.id = :id) AS "deleted!: bool";

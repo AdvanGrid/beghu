@@ -8,14 +8,18 @@
 // - It shows over a read that began before GitHub confirmed it, and stops showing over one that
 //   began after, since the server writes GitHub's answer to the mirror before it replies. So a
 //   view drops it only once a read that began after the confirmation is on screen, whatever
-//   order reads and the reply land in; a confirmed write then asks for such a read itself.
+//   order reads and the reply land in; a confirmed write then asks for such a read itself. A
+//   pick's own echo from GitHub finds the server's mirror already as the pick left it, so no
+//   read that begins after the confirmation shows anything older (crates/server/src/webhook.rs).
 // - It never changes which rows a list holds, their order, or a facet's count: only the row's own
-//   fields.
+//   fields. A label, assignee or milestone pick changes only its own property row, whose marker
+//   slot (one line the row always keeps) shows its dot and its latest failure.
 // - A dropped connection resends the same `op_id` (see `sendOp`): nothing is sent to GitHub
 //   twice. After 15 s without an answer it shows "still sending…", with no Retry.
 // - A **failed write** reverts at once and stays visible until the user retries or dismisses it
-//   (or reloads): a close or reopen on its own row, a comment in the thread as "not sent", and a
-//   failure on an issue that isn't open in the status slot.
+//   (or reloads): a close or reopen on its own row, a pick on its property row ("Couldn't add
+//   bug"), a comment in the thread as "not sent", and a failure on an issue that isn't open in
+//   the status slot.
 // - A **lost write** (the server lost track of it, or the resends ran out) and a **maybe-posted**
 //   comment (GitHub failed on it, answered it unreadably or didn't answer) may have reached GitHub
 //   all the same, and say so. Such a comment looks for itself in the thread: one comment by the
@@ -50,8 +54,10 @@ import {
   type Op,
   type OpReply,
 } from "./api";
+import type { Label } from "./bindings/Label";
+import type { Milestone } from "./bindings/Milestone";
 import { githubDown, reconnecting, refetchShown } from "./live";
-import { setOverlay, type ShownComment, type ShownDetail } from "./overlay";
+import { setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { link } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
@@ -64,6 +70,8 @@ interface Pending {
   op: Op;
   /** The issue as the user knows it, for the status slot: `web#12`. */
   ref: string;
+  /** How a pick shows until GitHub's data does: the label's colour, the milestone's title. */
+  look?: Look;
   /** The id a pending comment has in the thread until GitHub's comment replaces it: negative,
    * which no real comment's is. */
   commentId: number;
@@ -87,6 +95,9 @@ interface Pending {
   reply?: OpReply;
   error?: Error;
 }
+
+/** What a pick looks like, from the picker's list: the op names only a label's name, a milestone's number. */
+export type Look = { label?: Label; milestone?: Milestone | null };
 
 /** How long a write waits for an answer before it shows "still sending…". */
 const SLOW_MS = 15_000;
@@ -136,14 +147,15 @@ function setDraft(issue: number, text: string): void {
 }
 
 /**
- * Makes a write and sends it. A close or reopen supersedes the issue's earlier failed ones: the
- * user has chosen its state again.
+ * Makes a write and sends it. It supersedes the issue's earlier failed writes of the same thing (a
+ * close or reopen, the same label or assignee, the milestone): the user has chosen it again.
  */
-function write(op: Op, ref: string, author: string): void {
+function write(op: Op, ref: string, author: string, look?: Look): void {
   const p: Pending = {
     id: crypto.randomUUID(),
     op,
     ref,
+    look,
     commentId: -++writesMade,
     author,
     createdAt: Math.floor(Date.now() / 1000),
@@ -151,7 +163,8 @@ function write(op: Op, ref: string, author: string): void {
     phase: "sending",
     slow: false,
   };
-  const superseded = (q: Pending) => op.kind !== "comment" && q.op.kind !== "comment" && q.op.issue === op.issue && q.phase === "failed";
+  const sets = kindOf(op).target(op);
+  const superseded = (q: Pending) => sets !== undefined && kindOf(q.op).target(q.op) === sets && q.op.issue === op.issue && q.phase === "failed";
   commit([...pendingNow.filter((q) => !superseded(q)), p]);
   setTimeout(() => {
     if (find(p.id)?.phase === "sending") patch(p.id, { slow: true });
@@ -235,7 +248,7 @@ async function sha256(text: string): Promise<string | undefined> {
 /** Sends a failed write again, as a new op: the server remembers the old one's failure. */
 function retry(p: Pending): void {
   drop(p.id);
-  write(p.op, p.ref, p.author);
+  write(p.op, p.ref, p.author, p.look);
 }
 
 /** Whether `p` shows over a read that began at `at`. */
@@ -243,14 +256,151 @@ function shows(p: Pending, at: number): boolean {
   return p.phase === "sending" || (p.phase === "sent" && at < p.sentAt!);
 }
 
-/** The close or reopen writes on `issue` showing over a read from `at`, applied in order. */
-function withState<T extends { id: number; state: string; state_reason: string | null }>(x: T, at: number): T {
+/** Whether `p` is still waiting on GitHub as a read from `at` sees it: its dot shows. */
+function waiting(p: Pending, at: number): boolean {
+  return p.phase === "sending" || (p.phase === "sent" && at < p.sentAt!);
+}
+
+/** What a pending write can change on a list row or a detail (a row has no milestone). */
+type Shown = {
+  id: number;
+  state: string;
+  state_reason: string | null;
+  labels: Label[];
+  assignees: { login: string }[];
+  milestone?: Milestone | null;
+};
+
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** `list` with `item` in name order, as the server sorts it, so it doesn't move once GitHub has it. */
+function inOrder<T>(list: T[], item: T, name: (t: T) => string): T[] {
+  const at = list.findIndex((t) => name(t).toLowerCase() > name(item).toLowerCase());
+  return at < 0 ? [...list, item] : [...list.slice(0, at), item, ...list.slice(at)];
+}
+
+/** A milestone pick's title, as the picker showed it ("" for none). */
+function milestoneTitle(op: OpOf<"milestone_set">, look?: Look): string {
+  return op.milestone === null ? "" : (look?.milestone?.title ?? `#${op.milestone}`);
+}
+
+/** `ref` as the end of a line about the write ("close web#12"), or nothing on the issue's own row. */
+const onRef = (ref?: string) => (ref === undefined ? "" : ` ${ref}`);
+/** `word ref` ("to web#12"), or nothing on the issue's own row. */
+const onWord = (word: string, ref?: string) => (ref === undefined ? "" : ` ${word} ${ref}`);
+
+type OpOf<K extends Op["kind"]> = Extract<Op, { kind: K }>;
+
+/** What each kind of write is, for everything that shows or compares one. */
+interface Kind<O extends Op> {
+  /**
+   * What it sets, for telling which earlier failed write a new one supersedes: the state, a label
+   * or an assignee (by name, as GitHub compares them), or the milestone. A comment sets nothing
+   * another write can.
+   */
+  target(op: O): string | undefined;
+  /** Which property row of the detail it changes, if any. */
+  prop?: Prop;
+  /**
+   * It over `x`: pure and idempotent, so applying it to data that already has it changes nothing.
+   * A label shows in its picker colour until GitHub's data has it.
+   */
+  apply<T extends Shown>(x: T, op: O, look?: Look): T;
+  /**
+   * What it would have done, as the line that says it didn't takes it: "close web#12", "add bug to
+   * web#12". Without `ref`, on the issue's own row: "close", "add bug". The thing picked is `em`,
+   * so a row can stress it.
+   */
+  doing(op: O, ref?: string, look?: Look): { verb: string; em?: string; rest: string };
+  /** In a word or two, for a line that can't say whether it happened: "Close", "Label bug". */
+  noun(op: O, look?: Look): string;
+}
+
+const KINDS: { [K in Op["kind"]]: Kind<OpOf<K>> } = {
+  comment: {
+    target: () => undefined,
+    apply: (x) => x,
+    doing: (_, ref) => ({ verb: "comment on", rest: onRef(ref) }),
+    noun: () => "Comment",
+  },
+  close: {
+    target: () => "state",
+    apply: (x, op) => ({ ...x, state: "closed", state_reason: op.reason }),
+    doing: (_, ref) => ({ verb: "close", rest: onRef(ref) }),
+    noun: () => "Close",
+  },
+  reopen: {
+    target: () => "state",
+    apply: (x) => ({ ...x, state: "open", state_reason: "reopened" }),
+    doing: (_, ref) => ({ verb: "reopen", rest: onRef(ref) }),
+    noun: () => "Reopen",
+  },
+  label_add: {
+    target: (op) => `label:${op.label.toLowerCase()}`,
+    prop: "labels",
+    apply: (x, op, look) => {
+      if (x.labels.some((l) => same(l.name, op.label))) return x;
+      const label = { name: op.label, color: look?.label?.color ?? "ededed" };
+      return { ...x, labels: inOrder(x.labels, label, (l) => l.name) };
+    },
+    doing: (op, ref) => ({ verb: "add", em: op.label, rest: onWord("to", ref) }),
+    noun: (op) => `Label ${op.label}`,
+  },
+  label_remove: {
+    target: (op) => `label:${op.label.toLowerCase()}`,
+    prop: "labels",
+    apply: (x, op) => ({ ...x, labels: x.labels.filter((l) => !same(l.name, op.label)) }),
+    doing: (op, ref) => ({ verb: "remove", em: op.label, rest: onWord("from", ref) }),
+    noun: (op) => `Label ${op.label}`,
+  },
+  assignee_add: {
+    target: (op) => `assignee:${op.login.toLowerCase()}`,
+    prop: "assignees",
+    apply: (x, op) => {
+      if (x.assignees.some((u) => same(u.login, op.login))) return x;
+      return { ...x, assignees: inOrder(x.assignees, { login: op.login }, (u) => u.login) };
+    },
+    doing: (op, ref) => ({ verb: "assign", em: op.login, rest: onWord("to", ref) }),
+    noun: (op) => `Assignee ${op.login}`,
+  },
+  assignee_remove: {
+    target: (op) => `assignee:${op.login.toLowerCase()}`,
+    prop: "assignees",
+    apply: (x, op) => ({ ...x, assignees: x.assignees.filter((u) => !same(u.login, op.login)) }),
+    doing: (op, ref) => ({ verb: "unassign", em: op.login, rest: onWord("from", ref) }),
+    noun: (op) => `Assignee ${op.login}`,
+  },
+  milestone_set: {
+    target: () => "milestone",
+    prop: "milestone",
+    apply: (x, op, look) => {
+      if (!("milestone" in x)) return x;
+      if (op.milestone === null) return { ...x, milestone: null };
+      if (x.milestone?.number === op.milestone) return x;
+      return { ...x, milestone: look?.milestone ?? { number: op.milestone, title: `#${op.milestone}`, state: "open", due_on: null } };
+    },
+    doing: (op, ref, look) => {
+      if (op.milestone === null) return { verb: "clear the milestone", rest: onWord("of", ref) };
+      return { verb: ref === undefined ? "set the milestone to" : `set ${ref}'s milestone to`, em: milestoneTitle(op, look), rest: "" };
+    },
+    noun: (op, look) => (op.milestone === null ? "Clearing the milestone" : `Milestone ${milestoneTitle(op, look)}`),
+  },
+};
+
+/** What `op`'s kind of write is. */
+function kindOf(op: Op): Kind<Op> {
+  return KINDS[op.kind] as Kind<Op>;
+}
+
+/** One write over `x` (see `Kind.apply`). */
+function apply<T extends Shown>(x: T, p: Pending): T {
+  return kindOf(p.op).apply(x, p.op, p.look);
+}
+
+/** The writes on `x` showing over a read from `at`, applied in the order they were made. */
+function withWrites<T extends Shown>(x: T, at: number): T {
   let out = x;
-  for (const p of ops()) {
-    if (p.op.issue !== x.id || !shows(p, at)) continue;
-    if (p.op.kind === "close") out = { ...out, state: "closed", state_reason: p.op.reason };
-    else if (p.op.kind === "reopen") out = { ...out, state: "open", state_reason: "reopened" };
-  }
+  for (const p of ops()) if (p.op.issue === x.id && shows(p, at)) out = apply(out, p);
   return out;
 }
 
@@ -271,7 +421,7 @@ function sweep(): void {
 }
 
 function rowWithWrites(r: IssueRow, at: number): IssueRow {
-  return withState(r, at);
+  return withWrites(r, at);
 }
 
 function listShown(at: number): void {
@@ -286,7 +436,7 @@ function detailShown(issue: number, at: number): void {
 
 function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
   for (const c of d.comments.comments) if (c.id > (newestSeen.get(d.id) ?? 0)) newestSeen.set(d.id, c.id);
-  const out = withState(d, at);
+  const out = withWrites(d, at);
   const real = new Set(d.comments.comments.map((c) => c.id));
   const mine: ShownComment[] = [];
   let refs = d.comments.refs;
@@ -325,9 +475,15 @@ addEventListener("beforeunload", (e) => {
 
 // --- how writes show ------------------------------------------------------------------------------
 
-const VERB: Record<Op["kind"], string> = { comment: "comment on", close: "close", reopen: "reopen" };
+/** What a write would have done, as the line that says it didn't takes it (see `Kind.doing`). */
+function doing(p: Pending, ref?: string): { verb: string; em?: string; rest: string } {
+  return kindOf(p.op).doing(p.op, ref, p.look);
+}
 
-const NOUN: Record<Op["kind"], string> = { comment: "Comment", close: "Close", reopen: "Reopen" };
+/** A write in a word or two (see `Kind.noun`). */
+function noun(p: Pending): string {
+  return kindOf(p.op).noun(p.op, p.look);
+}
 
 /**
  * How a failed write reads. `unsure`: it may have reached GitHub after all (a lost write, or a
@@ -353,8 +509,9 @@ function howFailed(p: Pending): { unsure: boolean; why: string; retry: boolean }
 /** A failed write in a line, on `ref` if given: what didn't happen, or what may have. */
 function failedLine(p: Pending, ref?: string): string {
   const f = howFailed(p);
-  if (f.unsure) return `${NOUN[p.op.kind]}${ref === undefined ? "" : ` on ${ref}`} — ${f.why}`;
-  return `Couldn't ${VERB[p.op.kind]}${ref === undefined ? "" : ` ${ref}`} — ${f.why}`;
+  if (f.unsure) return `${noun(p)}${ref === undefined ? "" : ` on ${ref}`} — ${f.why}`;
+  const d = doing(p, ref);
+  return `Couldn't ${d.verb}${d.em === undefined ? "" : ` ${d.em}`}${d.rest} — ${f.why}`;
 }
 
 function Dot() {
@@ -404,7 +561,7 @@ function Actions(props: { p: Pending; open?: string; edit?: () => void }) {
 
 /** Beside the open issue's state: a dot while its close or reopen is pending, or its failure. */
 function StateNote(props: { issue: number; at: number }) {
-  const last = createMemo(() => ops().findLast((p) => p.op.issue === props.issue && p.op.kind !== "comment"));
+  const last = createMemo(() => ops().findLast((p) => p.op.issue === props.issue && kindOf(p.op).target(p.op) === "state"));
   return (
     <span id={`state-note-${props.issue}`} {...stylex.attrs(s.note, s.restOfRow)} data-perf="state-note">
       <Show when={last()}>
@@ -421,6 +578,68 @@ function StateNote(props: { issue: number; at: number }) {
       </Show>
     </span>
   );
+}
+
+/**
+ * In a property row's marker slot (labels, assignees, milestone: one line the row always keeps,
+ * IssuePanel.tsx): a dot while a pick on it is pending, and its latest failed pick, reverted, as
+ * "Couldn't add **bug** — why" with Retry and Dismiss, then "+N" for the earlier ones still
+ * failed (dismissing it shows the one before). Clipped to its line, so nothing around it moves.
+ */
+function PropNote(props: { issue: number; prop: Prop; at: number }) {
+  const mine = createMemo(() => ops().filter((p) => p.op.issue === props.issue && kindOf(p.op).prop === props.prop));
+  const pending = () => mine().some((p) => waiting(p, props.at));
+  const failed = () => mine().filter((p) => p.phase === "failed");
+  const more = () => failed().length - 1;
+  return (
+    <>
+      <Show when={pending()}>
+        <Dot />
+      </Show>
+      <Show when={failed().at(-1)}>
+        {(p) => (
+          <span {...stylex.attrs(s.note, s.pickNote)} data-perf="pick-failed" data-op={p().op.kind}>
+            <span {...stylex.attrs(s.failed, s.clip)} title={howFailed(p()).why}>
+              <Show when={!howFailed(p()).unsure} fallback={failedLine(p())}>
+                Couldn't {doing(p()).verb}
+                <Show when={doing(p()).em}>
+                  {(em) => (
+                    <>
+                      {" "}
+                      <b>{em()}</b>
+                    </>
+                  )}
+                </Show>{" "}
+                — {howFailed(p()).why}
+              </Show>
+            </span>
+            <Show when={more() > 0}>
+              <span {...stylex.attrs(s.keep, s.failed)} data-perf="pick-more" title={failed().slice(0, -1).map((q) => failedLine(q)).join("\n")}>
+                +{more()}
+              </span>
+            </Show>
+            <span {...stylex.attrs(s.keep)}>
+              <Actions p={p()} />
+            </span>
+          </span>
+        )}
+      </Show>
+    </>
+  );
+}
+
+/**
+ * For the pickers (Pickers.tsx): picks `op` on the open issue `d`, sent at once as its own write.
+ * `look` is how the pick shows until GitHub's data does.
+ */
+export function pick(op: Op, d: ShownDetail, look?: Look): void {
+  write(op, `${d.repo}#${d.number}`, "you", look);
+}
+
+/** Whether a pick of the same thing (a label, an assignee, the milestone) is on its way on `issue`. */
+export function picking(issue: number, op: Op): boolean {
+  const sets = kindOf(op).target(op);
+  return ops().some((p) => p.phase === "sending" && p.op.issue === issue && kindOf(p.op).target(p.op) === sets);
 }
 
 /** The longest comment GitHub takes, in characters. */
@@ -657,7 +876,7 @@ export function Composer(props: { d: ShownDetail }) {
   );
 }
 
-setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, Banner, StateNote, CommentNote });
+setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, Banner, StateNote, CommentNote, PropNote });
 
 const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },
@@ -694,6 +913,18 @@ const s = stylex.create({
   clip: {
     overflow: "hidden",
     textOverflow: "ellipsis",
+    minWidth: 0,
+  },
+  // In a property row's marker slot: its whole line and no more, the reason clipped first.
+  pickNote: {
+    flexBasis: 0,
+    flexGrow: 1,
+    paddingInlineStart: 0,
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  keep: {
+    flexShrink: 0,
   },
   failed: {
     color: colors.danger,

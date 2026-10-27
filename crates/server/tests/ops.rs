@@ -774,9 +774,9 @@ async fn close_and_reopen_are_tried_again_after_a_timeout_or_a_reset() {
     );
 }
 
-/// Points the fake's webhooks at a listener of the test's own: the `issues` deliveries' actions,
-/// in the order GitHub sent them.
-async fn issue_actions(s: &Stack) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+/// Points the fake's webhooks at a listener of the test's own: the `issues` deliveries, in the
+/// order GitHub sent them.
+async fn issue_deliveries(s: &Stack) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
     let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = got.clone();
     let app = axum::Router::new().route(
@@ -787,8 +787,7 @@ async fn issue_actions(s: &Stack) -> std::sync::Arc<std::sync::Mutex<Vec<String>
                 async move {
                     if headers["x-github-event"] == "issues" {
                         let v: Value = serde_json::from_slice(&body).unwrap();
-                        let action = v["action"].as_str().unwrap().to_owned();
-                        sink.lock().unwrap().push(action);
+                        sink.lock().unwrap().push(v);
                     }
                     "ok"
                 }
@@ -802,12 +801,21 @@ async fn issue_actions(s: &Stack) -> std::sync::Arc<std::sync::Mutex<Vec<String>
     got
 }
 
+/// The actions of the `issues` deliveries `got` holds so far.
+fn actions(got: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+    got.lock()
+        .unwrap()
+        .iter()
+        .map(|v| v["action"].as_str().unwrap().to_owned())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn ops_on_one_issue_reach_github_in_the_order_they_arrived() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let (id, _) = an_open_issue(&s, &mut b).await;
-    let actions = issue_actions(&s).await;
+    let got = issue_deliveries(&s).await;
     // GitHub is slow to take the close; the reopen arrives while it's in flight.
     s.fake(
         "POST",
@@ -837,7 +845,7 @@ async fn ops_on_one_issue_reach_github_in_the_order_they_arrived() {
     let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
     assert_eq!(d["state"], "open");
     tokio::time::sleep(2 * SECS).await;
-    assert_eq!(*actions.lock().unwrap(), ["closed", "reopened"]);
+    assert_eq!(actions(&got), ["closed", "reopened"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1188,4 +1196,433 @@ async fn a_second_sigterm_during_the_drain_stops_the_server_at_once() {
         .unwrap()
         .unwrap();
     assert!(t.elapsed() < SECS, "{:?}", t.elapsed());
+}
+
+// --- labels, assignees and milestone ------------------------------------------------------------
+
+/// The names of the labels (or the logins of the assignees) a detail or row lists.
+fn names_in(list: &Value, key: &str) -> Vec<String> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v[key].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Sends each op as its own request, 200 ms apart (far enough that one never overtakes the one
+/// before on a loaded machine), without waiting for the ones before: as a tab does when the user
+/// picks quickly. Their statuses, in the order sent.
+async fn picked_quickly(s: &Stack, b: &Browser, ops: Vec<Value>) -> Vec<u16> {
+    let mut sent = Vec::new();
+    for op in ops {
+        let req = s
+            .http
+            .post(format!("{}/api/ops", s.server))
+            .header("cookie", b.header())
+            .header("origin", &s.server)
+            .json(&json!({ "op_id": uuid(), "op": op }));
+        sent.push(tokio::spawn(async move {
+            req.send().await.unwrap().status().as_u16()
+        }));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let mut out = Vec::new();
+    for t in sent {
+        out.push(t.await.unwrap());
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn five_label_picks_on_one_issue_reach_github_in_the_order_they_were_made() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, row) = an_open_issue(&s, &mut b).await;
+    let had = names_in(&row["labels"], "name");
+    // A first pick that adds, then four toggles, each the opposite of what the issue has.
+    let first = ["p0", "p1", "p2", "ux", "question"]
+        .into_iter()
+        .find(|l| !had.iter().any(|h| h == l))
+        .unwrap();
+    let mut picks = vec![first];
+    picks.extend(
+        ["backend", "frontend", "good first issue", "performance"]
+            .into_iter()
+            .filter(|l| *l != first)
+            .take(4),
+    );
+    let mut want: Vec<String> = had.clone();
+    let mut expected = Vec::new();
+    let ops: Vec<Value> = picks
+        .iter()
+        .map(|l| {
+            let on = want.iter().any(|h| h == l);
+            if on {
+                want.retain(|h| h != l);
+                expected.push(("unlabeled".to_owned(), l.to_string()));
+                json!({ "kind": "label_remove", "issue": id, "label": l })
+            } else {
+                want.push(l.to_string());
+                expected.push(("labeled".to_owned(), l.to_string()));
+                json!({ "kind": "label_add", "issue": id, "label": l })
+            }
+        })
+        .collect();
+    let got = issue_deliveries(&s).await;
+    // GitHub is slow to take the first; the other four arrive while it's in flight.
+    s.fake(
+        "POST",
+        "/faults/latency",
+        json!({ "endpoint": "POST /repos/*/*/issues/*/labels", "ms": 1500, "count": 1 }),
+    )
+    .await;
+    assert_eq!(picked_quickly(&s, &b, ops).await, [200; 5]);
+
+    // Each reply came once the mirror had its change: the detail has all five.
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    let mut now = names_in(&d["labels"], "name");
+    now.sort();
+    want.sort();
+    assert_eq!(now, want);
+    tokio::time::sleep(2 * SECS).await;
+    let sent: Vec<(String, String)> = got
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            (
+                v["action"].as_str().unwrap().to_owned(),
+                v["label"]["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(sent, expected);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_label_pick_the_role_doesnt_allow_is_refused_in_its_terms_and_changes_nothing() {
+    let s = start().await;
+    // Read on `cli`, even on her own issues.
+    let mut b = s.sign_in("ilze-k").await;
+    let (_, page) = s.api(&mut b, "/api/issues").await;
+    let row = page["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["repo"] == "cli")
+        .expect("an open issue in cli")
+        .clone();
+    let id = row["id"].as_i64().unwrap();
+    let label = ["p0", "p1", "p2", "ux"]
+        .into_iter()
+        .find(|l| !names_in(&row["labels"], "name").iter().any(|h| h == l))
+        .unwrap();
+    let (status, err) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "label_add", "issue": id, "label": label }),
+        )
+        .await;
+    assert_eq!(
+        (status, err["error"].as_str()),
+        (422, Some("refused")),
+        "{err}"
+    );
+    assert_eq!(err["message"], "you have Read on cli");
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(d["labels"], row["labels"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_label_the_issue_doesnt_have_is_done() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, row) = an_open_issue(&s, &mut b).await;
+    let label = ["p0", "p1", "p2", "ux"]
+        .into_iter()
+        .find(|l| !names_in(&row["labels"], "name").iter().any(|h| h == l))
+        .unwrap();
+    let (status, reply) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "label_remove", "issue": id, "label": label }),
+        )
+        .await;
+    assert_eq!(status, 200, "{reply}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_a_label_the_repo_doesnt_have_is_refused_before_github_is_called() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, row) = an_open_issue(&s, &mut b).await;
+    // GitHub would create a label by that name: a stale name (renamed since) would make a
+    // second one. GitHub fails label writes meanwhile, so a call made would show.
+    s.fail("POST /repos/*/*/issues/*/labels", 500, 10, None)
+        .await;
+    let (status, err) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "label_add", "issue": id, "label": "renamed-since" }),
+        )
+        .await;
+    assert_eq!(
+        (status, err["error"].as_str()),
+        (422, Some("refused")),
+        "{err}"
+    );
+    assert_eq!(
+        err["message"],
+        format!(
+            "{} has no label called renamed-since; it may have been renamed or deleted",
+            row["repo"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        s.fail_rules().await[0]["remaining"],
+        10,
+        "GitHub was called"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_label_removal_github_answers_with_any_other_404_or_a_410_is_gone() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, row) = an_open_issue(&s, &mut b).await;
+    let label = row["labels"][0]["name"].as_str().unwrap().to_owned();
+    // The issue or the repo is out of the user's sight: GitHub's plain "Not Found", or 410 for a
+    // deleted issue. The label may well still be on it.
+    for status in [404, 410] {
+        s.fail("DELETE /repos/*/*/issues/*/labels/*", status, 1, None)
+            .await;
+        let (got, err) = s
+            .op(
+                &b,
+                &uuid(),
+                json!({ "kind": "label_remove", "issue": id, "label": label }),
+            )
+            .await;
+        assert_eq!((got, err["error"].as_str()), (404, Some("gone")), "{err}");
+    }
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert!(names_in(&d["labels"], "name").contains(&label), "{d}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_assignee_is_added_and_removed_and_one_github_ignores_fails_as_not_applied() {
+    let s = start().await;
+    // Admin everywhere: the role allows every pick.
+    let mut b = s.sign_in("tomsj").await;
+    let (id, _) = an_open_issue(&s, &mut b).await;
+    let assignees = |d: &Value| names_in(&d["assignees"], "login");
+    let pick = |kind: &str, login: &str| json!({ "kind": kind, "issue": id, "login": login });
+
+    assert_eq!(
+        s.op(&b, &uuid(), pick("assignee_remove", "ilze-k")).await.0,
+        200
+    );
+    let (status, reply) = s.op(&b, &uuid(), pick("assignee_add", "ilze-k")).await;
+    assert_eq!(status, 200, "{reply}");
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert!(assignees(&d).contains(&"ilze-k".to_owned()), "{d}");
+    let (status, reply) = s.op(&b, &uuid(), pick("assignee_remove", "ilze-k")).await;
+    assert_eq!(status, 200, "{reply}");
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert!(!assignees(&d).contains(&"ilze-k".to_owned()), "{d}");
+
+    // GitHub silently ignores a user who can't be assigned: a 201 that changed nothing.
+    let (status, err) = s.op(&b, &uuid(), pick("assignee_add", "octo-ext")).await;
+    assert_eq!(
+        (status, err["error"].as_str()),
+        (422, Some("refused")),
+        "{err}"
+    );
+    assert_eq!(err["message"], "GitHub didn't apply this change");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_milestone_is_set_and_cleared_and_of_two_quick_picks_the_last_wins() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, _) = an_open_issue(&s, &mut b).await;
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    let (status, milestones) = s
+        .api(&mut b, &format!("/api/repos/{}/milestones", d["repo_id"]))
+        .await;
+    assert_eq!(status, 200, "{milestones}");
+    let open: Vec<i64> = milestones
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["state"] == "open")
+        .map(|m| m["number"].as_i64().unwrap())
+        .collect();
+    let (a, z) = (open[0], open[1]);
+    let set = |m: Value| json!({ "kind": "milestone_set", "issue": id, "milestone": m });
+
+    // GitHub is slow to take the first; the second arrives while it's in flight.
+    s.fake(
+        "POST",
+        "/faults/latency",
+        json!({ "endpoint": ISSUE, "ms": 1500, "count": 1 }),
+    )
+    .await;
+    assert_eq!(
+        picked_quickly(&s, &b, vec![set(json!(a)), set(json!(z))]).await,
+        [200, 200]
+    );
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(d["milestone"]["number"], z, "{d}");
+    // Their webhooks change nothing more.
+    tokio::time::sleep(2 * SECS).await;
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(d["milestone"]["number"], z, "{d}");
+
+    let (status, reply) = s.op(&b, &uuid(), set(Value::Null)).await;
+    assert_eq!(status, 200, "{reply}");
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(d["milestone"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pick_with_no_label_or_login_is_a_bad_request() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, _) = an_open_issue(&s, &mut b).await;
+    for op in [
+        json!({ "kind": "label_add", "issue": id, "label": " " }),
+        json!({ "kind": "assignee_remove", "issue": id, "login": "" }),
+    ] {
+        let (status, err) = s.op(&b, &uuid(), op).await;
+        assert_eq!(
+            (status, err["error"].as_str()),
+            (400, Some("bad_request")),
+            "{err}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_echoes_of_quick_picks_change_nothing_and_push_nothing() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    let (id, row) = an_open_issue(&s, &mut b).await;
+    let had = names_in(&row["labels"], "name");
+    let free: Vec<&str> = ["p0", "p1", "p2", "ux", "question"]
+        .into_iter()
+        .filter(|l| !had.iter().any(|h| h == l))
+        .take(2)
+        .collect();
+    let ops = vec![
+        json!({ "kind": "label_add", "issue": id, "label": free[0] }),
+        json!({ "kind": "label_add", "issue": id, "label": free[1] }),
+    ];
+    assert_eq!(picked_quickly(&s, &b, ops).await, [200; 2]);
+    let (_, before) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    // The ops' own pushes came before their replies.
+    st.events_for(Duration::from_millis(300)).await;
+
+    // GitHub's webhooks for the three follow about a second later.
+    assert_eq!(st.events_for(3 * SECS).await, Vec::<common::Sse>::new());
+    let (_, after) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(after, before);
+    let labels = names_in(&after["labels"], "name");
+    assert!(
+        free.iter().all(|l| labels.iter().any(|h| h == l)),
+        "{after}"
+    );
+}
+
+/// Whole seconds on the clock the fake's `updated_at`s come from (its offset is 0 here).
+fn second_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Someone edits the issue on GitHub in the second of a label pick, after the pick's read-back
+/// GET was answered but before that answer is stored, and the edit's delivery lands first. The
+/// stored answer, of the same second, says otherwise than the mirror: it's written (it may be
+/// GitHub's newest), and the issue is read again once the second has settled, so the mirror ends
+/// as GitHub has it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outside_edit_in_the_second_of_a_label_pick_isnt_lost_to_the_picks_read_back() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (_, page) = s.api(&mut b, "/api/issues?q=is:open").await;
+    let rows = page["rows"].as_array().unwrap().clone();
+    for (tries, row) in rows.iter().enumerate() {
+        let id = row["id"].as_i64().unwrap();
+        let label = ["p0", "p1", "p2", "ux", "question"]
+            .into_iter()
+            .find(|l| !names_in(&row["labels"], "name").iter().any(|h| h == l))
+            .unwrap();
+        // The edit's delivery goes out before the pick's; the read-back's answer comes late.
+        s.fake("POST", "/faults/webhooks", json!({ "reorder": 2 }))
+            .await;
+        s.fake(
+            "POST",
+            "/faults/latency",
+            json!({ "endpoint": "GET /repos/*/*/issues/*", "ms": 3000, "count": 1, "after": true }),
+        )
+        .await;
+        // Early in a second, so the pick and the edit share it.
+        let into = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_millis();
+        tokio::time::sleep(Duration::from_millis(u64::from(1030 - into))).await;
+        let started = second_now();
+        let pick = {
+            let req = s
+                .http
+                .post(format!("{}/api/ops", s.server))
+                .header("cookie", b.header())
+                .header("origin", &s.server)
+                .json(&json!({ "op_id": uuid(), "op": { "kind": "label_add", "issue": id, "label": label } }));
+            tokio::spawn(async move { req.send().await.unwrap().status().as_u16() })
+        };
+        // The read-back's GET has been answered (its answer is on its way).
+        while s.fake("GET", "/state", json!({})).await["faults"]["latency"] != json!([]) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let title = format!("Edited during a pick {tries}");
+        let edited = s
+            .edit(json!({ "repo": row["repo"], "number": row["number"], "title": title }))
+            .await;
+        let same_second = second_now() == started;
+        assert_eq!(pick.await.unwrap(), 200);
+        if !same_second {
+            // A second ticked over: GitHub's `updated_at` orders them. Try another issue.
+            assert!(tries < 4, "no pick and edit fell within one second");
+            tokio::time::sleep(3 * SECS).await;
+            continue;
+        }
+        let want = names_in(&edited["issue"]["labels"], "name");
+        let deadline = Instant::now() + 12 * SECS;
+        loop {
+            let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+            let mut has = names_in(&d["labels"], "name");
+            has.sort();
+            let mut want = want.clone();
+            want.sort();
+            if d["title"] == title.as_str() && has == want {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the mirror never caught up with GitHub: {} {has:?}, GitHub has {title} {want:?}",
+                d["title"]
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    panic!("no issue to try");
 }

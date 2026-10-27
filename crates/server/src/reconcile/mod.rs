@@ -500,10 +500,11 @@ pub async fn opened(app: &App, account: i64, id: i64) {
         crate::edges::Subject {
             id,
             node_id: info.node_id,
+            number: info.number,
             repo: info.repo_id,
             installation,
         },
-        crate::edges::Kind::Sub,
+        crate::edges::ReadBack::Edges(crate::edges::Kind::Sub),
         true,
     ));
 }

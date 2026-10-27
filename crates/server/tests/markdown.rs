@@ -150,7 +150,16 @@ async fn references_resolve_against_the_posts_repo_and_refs_holds_only_what_the_
     );
     s.edit(json!({ "repo": t["repo"], "number": t["number"], "body": md, "comment": md }))
         .await;
-    let d = until_detail(&s, &mut b, tid, |d| !refs_in(&d["body"]).is_empty()).await;
+    // The body's and the comment's deliveries land apart: both, before either is looked at.
+    let d = until_detail(&s, &mut b, tid, |d| {
+        !refs_in(&d["body"]).is_empty()
+            && d["comments"]["comments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| !refs_in(&c["body"]).is_empty())
+    })
+    .await;
 
     let (o, r) = (t["owner"].as_str().unwrap(), t["repo"].as_str().unwrap());
     let want = vec![

@@ -8,7 +8,10 @@
 // through its last loaded comment in one request, and drops what the tab read earlier of every
 // issue it names (`refetchOpenIssue`).
 // The composer (with Close and Reopen) is a chunk of its own, the writes code (writes.tsx), loaded
-// once the detail shows; the tab's pending writes show over the detail through overlay.ts.
+// once the detail shows; the tab's pending writes show over the detail through overlay.ts. The
+// Labels, Assignees and Milestone rows each open a picker (Pickers.tsx, another chunk, loaded the
+// first time one opens); a pick shows on its own row only, which grows only itself, and its dot
+// and failure in the row's marker slot, a line the row always keeps.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
@@ -38,13 +41,14 @@ import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
 import { searchOf, type Term } from "./highlight";
 import { coalesced, onPush, resetAt } from "./live";
-import { overlay, type ShownComment, type ShownDetail } from "./overlay";
+import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
 import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
 import { marked } from "./md/walker";
 import type { Links } from "./md/links";
-import { IssueNotice, resetOnChange } from "./Root";
+import { IssueNotice, reloadOnce, resetOnChange } from "./Root";
+import { ChunkFailed } from "./router";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
 
@@ -59,6 +63,17 @@ const WIDTH_KEY = "beghu.detail-width";
 
 /** The composer and the rest of the writes code: not needed for the detail's first paint. */
 const Composer = lazy(() => import("./writes"), { export: "Composer" });
+/**
+ * The label, assignee and milestone pickers: loaded when one first opens. A failed load reloads
+ * the URL once, as a route's does (a deploy replaced the build), then says so in place.
+ */
+const Picker = lazy(
+  () =>
+    import("./Pickers").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load the pickers: ${String(e)}`);
+    }),
+  { export: "Picker" },
+);
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
@@ -80,7 +95,10 @@ export function refetchOpenIssue(ids: readonly number[]): Promise<void> {
 // The live stream (live.ts), from when this code loads: `ids` go to `refetchOpenIssue`, and a
 // reset refetches the open issue (live.ts itself forgets the remembered detail and the cached
 // reads). Before this code loads no issue is open, and the router's cache is cleared on every push.
-const unsubscribe = onPush((p) => void refetchOpenIssue(p.kind === "ids" ? p.ids : openDetail ? [openDetail.id] : []));
+const unsubscribe = onPush((p) => {
+  if (p.kind === "defs") return;
+  void refetchOpenIssue(p.kind === "ids" ? p.ids : openDetail ? [openDetail.id] : []);
+});
 // A hot reload of this file in development subscribes its new copy instead.
 import.meta.hot?.dispose(unsubscribe);
 
@@ -435,6 +453,20 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   const search = createMemo(() => searchOf(queryOf(props.search)));
   const terms = (field: SearchField): Term[] => (search().fields[field] ? search().terms : []);
   const state = () => issueState(d());
+  /** The property row whose picker is open. */
+  const [picking, setPicking] = createSignal<Prop>();
+  // Another issue opens with every picker closed. (The effect runs for every new read of the
+  // detail, a refetch of the same issue too: only a new id closes them.)
+  let pickingOn = untrack(() => props.d.id);
+  createEffect(
+    () => props.d.id,
+    (id) => {
+      if (id === pickingOn) return;
+      pickingOn = id;
+      setPicking(undefined);
+    },
+  );
+  const setOpen = (prop: Prop) => (open: boolean) => setPicking(open ? prop : undefined);
   return (
     <>
       <div ref={props.scroller} {...stylex.attrs(s.scroller)} data-perf="detail" data-id={d().id} onScroll={props.onScroll}>
@@ -462,34 +494,31 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           {marked(d().title, terms("title"))}
         </h2>
         <dl {...stylex.attrs(s.props)}>
-          <dt {...stylex.attrs(s.key)}>Assignees</dt>
-          <dd {...stylex.attrs(s.value)} data-perf="assignees">
+          <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")}>
             <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
               {(u) => (
-                <span {...stylex.attrs(s.person)}>
+                <span {...stylex.attrs(s.person)} data-perf="assignee">
                   <Avatar login={u().login} />
                   {u().login}
                 </span>
               )}
             </For>
-          </dd>
-          <dt {...stylex.attrs(s.key)}>Labels</dt>
-          <dd {...stylex.attrs(s.value)} data-perf="labels">
-            <For each={d().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
+          </PropRow>
+          <PropRow prop="labels" title="Labels" d={d()} at={at()} open={picking() === "labels"} setOpen={setOpen("labels")}>
+            <For each={d().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted, s.noLabels)}>None</span>}>
               {(l) => (
-                <span {...stylex.attrs(s.pill)}>
+                <span {...stylex.attrs(s.pill)} data-perf="label">
                   <span {...stylex.attrs(s.dot(`#${l().color}`))} />
                   {l().name}
                 </span>
               )}
             </For>
-          </dd>
-          <dt {...stylex.attrs(s.key)}>Milestone</dt>
-          <dd {...stylex.attrs(s.value)} data-perf="milestone">
+          </PropRow>
+          <PropRow prop="milestone" title="Milestone" d={d()} at={at()} open={picking() === "milestone"} setOpen={setOpen("milestone")}>
             <Show when={d().milestone} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
-              {(m) => m().title}
+              {(m) => <span data-perf="milestone-title">{m().title}</span>}
             </Show>
-          </dd>
+          </PropRow>
         </dl>
         <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
         <RelatesTo rels={d().relationships} search={props.search} />
@@ -537,6 +566,79 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </Errored>
       </Show>
     </>
+  );
+}
+
+/**
+ * One property row: its name, which opens its picker on an issue (a PR takes no writes), and its
+ * values, then what the tab's picks on it show (a pending dot, a failed pick with Retry). The
+ * picker opens over what follows, so nothing moves.
+ */
+function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number; open: boolean; setOpen: (open: boolean) => void; children: Element }) {
+  let button: HTMLButtonElement | undefined;
+  // The marker slot describes the row's opener: a failed pick is read out with it.
+  const noteId = () => `prop-note-${props.prop}-${props.d.id}`;
+  const close = (refocus: boolean) => {
+    props.setOpen(false);
+    if (refocus) button?.focus();
+  };
+  return (
+    <>
+      <dt {...stylex.attrs(s.key)}>
+        <Show when={props.d.kind === "issue"} fallback={props.title}>
+          <button
+            ref={button}
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={props.open ? "true" : "false"}
+            aria-describedby={noteId()}
+            data-perf={`pick-${props.prop}`}
+            {...stylex.attrs(s.keyButton)}
+            onClick={() => props.setOpen(!props.open)}
+          >
+            {props.title}
+          </button>
+        </Show>
+      </dt>
+      <dd {...stylex.attrs(s.value, s.anchor)} data-perf={props.prop}>
+        {props.children}
+        {/* The row's marker slot: one line it always keeps, so a pick's dot or failure moves
+            nothing. Only an issue takes picks. */}
+        <Show when={props.d.kind === "issue"}>
+          <span id={noteId()} {...stylex.attrs(s.noteSlot)} data-perf="prop-note">
+            <Dynamic component={overlay()?.PropNote} issue={props.d.id} prop={props.prop} at={props.at} />
+          </span>
+        </Show>
+        <Show when={props.open}>
+          <Errored fallback={(err, reset) => <PickerFailure error={err()} reset={reset} />}>
+            <Loading>
+              <Picker prop={props.prop} d={props.d} onClose={close} opener={button} />
+            </Loading>
+          </Errored>
+        </Show>
+      </dd>
+    </>
+  );
+}
+
+/**
+ * A picker's code didn't load: the URL reloads once (a deploy that replaced the build is the
+ * usual cause, and a fresh page names the new chunks), then it says so with Retry.
+ */
+function PickerFailure(props: { error: unknown; reset: () => void }) {
+  const location = useLocation();
+  // Decided once, as the failure shows: a reload leaves the page, and Retry must not flash first.
+  const chunk = untrack(() => props.error instanceof ChunkFailed);
+  const reloading = chunk && reloadOnce(location.pathname + location.search + location.hash);
+  return (
+    <Show when={!reloading}>
+      <span {...stylex.attrs(s.muted)} role="alert">
+        Couldn't load the picker{chunk ? "; beghu may have been updated" : ""} ·{" "}
+        <button type="button" {...stylex.attrs(s.link)} onClick={() => props.reset()}>
+          Retry
+        </button>
+      </span>
+    </Show>
   );
 }
 
@@ -775,6 +877,19 @@ const s = stylex.create({
     fontSize: 12,
     lineHeight: "20px",
   },
+  // A row's name as the button that opens its picker: it reads as the name, with a hover.
+  keyButton: {
+    font: "inherit",
+    padding: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    color: {
+      default: colors.muted,
+      ":hover": colors.fg,
+    },
+    cursor: "pointer",
+    textAlign: "start",
+  },
   value: {
     margin: 0,
     gap: 4,
@@ -783,6 +898,23 @@ const s = stylex.create({
     display: "flex",
     flexWrap: "wrap",
     minWidth: 0,
+  },
+  // A property row's marker slot: a line of its own under the row's values, always there.
+  noteSlot: {
+    gap: 4,
+    overflow: "hidden",
+    alignItems: "center",
+    display: "flex",
+    flexBasis: "100%",
+    fontSize: 12,
+    lineHeight: "16px",
+    whiteSpace: "nowrap",
+    height: 16,
+    minWidth: 0,
+  },
+  // What a row's picker opens under.
+  anchor: {
+    position: "relative",
   },
   person: {
     gap: 5,
@@ -830,6 +962,11 @@ const s = stylex.create({
   muted: {
     color: colors.muted,
     fontWeight: 400,
+  },
+  // As tall as a label's pill (18 px and its border), so the first label picked, or the last
+  // removed, moves nothing below the row.
+  noLabels: {
+    lineHeight: "20px",
   },
   text: {
     overflowWrap: "anywhere",

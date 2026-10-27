@@ -559,12 +559,29 @@ async fn a_delivery_that_comes_in_before_the_resume_is_applied_after_the_resumed
     assert_eq!(s.deliver("issues", "g-early", &second).await, 202);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(top_title(&s, &mut b).await, r["title"]);
+    assert!(!processed(&s, "g-early"));
 
-    // Then the resumed one goes first, and the early one, as new as it, lands over it.
+    // Then the resumed one goes first. The early one, of the same second but saying otherwise,
+    // can't be ordered after it: it's left unapplied (the issue is read again, and GitHub's own
+    // copy is older still). Applied the other way round, the early one would be the title.
     held.start().await;
     assert_eq!(ready(&s).await, 200);
-    s.until_list(&mut b, 5, |p| p["rows"][0]["title"] == "came in early")
+    s.until_list(&mut b, 5, |p| p["rows"][0]["title"] == "resumed")
         .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(top_title(&s, &mut b).await, "came in early");
+    // The early one is done with too: applied as far as it could be, and its read-back landed.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !processed(&s, "g-early") {
+        assert!(Instant::now() < deadline, "g-early was never processed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(top_title(&s, &mut b).await, "resumed");
+}
+
+/// Whether the delivery is marked processed: applied, and its read-back landed or given up. No
+/// HTTP seam shows it, so the test reads the control DB.
+fn processed(s: &Stack, guid: &str) -> bool {
+    let db = rusqlite::Connection::open(s.control_db()).unwrap();
+    control_db::q::pending_delivery(&db, guid)
+        .unwrap()
+        .is_none()
 }

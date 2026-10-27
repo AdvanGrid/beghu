@@ -45,7 +45,7 @@ export default async function globalSetup(): Promise<void> {
     await page.locator('[data-perf="composer"] textarea').waitFor();
     // The other lazily loaded modules, with everything they import.
     await page.evaluate(() =>
-      Promise.all(["/src/ListCard.tsx", "/src/Suggestions.tsx", "/src/RepoPicker.tsx", "/src/Importing.tsx"].map((m) => import(m))),
+      Promise.all(["/src/ListCard.tsx", "/src/Suggestions.tsx", "/src/RepoPicker.tsx", "/src/Importing.tsx", "/src/Pickers.tsx"].map((m) => import(m))),
     );
   } finally {
     await browser.close();

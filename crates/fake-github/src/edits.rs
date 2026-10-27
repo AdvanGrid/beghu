@@ -15,8 +15,10 @@
 //! `relationships.rs` for GitHub's rules and deliveries). `prioritize_sub_issue` moves one of the
 //! edited issue's sub-issues before its siblings, which GitHub does without a webhook.
 //!
-//! `"delete": true` deletes the issue instead (GitHub's `deleteIssue` mutation), with its comments
-//! and relationships, and sends `issues` `deleted`.
+//! `"delete": true` deletes the issue instead (GitHub's `deleteIssue` mutation, or an admin in its
+//! sidebar), with its labels, assignees, comments and relationships, and sends `issues` `deleted`
+//! with the issue as it was; its number answers 410 from then on. (Whether GitHub also sends
+//! relationship deliveries for the links that go is unrecorded: the fake sends none.)
 //!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
@@ -24,17 +26,19 @@
 //! type.
 //! Each delivery carries the issue as it is after the whole edit.
 //!
-//! `POST /label` on the control port changes a repo's labels, with GitHub's `label` deliveries:
-//! `{ "repo": "web", "name": "bug", "rename": "defect" }` renames one (`edited`, with
-//! `changes.name.from`), and `{ "repo": "web", "name": "needs-design", "color": "ededed" }`
-//! creates one (`created`).
+//! `POST /label` on the control port changes a repo's labels as someone would in its label
+//! settings, with GitHub's `label` deliveries: `{repo, name, rename?, color?, description?, as?}`.
+//! A label the repo has is edited (`edited`, whose `changes` name what each changed field was;
+//! no issue changes, as a rename bumps no issue's `updated_at`), and one it hasn't is created
+//! (`created`, `ededed` unless `color` says otherwise).
 
 use crate::Fake;
 use crate::api::{self, rfc3339};
 use crate::control::bad_request;
 use crate::relationships;
 use crate::webhooks::{
-    Delivery, author_association, envelope, issue_json, issue_type_json, label_json, user_json,
+    Delivery, author_association, envelope, issue_json, issue_type_json, label_json,
+    milestone_json, user_json,
 };
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
@@ -220,6 +224,8 @@ fn delete(
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
     q::delete_issue(tx, id)?;
+    // GitHub answers 410 for its number from then on.
+    q::record_deleted_issue(tx, repo.id, issue["number"].as_i64().unwrap_or_default())?;
     let mut p = envelope(repo, sender);
     p["action"] = json!("deleted");
     p["issue"] = issue.clone();
@@ -236,6 +242,12 @@ pub(crate) struct Change {
     pub state_reason: Option<String>,
     pub add_labels: Vec<q::LabelByNameRow>,
     pub remove_labels: Vec<q::LabelByNameRow>,
+    /// Users (ids) to assign; one already assigned changes nothing and sends nothing.
+    pub add_assignees: Vec<i64>,
+    /// Users (ids) to unassign; one not assigned changes nothing and sends nothing.
+    pub remove_assignees: Vec<i64>,
+    /// Absent: unchanged. `Some(None)`: no milestone. An id: that milestone of the repo.
+    pub milestone: Option<Option<i64>>,
     pub comment: Option<String>,
     /// Absent: unchanged. `Some(None)`: untyped. A name: that type.
     pub issue_type: Option<Option<String>>,
@@ -295,6 +307,9 @@ impl Change {
             || self.state.is_some()
             || !self.add_labels.is_empty()
             || !self.remove_labels.is_empty()
+            || !self.add_assignees.is_empty()
+            || !self.remove_assignees.is_empty()
+            || self.milestone.is_some()
             || self.comment.is_some();
         if props {
             q::update_issue(
@@ -330,6 +345,26 @@ impl Change {
                 removed.push(l);
             }
         }
+        let mut assigned = Vec::new();
+        for u in &self.add_assignees {
+            if q::add_issue_assignee(tx, id, *u)? > 0 {
+                assigned.push(*u);
+            }
+        }
+        let mut unassigned = Vec::new();
+        for u in &self.remove_assignees {
+            if q::remove_issue_assignee(tx, id, *u)? > 0 {
+                unassigned.push(*u);
+            }
+        }
+        // Setting the milestone it already has changes nothing and sends nothing.
+        let milestoned = match self.milestone {
+            Some(m) if m != before.milestone_id => {
+                q::set_issue_milestone(tx, id, m)?;
+                Some(m)
+            }
+            _ => None,
+        };
         let comment = match &self.comment {
             Some(text) => {
                 let cid = q::next_comment_id(tx)?;
@@ -400,6 +435,33 @@ impl Change {
                 out.push(delivery("issues", action, json!({ "label": label })));
             }
         }
+        for (action, users) in [("assigned", &assigned), ("unassigned", &unassigned)] {
+            for u in users.iter() {
+                let Some(u) = q::user_row(tx, *u)? else {
+                    continue;
+                };
+                let assignee = user_json(u.id, &u.login, u.avatar_url.as_deref());
+                out.push(delivery("issues", action, json!({ "assignee": assignee })));
+            }
+        }
+        // `milestoned` names the milestone it's in now; `demilestoned`, once out of one, the one
+        // it was in. (Whether GitHub also sends `demilestoned` for the old milestone when an
+        // issue moves straight to another is unrecorded: the fake sends `milestoned` alone.)
+        if let Some(m) = milestoned {
+            let (action, which) = match m {
+                Some(m) => ("milestoned", Some(m)),
+                None => ("demilestoned", before.milestone_id),
+            };
+            let milestone = match which {
+                Some(m) => milestone_json(tx, repo, m)?,
+                None => Value::Null,
+            };
+            out.push(delivery(
+                "issues",
+                action,
+                json!({ "milestone": milestone }),
+            ));
+        }
         if let Some(c) = &comment {
             out.push(delivery(
                 "issue_comment",
@@ -421,13 +483,19 @@ pub(crate) struct LabelChange {
     name: String,
     rename: Option<String>,
     color: Option<String>,
+    description: Option<String>,
+    #[serde(rename = "as")]
+    login: Option<String>,
 }
 
-/// `POST /label`: creates or renames a repo's label, as GitHub's web UI would.
+/// `POST /label`: edits or creates a repo's label, as GitHub's web UI would.
 pub(crate) async fn label(
     State(fake): State<Fake>,
     axum::Json(l): axum::Json<LabelChange>,
 ) -> Response {
+    if l.rename.as_deref().is_some_and(|n| n.trim().is_empty()) {
+        return bad_request("rename can't be empty");
+    }
     let done = fake
         .state()
         .truth
@@ -436,58 +504,74 @@ pub(crate) async fn label(
                 Ok(id) => q::repo(tx, id)?,
                 Err(why) => return Ok(Err(why)),
             };
-            let Some(sender) = q::accounts(tx)?.first().map(|a| a.id) else {
-                return Ok(Err("the fixture has no accounts".to_owned()));
+            let sender = match l.login.as_deref() {
+                Some(login) => q::account_by_login(tx, login)?.map(|a| a.id),
+                None => q::accounts(tx)?.first().map(|a| a.id),
             };
-            let Some(u) = q::user_row(tx, sender)? else {
-                return Ok(Err("the sender isn't a user".to_owned()));
+            let Some(u) = sender.map(|id| q::user_row(tx, id)).transpose()?.flatten() else {
+                return Ok(Err("the sender isn't a fixture account".to_owned()));
             };
             let sender = user_json(u.id, &u.login, u.avatar_url.as_deref());
-            let held = q::label_by_name(tx, repo.id, &l.name)?;
-            let (action, row, changes) = match (held, &l.rename) {
-                (Some(h), Some(to)) => {
-                    q::rename_label(tx, h.id, to)?;
-                    let from = h.name.clone();
+            let (action, row, changes) = match q::label_by_name(tx, repo.id, &l.name)? {
+                Some(before) => {
+                    let name = l.rename.clone().unwrap_or_else(|| before.name.clone());
+                    let color = l.color.clone().unwrap_or_else(|| before.color.clone());
+                    let description = l.description.clone().or_else(|| before.description.clone());
+                    q::update_label(tx, before.id, &name, &color, description.as_deref())?;
+                    let mut changes = serde_json::Map::new();
+                    if name != before.name {
+                        changes.insert("name".into(), json!({ "from": before.name }));
+                    }
+                    if color != before.color {
+                        changes.insert("color".into(), json!({ "from": before.color }));
+                    }
+                    if description != before.description {
+                        changes.insert("description".into(), json!({ "from": before.description }));
+                    }
                     let row = q::LabelByNameRow {
-                        name: to.clone(),
-                        ..h
+                        id: before.id,
+                        name,
+                        color,
+                        description,
                     };
-                    ("edited", row, Some(json!({ "name": { "from": from } })))
+                    ("edited", row, Some(Value::Object(changes)))
                 }
-                (None, None) => {
+                None if l.rename.is_some() => {
+                    return Ok(Err(format!("{} has no label {}", l.repo, l.name)));
+                }
+                None => {
                     let id = q::next_label_id(tx)?;
                     let color = l.color.clone().unwrap_or_else(|| "ededed".into());
-                    q::create_label(tx, id, repo.id, &l.name, &color)?;
+                    q::create_label(tx, id, repo.id, &l.name, &color, l.description.as_deref())?;
                     let row = q::LabelByNameRow {
                         id,
                         name: l.name.clone(),
                         color,
-                        description: None,
+                        description: l.description.clone(),
                     };
                     ("created", row, None)
                 }
-                (Some(_), None) => return Ok(Err(format!("{} has a label {}", l.repo, l.name))),
-                (None, Some(_)) => return Ok(Err(format!("{} has no label {}", l.repo, l.name))),
             };
-            let mut p = envelope(&repo, &sender);
-            p["action"] = json!(action);
-            p["label"] = label_json(
+            let label = label_json(
                 &repo,
                 row.id,
                 &row.name,
                 &row.color,
                 row.description.as_deref(),
             );
+            let mut p = envelope(&repo, &sender);
+            p["action"] = json!(action);
+            p["label"] = label.clone();
             if let Some(c) = changes {
                 p["changes"] = c;
             }
-            Ok(Ok((row.id, Delivery::new("label", p))))
+            Ok(Ok((row.id, label, Delivery::new("label", p))))
         })
         .await;
     match done {
-        Ok(Ok((id, d))) => {
+        Ok(Ok((id, label, d))) => {
             fake.state().webhooks.send(vec![d]);
-            axum::Json(json!({ "ok": true, "id": id })).into_response()
+            axum::Json(json!({ "ok": true, "id": id, "label": label })).into_response()
         }
         Ok(Err(why)) => bad_request(why),
         Err(e) => api::internal(e),

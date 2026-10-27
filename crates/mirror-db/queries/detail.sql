@@ -10,8 +10,9 @@
 -- param: id i64
 SELECT i.id, i.kind, i.is_stub AS "is_stub: bool", r.synced AS "synced: bool", i.number, i.title,
        i.body, i.state, i.state_reason, i.locked AS "locked: bool", i.created_at, i.updated_at,
-       i.closed_at, r.owner, r.name AS repo, u.login AS "author?",
-       m.title AS "milestone_title?", m.state AS "milestone_state?", m.due_on AS "milestone_due_on?"
+       i.closed_at, i.repo_id, r.owner, r.name AS repo, u.login AS "author?",
+       m.number AS "milestone_number?", m.title AS "milestone_title?", m.state AS "milestone_state?",
+       m.due_on AS "milestone_due_on?"
 FROM items i
 JOIN repos r ON r.id = i.repo_id
 LEFT JOIN users u ON u.id = i.author_id

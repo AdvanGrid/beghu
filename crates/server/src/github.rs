@@ -21,6 +21,18 @@ use ts_rs::TS;
 
 /// How many network errors or 5xx answers in a row mark GitHub down.
 const DOWN_AFTER: u32 = 3;
+/// How many users a page of who can be assigned holds: GitHub's most.
+pub const ASSIGNABLE_PAGE: usize = 100;
+
+/// A page read again with its `ETag`.
+#[derive(Debug)]
+pub enum Revalidated<T> {
+    /// GitHub answered 304: what the client holds is current. GitHub doesn't count it against
+    /// the rate limit.
+    NotModified,
+    /// GitHub answered with the page, and its new `ETag` (if it sent one).
+    Fresh { etag: Option<String>, page: T },
+}
 
 #[derive(Debug, Clone)]
 pub enum Error {
@@ -35,6 +47,10 @@ pub enum Error {
     Refused(String),
     /// Any other status.
     Status(u16),
+    /// A label removal answered 404 "Label does not exist": the issue doesn't have the label (any
+    /// other 404 is `Status(404)`: the issue or repo is out of sight). Observed, not documented
+    /// (docs/research/contract-check-shapes.md).
+    NoSuchLabel,
     /// No answer: the connection was reset or timed out, so GitHub may have acted on the request.
     Network(String),
     /// No connection: GitHub never saw the request.
@@ -50,6 +66,7 @@ impl std::fmt::Display for Error {
             Error::RateLimited(d) => write!(f, "GitHub's rate limit, for {} s", d.as_secs()),
             Error::Refused(e) => write!(f, "GitHub refused the token request: {e}"),
             Error::Status(s) => write!(f, "GitHub answered {s}"),
+            Error::NoSuchLabel => f.write_str("GitHub answered 404: Label does not exist"),
             Error::Network(e) => write!(f, "no answer from GitHub: {e}"),
             Error::Unsent(e) => write!(f, "can't reach GitHub: {e}"),
             Error::Malformed(e) => write!(f, "unreadable GitHub answer: {e}"),
@@ -219,7 +236,7 @@ impl From<Error> for CallError {
         match e {
             Error::Unauthorized => CallError::Unauthorized,
             Error::RateLimited(d) => CallError::RateLimited(d),
-            Error::Status(404 | 410) => CallError::NotFound,
+            Error::Status(404 | 410) | Error::NoSuchLabel => CallError::NotFound,
             Error::Status(s) => CallError::Status(s),
             Error::Network(e) | Error::Unsent(e) => CallError::Network(e),
             Error::Refused(e) | Error::Malformed(e) => CallError::Malformed(e),
@@ -612,7 +629,8 @@ impl GitHub {
         }
     }
 
-    /// A REST write (`POST`, `PATCH`, …) to `path` with `body`: GitHub's answer on a 2xx.
+    /// A REST write (`POST`, `PATCH`, …) to `path` with `body` (none when it's `null`): GitHub's
+    /// answer on a 2xx.
     pub async fn write(
         &self,
         token: &str,
@@ -620,21 +638,96 @@ impl GitHub {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, Error> {
-        let res = self
-            .send(
-                self.http
-                    .request(method, format!("{}{path}", self.api))
-                    .bearer_auth(token)
-                    .header("accept", "application/vnd.github+json")
-                    .header("x-github-api-version", "2022-11-28")
-                    .timeout(self.write_timeout)
-                    .json(body),
-            )
-            .await?;
+        let mut req = self
+            .http
+            .request(method, format!("{}{path}", self.api))
+            .bearer_auth(token)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+            .timeout(self.write_timeout);
+        if !body.is_null() {
+            req = req.json(body);
+        }
+        let res = self.send(req).await?;
         if res.status().is_success() {
             Ok(res.json().await?)
+        } else if res.status() == reqwest::StatusCode::NOT_FOUND {
+            #[derive(Deserialize)]
+            struct Body {
+                message: Option<String>,
+            }
+            let message = res.json::<Body>().await.ok().and_then(|b| b.message);
+            Err(match message.as_deref() {
+                Some("Label does not exist") => Error::NoSuchLabel,
+                _ => Error::Status(404),
+            })
         } else {
             Err(refusal(res).await)
+        }
+    }
+
+    /// Page `page` (from 1) of who can be assigned to `owner/repo`'s issues
+    /// (`GET /repos/{owner}/{repo}/assignees`, [`ASSIGNABLE_PAGE`] a page), by login; with `etag`,
+    /// asked as `If-None-Match`, so an unchanged page is a free 304.
+    pub async fn assignable_page(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        page: usize,
+        etag: Option<&str>,
+    ) -> Result<Revalidated<Vec<String>>, Error> {
+        #[derive(Deserialize)]
+        struct Assignee {
+            login: String,
+        }
+        let mut req = self
+            .http
+            .get(format!(
+                "{}/repos/{owner}/{repo}/assignees?per_page={ASSIGNABLE_PAGE}&page={page}",
+                self.api
+            ))
+            .bearer_auth(token)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28");
+        if let Some(etag) = etag {
+            req = req.header("if-none-match", etag);
+        }
+        let res = self.send(req).await?;
+        match res.status().as_u16() {
+            304 => Ok(Revalidated::NotModified),
+            200 => {
+                let etag = res
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                let got: Vec<Assignee> = res.json().await?;
+                Ok(Revalidated::Fresh {
+                    etag,
+                    page: got.into_iter().map(|a| a.login).collect(),
+                })
+            }
+            _ => Err(refusal(res).await),
+        }
+    }
+
+    /// Issue `number` of `owner/repo` as GitHub has it now (`GET /repos/{o}/{r}/issues/{n}`);
+    /// `None` when GitHub shows no such issue to the token (404, or 410 for a deleted one).
+    pub async fn issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Option<crate::webhook::Issue>, Error> {
+        match self
+            .get(token, &format!("/repos/{owner}/{repo}/issues/{number}"))
+            .await
+        {
+            Ok(i) => Ok(Some(i)),
+            Err(Error::Status(404 | 410)) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 

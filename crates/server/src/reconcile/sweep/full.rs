@@ -379,7 +379,7 @@ impl Sweeper {
         let written = self
             .write_each(t, "labels and milestones", move |tx, seq, account| {
                 let Some(&start) = seqs.get(&account) else {
-                    return Ok((Vec::new(), (seq, Vec::new(), false)));
+                    return Ok((Vec::new(), (seq, Vec::new(), false, false)));
                 };
                 let (labels, milestones) = &*lists;
                 let (gone_labels, gone_milestones) = &*gone;
@@ -389,6 +389,8 @@ impl Sweeper {
                 let mut changed = Vec::new();
                 // The labels changed, and whether a milestone change counts as missed.
                 let (mut labels_changed, mut milestone_missed) = (Vec::new(), false);
+                // Whether a milestone itself changed: what the pickers offer.
+                let mut milestones_changed = false;
                 for l in labels {
                     let (Some(id), Some(name)) = (l["id"].as_i64(), l["name"].as_str()) else {
                         continue;
@@ -427,6 +429,7 @@ impl Sweeper {
                     )? > 0
                     {
                         changed.extend(q::milestone_items(tx, id)?);
+                        milestones_changed = true;
                         milestone_missed |= !fresh.contains(&id);
                     }
                 }
@@ -435,15 +438,24 @@ impl Sweeper {
                         changed.extend(q::milestone_items(tx, m.id)?);
                         q::clear_milestone(tx, m.id, seq)?;
                         q::delete_milestone(tx, m.id)?;
+                        milestones_changed = true;
                         milestone_missed = true;
                     }
                 }
-                Ok((changed, (seq, labels_changed, milestone_missed)))
+                Ok((
+                    changed,
+                    (seq, labels_changed, milestone_missed, milestones_changed),
+                ))
             })
             .await?;
         let mut out = HashSet::new();
         let r = self.reconcile();
-        for (account, _, (seq, labels, milestone_missed)) in written {
+        for (account, ids, (seq, labels, milestone_missed, milestones_changed)) in written {
+            if ids.is_empty() && (milestones_changed || !labels.is_empty()) {
+                // A label or milestone no item carries still changes what the filter bar and the
+                // detail's pickers offer (as a webhook's would).
+                self.app.hub().publish(account, crate::live::Push::Defs);
+            }
             if milestone_missed {
                 r.missed(&self.app, account, t.id);
                 out.insert(account);

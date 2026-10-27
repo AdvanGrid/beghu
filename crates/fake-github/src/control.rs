@@ -3,11 +3,13 @@
 //!
 //! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules,
 //!   how many refresh tokens were honoured and how many arrived already spent, each
-//!   installation token minted with its permissions, and how many delivery attempts the App's
-//!   log holds (failed and redelivered among them), each token owner's quota used, and how many
-//!   conditional requests were answered 304.
-//! - `POST /faults/latency {endpoint, ms, count?}`: delay calls to `endpoint` (only the next
-//!   `count`, with one); `ms: 0` removes the rule.
+//!   installation token minted with its permissions, how many GraphQL calls came with each kind
+//!   of token, how often the assignee list was answered in full or 304, how many delivery
+//!   attempts the App's log holds (failed and redelivered among them), each token owner's quota
+//!   used, and how many conditional requests were answered 304.
+//! - `POST /faults/latency {endpoint, ms, count?, after?}`: delay calls to `endpoint` (only the
+//!   next `count`, with one); with `after: true` the call is made at once and its answer held
+//!   back instead; `ms: 0` removes the rule.
 //! - `POST /faults/fail {endpoint, count, status?, retry_after?, limit?, reset?}`: the next
 //!   `count` calls fail with `status`, or with `reset` get no answer at all. `limit` (`primary`
 //!   or `secondary` with 403/429, `graphql` with 200) makes the failure that GitHub rate limit,
@@ -26,11 +28,13 @@
 //! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
-//!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see `edits.rs`
-//!   and `relationships.rs`), with its webhooks.
+//!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see
+//!   `edits.rs` and `relationships.rs`), with its webhooks. `delete: true` deletes the issue
+//!   instead (`issues` `deleted`); its number answers 410 from then on.
+//! - `POST /label {repo, name, rename?, color?, description?, as?}`: edits one of the repo's
+//!   labels (a rename, a new colour), or creates it if the repo has none by that name, with
+//!   GitHub's `label` `edited` or `created` delivery (`edits.rs`).
 //! - `PUT /tokens {access_ttl?, refresh_ttl?}`: token lifetimes in seconds, for new tokens.
-//! - `POST /label {repo, name, rename | color}`: renames or creates a repo's label, with its
-//!   `label` delivery (`edits.rs`).
 //! - `PUT /clock {offset}`: run the fake's clock `offset` seconds ahead of the real one, so
 //!   tokens and codes expire without waiting.
 //! - `PUT /quota {remaining}`: every token owner's primary rate limit reads as at most
@@ -131,6 +135,7 @@ async fn state(State(fake): State<Fake>) -> Response {
         },
         "refreshes": fake.state().refreshes.snapshot(),
         "graphql": fake.state().graphql.snapshot(),
+        "assignees": fake.state().assignees.snapshot(),
         "installation_tokens": fake.state().app_tokens.minted(),
         "clock": { "offset": fake.clock_offset() },
         "quota": fake.state().quotas.snapshot(),
@@ -145,6 +150,8 @@ struct LatencyReq {
     endpoint: String,
     ms: u64,
     count: Option<u32>,
+    #[serde(default)]
+    after: bool,
 }
 
 async fn latency(State(fake): State<Fake>, axum::Json(r): axum::Json<LatencyReq>) -> Response {
@@ -154,7 +161,9 @@ async fn latency(State(fake): State<Fake>, axum::Json(r): axum::Json<LatencyReq>
     if r.count == Some(0) {
         return bad_request("count must be at least 1");
     }
-    fake.state().faults.set_latency(endpoint, r.ms, r.count);
+    fake.state()
+        .faults
+        .set_latency(endpoint, r.ms, r.count, r.after);
     ok()
 }
 
@@ -465,6 +474,7 @@ async fn reset(State(fake): State<Fake>) -> Response {
             fake.state().webhooks.clear_log();
             fake.state().refreshes.clear();
             fake.state().graphql.clear();
+            fake.state().assignees.clear();
             fake.state().app_tokens.clear();
             fake.state().quotas.clear();
             fake.state()

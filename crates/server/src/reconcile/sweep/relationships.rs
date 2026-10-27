@@ -48,6 +48,7 @@ impl Sweeper {
         #[serde(rename_all = "camelCase")]
         struct Swept {
             database_id: i64,
+            number: i64,
             #[serde(flatten)]
             node: edges::Node,
         }
@@ -81,10 +82,11 @@ impl Sweeper {
                         Subject {
                             id: n.database_id,
                             node_id,
+                            number: n.number,
                             repo: t.id,
                             installation: self.installation,
                         },
-                        Kind::Relates,
+                        ReadBack::Edges(Kind::Relates),
                         true,
                     ));
                 }
@@ -167,7 +169,7 @@ impl Sweeper {
 const SWEEP_EDGES: &str = "query SweepEdges($ids: [ID!]!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!) {
   nodes(ids: $ids) {
     ... on Issue {
-      id databaseId
+      id databaseId number
       parent @include(if: $sub) { ...End }
       subIssues(first: 100) @include(if: $sub) { nodes { ...End } }
       blockedBy(first: 50) @include(if: $blocks) { nodes { ...End } }

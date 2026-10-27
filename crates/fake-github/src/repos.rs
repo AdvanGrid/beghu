@@ -7,9 +7,17 @@
 //!   name, case-insensitively; 404 without one)
 //! - `GET /repos/{owner}/{repo}/milestones?state=open|closed|all`, and
 //!   `GET /repos/{owner}/{repo}/milestones/{milestone_number}` (one; 404 without one)
+//! - `GET /repos/{owner}/{repo}/assignees`: the users who can be assigned to its issues (see
+//!   `triage.rs` for who that is), by login. Like every GET, each page has a weak `ETag` over its
+//!   body, and a request whose `If-None-Match` names it is answered 304 with no body, which GitHub
+//!   doesn't count against the rate limit (`quota.rs`; `/state` counts both kinds of answer to
+//!   this list).
 //! - `GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=updated&direction=asc&since=`:
 //!   only `sort=updated` ascending, the order the import pages in. `since` is exclusive, as
 //!   GitHub's: only what was updated after it.
+//! - `GET /repos/{owner}/{repo}/issues/{number}`: one issue (or PR) as it is now; a deleted
+//!   one is a 410, as on GitHub, and a number the repo never had a 404. (Routed with the issue's
+//!   `PATCH` in `writes.rs`.)
 //! - `GET /repos/{owner}/{repo}/issues/{number}/comments`
 //! - `GET /repos/{owner}/{repo}/issues/comments?sort=updated&direction=asc&since=` (exclusive)
 //! - `GET /repos/{owner}/{repo}/issues/comments/{comment_id}`: one comment; 404 when the repo has
@@ -35,6 +43,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/repos/{owner}/{repo}/labels", get(labels))
         .route("/repos/{owner}/{repo}/labels/{name}", get(one_label))
         .route("/repos/{owner}/{repo}/milestones", get(milestones))
+        .route("/repos/{owner}/{repo}/assignees", get(assignees))
         .route(
             "/repos/{owner}/{repo}/milestones/{number}",
             get(one_milestone),
@@ -176,6 +185,67 @@ async fn labels(
         Ok(items) => paged(&headers, &path, &p, items, &[]),
         Err(e) => api::internal(e),
     }
+}
+
+pub(crate) async fn issue(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    Path((owner, name, number)): Path<(String, String, i64)>,
+) -> Response {
+    let repo = match visible_repo(&fake, token, owner, name).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| match q::issue_id(c, repo, number)? {
+            Some(id) => Ok(Ok(issue_json(c, id)?)),
+            None => Ok(Err(q::deleted_issue(c, repo, number)?.is_some())),
+        })
+        .await;
+    match read {
+        Ok(Ok(issue)) => axum::Json(issue).into_response(),
+        // GitHub's answer for an issue deleted since.
+        Ok(Err(true)) => api::error(StatusCode::GONE, "This issue was deleted"),
+        Ok(Err(false)) => api::not_found().await,
+        Err(e) => api::internal(e),
+    }
+}
+
+async fn assignees(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Query(p): Query<Params>,
+) -> Response {
+    let path = format!("/repos/{owner}/{name}/assignees");
+    let repo = match visible_repo(&fake, token, owner, name).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let (limit, offset) = (p.per_page() as usize, p.offset() as usize);
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let r = q::repo(c, repo)?;
+            Ok(crate::triage::assignable(c, &r)?
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|a| user_json(a.id, &a.login, a.avatar_url.as_deref()))
+                .collect::<Vec<_>>())
+        })
+        .await;
+    let items = match read {
+        Ok(items) => items,
+        Err(e) => return api::internal(e),
+    };
+    // Its weak `ETag`, and a 304 to a request naming it, are the quota middleware's, as for
+    // every GET (`quota.rs`), which also counts how this list was answered.
+    paged(&headers, &path, &p, items, &[])
 }
 
 async fn milestones(

@@ -165,7 +165,12 @@ export function IssueList(props: { search: string; openId?: number }) {
       done();
     }
   });
-  onSettled(() => onPush(refetch));
+  // A `defs` push changes no row.
+  onSettled(() =>
+    onPush((p) => {
+      if (p.kind !== "defs") void refetch();
+    }),
+  );
 
   let column!: HTMLDivElement;
   const [listWidth, setListWidth] = createSignal(0);

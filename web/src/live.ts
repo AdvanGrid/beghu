@@ -1,5 +1,6 @@
 // Live updates: one EventSource per tab on /api/stream. The server pushes `ids` (these items
-// changed) and `reset` (refetch everything shown); every stream opens with a reset, so a change
+// changed), `defs` (a repo's labels or milestones changed, no row did: what offers them reads
+// again) and `reset` (refetch everything shown); every stream opens with a reset, so a change
 // that landed before the stream was up is never missed. Views register a refetch with `onPush`
 // (the list in IssueList.tsx, the open detail in IssuePanel.tsx); `coalesced` keeps a burst of
 // pushes down to one fetch now and one after it.
@@ -22,7 +23,7 @@ import type { StreamIds } from "./bindings/StreamIds";
 import type { StreamStatus } from "./bindings/StreamStatus";
 import type { SyncStatus } from "./bindings/SyncStatus";
 
-export type Push = { kind: "ids"; ids: number[] } | { kind: "reset" };
+export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset" };
 
 const RETRY_MS = 1000;
 const RECONNECTING_AFTER_MS = 3000;
@@ -104,6 +105,7 @@ export function connectLive(): () => void {
       setSync(status.sync);
     });
     es.addEventListener("github", (e) => setGithubDown((JSON.parse((e as MessageEvent<string>).data) as StreamGitHub).state === "down"));
+    es.addEventListener("defs", () => emit({ kind: "defs" }));
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;
       emit({ kind: "ids", ids });

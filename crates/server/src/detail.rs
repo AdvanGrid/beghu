@@ -38,6 +38,8 @@ pub struct IssueDetail {
     pub id: i64,
     /// `issue` or `pr`.
     pub kind: String,
+    /// The repo's id: what its pickers' reads name (`/api/repos/:id/labels`, …).
+    pub repo_id: i64,
     pub owner: String,
     pub repo: String,
     pub number: i64,
@@ -75,6 +77,8 @@ pub struct IssueDetail {
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct Milestone {
+    /// Its number in the repo: what `milestone_set` names.
+    pub number: i64,
     pub title: String,
     /// `open` or `closed`.
     pub state: String,
@@ -232,8 +236,13 @@ pub async fn issue(
     let (body, comments) =
         rendered(&app, s.account, Place::from(&item), Some(body), thread).await?;
     let (body, refs) = body.expect("a body was given, so one is rendered");
-    let milestone = match (item.milestone_title, item.milestone_state) {
-        (Some(title), Some(state)) => Some(Milestone {
+    let milestone = match (
+        item.milestone_number,
+        item.milestone_title,
+        item.milestone_state,
+    ) {
+        (Some(number), Some(title), Some(state)) => Some(Milestone {
+            number,
             title,
             state,
             due_on: item.milestone_due_on,
@@ -243,6 +252,7 @@ pub async fn issue(
     Ok(Json(IssueDetail {
         id: item.id,
         kind: item.kind,
+        repo_id: item.repo_id,
         owner: item.owner,
         repo: item.repo,
         number: item.number,

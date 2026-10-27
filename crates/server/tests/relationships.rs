@@ -1218,7 +1218,10 @@ async fn read_backs_share_one_installation_token_that_can_only_read_issues() {
     let state = s.fake("GET", "/state", json!({})).await;
     assert_eq!(
         state["installation_tokens"],
-        json!([{ "installation": 41000001, "permissions": { "issues": "read" } }])
+        json!([{
+            "installation": 41000001,
+            "permissions": { "issues": "read", "pull_requests": "read" },
+        }])
     );
 }
 

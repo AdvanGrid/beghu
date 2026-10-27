@@ -107,7 +107,7 @@ const RELOADED = "beghu.chunk-reload:";
  * this tab already did for that URL. A deploy that replaced the build is the usual cause, and a
  * fresh shell names the new chunks. Without session storage there's no guard, so no reload.
  */
-function reloadOnce(target: string): boolean {
+export function reloadOnce(target: string): boolean {
   try {
     if (sessionStorage.getItem(RELOADED + target) !== null) return false;
     sessionStorage.setItem(RELOADED + target, "1");

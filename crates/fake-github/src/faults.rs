@@ -1,5 +1,6 @@
-//! Runtime faults on the GitHub side: latency per endpoint (for every call, or the next N), the
-//! next N calls failing with a chosen status or dropping the connection unanswered, the next N
+//! Runtime faults on the GitHub side: latency per endpoint (for every call, or the next N), before
+//! the call is made or, with `after`, between making it and answering (GitHub acted at once; its
+//! answer is slow to come back), the next N calls failing with a chosen status or dropping the connection unanswered, the next N
 //! answers carrying a rewritten `body` (or cut short), and down. Set through the control port; a
 //! reset clears them.
 //!
@@ -49,6 +50,9 @@ pub(crate) struct Latency {
     /// How many more calls it delays; none: every call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining: Option<u32>,
+    /// The call is made at once and its answer held back, rather than the call delayed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -133,16 +137,19 @@ impl Faults {
         self.with(|r| r.down = down);
     }
 
-    /// Sets the latency for `endpoint`, for every call or the next `count`, replacing any
-    /// earlier rule for it; 0 removes it.
-    pub fn set_latency(&self, endpoint: String, ms: u64, count: Option<u32>) {
+    /// Sets the latency for `endpoint` (before the call, or with `after` before its answer), for
+    /// every call or the next `count`, replacing any earlier rule for it of the same kind; 0
+    /// removes it.
+    pub fn set_latency(&self, endpoint: String, ms: u64, count: Option<u32>, after: bool) {
         self.with(|r| {
-            r.latency.retain(|l| l.endpoint != endpoint);
+            r.latency
+                .retain(|l| l.endpoint != endpoint || l.after != after);
             if ms > 0 {
                 r.latency.push(Latency {
                     endpoint,
                     ms,
                     remaining: count,
+                    after,
                 });
             }
         });
@@ -156,18 +163,19 @@ impl Faults {
         self.with(|r| r.fail.push(fail));
     }
 
-    /// What happens to one call: the delay before it, how it fails, if it does, and otherwise
-    /// how its answer is rewritten, if it is. Uses up one call of every matching
-    /// counted latency rule, and of the first matching fail rule or else rewrite rule.
-    fn on_call(&self, method: &Method, path: &str) -> (Duration, Option<Fail>, Option<RewriteTo>) {
+    /// What happens to one call: the delays before it and before its answer, how it fails, if
+    /// it does, and otherwise how its answer is rewritten, if it is. Uses up one call of every
+    /// matching counted latency rule, and of the first matching fail rule or else rewrite rule.
+    fn on_call(&self, method: &Method, path: &str) -> (Delays, Option<Fail>, Option<RewriteTo>) {
         self.with(|r| {
-            let mut delay = 0;
+            let (mut before, mut after) = (0, 0);
             for l in r
                 .latency
                 .iter_mut()
                 .filter(|l| matches(&l.endpoint, method, path))
             {
-                delay = delay.max(l.ms);
+                let delay = if l.after { &mut after } else { &mut before };
+                *delay = (*delay).max(l.ms);
                 if let Some(n) = &mut l.remaining {
                     *n -= 1;
                 }
@@ -194,9 +202,19 @@ impl Faults {
                     }),
             };
             r.rewrite.retain(|w| w.remaining > 0);
-            (Duration::from_millis(delay), fail, rewrite)
+            let delays = Delays {
+                before: Duration::from_millis(before),
+                after: Duration::from_millis(after),
+            };
+            (delays, fail, rewrite)
         })
     }
+}
+
+/// How long one call waits before it's made, and between making it and answering.
+struct Delays {
+    before: Duration,
+    after: Duration,
 }
 
 /// `endpoint` (see the module docs) in the one spelling rules are stored under: the method in
@@ -261,11 +279,11 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         )
             .into_response();
     }
-    let (delay, fail, rewrite) = faults.on_call(req.method(), req.uri().path());
-    if !delay.is_zero() {
-        tokio::time::sleep(delay).await;
+    let (delays, fail, rewrite) = faults.on_call(req.method(), req.uri().path());
+    if !delays.before.is_zero() {
+        tokio::time::sleep(delays.before).await;
     }
-    match (fail, rewrite) {
+    let res = match (fail, rewrite) {
         (Some(f), _) if f.reset => dropped(),
         (Some(f), _) => {
             let who = match f.limit {
@@ -282,7 +300,11 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
             res
         }
         (None, None) => next.run(req).await,
+    };
+    if !delays.after.is_zero() {
+        tokio::time::sleep(delays.after).await;
     }
+    res
 }
 
 /// No answer: the connection is closed before a status line goes out. (A response body that

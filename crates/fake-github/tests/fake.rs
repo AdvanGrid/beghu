@@ -2966,3 +2966,444 @@ async fn deleting_an_issue_sends_issues_deleted_and_github_no_longer_counts_it_o
         .unwrap();
     assert_eq!(res.status(), 400);
 }
+
+// --- labels, assignees and milestone ------------------------------------------------------------
+
+/// The `issues` deliveries' actions and what each names (a label's or milestone's name, an
+/// assignee's login), in the order they came.
+fn issue_actions(got: &[Received]) -> Vec<(String, String)> {
+    got.iter()
+        .filter(|r| r.event == "issues")
+        .map(|r| {
+            let p = r.payload();
+            let what = match p["action"].as_str().unwrap() {
+                "labeled" | "unlabeled" => p["label"]["name"].clone(),
+                "assigned" | "unassigned" => p["assignee"]["login"].clone(),
+                "milestoned" | "demilestoned" => p["milestone"]["title"].clone(),
+                _ => Value::Null,
+            };
+            (
+                p["action"].as_str().unwrap().to_owned(),
+                what.as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn names(labels: &Value) -> Vec<&str> {
+    labels
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn labels_are_added_and_removed_by_name_with_triage_and_answer_the_labels_left() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // Triage on `infra`; start from an issue without the two labels.
+    fake.edit(json!({ "repo": "infra", "number": 4, "remove_labels": ["p0", "good first issue"] }))
+        .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    let issue = "/repos/acme/infra/issues/4";
+
+    let (status, labels) = fake
+        .rest(
+            reqwest::Method::POST,
+            &format!("{issue}/labels"),
+            token,
+            json!({ "labels": ["p0"] }),
+        )
+        .await;
+    assert_eq!(status, 200, "{labels}");
+    assert!(names(&labels).contains(&"p0"), "{labels}");
+    // A bare array of names, as GitHub also takes; a name with a space is one path segment.
+    let (status, labels) = fake
+        .rest(
+            reqwest::Method::POST,
+            &format!("{issue}/labels"),
+            token,
+            json!(["good first issue"]),
+        )
+        .await;
+    assert_eq!(status, 200, "{labels}");
+    assert!(names(&labels).contains(&"good first issue"));
+    let (status, left) = fake
+        .rest(
+            reqwest::Method::DELETE,
+            &format!("{issue}/labels/good%20first%20issue"),
+            token,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, 200, "{left}");
+    assert!(names(&left).contains(&"p0"));
+    assert!(!names(&left).contains(&"good first issue"));
+    // Removing a label the issue doesn't have is GitHub's 404, in its documented body: what tells
+    // it from a 404 for an issue or repo the user can't see ("Not Found").
+    let (status, body) = fake
+        .rest(
+            reqwest::Method::DELETE,
+            &format!("{issue}/labels/good%20first%20issue"),
+            token,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            404,
+            json!({
+                "message": "Label does not exist",
+                "documentation_url": "https://docs.github.com/rest/issues/labels#remove-a-label-from-an-issue",
+                "status": "404",
+            })
+        )
+    );
+
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(
+        issue_actions(&got),
+        [
+            ("labeled".into(), "p0".into()),
+            ("labeled".into(), "good first issue".into()),
+            ("unlabeled".into(), "good first issue".into()),
+        ]
+    );
+    assert_eq!(got[0].payload()["sender"]["login"], "ilze-k");
+
+    // A label the repo doesn't have would be created by GitHub, which the fake doesn't model.
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            &format!("{issue}/labels"),
+            token,
+            json!({ "labels": ["brand new"] }),
+        )
+        .await;
+    assert_eq!(status, 422);
+}
+
+#[tokio::test]
+async fn read_gets_403_on_labels_assignees_and_someone_elses_milestone() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // Read on `web`; the fixture's issues are by other users.
+    let token = &fake.sign_in("octo-ext").await["access_token"];
+    let issue = "/repos/acme/web/issues/3";
+    for (method, path, body) in [
+        (
+            reqwest::Method::POST,
+            format!("{issue}/labels"),
+            json!({ "labels": ["bug"] }),
+        ),
+        (
+            reqwest::Method::DELETE,
+            format!("{issue}/labels/bug"),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("{issue}/assignees"),
+            json!({ "assignees": ["tomsj"] }),
+        ),
+        (
+            reqwest::Method::DELETE,
+            format!("{issue}/assignees"),
+            json!({ "assignees": ["tomsj"] }),
+        ),
+        (
+            reqwest::Method::PATCH,
+            issue.to_owned(),
+            json!({ "milestone": 3 }),
+        ),
+    ] {
+        let (status, body) = fake.rest(method.clone(), &path, token, body).await;
+        assert_eq!(status, 403, "{method} {path}: {body}");
+        assert_eq!(body["message"], "Resource not accessible by integration");
+    }
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn assignees_are_whoever_can_be_assigned_and_anyone_else_is_silently_ignored() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let res = fake
+        .get("/repos/acme/web/assignees?per_page=100", token)
+        .await;
+    assert_eq!(res.status(), 200);
+    let listed: Vec<String> = res
+        .json::<Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["login"].as_str().unwrap().to_owned())
+        .collect();
+    // The org's members, and the users the fixture assigns; not a Read outside collaborator.
+    assert!(listed.contains(&"tomsj".to_owned()), "{listed:?}");
+    assert!(listed.contains(&"ilze-k".to_owned()));
+    assert!(listed.contains(&"anna-b".to_owned()));
+    assert!(!listed.contains(&"octo-ext".to_owned()));
+    let mut sorted = listed.clone();
+    sorted.sort_by_key(|l| l.to_lowercase());
+    assert_eq!(listed, sorted);
+    // Paged as GitHub pages.
+    let res = fake
+        .get("/repos/acme/web/assignees?per_page=2", token)
+        .await;
+    assert!(
+        res.headers()["link"]
+            .to_str()
+            .unwrap()
+            .contains("rel=\"next\"")
+    );
+
+    let issue = "/repos/acme/web/issues/5";
+    fake.rest(
+        reqwest::Method::DELETE,
+        &format!("{issue}/assignees"),
+        token,
+        json!({ "assignees": ["ilze-k"] }),
+    )
+    .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let (status, i) = fake
+        .rest(
+            reqwest::Method::POST,
+            &format!("{issue}/assignees"),
+            token,
+            json!({ "assignees": ["ilze-k", "octo-ext"] }),
+        )
+        .await;
+    assert_eq!(status, 201, "{i}");
+    let logins = |i: &Value| -> Vec<String> {
+        i["assignees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["login"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(logins(&i).contains(&"ilze-k".to_owned()));
+    assert!(!logins(&i).contains(&"octo-ext".to_owned()));
+    let (status, i) = fake
+        .rest(
+            reqwest::Method::DELETE,
+            &format!("{issue}/assignees"),
+            token,
+            json!({ "assignees": ["ilze-k"] }),
+        )
+        .await;
+    assert_eq!(status, 200, "{i}");
+    assert!(!logins(&i).contains(&"ilze-k".to_owned()));
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(
+        issue_actions(&got),
+        [
+            ("assigned".into(), "ilze-k".into()),
+            ("unassigned".into(), "ilze-k".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_milestone_is_set_by_number_and_cleared_with_null() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // Triage on `infra`.
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    let patch = |body: Value| {
+        fake.rest(
+            reqwest::Method::PATCH,
+            "/repos/acme/infra/issues/6",
+            token,
+            body,
+        )
+    };
+    patch(json!({ "milestone": null })).await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let (status, i) = patch(json!({ "milestone": 3 })).await;
+    assert_eq!(status, 200, "{i}");
+    assert_eq!(i["milestone"]["number"], 3);
+    let title = i["milestone"]["title"].as_str().unwrap().to_owned();
+    let (status, i) = patch(json!({ "milestone": null })).await;
+    assert_eq!(status, 200, "{i}");
+    assert_eq!(i["milestone"], Value::Null);
+    // A number the repo has no milestone for is GitHub's validation failure.
+    assert_eq!(patch(json!({ "milestone": 99 })).await.0, 422);
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(
+        issue_actions(&got),
+        [
+            ("milestoned".into(), title.clone()),
+            ("demilestoned".into(), title),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_label_rename_sends_label_edited_and_lists_by_its_new_name() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let done = fake
+        .control(
+            reqwest::Method::POST,
+            "/label",
+            json!({ "repo": "web", "name": "ux", "rename": "design" }),
+        )
+        .await;
+    assert_eq!(done["label"]["name"], "design");
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "label");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "edited");
+    assert_eq!(p["label"]["name"], "design");
+    assert_eq!(p["changes"], json!({ "name": { "from": "ux" } }));
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let labels: Value = fake
+        .get("/repos/acme/web/labels?per_page=100", token)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(names(&labels).contains(&"design"));
+    assert!(!names(&labels).contains(&"ux"));
+}
+
+#[tokio::test]
+async fn whoever_can_be_assigned_follows_their_access_not_what_they_are_assigned_to() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    // An outside collaborator with Write can be assigned, and is.
+    fake.control(
+        reqwest::Method::PUT,
+        "/permissions",
+        json!({ "login": "octo-ext", "repo": "web", "role": "write" }),
+    )
+    .await;
+    let issue = "/repos/acme/web/issues/5";
+    let (status, i) = fake
+        .rest(
+            reqwest::Method::POST,
+            &format!("{issue}/assignees"),
+            token,
+            json!({ "assignees": ["octo-ext"] }),
+        )
+        .await;
+    assert_eq!(status, 201, "{i}");
+    assert!(i["assignees"].to_string().contains("octo-ext"), "{i}");
+    // Down to Read, still assigned: no longer someone who can be assigned.
+    fake.control(
+        reqwest::Method::PUT,
+        "/permissions",
+        json!({ "login": "octo-ext", "repo": "web", "role": "read" }),
+    )
+    .await;
+    let res = fake
+        .get("/repos/acme/web/assignees?per_page=100", token)
+        .await;
+    let listed = res.json::<Value>().await.unwrap().to_string();
+    assert!(!listed.contains("\"octo-ext\""), "{listed}");
+}
+
+#[tokio::test]
+async fn the_assignee_list_answers_304_to_its_own_etag_until_it_changes() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let path = "/repos/acme/web/assignees?per_page=100";
+    let conditional = |etag: &str| {
+        fake.http
+            .get(format!("{}{path}", fake.api))
+            .bearer_auth(token.as_str().unwrap())
+            .header("if-none-match", etag)
+    };
+    let first = fake.get(path, token).await;
+    assert_eq!(first.status(), 200);
+    let etag = first.headers()["etag"].to_str().unwrap().to_owned();
+    // Unchanged: 304, which GitHub doesn't count against the rate limit.
+    let again = conditional(&etag).send().await.unwrap();
+    assert_eq!(again.status(), 304);
+    assert_eq!(again.headers()["etag"].to_str().unwrap(), etag);
+    assert_eq!(
+        fake.state().await["assignees"],
+        json!({ "full": 1, "not_modified": 1 })
+    );
+    // Someone new can be assigned: the list, under a new ETag.
+    fake.control(
+        reqwest::Method::PUT,
+        "/permissions",
+        json!({ "login": "octo-ext", "repo": "web", "role": "write" }),
+    )
+    .await;
+    let changed = conditional(&etag).send().await.unwrap();
+    assert_eq!(changed.status(), 200);
+    assert_ne!(changed.headers()["etag"].to_str().unwrap(), etag);
+    assert!(changed.text().await.unwrap().contains("\"octo-ext\""));
+}
+
+#[tokio::test]
+async fn a_deleted_issue_answers_410_as_on_github_and_sends_issues_deleted() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let (status, before) = fake
+        .rest(
+            reqwest::Method::GET,
+            "/repos/acme/web/issues/1",
+            token,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, 200, "{before}");
+
+    fake.control(
+        reqwest::Method::POST,
+        "/edit",
+        json!({ "repo": "web", "number": 1, "as": "tomsj", "delete": true }),
+    )
+    .await;
+    let (status, gone) = fake
+        .rest(
+            reqwest::Method::GET,
+            "/repos/acme/web/issues/1",
+            token,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(
+        (status, &gone["message"]),
+        (410, &json!("This issue was deleted"))
+    );
+    // A number the repo never had is still a 404.
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::GET,
+            "/repos/acme/web/issues/999999",
+            token,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, 404);
+
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    let p = got[0].payload();
+    assert_eq!(
+        (got[0].event.as_str(), &p["action"]),
+        ("issues", &json!("deleted"))
+    );
+    assert_eq!(p["issue"]["id"], before["id"]);
+    assert_eq!(p["sender"]["login"], "tomsj");
+}
