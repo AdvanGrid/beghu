@@ -297,32 +297,44 @@ async fn a_refresh_token_is_single_use_and_retires_the_old_access_token() {
 }
 
 #[tokio::test]
-async fn token_lifetimes_set_at_runtime_expire_tokens_within_seconds() {
+async fn token_lifetimes_set_at_runtime_apply_to_new_tokens_and_expire_them_on_the_fake_clock() {
+    // Lifetimes far longer than the test can take in real time, however loaded the machine:
+    // only the fake's clock crosses them.
+    const HOUR: i64 = 3600;
+    const DAY: i64 = 24 * HOUR;
     let fake = start().await;
     fake.control(
         reqwest::Method::PUT,
         "/tokens",
-        json!({ "access_ttl": 1, "refresh_ttl": 10 }),
+        json!({ "access_ttl": HOUR, "refresh_ttl": DAY }),
     )
     .await;
     let a = fake.sign_in("tomsj").await;
     let b = fake.sign_in("tomsj").await;
-    assert_eq!(a["expires_in"], 1);
-    assert_eq!(a["refresh_token_expires_in"], 10);
+    assert_eq!(a["expires_in"], HOUR);
+    assert_eq!(a["refresh_token_expires_in"], DAY);
     assert_eq!(
         fake.login_of(&a["access_token"]).await.as_deref(),
         Some("tomsj")
     );
 
     // The fake's clock moves on: past the access tokens, well inside the refresh tokens.
-    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 3 }))
-        .await;
-    assert_eq!(fake.state().await["clock"], json!({ "offset": 3 }));
+    let past_access = 2 * HOUR;
+    fake.control(
+        reqwest::Method::PUT,
+        "/clock",
+        json!({ "offset": past_access }),
+    )
+    .await;
+    assert_eq!(
+        fake.state().await["clock"],
+        json!({ "offset": past_access })
+    );
     assert_eq!(fake.login_of(&a["access_token"]).await, None);
     assert!(fake.refresh(&b["refresh_token"]).await["access_token"].is_string());
 
     // And past the refresh tokens too.
-    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 12 }))
+    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 2 * DAY }))
         .await;
     assert_eq!(
         fake.refresh(&a["refresh_token"]).await["error"],
@@ -646,6 +658,45 @@ async fn a_star_at_the_end_of_a_rule_s_path_covers_everything_under_it() {
     fake.fail_next("/repos/*/issues/*", 502).await;
     assert_ne!(fake.status_of("/repos/acme/issues").await, 502);
     assert_eq!(fake.status_of("/repos/acme/issues/5/comments/9").await, 502);
+}
+
+#[tokio::test]
+async fn clearing_one_endpoint_s_faults_leaves_the_others() {
+    let fake = start().await;
+    let mine = "POST /repos/acme/web/issues/1/comments";
+    let theirs = "POST /repos/acme/web/issues/2/comments";
+    for endpoint in [mine, theirs] {
+        fake.fail_next(endpoint, 502).await;
+        fake.control(
+            reqwest::Method::POST,
+            "/faults/latency",
+            json!({ "endpoint": endpoint, "ms": 100 }),
+        )
+        .await;
+        fake.control(
+            reqwest::Method::POST,
+            "/faults/rewrite",
+            json!({ "endpoint": endpoint, "count": 1, "raw": "{" }),
+        )
+        .await;
+    }
+    // Spelled differently, it's the same endpoint.
+    fake.control(
+        reqwest::Method::DELETE,
+        "/faults",
+        json!({ "endpoint": "post /repos/acme/web/issues/1/comments/" }),
+    )
+    .await;
+    let faults = &fake.state().await["faults"];
+    for kind in ["fail", "latency", "rewrite"] {
+        let left: Vec<&str> = faults[kind]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["endpoint"].as_str().unwrap())
+            .collect();
+        assert_eq!(left, [theirs], "{kind}");
+    }
 }
 
 #[tokio::test]
@@ -1529,13 +1580,9 @@ async fn a_latency_rule_with_a_count_slows_only_the_next_calls() {
         "{:?}",
         t.elapsed()
     );
-    let t = Instant::now();
+    // Used up: the next call goes through undelayed. (Timing it would only measure the machine.)
+    assert_eq!(fake.state().await["faults"]["latency"], json!([]));
     assert_eq!(fake.get("/user", token).await.status(), 200);
-    assert!(
-        t.elapsed() < Duration::from_millis(400),
-        "{:?}",
-        t.elapsed()
-    );
     assert_eq!(fake.state().await["faults"]["latency"], json!([]));
 }
 

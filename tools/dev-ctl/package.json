@@ -7,7 +7,8 @@
     "node": ">=23.6"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

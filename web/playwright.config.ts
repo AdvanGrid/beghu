@@ -7,6 +7,8 @@ const app = process.env.BEGHU_APP_URL ?? `http://localhost:${process.env.DEV_APP
 
 export default defineConfig({
   testDir: "e2e",
+  // Waits for the stack, and has Vite compile the app before the first test (e2e/global-setup.ts).
+  globalSetup: "./e2e/global-setup.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -24,9 +26,17 @@ export default defineConfig({
     // sets faults for the whole stack, and repos.spec.ts slows GraphQL (the read-backs' too) and
     // installs the App, which has every account re-read its repos. So they run once the rest are
     // done, one after the other, never beside anything else.
-    { name: "live", testMatch: /live\.spec\.ts$/, dependencies: ["browser"] },
-    { name: "relationships", testMatch: /relationships\.spec\.ts$/, dependencies: ["live"] },
-    { name: "writes", testMatch: /writes\.spec\.ts$/, dependencies: ["relationships"] },
-    { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["writes"] },
+    //
+    // Their tests wait on outside edits (Fake GitHub's webhook, then the server's mirror write) on
+    // top of their own steps, and a test's cleanup waits for its close to land: one delivery's
+    // apply took 11 s while the disk was stalled. So they get 60 s rather than 30.
+    //
+    // live, relationships and repos watch what every tab shares (the list's order, its top rows)
+    // and so run on one worker, `--repeat-each` copies included. writes.spec.ts is safe side by
+    // side: its tests claim their own issues and take a lock for stack-wide state (claims.ts).
+    { name: "live", testMatch: /live\.spec\.ts$/, dependencies: ["browser"], timeout: 60_000, workers: 1 },
+    { name: "relationships", testMatch: /relationships\.spec\.ts$/, dependencies: ["live"], timeout: 60_000, workers: 1 },
+    { name: "writes", testMatch: /writes\.spec\.ts$/, dependencies: ["relationships"], timeout: 60_000 },
+    { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["writes"], workers: 1 },
   ],
 });

@@ -10,6 +10,12 @@ import { matchSpans, searchOf } from "../src/highlight";
 
 const q = (page: Page) => new URL(page.url()).searchParams.get("q");
 
+/**
+ * How long a new search's view may take to land. Each keystroke asks for a full-text search,
+ * and on a loaded machine one took over 5 s; until it lands the page shows the view before it.
+ */
+const VIEW_LANDS_WITHIN_MS = 20_000;
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/");
@@ -60,7 +66,7 @@ test("the Match dropdown and the match: token stay in sync, and wait for free te
   await box.press("End");
   await box.pressSequentially(" spinner");
   await box.press("Enter");
-  await expect(match).toBeEnabled();
+  await expect(match).toBeEnabled({ timeout: VIEW_LANDS_WITHIN_MS });
   await expect(match).toHaveValue("blend");
   await match.selectOption("best");
   await expect.poll(() => q(page)).toBe("is:open spinner match:best");
@@ -88,7 +94,7 @@ test("the detail marks the search's words and scrolls to the first match it has 
   // Every mark is the word, as typed or not.
   for (const t of await marks.allTextContents()) expect(t.toLowerCase()).toMatch(/^spinner/);
   // The first one is on screen.
-  await expect(marks.first()).toBeInViewport();
+  await expect(marks.first()).toBeInViewport({ timeout: VIEW_LANDS_WITHIN_MS });
   expect(await detail.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 
   // Diacritics and case fold: `SPÍNNER` marks the same words.
@@ -102,7 +108,7 @@ test("under a sort Blend can't use, the Match dropdown shows Best match and says
   const blend = match.locator('option[value="blend"]');
   for (const sort of ["created-asc", "comments", "comments-asc"]) {
     await page.goto("/?q=" + encodeURIComponent(`is:open spinner sort:${sort}`));
-    await expect(match).toBeEnabled();
+    await expect(match).toBeEnabled({ timeout: VIEW_LANDS_WITHIN_MS });
     await expect(match, sort).toHaveValue("best");
     // (Playwright's toBeDisabled doesn't read an <option>'s own state.)
     await expect.poll(() => blend.evaluate((o: HTMLOptionElement) => o.disabled), sort).toBe(true);
@@ -156,7 +162,7 @@ test("the detail scrolls to a first match that comment page 2 brings", async ({ 
   const comments = detail.locator('[data-perf="comment"]');
   await expect.poll(() => comments.count()).toBeGreaterThan(15);
   const mark = detail.locator('[data-perf="match"]').first();
-  await expect(mark).toBeInViewport();
+  await expect(mark).toBeInViewport({ timeout: VIEW_LANDS_WITHIN_MS });
   // On page 2: the 16th comment or later.
   const at = await mark.evaluate((m) => {
     const c = m.closest('[data-perf="comment"]')!;
@@ -177,6 +183,6 @@ test("a new search on the open issue scrolls to its first match", async ({ page 
   await box.pressSequentially(` ${word} in:comments`);
   await box.press("Enter");
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/issues/${id}`);
-  await expect(detail.locator('[data-perf="match"]').first()).toBeInViewport();
+  await expect(detail.locator('[data-perf="match"]').first()).toBeInViewport({ timeout: VIEW_LANDS_WITHIN_MS });
   expect(await detail.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 });

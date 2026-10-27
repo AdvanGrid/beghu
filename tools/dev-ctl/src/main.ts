@@ -351,8 +351,15 @@ function grep(args: string[]): void {
 // ---------------------------------------------------------------------------------------------
 // login / fake
 
+/**
+ * How long a command that needs the fake waits for it to answer. Far longer than `status` waits:
+ * on a machine stalled on disk the whole fake process has been seen to pause for 6 s, and a
+ * command that then gave up failed a test's cleanup with the fake running fine.
+ */
+const FAKE_ANSWERS_WITHIN_MS = 30_000;
+
 async function needFake(): Promise<FakeState> {
-  const s = await fakeState(urls().control);
+  const s = await fakeState(urls().control, FAKE_ANSWERS_WITHIN_MS);
   if (!s) die("Fake GitHub isn't answering; run ./dev-ctl start (or check ./dev-ctl status)");
   return s;
 }

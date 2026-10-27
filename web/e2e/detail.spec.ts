@@ -2,6 +2,7 @@
 // rows of the default list each have exactly 30 comments.
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
+import { status } from "./stack";
 
 const panel = (page: Page) => page.locator('[data-perf="panel"]');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
@@ -39,7 +40,7 @@ function apiRequests(page: Page): string[] {
 
 /** The fixture generator's summary, next to the fixture the stack's Fake GitHub serves. */
 async function summary(): Promise<{ stub_ids: number[]; stub_numbers: number[]; unlinked_stubs: number[] }> {
-  const control = `http://127.0.0.1:${process.env.DEV_FAKE_CONTROL_PORT ?? 3101}`;
+  const { control } = status().urls;
   const { fixture } = (await (await fetch(`${control}/state`)).json()) as { fixture: string };
   const path = fixture.replace(/mirror-([^/]*)\.db$/, "fixture-$1.json");
   return JSON.parse(readFileSync(path, "utf8"));
@@ -203,8 +204,10 @@ test("nothing in the panel moves when a value changes length", async ({ page }) 
   const before = await layout();
 
   // The same issue with every property a different length: closed as not planned, more labels,
-  // another assignee, a long milestone, a comment count with more digits.
-  await page.route(`**/api/issues/${id}`, async (route) => {
+  // another assignee, a long milestone, a comment count with more digits. Every read of it, the
+  // stream's opening reset's `?through=` one included: a plain read let through would put the
+  // issue back as it is.
+  await page.route((u) => u.pathname === `/api/issues/${id}`, async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.state = "closed";
@@ -450,7 +453,11 @@ test("panel code that fails to load reloads the URL once, then offers Retry, the
     if (r.isNavigationRequest() && r.frame() === page.mainFrame()) loads.push(new URL(r.url()).pathname);
   });
   // The hover's preload fails silently; the click's navigation fails, and reloads the target.
+  // The reload loads the whole app again, which can take seconds on a loaded machine: the
+  // failure is due once it has loaded.
+  const reloaded = page.waitForEvent("load");
   await row.click();
+  await reloaded;
   await expect(page.getByText("Couldn't load this issue")).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/issues/${id}$`));
   expect(loads).toEqual([`/issues/${id}`]);

@@ -85,10 +85,11 @@ test("suggestion counts are fetched only for a value list that stays open", asyn
   await page.waitForTimeout(1500);
   expect(counts).toEqual([]);
 
-  // Left open: one fetch for the label list, and the counts show beside the values.
+  // Left open: one fetch for the label list, and the counts show beside the values. (The counts
+  // query alone took over 4 s on a loaded machine: no budget here, only that they come.)
   await box.pressSequentially("b");
   const bug = suggestions.getByRole("option", { name: /label:bug/ });
-  await expect(bug.locator('[data-perf="count"]')).toHaveText(/^\d+$/);
+  await expect(bug.locator('[data-perf="count"]')).toHaveText(/^\d+$/, { timeout: 15_000 });
   expect(counts).toHaveLength(1);
   expect(new URL(counts[0]!).pathname).toBe("/api/facets/label/counts");
   expect(new URL(counts[0]!).searchParams.get("q")).toBe("is:open");
@@ -147,14 +148,29 @@ test("the sort dropdown and the sort: token follow each other", async ({ page })
 test("a view that takes over 200 ms pulses the list over the old rows, and a stale fetch never ends it", async ({ page }) => {
   const list = page.locator('[data-perf="list-frame"]');
   // Two slow views: the second is asked for while the first is still loading, and lands after it.
-  // Delayed here, in the browser: `./dev-ctl fake latency` slows Fake GitHub, but the list reads
-  // the server's mirror and never calls GitHub, so only a delay in front of `/api/issues` can
-  // make a view slow.
-  const slow: Record<string, number> = { "is:open assignee:me": 2000, "is:pr is:open": 4000 };
+  // Held here, in the browser: `./dev-ctl fake latency` slows Fake GitHub, but the list reads
+  // the server's mirror and never calls GitHub, so only a hold in front of `/api/issues` can
+  // make a view slow. Each is held for the other rather than for a fixed time, so the order
+  // holds however long the steps between take on a busy machine.
+  let askedNewer!: () => void;
+  const newerAsked = new Promise<void>((r) => (askedNewer = r));
+  let olderLanded!: () => void;
+  const olderIn = new Promise<void>((r) => (olderLanded = r));
   await page.route("**/api/issues?*", async (route) => {
-    const ms = slow[new URL(route.request().url()).searchParams.get("q") ?? ""];
-    if (ms) await new Promise((r) => setTimeout(r, ms));
-    await route.continue();
+    const q = new URL(route.request().url()).searchParams.get("q");
+    if (q === "is:open assignee:me") {
+      await newerAsked;
+      await route.fulfill({ response: await route.fetch() });
+      olderLanded();
+    } else if (q === "is:pr is:open") {
+      askedNewer();
+      const response = await route.fetch();
+      await olderIn;
+      await new Promise((r) => setTimeout(r, 500));
+      await route.fulfill({ response });
+    } else {
+      await route.continue();
+    }
   });
   // Timed in the page, so a busy test machine doesn't blur the 200 ms: each click, and each
   // change of the list's busy state.
@@ -208,10 +224,21 @@ test("steady typing pulses 200 ms after the list began waiting, not only once ty
     await route.continue();
   });
   const box = page.getByRole("combobox", { name: "Filter issues" });
+  // Clicking the box puts the default view's query in the URL (`/` becomes `/?q=is:open`): a view
+  // of its own, which pulses if it takes over 200 ms. It lands before the typing starts, so the
+  // pulse watched below is the typing's.
+  const settled = page.waitForEvent("requestfinished", (r) => {
+    const u = new URL(r.url());
+    return u.pathname === "/api/issues" && u.searchParams.get("q") === "is:open";
+  });
   await box.click();
   await box.press("End");
+  await settled;
+  await expect(page.locator('[data-perf="list-frame"]')).not.toHaveAttribute("aria-busy", "true");
   // A keystroke every 100 ms, timed in the page, with when the list first went busy. Watched
-  // from the list's column, which outlives any element inside it.
+  // from the list's column, which outlives any element inside it. Typing goes on until a
+  // keystroke has followed the pulse (at most 10 s of it), so a loaded machine that starts the
+  // first slow view late can't end the typing before the pulse is due.
   const t = await box.evaluate(async (el: HTMLInputElement) => {
     const busy = () => document.querySelector('[data-perf="list-frame"]')?.getAttribute("aria-busy") === "true";
     let on: number | undefined;
@@ -223,13 +250,16 @@ test("steady typing pulses 200 ms after the list began waiting, not only once ty
       childList: true,
       subtree: true,
     });
-    for (const ch of " crash dark theme") {
-      el.value += ch;
+    const words = " crash dark theme";
+    let last = performance.now();
+    for (let i = 0; i < 100 && !(on !== undefined && on < last); i++) {
+      el.value += words[i % words.length];
       el.setSelectionRange(el.value.length, el.value.length);
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      last = performance.now();
       await new Promise((r) => setTimeout(r, 100));
     }
-    return { last: performance.now(), on };
+    return { last, on };
   });
   // The list began waiting when it asked for the first slow view: its request's start, known
   // once it has landed.
@@ -352,4 +382,21 @@ test("the suggestions load on focus without moving anything on the page", async 
   await box.pressSequentially(" la");
   await expect(page.getByRole("listbox", { name: "Suggestions" }).getByRole("option").first()).toBeVisible();
   expect(await where()).toEqual(before);
+});
+
+test("Enter right after typing a word searches for the word, while views are still loading", async ({ page }) => {
+  // Every view takes 300 ms, so from the click's own view (it puts `?q=is:open` in the URL) one
+  // is always loading while the word is typed, and the bar's state is held behind them.
+  await page.route("**/api/issues?q=*", async (route) => {
+    await new Promise((r) => setTimeout(r, 300));
+    await route.continue();
+  });
+  const box = page.getByRole("combobox", { name: "Filter issues" });
+  await box.click();
+  await box.press("End");
+  await box.pressSequentially(" spinner");
+  await box.press("Enter");
+  // Not a value from the list as it was at the click ("is:open"), in place of the word.
+  await expect(box).toHaveValue("is:open spinner");
+  await expect.poll(() => q(page)).toBe("is:open spinner");
 });

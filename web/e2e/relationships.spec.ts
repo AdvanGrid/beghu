@@ -9,6 +9,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
+import { status } from "./stack";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -27,7 +29,7 @@ interface Unlinked {
 
 /** The fixture generator's summary, next to the fixture the stack's Fake GitHub serves. */
 async function summary(): Promise<{ unlinked: Unlinked[]; unlinked_closed: Unlinked[]; stub_numbers: number[]; unlinked_stubs: number[] }> {
-  const control = `http://127.0.0.1:${process.env.DEV_FAKE_CONTROL_PORT ?? 3101}`;
+  const { control } = status().urls;
   const { fixture } = (await (await fetch(`${control}/state`)).json()) as { fixture: string };
   return JSON.parse(readFileSync(fixture.replace(/mirror-([^/]*)\.db$/, "fixture-$1.json"), "utf8"));
 }
@@ -38,6 +40,7 @@ const row = (page: Page, id: number | string) => page.locator(`[data-perf="row"]
 
 /** Signed in, with the stream's opening refetch done, at `path`. */
 async function open(page: Page, path = "/"): Promise<void> {
+  await recordPushes(page);
   const live = page.waitForResponse((r) => r.url().includes("through=") && r.ok());
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/");
@@ -76,12 +79,18 @@ test("a dependency made on GitHub marks the row and fills both ends' Blocks sect
   const id = (await top.getAttribute("data-id"))!;
   const topRef = (await top.locator('[data-perf="ref"]').textContent())!.trim();
   const blocker = unlinked.find((u) => u.repo === "web")!;
+  const chipShown = await timeFromPush(
+    page,
+    id,
+    ([id, n]) =>
+      [...document.querySelectorAll(`[data-perf="row"][data-id="${id}"] [data-perf="blocker"]`)].some((c) => c.textContent?.includes(`#${n}`)),
+    [id, blocker.number] as const,
+  );
   try {
     devCtl(["fake", "edit", topRef, "--add-blocked-by", ref(blocker)]);
-    const made = Date.now();
     const chip = row(page, id).locator('[data-perf="blocker"]', { hasText: `#${blocker.number}` });
-    await expect(chip).toBeVisible({ timeout: 2000 });
-    expect(Date.now() - made).toBeLessThanOrEqual(2000);
+    await expect(chip).toBeVisible({ timeout: SHOWS_WITHIN_MS });
+    await chipShown();
     await expect(row(page, id)).toHaveAttribute("data-blocked", "");
     expect(loads).toBe(0);
 
@@ -109,7 +118,7 @@ test("the blockers' hover card lists each open blocker's title, owner and status
     devCtl(["fake", "edit", topRef, "--add-blocked-by", ref(b)]);
     devCtl(["fake", "edit", ref(b), "--add-blocked-by", ref(c)]);
     const chips = row(page, id).locator('[data-perf="blocker"]');
-    await expect(chips.filter({ hasText: `#${b.number}` })).toBeVisible({ timeout: 4000 });
+    await expect(chips.filter({ hasText: `#${b.number}` })).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     // The read-backs settle.
     await page.waitForTimeout(2500);
     const seen = apiRequests(page);
@@ -139,7 +148,7 @@ test("the detail shows the parent with its progress, sub-issues with x of y done
     await open(page, `/issues/${me.id}`);
     const crumb = page.locator('[data-perf="parent"]');
     // The parent's progress counts every descendant: me, child and the closed one.
-    await expect(crumb).toContainText("1/3", { timeout: 4000 });
+    await expect(crumb).toContainText("1/3", { timeout: SHOWS_WITHIN_MS });
     await expect(crumb.locator("a")).toHaveAttribute("href", `/issues/${parent.id}`);
     const subs = page.locator('[data-perf="sub-issues"]');
     await expect(subs.locator('[data-perf="sub-progress"]')).toHaveText("1 of 2 done");
@@ -159,9 +168,18 @@ test("a cross-repo relationship shows on both ends within 2 s", async ({ page })
   const me = unlinked.find((u) => u.repo === "web")!;
   const far = unlinked.find((u) => u.repo === "api")!;
   await open(page, `/issues/${me.id}`);
+  const blockerShown = await timeFromPush(
+    page,
+    me.id,
+    (far) => !!document.querySelector(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far}"]`),
+    far.id,
+  );
   try {
     devCtl(["fake", "edit", ref(me), "--add-blocked-by", ref(far)]);
-    await expect(page.locator(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far.id}"]`)).toBeVisible({ timeout: 2000 });
+    await expect(page.locator(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far.id}"]`)).toBeVisible({
+      timeout: SHOWS_WITHIN_MS,
+    });
+    await blockerShown();
     await page.locator(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far.id}"] a`).click();
     await expect(page.locator(`[data-perf="blocking"] [data-perf="block-item"][data-id="${me.id}"]`)).toBeVisible();
   } finally {

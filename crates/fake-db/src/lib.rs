@@ -18,8 +18,11 @@ use std::sync::{Arc, Mutex};
 /// Fills the fake's own tables in a fresh copy of the fixture.
 pub type Seed = Box<dyn Fn(&Transaction) -> rusqlite::Result<()> + Send + Sync>;
 
-/// The truth file, behind one connection. The fake is a dev tool serving a few users, so every
-/// call takes turns on that connection, off the async runtime.
+/// The truth file, behind one writer connection and one reader. The fake is a dev tool serving a
+/// few users, so writes take turns on the writer and reads on the reader, off the async runtime.
+/// The file is in WAL mode, so a read sees the last commit and never waits for a write: a commit
+/// can take seconds on a machine busy writing to disk, and every read (the control port's
+/// `/state`, which `./dev-ctl` gives 5 s; token checks; GraphQL) used to queue behind it.
 #[derive(Clone)]
 pub struct Truth(Arc<Inner>);
 
@@ -27,7 +30,9 @@ struct Inner {
     path: PathBuf,
     fixture: PathBuf,
     seed: Seed,
+    /// Taken before `reader` by anything that takes both.
     conn: Mutex<Connection>,
+    reader: Mutex<Connection>,
 }
 
 impl Truth {
@@ -47,15 +52,18 @@ impl Truth {
             fixture: fixture.to_owned(),
             seed,
             conn: Mutex::new(conn),
+            reader: Mutex::new(open_reader(path)?),
         })))
     }
 
     /// Throws away everything since the copy: copies the fixture again and re-seeds it. Blocks.
     pub fn reset(&self) -> Result<(), Error> {
         let mut conn = self.0.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut reader = self.0.reader.lock().unwrap_or_else(|e| e.into_inner());
         // Close the file before replacing it.
+        *reader = Connection::open_in_memory()?;
         *conn = Connection::open_in_memory()?;
-        match copy_fixture(&self.0.path, &self.0.fixture, &self.0.seed) {
+        let out = match copy_fixture(&self.0.path, &self.0.fixture, &self.0.seed) {
             Ok(fresh) => {
                 *conn = fresh;
                 Ok(())
@@ -65,7 +73,9 @@ impl Truth {
                 *conn = open_writer(&self.0.path)?;
                 Err(e)
             }
-        }
+        };
+        *reader = open_reader(&self.0.path)?;
+        out
     }
 
     pub fn fixture(&self) -> &Path {
@@ -79,7 +89,7 @@ impl Truth {
     {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = inner.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let conn = inner.reader.lock().unwrap_or_else(|e| e.into_inner());
             f(&conn).map_err(Error::from)
         })
         .await
@@ -155,5 +165,11 @@ fn copy_fixture(path: &Path, fixture: &Path, seed: &Seed) -> Result<Connection, 
 fn open_writer(path: &Path) -> Result<Connection, Error> {
     let conn = Connection::open(path)?;
     pool::configure(&conn, ConnKind::Writer)?;
+    Ok(conn)
+}
+
+fn open_reader(path: &Path) -> Result<Connection, Error> {
+    let conn = Connection::open(path)?;
+    pool::configure(&conn, ConnKind::Reader)?;
     Ok(conn)
 }

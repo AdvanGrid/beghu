@@ -18,7 +18,9 @@
 //! - `POST /faults/webhooks {drop?, duplicate?, reorder?, delay_ms?}`: the next `drop`
 //!   deliveries are lost, the next `duplicate` are sent twice under one GUID, the next `reorder`
 //!   are held and sent newest first, and every delivery waits `delay_ms` longer.
-//! - `DELETE /faults`: clear every fault rule, webhook ones included.
+//! - `DELETE /faults`: clear every fault rule, webhook ones included. With `{endpoint}`, only
+//!   that endpoint's latency, fail and rewrite rules, so callers sharing the fake (tests running
+//!   side by side) can each remove their own.
 //! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
@@ -234,9 +236,33 @@ async fn down(State(fake): State<Fake>, axum::Json(r): axum::Json<DownReq>) -> R
     ok()
 }
 
-async fn clear(State(fake): State<Fake>) -> Response {
-    fake.state().faults.clear();
-    fake.state().webhooks.clear();
+#[derive(Deserialize)]
+struct ClearReq {
+    endpoint: Option<String>,
+}
+
+async fn clear(State(fake): State<Fake>, body: axum::body::Bytes) -> Response {
+    // No body, `null` or `{}`: everything.
+    let r = if body.iter().all(u8::is_ascii_whitespace) {
+        None
+    } else {
+        match serde_json::from_slice::<Option<ClearReq>>(&body) {
+            Ok(r) => r,
+            Err(e) => return bad_request(e.to_string()),
+        }
+    };
+    match r.and_then(|r| r.endpoint) {
+        Some(endpoint) => {
+            let Some(endpoint) = faults::normalise_endpoint(&endpoint) else {
+                return bad_request(ENDPOINT_HELP);
+            };
+            fake.state().faults.clear_endpoint(&endpoint);
+        }
+        None => {
+            fake.state().faults.clear();
+            fake.state().webhooks.clear();
+        }
+    }
     ok()
 }
 

@@ -131,11 +131,15 @@ export function FilterBar(props: { onFocusChange: (focused: boolean) => void }) 
     go(applied(next), true);
   };
 
-  /** A suggestion was taken: `insert` replaces the token being typed. */
+  /**
+   * A suggestion was taken: `insert` replaces the token being typed. Read from the box itself:
+   * `text()` and `caret()` are held while a view typing asked for loads.
+   */
   const pick = (insert: string, done: boolean) => {
-    const cur = text();
-    const t = tokenAt(cur, caret());
-    const [start, end] = t ? [t.start, t.end] : [caret(), caret()];
+    const cur = box.value;
+    const at0 = box.selectionStart ?? cur.length;
+    const t = tokenAt(cur, at0);
+    const [start, end] = t ? [t.start, t.end] : [at0, at0];
     const before = cur.slice(0, start);
     const after = cur.slice(end).trimStart();
     const put = done ? `${insert} ` : insert;

@@ -191,10 +191,13 @@ export interface WebhookFaults {
   delay_ms: number;
 }
 
-/** The fake's state from its control port at `control`, or null when it doesn't answer. */
-export async function fakeState(control: string): Promise<FakeState | null> {
+/**
+ * The fake's state from its control port at `control`, or null when it doesn't answer within
+ * `ms`. A fake that isn't running refuses the connection at once; only a slow answer waits.
+ */
+export async function fakeState(control: string, ms = 5000): Promise<FakeState | null> {
   try {
-    const res = await fetch(`${control}/state`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${control}/state`, { signal: AbortSignal.timeout(ms) });
     return res.ok ? ((await res.json()) as FakeState) : null;
   } catch {
     return null;

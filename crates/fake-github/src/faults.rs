@@ -116,6 +116,15 @@ impl Faults {
         self.with(|r| *r = Rules::default());
     }
 
+    /// Removes every latency, fail and rewrite rule for `endpoint` (normalised), leaving the rest.
+    pub fn clear_endpoint(&self, endpoint: &str) {
+        self.with(|r| {
+            r.latency.retain(|l| l.endpoint != endpoint);
+            r.fail.retain(|f| f.endpoint != endpoint);
+            r.rewrite.retain(|w| w.endpoint != endpoint);
+        });
+    }
+
     pub fn is_down(&self) -> bool {
         self.with(|r| r.down)
     }

@@ -61,3 +61,33 @@ async fn a_failed_reset_keeps_the_truth_serving() {
     let from = truth.read(fake_db::q::fixture).await.unwrap();
     assert_eq!(from.as_deref(), Some(&*truth.fixture().to_string_lossy()));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_never_waits_for_a_write_under_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let truth = open_with_fixture_at(dir.path(), fake_db::BASE_VERSION as usize).unwrap();
+    let (holding, held) = std::sync::mpsc::channel();
+    let (read_done, read) = std::sync::mpsc::channel::<()>();
+    // A write that holds the truth until the read below is done, or gives up after 10 s.
+    let writer = tokio::spawn({
+        let truth = truth.clone();
+        async move {
+            truth
+                .write(move |_| {
+                    holding.send(()).unwrap();
+                    Ok(read
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .is_ok())
+                })
+                .await
+                .unwrap()
+        }
+    });
+    tokio::task::spawn_blocking(move || held.recv().unwrap())
+        .await
+        .unwrap();
+    let from = truth.read(fake_db::q::fixture).await.unwrap();
+    assert!(from.is_some());
+    read_done.send(()).unwrap();
+    assert!(writer.await.unwrap(), "the read waited for the write");
+}

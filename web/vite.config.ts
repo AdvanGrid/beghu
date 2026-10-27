@@ -61,6 +61,41 @@ function shell(): Plugin {
 }
 
 /**
+ * In dev, a file rewritten with the content it already had updates nothing. `cargo test`
+ * rewrites every file in `src/bindings/` (ts-rs exports them whole, changed or not), and Vite
+ * took each rewrite for an edit: every open page reloaded or swapped modules mid-use, which broke
+ * e2e tests whenever cargo test ran beside them. Each module's source is noted as it's first
+ * served; an update whose source is the same is dropped.
+ */
+function unchangedUpdatesNothing(): Plugin {
+  const seen = new Map<string, string>();
+  return {
+    name: "beghu-unchanged-updates-nothing",
+    apply: "serve",
+    enforce: "pre",
+    transform(_code, id) {
+      const file = id.split("?")[0]!;
+      if (file.startsWith("/") && !file.includes("/node_modules/") && !seen.has(file)) {
+        try {
+          seen.set(file, readFileSync(file, "utf8"));
+        } catch {
+          // Not a file on disk (a virtual module).
+        }
+      }
+    },
+    hotUpdate: {
+      order: "pre",
+      async handler({ type, file, read }) {
+        if (type !== "update" || !seen.has(file)) return;
+        const now = await read();
+        if (now === seen.get(file)) return [];
+        seen.set(file, now);
+      },
+    },
+  };
+}
+
+/**
  * `.br` and `.gz` next to each built asset, at maximum compression, for the server to send as
  * they are (crates/server/src/lib.rs). The edge passes encodings through, so these are the bytes
  * on the wire. A sibling that wouldn't be smaller isn't written.
@@ -148,7 +183,7 @@ function firstLoadInEntry(): { plugin: Plugin; test: (id: string) => boolean } {
 const firstLoad = firstLoadInEntry();
 
 export default defineConfig({
-  plugins: [stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin],
+  plugins: [unchangedUpdatesNothing(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
   // out of first-load JS (see src/no-server-functions.ts). Exact match only, so the router's
   // lazy `…/server-functions/server` import is untouched.
@@ -160,6 +195,12 @@ export default defineConfig({
       },
     ],
   },
+  // Every bare import the app's code reaches, pre-bundled at startup. Vite's scan of index.html
+  // misses the ones that only show up once a plugin has transformed a module (StyleX's runtime,
+  // Solid's refresh, the list's virtualizer): it found those on the first page loads instead,
+  // bundled them again and reloaded every open tab, mid-test on a fresh `./dev-ctl start`.
+  // @solidjs/router ships JSX, which the Solid plugin compiles as source.
+  optimizeDeps: { include: ["solid-js", "solid-js/refresh", "@solidjs/web", "@stylexjs/stylex", "@tanstack/virtual-core"] },
   server: { proxy, strictPort: true },
   build: {
     target: ["chrome123", "firefox120", "safari17.5"],

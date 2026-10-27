@@ -6,6 +6,8 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { claimBelowTheTop } from "./claims";
+import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -35,7 +37,8 @@ async function rowRef(page: Page, i: number): Promise<{ repo: string; number: nu
   return { repo: ref[1]!, number: Number(ref[2]), id: (await row.getAttribute("data-id"))! };
 }
 
-const unique = (what: string) => `${what} ${Date.now().toString(36)}`;
+/** Text no other test, here or beside this one, will have used. */
+const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 test.beforeAll(() => {
   control = (JSON.parse(devCtl(["status", "--json"])) as { urls: { control: string } }).urls.control;
@@ -46,6 +49,7 @@ const liveRefetch = (page: Page) => page.waitForResponse((r) => r.url().includes
 
 test.beforeEach(async ({ page }) => {
   await fake("/faults", {}, "DELETE");
+  await recordPushes(page);
   // Signed in, with the stream up and its opening refetch done, so each test's change is the
   // only one.
   const live = liveRefetch(page);
@@ -64,14 +68,22 @@ test("an outside edit through ./dev-ctl fake edit shows in the open list within 
   page.on("framenavigated", (f) => f === page.mainFrame() && loads++);
   const { repo, number, id } = await rowRef(page, 5);
   const title = unique("Retitled with gh");
+  // It moves to the top: it was updated last.
+  const onTop = await timeFromPush(
+    page,
+    id,
+    ([id, title]) => {
+      const top = document.querySelector('[data-perf="row"]');
+      return top?.getAttribute("data-id") === id && !!top.textContent?.includes(title);
+    },
+    [id, title] as const,
+  );
 
   devCtl(["fake", "edit", `${repo}#${number}`, "--title", title]);
-  const edited = Date.now();
-  // It moves to the top: it was updated last.
   const top = page.locator('[data-perf="row"]').first();
-  await expect(top).toHaveAttribute("data-id", id, { timeout: 2000 });
+  await expect(top).toHaveAttribute("data-id", id, { timeout: SHOWS_WITHIN_MS });
   await expect(top).toContainText(title);
-  expect(Date.now() - edited).toBeLessThanOrEqual(2000);
+  await onTop();
   expect(loads).toBe(0);
 });
 
@@ -105,7 +117,7 @@ test("a burst of pushes costs one immediate refetch and one trailing one, and th
     if (first) {
       fetched();
       await page.waitForFunction(() => (window as unknown as { pushes: number[] }).pushes.length >= 4, null, {
-        timeout: 10_000,
+        timeout: SHOWS_WITHIN_MS,
       });
     }
     await route.fulfill({ response });
@@ -117,7 +129,7 @@ test("a burst of pushes costs one immediate refetch and one trailing one, and th
   await fake("/faults/webhooks", { reorder: 3 });
   for (const [i, r] of refs.entries()) if (i > 0) await fake("/edit", { repo: r.repo, number: r.number, title: titles[i] });
 
-  for (const t of titles) await expect(page.getByText(t)).toBeVisible({ timeout: 8000 });
+  for (const t of titles) await expect(page.getByText(t)).toBeVisible({ timeout: SHOWS_WITHIN_MS });
   // The first refetch went out as soon as its push arrived, not after a debounce.
   const pushes = await page.evaluate(() => (window as unknown as { pushes: number[] }).pushes);
   expect(refetches[0]! - pushes[0]!).toBeLessThan(500);
@@ -146,8 +158,8 @@ test("a push refetches a filtered, sorted view through its last loaded row, in i
   await fake("/edit", { repo: dropped.repo, number: dropped.number, remove_labels: ["bug"] });
 
   const row = (id: string) => page.locator(`[data-perf="row"][data-id="${id}"]`);
-  await expect(row(kept.id)).toContainText(title, { timeout: 4000 });
-  await expect(row(dropped.id)).toHaveCount(0, { timeout: 4000 });
+  await expect(row(kept.id)).toContainText(title, { timeout: SHOWS_WITHIN_MS });
+  await expect(row(dropped.id)).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
   await expect(rows.nth(2)).toHaveAttribute("data-id", kept.id);
   const after = await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-id")));
   expect(after.slice(0, 6)).toEqual(before.filter((id) => id !== dropped.id).slice(0, 6));
@@ -165,7 +177,7 @@ async function untilInMirror(page: Page, id: string, title: string): Promise<voi
         const { rows } = (await res.json()) as { rows: { id: number; title: string }[] };
         return rows[0] && { id: String(rows[0].id), title: rows[0].title };
       },
-      { timeout: 5000 },
+      { timeout: SHOWS_WITHIN_MS },
     )
     .toEqual({ id, title });
 }
@@ -270,7 +282,7 @@ test("a failed refetch leaves the rows on screen", async ({ page }) => {
   await page.unroute("**/api/issues?*through=*");
   const title = unique("Shown now");
   await fake("/edit", { repo, number, title });
-  await expect(rows.first()).toContainText(title, { timeout: 3000 });
+  await expect(rows.first()).toContainText(title, { timeout: SHOWS_WITHIN_MS });
 });
 
 test("a page that loads during a refetch is never shown and then dropped", async ({ page }) => {
@@ -338,20 +350,20 @@ function apiRequests(page: Page): string[] {
 const listRefetch = (page: Page) =>
   page.waitForResponse((r) => new URL(r.url()).pathname === "/api/issues" && r.url().includes("through=") && r.ok());
 
-type Row = { id: number; owner: string; repo: string; number: number; comments: number };
+/** An open issue below the default list's top 40 rows, with 1 to 15 comments, claimed for this test. */
+const issueBelowTheTop = (page: Page) => claimBelowTheTop(page);
 
-/** An open issue below the default list's top 40 rows, with 1 to 15 comments (one page). */
-async function issueBelowTheTop(page: Page): Promise<Row & { ref: string }> {
-  const rows: Row[] = [];
-  let after: string | null = null;
-  do {
-    const res = await page.request.get(after ? `/api/issues?after=${after}` : "/api/issues");
-    const p = (await res.json()) as { rows: Row[]; next: string | null };
-    rows.push(...p.rows);
-    after = p.next;
-  } while (after && rows.length < 200);
-  const r = rows.slice(40).find((r) => r.comments >= 1 && r.comments <= 15)!;
-  return { ...r, ref: `${r.owner}/${r.repo}#${r.number}` };
+/**
+ * Leaves `issue` closed, out of the default list, and waits for beghu to have the close (its
+ * webhook comes about a second later), so the next test can't pick the issue again.
+ */
+async function closeForGood(page: Page, issue: { id: number; ref: string }): Promise<void> {
+  devCtl(["fake", "edit", issue.ref, "--close"]);
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/issues/${issue.id}`)).json()) as { state: string }).state, {
+      timeout: SHOWS_WITHIN_MS,
+    })
+    .toBe("closed");
 }
 
 /** Each comment's id and time, in the order shown. */
@@ -390,11 +402,16 @@ test("a comment made on GitHub shows in the open issue within 2 s, in one reques
   const api = apiRequests(page);
   const text = unique("Commented with gh");
   try {
-    devCtl(["fake", "edit", issue.ref, "--comment", text]);
-    const edited = Date.now();
     // Newest first: it arrives on top, and nothing loaded is skipped or repeated.
-    await expect(comments(page).first()).toContainText(text, { timeout: 2000 });
-    expect(Date.now() - edited).toBeLessThanOrEqual(2000);
+    const onTop = await timeFromPush(
+      page,
+      issue.id,
+      (text) => !!document.querySelector('[data-perf="comment"]')?.textContent?.includes(text),
+      text,
+    );
+    devCtl(["fake", "edit", issue.ref, "--comment", text]);
+    await expect(comments(page).first()).toContainText(text, { timeout: SHOWS_WITHIN_MS });
+    await onTop();
     const after = await shownComments(page);
     expect(after.slice(1)).toEqual(before);
     // One push, one request; give a stray second one time to show.
@@ -404,7 +421,7 @@ test("a comment made on GitHub shows in the open issue within 2 s, in one reques
     ]);
   } finally {
     // Out of the default list again: it rose to the top with few comments.
-    devCtl(["fake", "edit", issue.ref, "--close"]);
+    await closeForGood(page, issue);
   }
 });
 
@@ -422,7 +439,7 @@ const frames = (page: Page, n: number) =>
 test("a match that a push brings to the open issue later never scrolls it", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 600 });
   const issue = await issueBelowTheTop(page);
-  const word = `zq${Date.now().toString(36)}`;
+  const word = `zq${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   await page.goto(`/issues/${issue.id}?q=` + encodeURIComponent(`is:open ${word}`));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   // Its one page of comments is in, with no match: the opening reads have settled.
@@ -440,7 +457,7 @@ test("a match that a push brings to the open issue later never scrolls it", asyn
     expect(await detail(page).evaluate((el) => el.scrollTop)).toBe(0);
   } finally {
     // Out of the default list again: it rose to the top.
-    devCtl(["fake", "edit", issue.ref, "--close"]);
+    await closeForGood(page, issue);
   }
 });
 
@@ -458,11 +475,11 @@ test("a push for an issue whose detail failed to load acts as Retry", async ({ p
   const text = unique("Commented after a failure");
   try {
     devCtl(["fake", "edit", issue.ref, "--comment", text]);
-    await expect(detail(page)).toHaveAttribute("data-id", String(issue.id), { timeout: 2000 });
+    await expect(detail(page)).toHaveAttribute("data-id", String(issue.id), { timeout: SHOWS_WITHIN_MS });
     await expect(comments(page).first()).toContainText(text);
     expect(errors).toEqual([]);
   } finally {
-    devCtl(["fake", "edit", issue.ref, "--close"]);
+    await closeForGood(page, issue);
   }
 });
 
@@ -478,7 +495,7 @@ test("a push naming a hovered issue makes its click read it afresh", async ({ pa
   const title = unique("Renamed by the push");
   await fake("/edit", { repo, number, title });
   // The push has reached the tab: the list shows it.
-  await expect(row).toContainText(title, { timeout: 3000 });
+  await expect(row).toContainText(title, { timeout: SHOWS_WITHIN_MS });
   const titles = await watchTitles(page);
   await row.click();
   await expect(detail(page).locator("h2")).toHaveText(title);
@@ -510,7 +527,7 @@ test("a hover read still on its way when a push names its issue is never shown",
   await expect.poll(() => was).toBeDefined();
   const title = unique("Renamed while a read was on its way");
   await fake("/edit", { repo, number, title });
-  await expect(row).toContainText(title, { timeout: 3000 });
+  await expect(row).toContainText(title, { timeout: SHOWS_WITHIN_MS });
   release();
   await preloaded;
   // Past the router's 5 s preload window, where only a remembered read could show at once.

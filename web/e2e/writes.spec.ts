@@ -3,17 +3,23 @@
 // sending…", a failed close on its row, a comment "not sent", the status slot and the GitHub
 // banner.
 //
-// Serial, after live.spec.ts: writes change the fixture for every tab, and faults are global to
-// the stack (playwright.config.ts). As in live.spec.ts, every issue written to sits below the
-// default list's top 40 rows (detail.spec.ts relies on those) and is left closed, so it's out of
-// the default list again.
+// After live.spec.ts: writes change the fixture for every tab (playwright.config.ts). As in
+// live.spec.ts, every issue written to sits below the default list's top 40 rows (detail.spec.ts
+// relies on those) and is left closed, so it's out of the default list again.
+//
+// Safe side by side, and with `--repeat-each`: each test claims its own issues (claims.ts) and
+// sets faults only on their endpoints, removing just those after. A test that changes or reads
+// what's shared by every test takes the stack to itself (`@alone`: GitHub marked down for the
+// whole server, a facet's count, the list's order), and one that makes GitHub answer 5xx takes
+// turns with the others that do (`@5xx`).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { claimBelowTheTop, exclusive, fiveHundreds, shared, type Issue } from "./claims";
+import { SHOWS_WITHIN_MS } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-test.describe.configure({ mode: "serial" });
 
 function devCtl(args: string[]): string {
   const env = { ...process.env, DEV_APP_PORT: new URL(test.info().project.use.baseURL!).port };
@@ -22,8 +28,13 @@ function devCtl(args: string[]): string {
 
 let control: string;
 
+/** The endpoints this test set faults on, to remove just those afterwards. */
+const faulted = new Set<string>();
+
 /** A call to Fake GitHub's control port, which `./dev-ctl fake` also uses. */
 async function fake(path: string, body: unknown, method = "POST"): Promise<void> {
+  const endpoint = (body as { endpoint?: string } | null)?.endpoint;
+  if (path.startsWith("/faults/") && endpoint) faulted.add(endpoint);
   const res = await fetch(`${control}${path}`, {
     method,
     headers: { "content-type": "application/json" },
@@ -32,13 +43,15 @@ async function fake(path: string, body: unknown, method = "POST"): Promise<void>
   expect(res.ok, `${path}: ${await res.text()}`).toBe(true);
 }
 
-const COMMENTS = "POST /repos/*/*/issues/*/comments";
-const ISSUE = "PATCH /repos/*/*/issues/*";
+/** GitHub's endpoints for a comment on `i`, and for a change to `i` (close, reopen). */
+const COMMENTS = (i: Issue) => `POST /repos/${i.owner}/${i.repo}/issues/${i.number}/comments`;
+const ISSUE = (i: Issue) => `PATCH /repos/${i.owner}/${i.repo}/issues/${i.number}`;
 
 const fail = (endpoint: string, status: number, count = 1, retry_after?: number) =>
   fake("/faults/fail", { endpoint, status, count, retry_after });
 
-const unique = (what: string) => `${what} ${Date.now().toString(36)}`;
+/** Text no other test, here or beside this one, will have used. */
+const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 const rows = (page: Page) => page.locator('[data-perf="row"]');
 const comments = (page: Page) => page.locator('[data-perf="comment"]');
@@ -49,31 +62,6 @@ const composer = (page: Page) => page.locator('[data-perf="composer"]');
 const box = (page: Page) => composer(page).locator("textarea");
 const button = (page: Page, name: string) => composer(page).getByRole("button", { name, exact: true });
 const commentSaying = (page: Page, text: string) => comments(page).filter({ hasText: text });
-
-type Row = { id: number; owner: string; repo: string; number: number; comments: number; state: string; labels: { name: string }[] };
-
-/**
- * Open issues below the default list's top 40 rows, with 1 to 15 comments (one page), and where
- * each sits in the list.
- */
-async function issuesBelowTheTop(page: Page): Promise<(Row & { ref: string; index: number })[]> {
-  const all: Row[] = [];
-  let after: string | null = null;
-  do {
-    const res = await page.request.get(after ? `/api/issues?after=${after}` : "/api/issues");
-    const p = (await res.json()) as { rows: Row[]; next: string | null };
-    all.push(...p.rows);
-    after = p.next;
-  } while (after && all.length < 200);
-  return all
-    .map((r, index) => ({ ...r, index, ref: `${r.owner}/${r.repo}#${r.number}` }))
-    .slice(40)
-    .filter((r) => r.comments >= 1 && r.comments <= 15);
-}
-
-async function issueBelowTheTop(page: Page): Promise<Row & { ref: string; index: number }> {
-  return (await issuesBelowTheTop(page))[0]!;
-}
 
 /** Opens `/issues/:id` and waits for the stream's opening reset to have been handled. */
 async function open(page: Page, id: number): Promise<void> {
@@ -107,16 +95,46 @@ async function openInApp(page: Page, id: number): Promise<void> {
 async function closeForGood(page: Page, issue: { id: number; ref: string }): Promise<void> {
   devCtl(["fake", "edit", issue.ref, "--close"]);
   await expect
-    .poll(async () => ((await (await page.request.get(`/api/issues/${issue.id}`)).json()) as { state: string }).state, { timeout: 10_000 })
+    .poll(async () => ((await (await page.request.get(`/api/issues/${issue.id}`)).json()) as { state: string }).state, {
+      timeout: SHOWS_WITHIN_MS,
+    })
     .toBe("closed");
+}
+
+/**
+ * Moves the page's clock past the 9 minutes a write is resent for, then on in steps until `gaveUp`
+ * shows. A send whose answer reaches the tab after the jump waits for its next try on the page's
+ * clock, which doesn't jump again by itself: without the steps that try comes a real retry-after
+ * later.
+ */
+async function pastNineMinutes(page: Page, gaveUp: () => Promise<boolean>): Promise<void> {
+  await page.clock.fastForward("09:10");
+  await expect
+    .poll(async () => {
+      if (await gaveUp()) return true;
+      await page.clock.fastForward("00:01");
+      return false;
+    })
+    .toBe(true);
 }
 
 test.beforeAll(() => {
   control = (JSON.parse(devCtl(["status", "--json"])) as { urls: { control: string } }).urls.control;
 });
 
-test.beforeEach(async ({ page }) => {
-  await fake("/faults", {}, "DELETE");
+let release: (() => void)[] = [];
+
+test.beforeEach(async ({ page }, info) => {
+  // Waiting for the lock isn't the test's own time: no timeout while it waits (another test
+  // holding the stack alone, or the ones it waits for, can take longer than a test may), then
+  // the test's own from when it has the lock.
+  const own = info.timeout;
+  const waiting = Date.now();
+  info.setTimeout(0);
+  release = [await (info.tags.includes("@alone") ? exclusive() : shared())];
+  if (info.tags.includes("@5xx")) release.push(await fiveHundreds());
+  info.setTimeout(own + (Date.now() - waiting));
+  faulted.clear();
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/");
@@ -124,8 +142,29 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.afterEach(async () => {
-  await fake("/faults", {}, "DELETE");
+  try {
+    for (const endpoint of faulted) await fake("/faults", { endpoint }, "DELETE");
+  } finally {
+    for (const r of release.reverse()) r();
+  }
 });
+
+/** From now on, per animation frame, whether a comment saying `text` has shown `state`; call the result to read it. */
+async function watchFor(page: Page, text: string, state: string): Promise<() => Promise<boolean>> {
+  await page.evaluate(
+    ([text, state]) => {
+      const w = window as unknown as { saw: boolean };
+      w.saw = false;
+      const frame = () => {
+        w.saw ||= [...document.querySelectorAll('[data-perf="comment"]')].some((c) => c.textContent?.includes(text) && c.textContent.includes(state));
+        if (!w.saw) requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    },
+    [text, state] as const,
+  );
+  return () => page.evaluate(() => (window as unknown as { saw: boolean }).saw);
+}
 
 /**
  * From now on, per animation frame, how many comments in the thread say `text` and whether one of
@@ -148,11 +187,11 @@ async function watchComment(page: Page, text: string): Promise<() => Promise<{ n
 }
 
 test("a comment shows at once as pending, then confirmed, with no flicker while the refetch is held", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     // GitHub takes its time, and every refetch of the detail is held back 2 s more.
-    await fake("/faults/latency", { endpoint: COMMENTS, ms: 1500 });
+    await fake("/faults/latency", { endpoint: COMMENTS(issue), ms: 1500 });
     await page.route(`**/api/issues/${issue.id}?through=*`, async (r) => {
       await new Promise((done) => setTimeout(done, 2000));
       await r.continue();
@@ -168,7 +207,7 @@ test("a comment shows at once as pending, then confirmed, with no flicker while 
     await expect(mine.locator('[data-perf="pending"]')).toBeVisible();
     await expect(box(page)).toHaveValue("");
     // Then GitHub has it, and a read that began after the confirmation shows the real comment.
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).toHaveCount(1);
     expect(Number(await mine.getAttribute("data-id"))).toBeGreaterThan(0);
 
@@ -185,7 +224,7 @@ test("a comment shows at once as pending, then confirmed, with no flicker while 
 type Sent = { op_id: string; resend?: boolean };
 
 test("a dropped connection resends the same op_id, and the comment is posted once", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const sent: Sent[] = [];
@@ -201,7 +240,7 @@ test("a dropped connection resends the same op_id, and the comment is posted onc
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     expect(sent).toHaveLength(2);
     expect(sent[1]!.op_id).toBe(sent[0]!.op_id);
     expect(sent.map((s) => s.resend ?? false)).toEqual([false, true]);
@@ -214,7 +253,7 @@ test("a dropped connection resends the same op_id, and the comment is posted onc
 });
 
 test("a resend beghu has no record of shows as maybe sent, looks in the thread, and offers Retry once it isn't there", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const sent: Sent[] = [];
@@ -234,8 +273,8 @@ test("a resend beghu has no record of shows as maybe sent, looks in the thread, 
     await expect(mine.getByRole("button", { name: "Discard" })).toBeVisible();
     expect(sent.map((s) => s.resend ?? false)).toEqual([false, true]);
     // Nothing reached GitHub: once it has looked in the thread, Retry sends it, once.
-    await mine.getByRole("button", { name: "Retry" }).click({ timeout: 10_000 });
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await mine.getByRole("button", { name: "Retry" }).click({ timeout: SHOWS_WITHIN_MS });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).not.toContainText("May or may not");
     await expect(mine).toHaveCount(1);
     expect(Number(await mine.getAttribute("data-id"))).toBeGreaterThan(0);
@@ -245,7 +284,7 @@ test("a resend beghu has no record of shows as maybe sent, looks in the thread, 
 });
 
 test("a comment sent while the browser is offline didn't arrive: it's sent once the tab is back online", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     await page.context().setOffline(true);
@@ -257,7 +296,7 @@ test("a comment sent while the browser is offline didn't arrive: it's sent once 
     await page.waitForTimeout(2500);
     await page.context().setOffline(false);
     // Not "lost": no send while offline reached beghu, so the next one isn't a resend.
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 15_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).not.toContainText("May or may not");
     expect(Number(await mine.getAttribute("data-id"))).toBeGreaterThan(0);
   } finally {
@@ -267,18 +306,22 @@ test("a comment sent while the browser is offline didn't arrive: it's sent once 
 });
 
 test("a comment GitHub posted but whose answer was lost finds itself in the thread and settles as posted", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     // GitHub posts it, and its 201 comes back cut short.
-    await fake("/faults/rewrite", { endpoint: COMMENTS, raw: "{" });
+    await fake("/faults/rewrite", { endpoint: COMMENTS(issue), raw: "{" });
     const text = unique("Posted, its answer unreadable");
+    // Watched every frame: the server's answer can take seconds on a loaded machine, and once it
+    // has come, the first look in the thread may find the comment at once, so the state can
+    // last a frame.
+    const sawMaybe = await watchFor(page, text, "May have been posted");
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
-    await expect(mine).toContainText("May have been posted");
+    await expect.poll(sawMaybe, { timeout: SHOWS_WITHIN_MS }).toBe(true);
     // Its webhook may bring the real comment first, beside it, for a moment.
-    await expect(mine.filter({ hasText: "May have been posted" })).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.filter({ hasText: "May have been posted" })).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).toHaveCount(1);
     await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0);
     expect(Number(await mine.getAttribute("data-id"))).toBeGreaterThan(0);
@@ -287,31 +330,31 @@ test("a comment GitHub posted but whose answer was lost finds itself in the thre
   }
 });
 
-test("a second +1 GitHub fails on never takes the first one for itself: it offers Retry", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+test("a second +1 GitHub fails on never takes the first one for itself: it offers Retry", { tag: "@5xx" }, async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const text = unique("+1");
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).toHaveCount(1);
     // The same text again, and GitHub fails on it without posting it.
-    await fail(COMMENTS, 502);
+    await fail(COMMENTS(issue), 502);
     await box(page).fill(text);
     await button(page, "Comment").click();
     const unsure = mine.filter({ hasText: "May have been posted" });
     await expect(unsure).toHaveCount(1);
-    await expect(unsure.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 10_000 });
+    await expect(unsure.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     await expect(mine).toHaveCount(2);
   } finally {
     await closeForGood(page, issue);
   }
 });
 
-test("a maybe-posted comment two newer comments could be stays unsure, with Retry", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+test("a maybe-posted comment two newer comments could be stays unsure, with Retry", { tag: "@5xx" }, async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const text = unique("Said twice");
@@ -319,13 +362,13 @@ test("a maybe-posted comment two newer comments could be stays unsure, with Retr
       const res = await page.request.get(`/api/issues/${issue.id}/comments?order=newest`);
       return ((await res.json()) as { comments: { body: string }[] }).comments.filter((c) => c.body === text).length;
     };
-    await fail(COMMENTS, 502);
+    await fail(COMMENTS(issue), 502);
     await page.route("**/api/ops", async (r) => {
       const res = await r.fetch();
       // After GitHub failed on it, two comments with its text by the same account land.
       devCtl(["fake", "edit", issue.ref, "--comment", text, "--as", "tomsj"]);
       devCtl(["fake", "edit", issue.ref, "--comment", text, "--as", "tomsj"]);
-      await expect.poll(said, { timeout: 10_000 }).toBe(2);
+      await expect.poll(said, { timeout: SHOWS_WITHIN_MS }).toBe(2);
       await r.fulfill({ response: res });
     });
     await box(page).fill(text);
@@ -339,7 +382,7 @@ test("a maybe-posted comment two newer comments could be stays unsure, with Retr
 });
 
 test("a write whose 2xx answer comes back cut short is resent, and joins the write beghu made", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const sent: Sent[] = [];
@@ -355,7 +398,7 @@ test("a write whose 2xx answer comes back cut short is resent, and joins the wri
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).not.toContainText("Not sent");
     expect(sent.map((s) => s.resend ?? false)).toEqual([false, true]);
     expect(sent[1]!.op_id).toBe(sent[0]!.op_id);
@@ -367,7 +410,7 @@ test("a write whose 2xx answer comes back cut short is resent, and joins the wri
 });
 
 test("a write whose answer a proxy drops without a body is resent, not failed", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     const sent: Sent[] = [];
@@ -383,7 +426,7 @@ test("a write whose answer a proxy drops without a body is resent, not failed", 
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).not.toContainText("Not sent");
     expect(sent.map((s) => s.resend ?? false)).toEqual([false, true]);
     expect(sent[1]!.op_id).toBe(sent[0]!.op_id);
@@ -395,7 +438,7 @@ test("a write whose answer a proxy drops without a body is resent, not failed", 
 });
 
 test("a comment longer than GitHub takes can't be typed, and one that gets through is refused with no Retry", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     await expect(box(page)).toHaveAttribute("maxlength", "65536");
@@ -417,11 +460,11 @@ test("a comment longer than GitHub takes can't be typed, and one that gets throu
   }
 });
 
-test("a comment GitHub fails on may have been posted: it says to check the thread, and offers Retry once it isn't there", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+test("a comment GitHub fails on may have been posted: it says to check the thread, and offers Retry once it isn't there", { tag: "@5xx" }, async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    await fail(COMMENTS, 502);
+    await fail(COMMENTS(issue), 502);
     const text = unique("Maybe posted");
     await box(page).fill(text);
     await button(page, "Comment").click();
@@ -429,7 +472,7 @@ test("a comment GitHub fails on may have been posted: it says to check the threa
     await expect(mine).toContainText("May have been posted; check the thread");
     await expect(mine.getByRole("button", { name: "Retry" })).toHaveCount(0);
     // It looks in the thread: not there, so Retry.
-    await expect(mine.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 10_000 });
+    await expect(mine.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     // Edit puts the text back, for the user to send again.
     await mine.getByRole("button", { name: "Edit" }).click();
     await expect(box(page)).toHaveValue(text);
@@ -440,7 +483,7 @@ test("a comment GitHub fails on may have been posted: it says to check the threa
 });
 
 test("a write beghu doesn't answer for 9 minutes stops being resent and shows as maybe sent", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await page.clock.install();
     await open(page, issue.id);
@@ -454,8 +497,9 @@ test("a write beghu doesn't answer for 9 minutes stops being resent and shows as
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
     await expect.poll(() => sends).toBeGreaterThan(0);
-    await page.clock.fastForward("09:10");
-    await expect(mine).toContainText("May or may not have been sent; check the thread");
+    const maybeSent = "May or may not have been sent; check the thread";
+    await pastNineMinutes(page, async () => (await mine.allTextContents()).some((t) => t.includes(maybeSent)));
+    await expect(mine).toContainText(maybeSent);
     const after = sends;
     await page.clock.fastForward("01:00");
     await page.waitForTimeout(500);
@@ -466,7 +510,7 @@ test("a write beghu doesn't answer for 9 minutes stops being resent and shows as
 });
 
 test("a write beghu keeps turning away as busy stops after 9 minutes and fails with Retry", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await page.clock.install();
     await open(page, issue.id);
@@ -481,9 +525,10 @@ test("a write beghu keeps turning away as busy stops after 9 minutes and fails w
     });
     await button(page, "Close issue").click();
     await expect.poll(() => sends).toBeGreaterThan(0);
-    await page.clock.fastForward("09:10");
     // beghu never started it: not lost, just not sent.
-    await expect(stateNote(page)).toContainText("Couldn't close — beghu was busy, so this change wasn't sent");
+    const notSent = "Couldn't close — beghu was busy, so this change wasn't sent";
+    await pastNineMinutes(page, async () => (await stateNote(page).allTextContents()).some((t) => t.includes(notSent)));
+    await expect(stateNote(page)).toContainText(notSent);
     await expect(stateNote(page).getByRole("button", { name: "Retry" })).toBeVisible();
     const after = sends;
     await page.clock.fastForward("01:00");
@@ -495,10 +540,10 @@ test("a write beghu keeps turning away as busy stops after 9 minutes and fails w
 });
 
 test("a close GitHub refuses reverts with Retry and Dismiss on its row, and Retry closes it", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    await fail(ISSUE, 403);
+    await fail(ISSUE(issue), 403);
     await button(page, "Close issue").click();
     // The role allows it: GitHub just didn't apply it.
     await expect(stateNote(page)).toContainText("Couldn't close — GitHub didn't apply this change");
@@ -516,10 +561,10 @@ test("a close GitHub refuses reverts with Retry and Dismiss on its row, and Retr
 });
 
 test("a comment GitHub refuses stays in the thread as not sent, with Retry, Edit and Discard", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    await fail(COMMENTS, 422, 2);
+    await fail(COMMENTS(issue), 422, 2);
     const text = unique("Refused at first");
     await box(page).fill(text);
     await button(page, "Comment").click();
@@ -538,11 +583,11 @@ test("a comment GitHub refuses stays in the thread as not sent, with Retry, Edit
 
     // Retry sends it again, and GitHub takes it this time.
     await box(page).fill(text);
-    await fail(COMMENTS, 422);
+    await fail(COMMENTS(issue), 422);
     await button(page, "Comment").click();
     await expect(mine).toContainText("Not sent");
     await mine.getByRole("button", { name: "Retry" }).click();
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(mine).not.toContainText("Not sent");
     await expect(mine).toHaveCount(1);
   } finally {
@@ -550,15 +595,15 @@ test("a comment GitHub refuses stays in the thread as not sent, with Retry, Edit
   }
 });
 
-test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes and keeps the text, until GitHub is back", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes and keeps the text, until GitHub is back", { tag: "@alone" }, async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
     // One close meets a 500, and so do both its retries.
-    await fail(ISSUE, 500, 3);
+    await fail(ISSUE(issue), 500, 3);
     await button(page, "Close issue").click();
     const banner = page.locator('[data-perf="banner"]');
-    await expect(banner).toBeVisible({ timeout: 8000 });
+    await expect(banner).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     await expect(banner).toHaveAttribute("role", "alert");
     await expect(stateNote(page)).toContainText("Couldn't close");
     const text = unique("Kept while GitHub is down");
@@ -568,8 +613,8 @@ test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes a
     await expect(composer(page).getByRole("button", { name: "More ways to close" })).toBeDisabled();
     await expect(box(page)).toHaveValue(text);
 
-    // The server probes GitHub every 10 s.
-    await expect(banner).toBeHidden({ timeout: 15_000 });
+    // The server probes GitHub every 10 s: one probe, and room for a stalled machine.
+    await expect(banner).toBeHidden({ timeout: 10_000 + SHOWS_WITHIN_MS });
     await expect(button(page, "Comment")).toBeEnabled();
     await expect(box(page)).toHaveValue(text);
     await composer(page).getByRole("button", { name: "More ways to close" }).click();
@@ -581,9 +626,9 @@ test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes a
 });
 
 test("failures on issues that aren't open show in the status slot with Retry and Open", async ({ page }) => {
-  const [first, second] = await issuesBelowTheTop(page);
+  const [first, second] = [await claimBelowTheTop(page), await claimBelowTheTop(page)];
   try {
-    await fail(ISSUE, 403, 2);
+    for (const issue of [first!, second!]) await fail(ISSUE(issue), 403);
     for (const issue of [first!, second!]) {
       await openInApp(page, issue.id);
       await button(page, "Close issue").click();
@@ -612,16 +657,16 @@ test("failures on issues that aren't open show in the status slot with Retry and
 });
 
 test("a failure in the status slot collapses the quiet states behind an icon that shows them", async ({ page }) => {
-  const [first, second] = await issuesBelowTheTop(page);
+  const [first, second] = [await claimBelowTheTop(page), await claimBelowTheTop(page)];
   try {
-    await fail(ISSUE, 403);
+    await fail(ISSUE(first!), 403);
     await openInApp(page, first!.id);
     await button(page, "Close issue").click();
     await expect(stateNote(page)).toContainText("Couldn't close");
     await openInApp(page, second!.id);
     await expect(status(page)).toContainText(`Couldn't close ${first!.repo}#${first!.number}`);
     // A write on its way: the failure stays, and the sending state is behind its icon.
-    await fake("/faults/latency", { endpoint: COMMENTS, ms: 4000 });
+    await fake("/faults/latency", { endpoint: COMMENTS(second!), ms: 4000 });
     const text = unique("Sent beside a failure");
     await box(page).fill(text);
     await button(page, "Comment").click();
@@ -635,7 +680,7 @@ test("a failure in the status slot collapses the quiet states behind an icon tha
     expect(Math.min(target.width, target.height)).toBeGreaterThanOrEqual(24);
     await icon.click();
     await expect(status(page)).toContainText("sending 1 change…");
-    await expect(commentSaying(page, text).locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(commentSaying(page, text).locator('[data-perf="pending"]')).toHaveCount(0, { timeout: SHOWS_WITHIN_MS });
     await expect(icon).toHaveCount(0);
   } finally {
     await closeForGood(page, first!);
@@ -644,10 +689,10 @@ test("a failure in the status slot collapses the quiet states behind an icon tha
 });
 
 test("a failure in the status slot never times out", async ({ page }) => {
-  const [first, second] = await issuesBelowTheTop(page);
+  const [first, second] = [await claimBelowTheTop(page), await claimBelowTheTop(page)];
   try {
     await page.clock.install();
-    await fail(ISSUE, 403);
+    await fail(ISSUE(first!), 403);
     await openInApp(page, first!.id);
     await button(page, "Close issue").click();
     await expect(stateNote(page)).toContainText("Couldn't close");
@@ -663,10 +708,10 @@ test("a failure in the status slot never times out", async ({ page }) => {
 });
 
 test("a rate limit longer than beghu waits out says when to try again", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    await fail(ISSUE, 429, 1, 60);
+    await fail(ISSUE(issue), 429, 1, 60);
     await button(page, "Close issue").click();
     await expect(stateNote(page)).toContainText("Couldn't close — GitHub's rate limit: try again in 60 s");
     await expect(badge(page)).toHaveText("Open");
@@ -677,31 +722,36 @@ test("a rate limit longer than beghu waits out says when to try again", async ({
 
 test("a write with no answer for 15 s shows still sending, with no Retry, then lands", async ({ page }) => {
   test.slow();
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    await fake("/faults/latency", { endpoint: COMMENTS, ms: 17_000 });
+    // GitHub holds the comment 22 s: past the tab's 15 s, with room for a loaded machine to show
+    // "still sending…" before it lands, and inside the server's 30 s for a write.
+    await fake("/faults/latency", { endpoint: COMMENTS(issue), ms: 22_000 });
     const text = unique("Slow to send");
     await box(page).fill(text);
     await button(page, "Comment").click();
     const mine = commentSaying(page, text);
     await expect(status(page)).toHaveText("sending 1 change…");
-    await expect(mine).toContainText("still sending…", { timeout: 16_000 });
+    await expect(mine).toContainText("still sending…", { timeout: 20_000 });
     await expect(status(page)).toHaveText("still sending…");
     await expect(mine.getByRole("button", { name: "Retry" })).toHaveCount(0);
-    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 10_000 });
+    await expect(mine.locator('[data-perf="pending"]')).toHaveCount(0, { timeout: 20_000 });
     await expect(mine).not.toContainText("still sending");
   } finally {
     await closeForGood(page, issue);
   }
 });
 
-test("a pending close shows on its row but never moves, adds or removes a row", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+test("a pending close shows on its row but never moves, adds or removes a row", { tag: "@alone" }, async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
   try {
     // An issue on screen in the list: scroll it into the list's window.
     await page.goto(`/issues/${issue.id}`);
     await expect(composer(page)).toBeVisible();
+    // No more pages from here on: a scroll near the end of the loaded rows loads the next page,
+    // which adds rows whenever it lands, before or after the count below is read.
+    await page.route("**/api/issues?*after=*", () => new Promise<void>(() => {}));
     const row = page.locator(`[data-perf="row"][data-id="${issue.id}"]`);
     // The list renders only the rows in its window: bring the issue's row into it (34 px rows).
     await page.locator('[data-perf="list"]').evaluate((el, y) => el.scrollTo(0, y), issue.index * 34 - 100);
@@ -710,31 +760,32 @@ test("a pending close shows on its row but never moves, adds or removes a row", 
     const before = await order();
     const count = await page.locator('[data-perf="list"]').getAttribute("data-perf-rows");
 
-    await fake("/faults/latency", { endpoint: ISSUE, ms: 3000 });
+    await fake("/faults/latency", { endpoint: ISSUE(issue), ms: 3000 });
     await button(page, "Close issue").click();
     await expect(row.getByRole("img", { name: "Closed as completed" })).toBeVisible();
     await expect(badge(page)).toHaveText("Closed");
     expect(await order()).toEqual(before);
     await expect(page.locator('[data-perf="list"]')).toHaveAttribute("data-perf-rows", count!);
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await closeForGood(page, issue);
   }
 });
 
 test("a pending comment changes no search's rows or their matched icons", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
-  const word = `zq${Date.now().toString(36)}`;
+  const issue = await claimBelowTheTop(page);
+  const word = `zq${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   try {
     devCtl(["fake", "edit", issue.ref, "--title", `Searched for ${word}`]);
     await page.goto(`/issues/${issue.id}?q=` + encodeURIComponent(`is:open ${word}`));
     await expect(composer(page)).toBeVisible();
     const row = page.locator(`[data-perf="row"][data-id="${issue.id}"]`);
     const matched = row.locator('[data-perf="matched"]');
-    await expect(matched).toHaveAttribute("data-fields", "title", { timeout: 10_000 });
+    await expect(matched).toHaveAttribute("data-fields", "title", { timeout: SHOWS_WITHIN_MS });
     await expect(rows(page)).toHaveCount(1);
 
     // A comment with the word, held at GitHub: pending in the thread, and the row as it was.
-    await fake("/faults/latency", { endpoint: COMMENTS, ms: 3000 });
+    await fake("/faults/latency", { endpoint: COMMENTS(issue), ms: 3000 });
     const text = `Pending ${word}`;
     await box(page).fill(text);
     await button(page, "Comment").click();
@@ -751,11 +802,11 @@ test("a pending comment changes no search's rows or their matched icons", async 
   }
 });
 
-test("a pending close changes no facet's count", async ({ page }) => {
+test("a pending close changes no facet's count", { tag: "@alone" }, async ({ page }) => {
   // Spec #86: ops never change list membership, order or facet counts. The default view is
   // `is:open`, so a close, once GitHub has it, takes the issue out of its label's count; while
   // it's pending the count stays as the server has it.
-  const issue = (await issuesBelowTheTop(page)).find((r) => r.labels.some((l) => /^[\w-]+$/.test(l.name)))!;
+  const issue = await claimBelowTheTop(page, (r) => r.labels.some((l) => /^[\w-]+$/.test(l.name)));
   const label = issue.labels.find((l) => /^[\w-]+$/.test(l.name))!.name;
   const filter = page.getByRole("combobox", { name: "Filter issues" });
   /** The label's count in the open view, as the filter bar's suggestions show it. */
@@ -782,7 +833,7 @@ test("a pending close changes no facet's count", async ({ page }) => {
     await page.locator('[data-perf="list"]').evaluate((el, y) => el.scrollTo(0, y), issue.index * 34 - 100);
     await expect(row).toBeVisible();
 
-    await fake("/faults/latency", { endpoint: ISSUE, ms: 8000 });
+    await fake("/faults/latency", { endpoint: ISSUE(issue), ms: 8000 });
     await button(page, "Close issue").click();
     await expect(row.getByRole("img", { name: "Closed as completed" })).toBeVisible();
     expect(await labelCount()).toBe(before);
@@ -795,7 +846,7 @@ test("a pending close changes no facet's count", async ({ page }) => {
 });
 
 test("leaving asks first only while there's unsaved text", async ({ page }) => {
-  const issue = await issueBelowTheTop(page);
+  const issue = await claimBelowTheTop(page);
   for (const unsaved of [false, true]) {
     await open(page, issue.id);
     if (unsaved) await box(page).fill("Half a thought");

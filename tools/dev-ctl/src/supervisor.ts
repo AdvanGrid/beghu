@@ -45,7 +45,7 @@ function log(prefix: string, line: string): void {
 }
 
 /** Pipes a child's stdout and stderr into the log, line by line, under `prefix`. */
-function capture(child: ChildProcess, prefix: string, onLine?: (line: string) => void): void {
+function capture(child: ChildProcess, prefix: string, onLine?: (line: string) => void, sink = log): void {
   for (const stream of [child.stdout, child.stderr]) {
     let rest = "";
     stream?.setEncoding("utf8");
@@ -53,12 +53,12 @@ function capture(child: ChildProcess, prefix: string, onLine?: (line: string) =>
       const lines = (rest + chunk).split("\n");
       rest = lines.pop() ?? "";
       for (const line of lines) {
-        log(prefix, line);
+        sink(prefix, line);
         onLine?.(line);
       }
     });
     stream?.on("end", () => {
-      if (rest) log(prefix, rest);
+      if (rest) sink(prefix, rest);
     });
   }
 }
@@ -229,7 +229,9 @@ async function seedMirrors(scale: Scale, fixture: string): Promise<boolean> {
 }
 
 /** How each process is launched: command, arguments and extra environment. */
-function commands(fixture: () => string): Record<Proc, () => [string, string[], NodeJS.ProcessEnv]> {
+type Commands = Record<Proc, () => [string, string[], NodeJS.ProcessEnv]>;
+
+function commands(fixture: () => string): Commands {
   return {
     fake: () => [
       BINARIES.fake,
@@ -297,7 +299,7 @@ const MAX_FAST_FAILURES = 5;
 /** The wait before the first restart, doubled for each fast failure in a row. */
 const RESTART_MS = 500;
 
-interface Events {
+export interface Events {
   /** A process was spawned. */
   started: (name: Proc, pid: number) => void;
   /** A process kept failing fast and won't be restarted until a rebuild restarts it. */
@@ -309,9 +311,17 @@ interface Events {
 /**
  * The three child processes: starting, stopping and restarting them, with their output logged.
  * One that exits (or can't be spawned) when nothing asked it to is started again with backoff.
+ * Once a stop has begun nothing starts again, whatever was under way: a restart after a rebuild
+ * that spawned its process after the stop had stopped the others would outlive the stack, holding
+ * its port. `command` and `log` stand in for the real ones in tests.
  */
-function processes(fixture: () => string, events: Events) {
-  const command = commands(fixture);
+export function processes(
+  fixture: () => string,
+  events: Events,
+  stand: { command?: Commands; log?: typeof log } = {},
+) {
+  const command = stand.command ?? commands(fixture);
+  const say = stand.log ?? log;
   const children = new Map<Proc, ChildProcess>();
   const restarting = new Set<Proc>();
   /** Fast failures in a row, per process. */
@@ -320,12 +330,13 @@ function processes(fixture: () => string, events: Events) {
   let stopping = false;
 
   const start = (name: Proc) => {
+    if (stopping) return;
     const [cmd, args, env] = command[name]();
     const cwd = name === "vite" ? join(ROOT, "web") : ROOT;
     const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const startedAt = Date.now();
     children.set(name, child);
-    capture(child, name);
+    capture(child, name, undefined, say);
     if (child.pid !== undefined) events.started(name, child.pid);
     const stable = setTimeout(() => {
       if (failures.delete(name)) events.recovered(name);
@@ -337,7 +348,7 @@ function processes(fixture: () => string, events: Events) {
       clearTimeout(stable);
       if (children.get(name) === child) children.delete(name);
       if (stopping || restarting.has(name)) return;
-      log("dev-ctl", `${name} ${why}`);
+      say("dev-ctl", `${name} ${why}`);
       const fast = Date.now() - startedAt < STABLE_MS;
       const n = fast ? (failures.get(name) ?? 0) + 1 : 1;
       failures.set(name, n);
@@ -346,7 +357,7 @@ function processes(fixture: () => string, events: Events) {
         return;
       }
       const wait = RESTART_MS * 2 ** (n - 1);
-      log("dev-ctl", `restarting ${name} in ${wait} ms`);
+      say("dev-ctl", `restarting ${name} in ${wait} ms`);
       pending.set(
         name,
         setTimeout(() => {
@@ -359,7 +370,7 @@ function processes(fixture: () => string, events: Events) {
     // couldn't be sent, to a child still running: that one isn't gone, and its `exit` comes later.
     child.on("error", (e) => {
       if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) end(`couldn't run: ${e.message}`);
-      else log("dev-ctl", `${name}: ${e.message}`);
+      else say("dev-ctl", `${name}: ${e.message}`);
     });
     child.on("exit", (code, signal) => end(`exited (${signal ?? `code ${code}`})`));
   };
@@ -384,7 +395,8 @@ function processes(fixture: () => string, events: Events) {
     stopAll: async () => {
       for (const t of pending.values()) clearTimeout(t);
       pending.clear();
-      await Promise.all((["vite", "server", "fake"] as Proc[]).map(stop));
+      // Until none is left: a child that was spawning as the stop began is stopped too.
+      while (children.size) await Promise.all((["vite", "server", "fake"] as Proc[]).map(stop));
     },
     /** False when a stop is already under way. */
     beginStopping: () => {
@@ -398,7 +410,8 @@ function processes(fixture: () => string, events: Events) {
       restarting.add(name);
       await stop(name);
       restarting.delete(name);
-      log("dev-ctl", `restarting ${name}`);
+      if (stopping) return;
+      say("dev-ctl", `restarting ${name}`);
       start(name);
     },
     /** Stops `names` (in order), runs `between`, then starts them again (in reverse order). */
@@ -415,7 +428,7 @@ function processes(fixture: () => string, events: Events) {
         for (const name of [...names].reverse()) {
           restarting.delete(name);
           if (stopping) continue;
-          log("dev-ctl", `restarting ${name}`);
+          say("dev-ctl", `restarting ${name}`);
           start(name);
         }
       }

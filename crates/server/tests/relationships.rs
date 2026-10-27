@@ -189,20 +189,38 @@ async fn a_cross_repo_removal_that_names_the_other_end_applies_without_a_read_ba
     let (web, api) = (unlinked("web"), unlinked("api"));
     let (blocked, blocker) = (&web[0], &api[0]);
     let repo = summary_repo_id(&s, &b, "web").await;
-    edit(&s, blocked, json!({ "add_blocked_by": reference(blocker) })).await;
-    until(3.0, "the dependency", || async {
-        let d = detail(&s, &b, blocked.2).await;
-        (rel_ids(&d, "blocked_by") == [blocker.2]).then_some(())
-    })
-    .await;
-
-    // No read-back can land now; the removal names the blocker by id, though it's in another repo.
+    // No read-back can land in this test: GitHub fails every one. (Made as an outside edit, the
+    // dependency's two cross-repo deliveries each start a read-back, and one landing after the
+    // removal below would put the edge back from GitHub's state, which still has it.) So the
+    // dependency comes as a delivery that names the other end too, applied by id.
     s.fake(
         "POST",
         "/faults/fail",
         json!({ "endpoint": "POST /graphql", "count": 1000, "status": 502 }),
     )
     .await;
+    s.deliver(
+        "issue_dependencies",
+        "block-1",
+        &envelope(
+            repo,
+            "blocked_by_added",
+            json!({
+                "blocked_issue_id": blocked.2, "blocked_issue": issue(blocked),
+                "blocking_issue_id": blocker.2,
+            }),
+        ),
+    )
+    .await;
+    until(10.0, "the dependency", || async {
+        let d = detail(&s, &b, blocked.2).await;
+        let other = detail(&s, &b, blocker.2).await;
+        (rel_ids(&d, "blocked_by") == [blocker.2] && rel_ids(&other, "blocking") == [blocked.2])
+            .then_some(())
+    })
+    .await;
+
+    // The removal names the blocker by id, though it's in another repo.
     s.deliver(
         "issue_dependencies",
         "unblock-1",
@@ -216,7 +234,7 @@ async fn a_cross_repo_removal_that_names_the_other_end_applies_without_a_read_ba
         ),
     )
     .await;
-    until(2.0, "the dependency going", || async {
+    until(10.0, "the dependency going", || async {
         let d = detail(&s, &b, blocked.2).await;
         rel_ids(&d, "blocked_by").is_empty().then_some(())
     })

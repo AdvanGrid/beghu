@@ -2,7 +2,7 @@
 // value list that stays open, and the popover that shows them. Loaded on demand (the bar asks
 // for this module when the box takes focus), so none of it is in the first load.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, onSettled, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, latest, onSettled, Show } from "solid-js";
 import { forgetFailure, getFacetCounts, readThen, type Facet, type Facets } from "./api";
 import { LabelDot } from "./IssueList";
 import { onPush } from "./live";
@@ -120,19 +120,24 @@ export function Suggestions(props: {
 }) {
   const [active, setActive] = createSignal(0);
   const [counts, setCounts] = createSignal<Record<string, Map<string, number>>>({});
+  // The box as it is now. Typing navigates, and while the new view loads its writes are held:
+  // `props.text` would still be the text from before (the click that put `?q=is:open` in the URL,
+  // say), and a quick Enter would take a value from that old list and drop the typed word.
+  const text = () => latest(() => props.text);
+  const caret = () => latest(() => props.caret);
   // Typing starts the highlight over at the top.
   createEffect(
-    () => props.text,
+    () => text(),
     () => void setActive(0),
   );
 
-  const live = createMemo(() => tokenAt(props.text, props.caret));
+  const live = createMemo(() => tokenAt(text(), caret()));
 
   const suggestions = createMemo<Suggestion[]>(() => {
     const t = live();
     const f = props.facets;
     const present = new Set(
-      tokenize(props.text)
+      tokenize(text())
         .filter((x) => x.start !== t?.start)
         .map((x) => x.text.toLowerCase()),
     );
