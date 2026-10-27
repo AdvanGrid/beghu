@@ -1,6 +1,8 @@
 // The filter bar's text on the client: where its tokens are, which one is still being typed, and
 // the query that applies. The server owns the language (crates/server/src/query.rs) and parses
-// what the URL's `q` holds; the client only needs the token boundaries, the keys, and the sort.
+// what the URL's `q` holds; the client only needs the token boundaries, the keys, the sort and
+// Match mode, and which words are free text (`wordOf`, as the server reads them).
+import type { MatchMode } from "./bindings/MatchMode";
 
 /** The view when the URL has no `q`: the Open preset (the server's `query::DEFAULT`). */
 export const DEFAULT_QUERY = "is:open";
@@ -128,4 +130,81 @@ export function sameFilters(a: string, b: string): boolean {
       .sort()
       .join(" ");
   return set(a) === set(b);
+}
+
+/** The Match modes, in the dropdown's order, each with its label. */
+export const MATCHES: readonly { value: MatchMode; label: string }[] = [
+  { value: "blend", label: "Blend" },
+  { value: "best", label: "Best match" },
+  { value: "off", label: "Off" },
+];
+
+/** A free word as the server reads it (`parse` and `searchable` in query.rs). */
+export type Word = { text: string; phrase: boolean; exclude: boolean };
+
+/** A letter or digit, as Rust's `char::is_alphanumeric` has it. */
+const ALNUM = /[\p{Alphabetic}\p{N}]/u;
+
+/**
+ * The free word a token is, if any: not a qualifier (`-key:value` is a dropped one), and with
+ * enough of it to search. A leading `-` excludes; a leading quote makes a phrase; every quote is
+ * dropped, so `ab"cd` is `abcd`. A phrase needs two letters or digits in all; a word, a last part
+ * of two (split where it isn't a letter or digit), or else it searches the parts before it.
+ */
+export function wordOf(raw: string): Word | undefined {
+  const exclude = raw.startsWith("-") && raw.length > 1;
+  const t = exclude ? raw.slice(1) : raw;
+  if (/^[A-Za-z]+:/.test(t)) return undefined;
+  const phrase = t.startsWith('"');
+  const cps = [...t.replace(/"/g, "")];
+  if (phrase) return cps.filter((c) => ALNUM.test(c)).length >= 2 ? { text: cps.join(""), phrase, exclude } : undefined;
+  let end = cps.length;
+  while (end > 0 && !ALNUM.test(cps[end - 1]!)) end--;
+  for (;;) {
+    let start = end;
+    while (start > 0 && ALNUM.test(cps[start - 1]!)) start--;
+    if (end - start >= 2) return { text: cps.slice(0, end).join(""), phrase, exclude };
+    if (start === 0) return undefined;
+    end = start;
+    while (end > 0 && !ALNUM.test(cps[end - 1]!)) end--;
+  }
+}
+
+/** Whether a query has free text to search: a word that isn't a qualifier or an exclusion. */
+export function hasText(query: string): boolean {
+  return tokenize(query).some((t) => {
+    const w = wordOf(t.text);
+    return w !== undefined && !w.exclude;
+  });
+}
+
+/** The Match mode a query asks for: its last valid `match:` token, or Blend. */
+export function matchOf(query: string): MatchMode {
+  let out: MatchMode = "blend";
+  for (const t of tokenize(query)) {
+    const v = t.key === "match" ? t.value?.toLowerCase() : undefined;
+    if (MATCHES.some((m) => m.value === v)) out = v as MatchMode;
+  }
+  return out;
+}
+
+/** Whether Blend can order a query's sort: it needs a descending time sort (`rank::mode`). */
+export function blendFits(query: string): boolean {
+  const s = sortOf(query);
+  return !s.asc && s.key !== "comments";
+}
+
+/** The Match mode that runs for a query: the one it asks for, but Best for a Blend that can't. */
+export function effectiveMatch(query: string): MatchMode {
+  const m = matchOf(query);
+  return m === "blend" && !blendFits(query) ? "best" : m;
+}
+
+/** `query` with its `match:` tokens replaced by `match` (none for the default). */
+export function withMatch(query: string, match: MatchMode): string {
+  const rest = tokenize(query)
+    .filter((t) => t.key !== "match")
+    .map((t) => t.text);
+  if (match !== "blend") rest.push(`match:${match}`);
+  return rest.join(" ");
 }

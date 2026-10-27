@@ -10,7 +10,7 @@
 // The composer (with Close and Reopen) is a chunk of its own, the writes code (writes.tsx), loaded
 // once the detail shows; the tab's pending writes show over the detail through overlay.ts.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import {
@@ -32,10 +32,13 @@ import {
   type IssueRef,
 } from "./api";
 import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
+import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
+import { matchSpans, searchOf, type Term } from "./highlight";
 import { coalesced, onPush, resetAt } from "./live";
 import { overlay, type ShownComment } from "./overlay";
+import { queryOf } from "./query";
 import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { IssueNotice, resetOnChange } from "./Root";
 import { ago, fullDate } from "./time";
@@ -204,6 +207,64 @@ function Detail(props: { id: number; search: string }) {
   /** The issue whose next comment page is on its way. */
   let loadingFor: number | undefined;
 
+  /**
+   * Looking for the search's first match to bring into view: from when an issue opens or the
+   * search changes until a match is on screen, or the user scrolls the detail themselves, or the
+   * issue's opening reads have settled with no match. Each of those reads landing looks again,
+   * so a match that comment page 2 brings is still found; nothing is fetched to find one, and
+   * nothing that lands later (a live push's refetch, a later page) ever moves the detail.
+   */
+  let seeking = false;
+  /**
+   * The open issue's opening reads still on their way: its first comment page, and the refetch
+   * that replaces a remembered detail.
+   */
+  let opening: { due: number } | undefined;
+  /** The one look scheduled, to cancel before scheduling another. */
+  let frame: number | undefined;
+  // A scroll lands near, not on, a match far down: the comments it passes skip layout until
+  // they come near (`content-visibility`), and lay out a frame or two after it lands, moving
+  // the match. So it looks again each frame until the match has stayed put on screen.
+  const seek = (tries = 30, last?: number) => {
+    if (frame !== undefined) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      frame = undefined;
+      if (!seeking) return;
+      const at = scrollToMatch(scroller);
+      // No match yet: wait for the opening reads, if any are still on their way.
+      if (at === undefined) seeking = opening !== undefined;
+      else if (at === last || tries === 0) seeking = false;
+      else seek(tries - 1, at);
+    });
+  };
+  /** One of the opening reads `o` counts has landed, or failed: once all have, a last look. */
+  const settle = (o: { due: number }) => {
+    if (o !== opening || --o.due > 0) return;
+    opening = undefined;
+    seek();
+  };
+  onCleanup(() => {
+    seeking = false;
+    opening = undefined;
+    if (frame !== undefined) cancelAnimationFrame(frame);
+  });
+  const userScrolls = (el: HTMLDivElement) => {
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) el.addEventListener(type, () => (seeking = false), { passive: true });
+  };
+  // A new search on the open issue looks for its first match (an issue opening does, below).
+  let searched: string | undefined;
+  createEffect(
+    () => JSON.stringify(searchOf(queryOf(props.search)).terms),
+    (key) => {
+      const changed = searched !== undefined && key !== searched;
+      searched = key;
+      if (changed) {
+        seeking = true;
+        seek();
+      }
+    },
+  );
+
   /** Near the loaded end (within about one screen), ask for the next page. */
   const nearEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < scroller.clientHeight;
 
@@ -280,9 +341,18 @@ function Detail(props: { id: number; search: string }) {
     () => d(),
     (detail) => {
       const id = detail.id;
-      if (id === shown) return;
+      if (id === shown) {
+        if (seeking) seek();
+        return;
+      }
       shown = id;
       scroller.scrollTop = 0;
+      // Under a search, to its first match once it's loaded: the first comment page, and a
+      // remembered detail's refetch, may bring it.
+      const o = { due: fromMemory === id ? 2 : 1 };
+      opening = o;
+      seeking = true;
+      seek();
       setLost(undefined);
       openDetail = { id, onPush: refetchForPush };
       // A remembered detail is on screen (its first page), maybe minutes old: replace it with the
@@ -291,16 +361,18 @@ function Detail(props: { id: number; search: string }) {
       // afresh, page 2 and all.
       if (fromMemory === id) {
         fromMemory = undefined;
-        untrack(() => refetch((id) => getIssue(id))).catch((e: unknown) => {
-          failure = { error: e };
-          setRerun((n) => n + 1);
-        });
+        untrack(() => refetch((id) => getIssue(id)))
+          .catch((e: unknown) => {
+            failure = { error: e };
+            setRerun((n) => n + 1);
+          })
+          .finally(() => settle(o));
       } else if (readBefore(detail, resetAt())) {
         // Its read began before a push named it or the stream reset, while nothing was open for
         // that push to refetch (the read was on its way, or the panel's code was): refetch it now.
         void untrack(refetchForPush);
       }
-      requestAnimationFrame(() => setTimeout(() => void loadMore()));
+      requestAnimationFrame(() => setTimeout(() => void loadMore().finally(() => settle(o))));
     },
   );
   onSettled(() => () => {
@@ -308,7 +380,10 @@ function Detail(props: { id: number; search: string }) {
   });
 
   return (
-    <Show when={lost()} fallback={<Body d={d()} search={props.search} scroller={(el) => (scroller = el)} onScroll={() => nearEnd() && void loadMore()} />}>
+    <Show when={lost()} fallback={<Body d={d()} search={props.search} scroller={(el) => {
+            scroller = el;
+            userScrolls(el);
+          }} onScroll={() => nearEnd() && void loadMore()} />}>
       {(e) => <LostIssue error={e()} search={props.search} />}
     </Show>
   );
@@ -321,6 +396,43 @@ function merge(have: Comment[], more: Comment[]): Comment[] {
   return [...have, ...more.filter((c) => !seen.has(c.id))];
 }
 
+/**
+ * Brings the detail's first marked match into view, unless it's already on screen (the title's
+ * is), and gives where it is then (a moved one's top is NaN: it's still on its way), or
+ * undefined for none.
+ */
+function scrollToMatch(scroller: HTMLDivElement): number | undefined {
+  const mark = scroller.querySelector("mark");
+  if (!mark) return undefined;
+  const box = mark.getBoundingClientRect();
+  const view = scroller.getBoundingClientRect();
+  if (box.top >= view.top && box.bottom <= view.bottom) return box.top;
+  mark.scrollIntoView({ block: "center" });
+  return NaN;
+}
+
+/** `text`, with the spans the search's terms match marked. */
+function Marked(props: { text: string; terms: Term[] }) {
+  const parts = createMemo(() => {
+    const spans = matchSpans(props.text, props.terms);
+    if (spans.length === 0) return [props.text];
+    const out: Element[] = [];
+    let at = 0;
+    for (const [start, end] of spans) {
+      if (start > at) out.push(props.text.slice(at, start));
+      out.push(
+        <mark data-perf="match" {...stylex.attrs(s.mark)}>
+          {props.text.slice(start, end)}
+        </mark>,
+      );
+      at = end;
+    }
+    if (at < props.text.length) out.push(props.text.slice(at));
+    return out;
+  });
+  return <>{parts()}</>;
+}
+
 function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivElement) => void; onScroll: () => void }) {
   /** When the detail's read began: the tab's writes show over anything older. */
   const at = () => readAt(props.d);
@@ -331,6 +443,9 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
     () => ({ o: overlay(), issue: props.d.id, at: at() }),
     ({ o, issue, at }) => o?.detailShown(issue, at),
   );
+  // The filter bar's free text, marked in the fields it searched.
+  const search = createMemo(() => searchOf(queryOf(props.search)));
+  const terms = (field: SearchField): Term[] => (search().fields[field] ? search().terms : []);
   const state = () => issueState(d());
   return (
     <>
@@ -355,7 +470,9 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           </a>
         </div>
         <ParentCrumb rels={d().relationships} search={props.search} />
-        <h2 {...stylex.attrs(s.title)}>{d().title}</h2>
+        <h2 {...stylex.attrs(s.title)}>
+          <Marked text={d().title} terms={terms("title")} />
+        </h2>
         <dl {...stylex.attrs(s.props)}>
           <dt {...stylex.attrs(s.key)}>Assignees</dt>
           <dd {...stylex.attrs(s.value)} data-perf="assignees">
@@ -394,7 +511,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         {/* Plain text until Markdown rendering lands (#98). */}
         <div {...stylex.attrs(s.text, s.body)} data-perf="body">
           <Show when={d().body.trim()} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
-            {d().body}
+            <Marked text={d().body} terms={terms("body")} />
           </Show>
         </div>
         <SubIssues rels={d().relationships} search={props.search} />
@@ -404,7 +521,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </h3>
         <div data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>
-            {(c) => <CommentView c={c()} at={at()} />}
+            {(c) => <CommentView c={c()} at={at()} terms={terms("comments")} />}
           </For>
         </div>
         <Show when={d().comments.next !== null}>
@@ -436,14 +553,16 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   );
 }
 
-function CommentView(props: { c: ShownComment; at: number }) {
+function CommentView(props: { c: ShownComment; at: number; terms: Term[] }) {
   return (
     <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id} data-op={props.c.op}>
       <Byline author={props.c.author}>
         <Ago at={props.c.created_at} />
         <Show when={props.c.op}>{(op) => <Dynamic component={overlay()?.CommentNote} op={op()} at={props.at} />}</Show>
       </Byline>
-      <div {...stylex.attrs(s.text)}>{props.c.body}</div>
+      <div {...stylex.attrs(s.text)}>
+        <Marked text={props.c.body} terms={props.terms} />
+      </div>
     </article>
   );
 }
@@ -558,6 +677,12 @@ function writeWidth(px: number | undefined) {
 const BADGE_TEXT: Record<IssueState, string> = { open: "Open", done: "Closed", notPlanned: "Not planned" };
 
 const s = stylex.create({
+  // A search's match in the text.
+  mark: {
+    borderRadius: 2,
+    backgroundColor: colors.mark,
+    color: "inherit",
+  },
   divider: {
     backgroundColor: {
       default: colors.line,

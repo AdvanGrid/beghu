@@ -6,7 +6,7 @@
 //! parameters from SQLite's trace hook and handed to `dbrt::plan::explain`.
 
 use fixture::{Scale, cached};
-use mirror_db::list::{self, Cursor, Sort, SortKey, Span, View, Who, Word};
+use mirror_db::list::{self, Cursor, Fields, Match, Sort, SortKey, Span, View, Who, Word};
 use mirror_db::q;
 use rusqlite::Connection;
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -40,28 +40,31 @@ fn fixture() -> (MutexGuard<'static, ()>, Connection) {
     (guard, c)
 }
 
-/// The plan of the first statement `run` makes whose SQL contains `marker`, one line per step.
-fn plan_of(c: &Connection, marker: &str, run: impl FnOnce(&Connection)) -> Vec<String> {
-    plan_and_sql(c, marker, run).0
-}
-
-/// `plan_of`, with the statement's SQL.
-fn plan_and_sql(
+/// The plan (one line per step) and SQL of every statement `run` makes whose SQL contains
+/// `marker`, in order. FTS5 runs statements of its own on its shadow tables around the app's.
+fn plans_of(
     c: &Connection,
     marker: &str,
     run: impl FnOnce(&Connection),
-) -> (Vec<String>, String) {
+) -> Vec<(Vec<String>, String)> {
     RAN.lock().unwrap().clear();
     run(c);
-    // FTS5 runs statements of its own on its shadow tables around the app's.
-    let sql = RAN
+    let ran: Vec<String> = RAN
         .lock()
         .unwrap()
         .iter()
-        .find(|s| s.contains(marker))
+        .filter(|s| s.contains(marker))
         .cloned()
-        .unwrap_or_else(|| panic!("no statement with {marker:?} ran"));
-    (dbrt::plan::explain(c, &sql).unwrap(), sql)
+        .collect();
+    assert!(!ran.is_empty(), "no statement with {marker:?} ran");
+    ran.into_iter()
+        .map(|sql| (dbrt::plan::explain(c, &sql).unwrap(), sql))
+        .collect()
+}
+
+/// The plan of the first statement `run` makes whose SQL contains `marker`.
+fn plan_of(c: &Connection, marker: &str, run: impl FnOnce(&Connection)) -> Vec<String> {
+    plans_of(c, marker, run).swap_remove(0).0
 }
 
 const ME: i64 = 1000; // tomsj, as the fixture numbers its users
@@ -554,10 +557,152 @@ fn a_pages_blockers_and_progress_read_through_indexes() {
             .map(|row| row.id)
             .collect();
         for (name, run) in queries {
-            let (p, sql) = plan_and_sql(&c, "json_each", |c| run(c, &ids));
-            if p.iter().any(|l| scans_a_table(&sql, l)) {
-                bad.push(format!("{name} for {what}: {p:#?}"));
+            for (p, sql) in plans_of(&c, "json_each", |c| run(c, &ids)) {
+                if p.iter().any(|l| scans_a_table(&sql, l)) {
+                    bad.push(format!("{name} for {what}: {p:#?}"));
+                }
             }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The search shapes: free text under each Match mode (a ranked page is one id query per field,
+/// merged), with `in:`, phrases and exclusions, under a rare word (the planner starts from its
+/// matches) and a common one (the list walks its sort), on the first page, the page after a
+/// cursor and a refetch through one. Each id query reads through an index or FTS5, never a full
+/// scan, and a common word's reads its sort in order. A page's matched fields read the page's
+/// rows and their comments through indexes.
+#[test]
+fn every_search_reads_through_its_indexes() {
+    let (_g, c) = fixture();
+    let phrase = |t: &str| Word {
+        phrase: true,
+        ..word(t)
+    };
+    let not = |t: &str| Word {
+        exclude: true,
+        ..word(t)
+    };
+    let comments = Fields {
+        comments: true,
+        ..Fields::default()
+    };
+    let title = Fields {
+        title: true,
+        ..Fields::default()
+    };
+    // (what, words, fields, common: every word in 2,000 rows or more at 1k, so the list walks)
+    let searches: [(&str, Vec<Word>, Fields, bool); 8] = [
+        ("crash", vec![word("crash")], Fields::default(), false),
+        ("the", vec![word("the")], Fields::default(), true),
+        (
+            "the list",
+            vec![word("the"), word("list")],
+            Fields::default(),
+            true,
+        ),
+        (
+            "dark theme -safari",
+            vec![word("dark"), word("theme"), not("safari")],
+            Fields::default(),
+            false,
+        ),
+        (
+            "\"the list\" -spinner",
+            vec![phrase("the list"), not("spinner")],
+            Fields::default(),
+            false,
+        ),
+        ("spinner in:comments", vec![word("spinner")], comments, true),
+        ("crash in:title", vec![word("crash")], title, false),
+        ("the in:title", vec![word("the")], title, false),
+    ];
+    let mut bad = Vec::new();
+    for (what, words, fields, common) in &searches {
+        for matching in [None, Some(Match::Best), Some(Match::Off)] {
+            for (sort, asc) in [
+                (SortKey::Updated, false),
+                (SortKey::Created, true),
+                (SortKey::Comments, false),
+            ] {
+                let view = View {
+                    words: words.clone(),
+                    fields: *fields,
+                    matching,
+                    ..sorted(open(), sort, asc)
+                };
+                let first = list::page(&c, &view, ME, Span::Top, 101).unwrap();
+                let mut spans = vec![Span::Top];
+                if let Some(&last) = first.last() {
+                    spans.push(Span::After(last));
+                    spans.push(Span::Through(last));
+                }
+                for span in spans {
+                    let all = plans_of(&c, "FROM items i", |c| {
+                        list::page(c, &view, ME, span, 101).unwrap();
+                    });
+                    for (p, _) in all {
+                        let ok = if *common {
+                            in_order(&p)
+                        } else {
+                            !p.iter().any(|l| full_scan(l, &p))
+                        };
+                        if !ok {
+                            bad.push(format!(
+                                "{what} {matching:?} {sort:?} asc={asc} {span:?}: {p:#?}"
+                            ));
+                        }
+                    }
+                }
+                let ids: Vec<i64> = first.iter().map(|r| r.id).collect();
+                if ids.is_empty() {
+                    bad.push(format!("{what} {matching:?} {sort:?}: no rows to check"));
+                    continue;
+                }
+                for (p, sql) in plans_of(&c, "json_each", |c| {
+                    mirror_db::search::matched(c, &view, &ids).unwrap();
+                }) {
+                    if p.iter()
+                        .any(|l| scans_a_table(&sql, l) || l.starts_with("SCAN c "))
+                    {
+                        bad.push(format!("{what} matched fields: {p:#?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// A refetch's matched fields read each field's matches as one set per statement, never one FTS5
+/// lookup per row, even for a short common word whose prefix the index keeps (`prefix='2 3'`):
+/// on the index as its triggers leave it, a lookup per row cost 10–100× the set on every
+/// measured shape (see `search::matched`), and a refetch covers up to 10,000 rows.
+#[test]
+fn a_refetchs_matched_fields_read_each_fields_matches_once() {
+    let (_g, c) = fixture();
+    let view = View {
+        words: vec![word("the")],
+        ..open()
+    };
+    let rows = list::page(&c, &view, ME, Span::Top, 10_000).unwrap();
+    let last = *rows.last().expect("the view has rows");
+    let ids: Vec<i64> = list::page(&c, &view, ME, Span::Through(last), 10_000)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert!(ids.len() > 200, "a refetch of several pages: {}", ids.len());
+    let mut bad = Vec::new();
+    for (p, sql) in plans_of(&c, "json_each", |c| {
+        mirror_db::search::matched(c, &view, &ids).unwrap();
+    }) {
+        // The FTS5 table is read once, as the IN list's subquery, not joined to each row.
+        let set = p.iter().any(|l| l.contains("LIST SUBQUERY"));
+        let joined = p.iter().any(|l| l.starts_with("SCAN f VIRTUAL TABLE"));
+        if !set || joined {
+            bad.push(format!("{sql}: {p:#?}"));
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));

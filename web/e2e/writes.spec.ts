@@ -721,6 +721,36 @@ test("a pending close shows on its row but never moves, adds or removes a row", 
   }
 });
 
+test("a pending comment changes no search's rows or their matched icons", async ({ page }) => {
+  const issue = await issueBelowTheTop(page);
+  const word = `zq${Date.now().toString(36)}`;
+  try {
+    devCtl(["fake", "edit", issue.ref, "--title", `Searched for ${word}`]);
+    await page.goto(`/issues/${issue.id}?q=` + encodeURIComponent(`is:open ${word}`));
+    await expect(composer(page)).toBeVisible();
+    const row = page.locator(`[data-perf="row"][data-id="${issue.id}"]`);
+    const matched = row.locator('[data-perf="matched"]');
+    await expect(matched).toHaveAttribute("data-fields", "title", { timeout: 10_000 });
+    await expect(rows(page)).toHaveCount(1);
+
+    // A comment with the word, held at GitHub: pending in the thread, and the row as it was.
+    await fake("/faults/latency", { endpoint: COMMENTS, ms: 3000 });
+    const text = `Pending ${word}`;
+    await box(page).fill(text);
+    await button(page, "Comment").click();
+    const mine = commentSaying(page, text);
+    await expect(mine.locator('[data-perf="pending"]')).toBeVisible();
+    for (let i = 0; i < 5; i++) {
+      await expect(matched).toHaveAttribute("data-fields", "title");
+      await expect(rows(page)).toHaveCount(1);
+      await page.waitForTimeout(200);
+    }
+    await expect(mine.locator('[data-perf="pending"]')).toBeVisible();
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
 test("a pending close changes no facet's count", async ({ page }) => {
   // Spec #86: ops never change list membership, order or facet counts. The default view is
   // `is:open`, so a close, once GitHub has it, takes the issue out of its label's count; while

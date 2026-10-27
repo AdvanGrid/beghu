@@ -2,6 +2,7 @@
 import type { Blocker } from "./Blocker";
 import type { Label } from "./Label";
 import type { Progress } from "./Progress";
+import type { SearchField } from "./SearchField";
 import type { User } from "./User";
 
 export type IssueRow = { id: number, 
@@ -48,4 +49,8 @@ blockers: Array<Blocker>,
 /**
  * Sub-issue progress: every descendant. `null` without sub-issues.
  */
-progress: Progress | null, };
+progress: Progress | null, 
+/**
+ * The fields the search's words were found in, in this order; empty without free text.
+ */
+matched: Array<SearchField>, };

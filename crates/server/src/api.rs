@@ -9,8 +9,8 @@ use crate::relationships::{self, Blocker, Progress};
 use crate::{App, query, repos};
 use axum::Json;
 use axum::extract::{Extension, Query, State};
-use mirror_db::list;
 use mirror_db::{Caller, q};
+use mirror_db::{list, search};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
@@ -177,6 +177,50 @@ pub struct IssueRow {
     pub blockers: Vec<Blocker>,
     /// Sub-issue progress: every descendant. `null` without sub-issues.
     pub progress: Option<Progress>,
+    /// The fields the search's words were found in, in this order; empty without free text.
+    pub matched: Vec<SearchField>,
+}
+
+/// A field free text searches (`in:`) and matches in (a row's icons): `search::Field` on the
+/// wire.
+#[derive(Serialize, TS, Debug, Clone, Copy, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchField {
+    Title,
+    Body,
+    Comments,
+}
+
+impl From<search::Field> for SearchField {
+    fn from(f: search::Field) -> SearchField {
+        match f {
+            search::Field::Title => SearchField::Title,
+            search::Field::Body => SearchField::Body,
+            search::Field::Comments => SearchField::Comments,
+        }
+    }
+}
+
+/// A Match mode (`list::Match`) as the web app and the `match:` token spell it: the Match
+/// dropdown's values are the token's.
+#[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchMode {
+    Blend,
+    Best,
+    Off,
+}
+
+impl From<MatchMode> for list::Match {
+    fn from(m: MatchMode) -> list::Match {
+        match m {
+            MatchMode::Blend => list::Match::Blend,
+            MatchMode::Best => list::Match::Best,
+            MatchMode::Off => list::Match::Off,
+        }
+    }
 }
 
 #[derive(Serialize, TS)]
@@ -205,17 +249,26 @@ pub struct ListQuery {
 
 /// A page of the list for the query in `q`, in its sort, ties on id. `after` pages on;
 /// `through` is a live refetch, in one request, of the view from the top through the last row
-/// the tab has loaded. Both cursors are the sort's (`<key>.<id>`, see `list::Cursor`), so a
-/// refetch works under every filter and sort.
+/// the tab has loaded. Both cursors are the view's order's (`<sort>.<key>.<id>`, or
+/// `<mode>-<sort>.<rank>.<key>.<id>` under a Match mode; see `list::Cursor`), so a refetch works
+/// under every filter, sort and Match mode. A cursor from another sort or Match mode, or
+/// a plain one under a ranked view (or the reverse), is refused. Under free text each row
+/// carries the fields it matched in.
 pub async fn issues(
     State(app): State<App>,
     Extension(s): Extension<Session>,
     Query(lq): Query<ListQuery>,
 ) -> Result<Json<IssuePage>, ApiError> {
     let view = query::parse(lq.q.as_deref().unwrap_or(query::DEFAULT));
-    let cursor = |c: &str| {
-        c.parse::<list::Cursor>()
-            .map_err(|()| ApiError::BadRequest(format!("bad cursor {c:?}")))
+    // A cursor of this view's order: a ranked one names its Match mode and sort.
+    let cursor = |c: &str| match c.parse::<list::Cursor>() {
+        Ok(cur) if cur.fits(&view) => Ok(cur),
+        Ok(_) => Err(ApiError::BadRequest(format!(
+            "cursor {c:?} is from another order than this view's"
+        ))),
+        Err(()) => Err(ApiError::BadRequest(format!(
+            "cursor {c:?} isn't one this server writes"
+        ))),
     };
     let (span, limit) = match (lq.after.as_deref(), lq.through.as_deref()) {
         (Some(_), Some(_)) => {
@@ -227,22 +280,20 @@ pub async fn issues(
         (None, Some(through)) => (list::Span::Through(cursor(through)?), THROUGH_MAX),
         (None, None) => (list::Span::Top, PAGE),
     };
-    let filter = list::filter(&view, s.account);
-    let sort = view.sort;
-    let (rows, labels, assignees, mut related, next, last) = app
+    let me = s.account;
+    let (rows, labels, assignees, mut related, mut matched, next, last) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
-            // A refetch stops at its cursor, not at a page's end: the list goes on if any row
-            // follows the last one it returns, which takes the filter again.
-            let probe = matches!(span, list::Span::Through(_)).then(|| filter.clone());
-            let mut ids = list::ids(c, sort, filter, span, limit + 1)?;
+            let mut ids = list::page(c, &view, me, span, limit + 1)?;
             let mut more = ids.len() as i64 > limit;
             ids.truncate(limit as usize);
-            if let Some(filter) = probe
+            // A refetch stops at its cursor, not at a page's end: the list goes on if any row
+            // follows the last one it returns, which takes the view again.
+            if matches!(span, list::Span::Through(_))
                 && !more
                 && let Some(&last) = ids.last()
             {
-                more = !list::ids(c, sort, filter, list::Span::After(last), 1)?.is_empty();
+                more = !list::page(c, &view, me, list::Span::After(last), 1)?.is_empty();
             }
             let last = ids.last().copied();
             let next = more.then_some(last).flatten();
@@ -253,6 +304,7 @@ pub async fn issues(
                 q::hydrate_labels(c, &ids)?,
                 q::hydrate_assignees(c, &ids)?,
                 relationships::for_rows(c, &ids)?,
+                search::matched(c, &view, &ids)?,
                 next,
                 last,
             ))
@@ -299,6 +351,12 @@ pub async fn issues(
                 blocked_by: rel.blocked_by,
                 blockers: rel.blockers,
                 progress: rel.progress,
+                matched: matched
+                    .remove(&r.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(SearchField::from)
+                    .collect(),
             }
         })
         .collect();

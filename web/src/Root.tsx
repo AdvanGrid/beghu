@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, Errored, Loading, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, For, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
@@ -23,6 +23,8 @@ export function Root(props: { children?: Element }) {
   onSettled(connectLive);
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
+  /** Whether the filter box has focus: the hint bar shows the search syntax meanwhile. */
+  const [filterFocused, setFilterFocused] = createSignal(false);
   // Another view (its query string, with an issue open or not) or leaving the issue for the
   // list's own path forgets the detail a hover remembered; opening an issue uses it up
   // (IssuePanel.tsx).
@@ -39,24 +41,34 @@ export function Root(props: { children?: Element }) {
         <Dynamic component={overlay()?.Banner} />
         <main {...stylex.attrs(s.main)}>
           <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
-            <List />
+            <List onFilterFocus={setFilterFocused} />
           </div>
           <Errored fallback={(err, reset) => <PanelFailure error={err()} reset={reset} />}>
             <Loading fallback={<div {...stylex.attrs(s.panelSlot)} aria-busy="true" />}>{props.children}</Loading>
           </Errored>
         </main>
-        <StatusBar />
+        <StatusBar hints={filterFocused()} />
       </Errored>
     </div>
   );
 }
 
+/** The search syntax, as the hint bar shows it while the filter box has focus. */
+const SEARCH_HINTS: { syntax: string; does: string }[] = [
+  { syntax: "word", does: "starts a word" },
+  { syntax: '"a phrase"', does: "as written" },
+  { syntax: "-word", does: "leaves out" },
+  { syntax: "in:title,body,comments", does: "where to look" },
+  { syntax: "match:blend|best|off", does: "Match mode" },
+];
+
 /**
  * The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. Once
  * the tab can write, the writes code fills it, failed writes first (overlay.ts); otherwise a lost
- * connection comes before the import (whose progress it can't hear meanwhile).
+ * connection comes before the import (whose progress it can't hear meanwhile). Its hints follow
+ * the focus: while the filter box has it, the search syntax.
  */
-function StatusBar() {
+function StatusBar(props: { hints: boolean }) {
   return (
     <footer {...stylex.attrs(s.bar)}>
       <span role="status" data-perf="status" {...stylex.attrs(s.status)}>
@@ -71,6 +83,17 @@ function StatusBar() {
           {(status) => <Dynamic component={status()} />}
         </Show>
       </span>
+      <Show when={props.hints}>
+        <span data-perf="hints" aria-label="Search syntax" {...stylex.attrs(s.hints)}>
+          <For each={SEARCH_HINTS}>
+            {(h) => (
+              <span {...stylex.attrs(s.hint)}>
+                <code {...stylex.attrs(s.syntax)}>{h.syntax}</code> {h.does}
+              </span>
+            )}
+          </For>
+        </span>
+      </Show>
     </footer>
   );
 }
@@ -196,13 +219,13 @@ function AccountFailure(props: { error: unknown; reset: () => void }) {
   );
 }
 
-function List() {
+function List(props: { onFilterFocus: (focused: boolean) => void }) {
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
   // The bar sits outside the list's boundary, so a view that fails to load can be changed.
   return (
     <div {...stylex.attrs(s.listColumn)}>
-      <FilterBar />
+      <FilterBar onFocusChange={props.onFilterFocus} />
       <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
         <IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
       </Errored>
@@ -361,6 +384,23 @@ const s = stylex.create({
   status: {
     color: colors.muted,
     fontSize: 12,
+  },
+  hints: {
+    gap: 14,
+    overflow: "hidden",
+    color: colors.muted,
+    display: "flex",
+    fontSize: 11.5,
+    marginInlineStart: "auto",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  hint: {
+    flexShrink: 0,
+  },
+  syntax: {
+    color: colors.fg,
+    fontFamily: fonts.mono,
   },
   notice: {
     margin: 0,

@@ -6,7 +6,7 @@ import { createEffect, createMemo, createSignal, For, onSettled, Show } from "so
 import { forgetFailure, getFacetCounts, readThen, type Facet, type Facets } from "./api";
 import { LabelDot } from "./IssueList";
 import { onPush } from "./live";
-import { quote, SORTS, tokenAt, tokenize } from "./query";
+import { MATCHES, quote, SORTS, tokenAt, tokenize } from "./query";
 import { colors, fonts } from "./tokens.stylex";
 
 /** A value list must stay open this long before its counts are fetched. */
@@ -23,6 +23,8 @@ const KEYS: { key: string; hint: string }[] = [
   { key: "type", hint: "issue type: any of" },
   { key: "no", hint: "label, assignee, milestone" },
   { key: "sort", hint: "updated, created, closed, …" },
+  { key: "in", hint: "search title, body, comments" },
+  { key: "match", hint: "blend, best, off" },
 ];
 
 /** Fixed values, for the keys that take a closed set. */
@@ -40,6 +42,12 @@ const FIXED: Record<string, { value: string; hint: string }[]> = {
     { value: "milestone", hint: "no milestone" },
   ],
   sort: SORTS.map((s) => ({ value: s.value, hint: s.label })),
+  in: [
+    { value: "title", hint: "search titles" },
+    { value: "body", hint: "search descriptions" },
+    { value: "comments", hint: "search comments" },
+  ],
+  match: MATCHES.map((m) => ({ value: m.value, hint: m.label })),
 };
 
 type Suggestion = {

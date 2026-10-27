@@ -4,19 +4,22 @@
 //! Qualifiers: `is:open|closed` (state) and `is:issue|pr|any` (kind, `issue` when none is
 //! given), `type:` (the GitHub issue type, by name), `label:`, `assignee:`, `author:` (both take
 //! `me`), `repo:` (`name` or `owner/name`), `milestone:` (by title), `no:label|assignee|milestone`
-//! and `sort:<key>[-asc|-desc]`. A value with spaces is quoted: `label:"good first issue"`. Labels
+//! `sort:<key>[-asc|-desc]`, `in:title|body|comments` (the fields free text searches; several,
+//! by comma or by token, OR together, and none means all three) and `match:blend|best|off`
+//! (Match mode, see `mirror_db::rank`). A value with spaces is quoted: `label:"good first issue"`. Labels
 //! and assignees AND together; repos, milestones, authors and types OR; several states or kinds
-//! OR. The last `sort:` wins.
+//! OR. The last `sort:` and the last `match:` win.
 //!
 //! A token that can't mean anything yet is dropped rather than guessed at: a key with no value
 //! (`label:`), an unknown key, or a value that isn't one of a closed set (`is:op`, `sort:upd`).
 //! So typing never filters by a half-typed token.
 //!
 //! Everything else is free text: words AND together, each matching the start of a word in the
-//! title or body. A word's last part (split as the index splits text) needs 2 characters; until
+//! title, body or comments (`mirror_db::search`). A word's last part (split as the index splits text) needs 2 characters; until
 //! it has them, the word searches on the parts before it.
 //! `"a phrase"` matches as written and `-word` excludes.
 
+use crate::api::MatchMode;
 use mirror_db::list::{Sort, SortKey, View, Who, Word};
 
 /// The view when the URL has no `q`: the Open preset.
@@ -85,19 +88,35 @@ fn apply(v: &mut View, key: &str, value: String) {
             "milestone" => v.no_milestone = true,
             _ => {}
         },
+        "in" => {
+            for f in value.to_ascii_lowercase().split(',') {
+                match f.trim() {
+                    "title" => v.fields.title = true,
+                    "body" => v.fields.body = true,
+                    "comments" | "comment" => v.fields.comments = true,
+                    _ => {}
+                }
+            }
+        }
+        "match" => {
+            use serde::Deserialize;
+            use serde::de::IntoDeserializer;
+            let value = value.to_ascii_lowercase();
+            // The value as the web app's Match dropdown spells it.
+            let mode: Result<_, serde::de::value::Error> =
+                MatchMode::deserialize(value.as_str().into_deserializer());
+            if let Ok(m) = mode {
+                v.matching = Some(m.into());
+            }
+        }
         "sort" => {
             let lower = value.to_ascii_lowercase();
             let (name, asc) = match lower.strip_suffix("-asc") {
                 Some(n) => (n, true),
                 None => (lower.strip_suffix("-desc").unwrap_or(&lower), false),
             };
-            let key = match name {
-                "updated" => SortKey::Updated,
-                "created" => SortKey::Created,
-                "closed" => SortKey::Closed,
-                "commented" => SortKey::Commented,
-                "comments" => SortKey::Comments,
-                _ => return,
+            let Some(key) = SortKey::named(name) else {
+                return;
             };
             v.sort = Sort { key, asc };
         }

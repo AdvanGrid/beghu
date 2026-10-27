@@ -431,7 +431,7 @@ async fn a_live_refetch_returns_the_list_from_the_top_through_the_last_loaded_ro
         .flat_map(|p| p["rows"].as_array().unwrap().clone())
         .collect();
     let last = &loaded[149];
-    let cursor = format!("{}.{}", last["updated_at"], last["id"]);
+    let cursor = format!("updated.{}.{}", last["updated_at"], last["id"]);
     let (status, page) = s
         .api(&mut b, &format!("/api/issues?through={cursor}"))
         .await;

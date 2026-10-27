@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
+import type { SearchField } from "./bindings/SearchField";
 import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
@@ -358,7 +359,14 @@ function Row(props: {
       <span {...stylex.attrs(s.state)}>
         <StateIcon state={issueState(r())} />
       </span>
-      <span {...stylex.attrs(s.title)}>{r().title}</span>
+      <span {...stylex.attrs(s.title)}>
+        <span {...stylex.attrs(s.titleText)}>{r().title}</span>
+        <Show when={r().matched.length > 0}>
+          <span {...stylex.attrs(s.matched)} data-perf="matched" data-fields={r().matched.join(" ")}>
+            <For each={r().matched}>{(f) => <MatchIcon field={f} />}</For>
+          </span>
+        </Show>
+      </span>
       <Labels r={r()} width={w("labels")} card={props.card} />
       <span {...stylex.attrs(s.cell, s.wide, s.w(w("blockers")))} data-perf="blockers">
         <Show when={blocked()}>
@@ -385,6 +393,30 @@ function Row(props: {
         {at() === null ? "" : ago(at()!)}
       </span>
     </a>
+  );
+}
+
+const MATCHED: Record<SearchField, string> = {
+  title: "Matched in the title",
+  body: "Matched in the description",
+  comments: "Matched in a comment",
+};
+
+/** A muted mark for a field the search matched in: the title, the description, a comment. */
+function MatchIcon(props: { field: SearchField }) {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" role="img" aria-label={MATCHED[props.field]} {...stylex.attrs(s.matchIcon)}>
+      <title>{MATCHED[props.field]}</title>
+      <Show when={props.field === "title"}>
+        <path d="M3 3.5h10M8 3.5V13" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </Show>
+      <Show when={props.field === "body"}>
+        <path d="M2.5 4h11M2.5 8h11M2.5 12h7" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </Show>
+      <Show when={props.field === "comments"}>
+        <path d="M2.75 2.75h10.5v8H7.5l-3 2.5v-2.5H2.75z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+      </Show>
+    </svg>
   );
 }
 
@@ -620,11 +652,27 @@ const s = stylex.create({
     width: 16,
   },
   title: {
-    overflow: "hidden",
+    gap: 6,
+    alignItems: "center",
+    display: "flex",
     flexBasis: 0,
     flexGrow: 1,
+    minWidth: 0,
+  },
+  titleText: {
+    overflow: "hidden",
     textOverflow: "ellipsis",
     minWidth: 0,
+  },
+  // The fields a search matched in, after the title.
+  matched: {
+    gap: 3,
+    color: colors.muted,
+    display: "flex",
+    flexShrink: 0,
+  },
+  matchIcon: {
+    display: "block",
   },
   cell: {
     overflow: "hidden",

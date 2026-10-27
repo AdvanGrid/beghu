@@ -20,6 +20,8 @@ export const colors = stylex.defineVars({
   danger: "light-dark(#cf222e, #f85149)",
   // A blocker nobody owns.
   unowned: "light-dark(#9a6700, #d29922)",
+  // A search's matched words in the detail.
+  mark: "light-dark(#fff1a8, #5c4a00)",
   // Hover cards, over the list.
   pop: "light-dark(#ffffff, #18181b)",
   popShadow: "light-dark(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.6))",

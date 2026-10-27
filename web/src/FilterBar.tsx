@@ -4,7 +4,8 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { SessionEnded, forgetFailure, getFacets, readThen, signIn, type Facets } from "./api";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
-import { applied, queryOf, sameFilters, SORTS, sortValueOf, tokenAt, withQuery, withSort, type SortValue } from "./query";
+import type { MatchMode } from "./bindings/MatchMode";
+import { applied, blendFits, effectiveMatch, hasText, MATCHES, queryOf, sameFilters, SORTS, sortValueOf, tokenAt, withMatch, withQuery, withSort, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
 
 const PRESETS: { name: string; query: string }[] = [
@@ -24,8 +25,14 @@ const PRESETS: { name: string; query: string }[] = [
  * them. Until they arrive the box filters as usual, only without a list. Their popover floats
  * over the list, so its arrival moves nothing.
  */
-export function FilterBar() {
+export function FilterBar(props: { onFocusChange: (focused: boolean) => void }) {
   const location = useLocation();
+  /** Whether the box has focus; Root's hint bar hears of it through `onFocusChange`. */
+  const [focused, setFocused] = createSignal(false);
+  const focus = (on: boolean) => {
+    setFocused(on);
+    props.onFocusChange(on);
+  };
   const navigate = useNavigate();
   let box!: HTMLInputElement;
   // Filled from the URL once; after that only typing, picks and Back/Forward change it.
@@ -34,7 +41,6 @@ export function FilterBar() {
   const [caret, setCaret] = createSignal(initial.length);
   /** Where the token being typed starts: set by typing, cleared once the caret leaves it. */
   let editing: number | undefined;
-  const [focused, setFocused] = createSignal(false);
   const [dismissed, setDismissed] = createSignal(false);
   /** The query that applies now: what the URL holds, or is about to. */
   const [current, setCurrent] = createSignal(initial);
@@ -166,15 +172,15 @@ export function FilterBar() {
             aria-activedescendant={control()?.active()}
             spellcheck={false}
             autocomplete="off"
-            placeholder="Filter: label:, assignee:me, repo:, is:pr… or search titles"
+            placeholder="Filter: label:, assignee:me, repo:, is:pr… or search text"
             data-perf="filter"
             {...stylex.attrs(s.input)}
             onFocus={() => {
-              setFocused(true);
+              focus(true);
               loadSuggestions();
             }}
             onBlur={() => {
-              setFocused(false);
+              focus(false);
               // Leaving the box finishes the token being typed.
               editing = undefined;
               go(applied(box.value), false);
@@ -209,6 +215,30 @@ export function FilterBar() {
             onChange={(e) => commit(withSort(text(), e.currentTarget.value as SortValue))}
           >
             <For each={SORTS}>{(o) => <option value={o.value}>{o.label}</option>}</For>
+          </select>
+        </label>
+        {/* Match mode: how free text orders the list. Only free text ranks, so without any the
+            choice waits, disabled. Blend needs a descending time sort: under any other the server
+            runs Best match, so the dropdown shows that and Blend can't be picked. Kept in sync
+            with the `match:` token, as the sort is. */}
+        <label {...stylex.attrs(s.sortLabel)}>
+          <span {...stylex.attrs(s.hidden)}>Match</span>
+          <select
+            aria-label="Match"
+            data-perf="match"
+            title={blendFits(current()) ? "How search text orders the list" : "Blend needs a newest-first time sort, so this sort uses Best match"}
+            disabled={!hasText(current())}
+            value={effectiveMatch(current())}
+            {...stylex.attrs(s.select, s.match)}
+            onChange={(e) => commit(withMatch(text(), e.currentTarget.value as MatchMode))}
+          >
+            <For each={MATCHES}>
+              {(o) => (
+                <option value={o.value} disabled={o.value === "blend" && !blendFits(current())}>
+                  {o.label}
+                </option>
+              )}
+            </For>
           </select>
         </label>
       </div>
@@ -328,6 +358,16 @@ const s = stylex.create({
     fontSize: 12,
     height: 30,
     width: "100%",
+  },
+  match: {
+    cursor: {
+      default: "pointer",
+      ":disabled": "default",
+    },
+    opacity: {
+      default: 1,
+      ":disabled": 0.5,
+    },
   },
   presets: {
     gap: 6,

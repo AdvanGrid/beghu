@@ -408,6 +408,42 @@ test("a comment made on GitHub shows in the open issue within 2 s, in one reques
   }
 });
 
+/** Waits `n` frames. */
+const frames = (page: Page, n: number) =>
+  page.evaluate(
+    (n) =>
+      new Promise<void>((done) => {
+        const next = (left: number) => (left === 0 ? done() : requestAnimationFrame(() => next(left - 1)));
+        next(n);
+      }),
+    n,
+  );
+
+test("a match that a push brings to the open issue later never scrolls it", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 600 });
+  const issue = await issueBelowTheTop(page);
+  const word = `zq${Date.now().toString(36)}`;
+  await page.goto(`/issues/${issue.id}?q=` + encodeURIComponent(`is:open ${word}`));
+  await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
+  // Its one page of comments is in, with no match: the opening reads have settled.
+  await expect(comments(page)).toHaveCount(issue.comments);
+  await frames(page, 5);
+  const marks = detail(page).locator('[data-perf="match"]');
+  await expect(marks).toHaveCount(0);
+  // A body whose last line has the word, far below the fold.
+  const body = [...Array(80).keys()].map((i) => `Filler line ${i}.`).join("\n\n") + `\n\nThe ${word} at the end.`;
+  try {
+    devCtl(["fake", "edit", issue.ref, "--body", body]);
+    await expect(marks).toHaveCount(1, { timeout: 10_000 });
+    await frames(page, 10);
+    await expect(marks).not.toBeInViewport();
+    expect(await detail(page).evaluate((el) => el.scrollTop)).toBe(0);
+  } finally {
+    // Out of the default list again: it rose to the top.
+    devCtl(["fake", "edit", issue.ref, "--close"]);
+  }
+});
+
 test("a push for an issue whose detail failed to load acts as Retry", async ({ page }) => {
   const issue = await issueBelowTheTop(page);
   await page.route(`**/api/issues/${issue.id}`, (r) => r.fulfill({ status: 500, body: "{}" }));
