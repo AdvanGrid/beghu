@@ -15,6 +15,11 @@
 //! - `ImportRelatesTo(id, after)`: an issue's `relatesTo` past its first 50.
 //! - `ImportPullDetails(ids)`: each PR's own fields and `closingIssuesReferences(first: 50)`.
 //! - `ImportClosingRefs(id, after)`: a PR's closing references past its first 50.
+//! - `PullReadBack(id, after)`: one PR's own fields and a page of 50 of its closing references,
+//!   the PR read-back's query (crates/server/src/pulls.rs).
+//! - `IssueLinkedPulls(id, after)`: a page of 50 of an issue's `closedByPullRequestsReferences`
+//!   (closed, unmerged PRs only with `includeClosedPrs: true`, as beghu asks; GitHub's default
+//!   leaves them out), the issue-side linked-PR read-back's query (crates/server/src/pulls.rs).
 //! - `ImportComments(ids)`: each issue's or PR's first 100 comments.
 //! - `ImportMoreComments(id, after)`: the next 100 of one item's comments.
 //! - `IssueEdges(id, sub, blocks, relates, relatesAfter)`: the relationship read-backs' query
@@ -71,6 +76,23 @@ fn operation(r: &Request) -> Option<String> {
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
     (!name.is_empty()).then_some(name)
+}
+
+/// Whether the document asks `closedByPullRequestsReferences` for closed PRs too
+/// (`includeClosedPrs: true`, literal or through a variable); GitHub's default is false.
+fn include_closed_prs(query: &str, vars: &Value) -> bool {
+    let Some((_, rest)) = query.split_once("includeClosedPrs:") else {
+        return false;
+    };
+    let arg: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    match arg.strip_prefix('$') {
+        Some(var) => vars[var].as_bool().unwrap_or(false),
+        None => arg == "true",
+    }
 }
 
 /// GitHub's top-level error answer: 200 with `errors` and no `data`.
@@ -473,6 +495,73 @@ fn closing(
     ))
 }
 
+/// `closedByPullRequestsReferences(first: 50, after, includeClosedPrs)` of an issue: the PRs
+/// the token can see that close it (open or merged, and closed unmerged ones only with
+/// `include_closed`), each a `PullRequest` (whose `databaseId` is the PR's own id, not the
+/// issue-side one) with its number and repository.
+fn closed_by(
+    c: &rusqlite::Connection,
+    token: Token,
+    id: i64,
+    after: Option<&str>,
+    include_closed: bool,
+) -> rusqlite::Result<Value> {
+    let mut all = Vec::new();
+    for pr in q::closed_by(c, id)? {
+        let t = q::target(c, pr)?;
+        if !can_see(c, token, t.repo_id)? {
+            continue;
+        }
+        let p = q::pr_details(c, pr)?;
+        if !include_closed && t.state == "closed" && p.merged_at.is_none() {
+            continue;
+        }
+        all.push(json!({
+            "__typename": "PullRequest",
+            "id": t.node_id,
+            "databaseId": p.pr_id,
+            "number": t.number,
+            "title": t.title,
+            "state": if p.merged_at.is_some() { "MERGED" } else { state_enum(&t.state) },
+            "repository": {
+                "id": t.repo_node_id,
+                "databaseId": t.repo_id,
+                "name": t.name,
+                "owner": { "login": t.owner },
+                "isPrivate": t.private,
+            },
+        }));
+    }
+    Ok(page_of(all, after, RELATES_PAGE))
+}
+
+/// A PR's own fields and a page of its closing references (after `after`), as
+/// `ImportPullDetails` and `PullReadBack` ask for them; an issue under `... on PullRequest` has
+/// only its type and id.
+fn pull_details(
+    c: &rusqlite::Connection,
+    token: Token,
+    item: &q::ItemByNodeRow,
+    after: Option<&str>,
+) -> rusqlite::Result<Value> {
+    let node_id = q::target(c, item.id)?.node_id;
+    if item.kind != "pr" {
+        return Ok(json!({ "__typename": "Issue", "id": node_id }));
+    }
+    let p = q::pr_details(c, item.id)?;
+    Ok(json!({
+        "__typename": "PullRequest",
+        "id": node_id,
+        "databaseId": p.pr_id,
+        "isDraft": p.draft.unwrap_or(false),
+        "mergedAt": time(p.merged_at),
+        "headRefName": p.head_ref,
+        "baseRefName": p.base_ref,
+        "reviewDecision": upper(p.review_decision.as_deref()),
+        "closingIssuesReferences": closing(c, token, item.id, after)?,
+    }))
+}
+
 /// An issue as `ImportIssues` asks for it.
 fn issue_node(c: &rusqlite::Connection, token: Token, id: i64) -> rusqlite::Result<Value> {
     let i = q::issue(c, id)?;
@@ -622,6 +711,7 @@ fn run(
     token: Token,
     op: &str,
     v: &Value,
+    include_closed: bool,
 ) -> rusqlite::Result<Result<Answer, String>> {
     let str_var = |k: &str| v[k].as_str().map(str::to_owned);
     let ids: Vec<String> = v["ids"]
@@ -781,25 +871,23 @@ fn run(
         }
         "ImportPullDetails" => {
             let nodes = each_node(c, token, &ids, &mut errs, &mut |item| {
-                if item.kind != "pr" {
-                    return Ok(
-                        json!({ "__typename": "Issue", "id": q::target(c, item.id)?.node_id }),
-                    );
-                }
-                let p = q::pr_details(c, item.id)?;
-                Ok(json!({
-                    "__typename": "PullRequest",
-                    "id": q::target(c, item.id)?.node_id,
-                    "databaseId": p.pr_id,
-                    "isDraft": p.draft.unwrap_or(false),
-                    "mergedAt": time(p.merged_at),
-                    "headRefName": p.head_ref,
-                    "baseRefName": p.base_ref,
-                    "reviewDecision": upper(p.review_decision.as_deref()),
-                    "closingIssuesReferences": closing(c, token, item.id, None)?,
-                }))
+                pull_details(c, token, item, None)
             })?;
             json!({ "nodes": nodes })
+        }
+        "PullReadBack" => {
+            let Some(id) = str_var("id") else {
+                return Ok(Err("Variable $id is required".into()));
+            };
+            match node(c, token, &id)? {
+                Some(item) => {
+                    json!({ "node": pull_details(c, token, &item, str_var("after").as_deref())? })
+                }
+                None => {
+                    errs.push(not_found(&id, vec![json!("node")]));
+                    json!({ "node": null })
+                }
+            }
         }
         "ImportLabels" => {
             let Some(id) = str_var("id") else {
@@ -811,6 +899,24 @@ fn run(
                     "id": id,
                     "labels": labels(c, item.id, str_var("after").as_deref())?,
                 } }),
+                None => {
+                    errs.push(not_found(&id, vec![json!("node")]));
+                    json!({ "node": null })
+                }
+            }
+        }
+        "IssueLinkedPulls" => {
+            let Some(id) = str_var("id") else {
+                return Ok(Err("Variable $id is required".into()));
+            };
+            match node(c, token, &id)? {
+                Some(item) if item.kind != "pr" => json!({ "node": {
+                    "__typename": "Issue",
+                    "closedByPullRequestsReferences":
+                        closed_by(c, token, item.id, str_var("after").as_deref(), include_closed)?,
+                } }),
+                // `... on Issue` selects nothing of a PR.
+                Some(_) => json!({ "node": { "__typename": "PullRequest" } }),
                 None => {
                     errs.push(not_found(&id, vec![json!("node")]));
                     json!({ "node": null })
@@ -920,10 +1026,11 @@ async fn graphql(
         res.extensions_mut().insert(cost);
         return res;
     }
+    let include_closed = include_closed_prs(&req.query, &req.variables);
     let answer = fake
         .state()
         .truth
-        .read(move |c| run(c, token, &op, &vars))
+        .read(move |c| run(c, token, &op, &vars, include_closed))
         .await;
     let mut res = match answer {
         Ok(Ok((data, errs))) if errs.is_empty() => {

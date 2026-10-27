@@ -258,8 +258,12 @@ pub struct GitHub {
 
 /// Whether GitHub is answering, across the process.
 struct Health {
-    /// Network errors and 5xx answers in a row.
+    /// Network errors and 5xx answers in a row, among every call but the poller's.
     failures: AtomicU32,
+    /// The events-feed poller's own streak: its failures in a row, which any answer of its (a
+    /// 304 too) ends. Kept apart so its thousands of calls a day neither hide an outage a write
+    /// is meeting nor add scattered 502s up into one.
+    poller_failures: AtomicU32,
     /// True while GitHub is down.
     down: watch::Sender<bool>,
     probe_every: Duration,
@@ -469,6 +473,7 @@ impl GitHub {
             write_timeout,
             health: Arc::new(Health {
                 failures: AtomicU32::new(0),
+                poller_failures: AtomicU32::new(0),
                 down: watch::channel(false).0,
                 probe_every,
             }),
@@ -487,20 +492,44 @@ impl GitHub {
 
     /// Sends `req`, recording whether GitHub answered.
     async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
-        match req.send().await {
-            Ok(res) if res.status().is_server_error() => {
-                self.failed();
-                Ok(res)
+        self.send_recording(req, true).await
+    }
+
+    /// Sends `req`, recording whether GitHub answered. A 304 is never an answer to the main
+    /// streak: GitHub serves an unchanged ETag through outages that fail everything else, so it
+    /// would hide them (owner's call: a real outage must show). The events-feed poller (not
+    /// `answers`), whose reads run every couple of seconds, keeps a streak of its own (see
+    /// [`Health::poller_failures`]): any answer of its ends it, and only `DOWN_AFTER` failures
+    /// of its in a row mark GitHub down.
+    async fn send_recording(
+        &self,
+        req: reqwest::RequestBuilder,
+        answers: bool,
+    ) -> Result<reqwest::Response, Error> {
+        let sent = req.send().await;
+        let failed = match &sent {
+            Ok(res) => res.status().is_server_error(),
+            Err(_) => true,
+        };
+        match (answers, failed) {
+            (true, true) => self.failed(),
+            (true, false) => {
+                if sent
+                    .as_ref()
+                    .is_ok_and(|r| r.status() != reqwest::StatusCode::NOT_MODIFIED)
+                {
+                    self.answered();
+                }
             }
-            Ok(res) => {
-                self.answered();
-                Ok(res)
+            (false, true) => {
+                let n = self.health.poller_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if n >= DOWN_AFTER {
+                    self.mark_down(n, "poller reads");
+                }
             }
-            Err(e) => {
-                self.failed();
-                Err(e.into())
-            }
+            (false, false) => self.health.poller_failures.store(0, Ordering::Relaxed),
         }
+        sent.map_err(Into::into)
     }
 
     fn answered(&self) {
@@ -510,19 +539,26 @@ impl GitHub {
             .down
             .send_if_modified(|down| std::mem::replace(down, false))
         {
+            self.health.poller_failures.store(0, Ordering::Relaxed);
             eprintln!("github: answering again");
         }
     }
 
     fn failed(&self) {
         let n = self.health.failures.fetch_add(1, Ordering::Relaxed) + 1;
-        if n >= DOWN_AFTER
-            && self
-                .health
-                .down
-                .send_if_modified(|down| !std::mem::replace(down, true))
+        if n >= DOWN_AFTER {
+            self.mark_down(n, "calls");
+        }
+    }
+
+    /// Marks GitHub down after `n` failed `what` in a row, and starts probing it.
+    fn mark_down(&self, n: u32, what: &str) {
+        if self
+            .health
+            .down
+            .send_if_modified(|down| !std::mem::replace(down, true))
         {
-            eprintln!("github: down after {n} failed calls in a row; probing /rate_limit");
+            eprintln!("github: down after {n} failed {what} in a row; probing /rate_limit");
             let gh = self.clone();
             tokio::spawn(async move { gh.probe().await });
         }
@@ -1037,25 +1073,52 @@ impl GitHub {
         path: &str,
         etag: Option<&str>,
     ) -> Result<(Fetched, Option<Quota>), CallError> {
+        let (fetched, quota, _) = self.conditional(token, path, etag, true).await?;
+        Ok((fetched, quota))
+    }
+
+    /// The events-feed poller's read: as [`GitHub::rest_if_changed`], but recorded toward
+    /// GitHub's health on the poller's own streak (see [`GitHub::send_recording`]), and with
+    /// whether the `Link` header names a next page.
+    pub async fn poll_if_changed(
+        &self,
+        token: &str,
+        path: &str,
+        etag: Option<&str>,
+    ) -> Result<(Fetched, Option<Quota>, bool), CallError> {
+        self.conditional(token, path, etag, false).await
+    }
+
+    async fn conditional(
+        &self,
+        token: &str,
+        path: &str,
+        etag: Option<&str>,
+        answers: bool,
+    ) -> Result<(Fetched, Option<Quota>, bool), CallError> {
         let mut req = self.api(reqwest::Method::GET, path, token);
         if let Some(tag) = etag {
             req = req.header("if-none-match", tag);
         }
-        let res = self.send(req).await?;
+        let res = self.send_recording(req, answers).await?;
         let quota = Quota::of(res.headers());
         if res.status() == reqwest::StatusCode::NOT_MODIFIED {
-            return Ok((Fetched::NotModified, quota));
+            return Ok((Fetched::NotModified, quota, false));
         }
         if !res.status().is_success() {
             return Err(call_error(res).await);
         }
-        let etag = res
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let header = |name: &str| {
+            res.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let etag = header("etag");
+        let more =
+            header("link").is_some_and(|l| l.split(',').any(|part| part.contains("rel=\"next\"")));
         let body = res.json().await?;
-        Ok((Fetched::Fresh { body, etag }, quota))
+        Ok((Fetched::Fresh { body, etag }, quota, more))
     }
 
     /// The token's primary rate limits, core and GraphQL (`GET /rate_limit`, which costs

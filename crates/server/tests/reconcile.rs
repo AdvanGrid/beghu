@@ -754,6 +754,63 @@ async fn sweeps_pause_below_a_fifth_of_the_quota_and_webhook_read_backs_do_not()
     .await;
 }
 
+/// Every feed read so far, across the repos.
+async fn all_feed_reads(s: &Stack) -> u64 {
+    fake_state(s).await["feeds"].as_object().map_or(0, |f| {
+        f.values().map(|r| r["reads"].as_u64().unwrap()).sum()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rate_limit_the_feed_poller_meets_pauses_it_and_the_sweeps_until_it_lifts() {
+    let s = start_with(|c| {
+        sweeping(c);
+        c.reconcile.feed_every = Duration::from_millis(100);
+    })
+    .await;
+    let b = s.sign_in("tomsj").await;
+    let _stream = s.stream(&b).await;
+    until(10.0, "the poller and the probes at work", || async {
+        (all_feed_reads(&s).await > 3 && conditional(&s).await.0 >= 3).then_some(())
+    })
+    .await;
+
+    // GitHub's secondary limit, asking for 3 s, on one feed read.
+    let endpoint = "GET /repos/acme/web/issues/events";
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": endpoint, "status": 403, "limit": "secondary", "retry_after": 3, "count": 1 }),
+    )
+    .await;
+    until(10.0, "the poller to meet it", || async {
+        let st = fake_state(&s).await;
+        let left = st["faults"]["fail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["endpoint"] == endpoint)
+            .map_or(0, |f| f["remaining"].as_u64().unwrap());
+        (left == 0).then_some(())
+    })
+    .await;
+    let met = Instant::now();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (reads, probes) = (all_feed_reads(&s).await, conditional(&s).await.0);
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    assert!(
+        met.elapsed() < Duration::from_millis(2900),
+        "too slow to tell"
+    );
+    assert_eq!(all_feed_reads(&s).await, reads, "the poller waits");
+    assert_eq!(conditional(&s).await.0, probes, "the probes wait");
+    // Past the wait, both go on.
+    until(10.0, "the poller and the probes again", || async {
+        (all_feed_reads(&s).await > reads && conditional(&s).await.0 > probes).then_some(())
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_no_account_syncs_gets_no_probes() {
     let s = start_with(sweeping).await;

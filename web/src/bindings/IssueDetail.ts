@@ -3,7 +3,9 @@ import type { CommentOrder } from "./CommentOrder";
 import type { CommentPage } from "./CommentPage";
 import type { Label } from "./Label";
 import type { Milestone } from "./Milestone";
+import type { PullDetail } from "./PullDetail";
 import type { RefTarget } from "./RefTarget";
+import type { Related } from "./Related";
 import type { Relationships } from "./Relationships";
 import type { User } from "./User";
 
@@ -59,4 +61,16 @@ comments: CommentPage,
 /**
  * Every comment the thread has.
  */
-comment_total: number, relationships: Relationships, };
+comment_total: number, relationships: Relationships, 
+/**
+ * A PR's own fields; `null` for an issue.
+ */
+pr: PullDetail | null, 
+/**
+ * On a PR, the issues it closes when it merges ("Closes"); empty on an issue.
+ */
+closes: Array<Related>, 
+/**
+ * On an issue, the PRs that close it when they merge ("Linked PRs"); empty on a PR.
+ */
+linked_prs: Array<Related>, };

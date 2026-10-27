@@ -116,6 +116,14 @@ impl Hub {
         }
     }
 
+    /// Whether `account` has a stream open.
+    pub fn has_streams(&self, account: i64) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&account)
+    }
+
     /// Sends `push` to `account`'s streams; with none open, it goes nowhere.
     pub fn publish(&self, account: i64, push: Push) {
         let all = self.0.lock().unwrap_or_else(|e| e.into_inner());

@@ -117,6 +117,9 @@ pub struct ReconcileConfig {
     /// delivery for it lands within this after the sweep wrote it. A sub-issue reorder never
     /// does: GitHub sends no webhook for it.
     pub webhook_grace: Duration,
+    /// How often the events-feed poller reads the feed of each repo an account with a live
+    /// stream syncs (about 2 s).
+    pub feed_every: Duration,
 }
 
 impl Default for ReconcileConfig {
@@ -136,6 +139,7 @@ impl Default for ReconcileConfig {
             resync_every: min(60),
             failure_backoff: min(10),
             webhook_grace: min(1),
+            feed_every: Duration::from_secs(2),
         }
     }
 }

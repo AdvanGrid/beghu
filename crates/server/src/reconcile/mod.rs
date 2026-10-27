@@ -45,6 +45,10 @@
 //!   owed. A repo whose full sweep fails is repaired again only after
 //!   [`ReconcileConfig::failure_backoff`], doubling. While a Resync or a repair runs, it shows
 //!   "resyncing…".
+//! - **The events-feed poller** (`feed.rs`): every [`ReconcileConfig::feed_every`], each synced
+//!   repo's issue events feed, while an account syncing it has a live stream (the 5-minute probe
+//!   reads it for the others), for what no webhook says: a PR linked to an issue in GitHub's
+//!   Development sidebar, and a backup for dropped `sub_issues` deliveries.
 //! - Opening an issue with sub-issues reads their order back from GitHub, at most every 30 s per
 //!   parent: a reorder made outside beghu sends nothing.
 //!
@@ -55,6 +59,7 @@
 //! as a failure (no mark, no backoff). What they'd have repaired waits for the next start, whose
 //! redelivery, marks and sweeps find it again.
 
+mod feed;
 mod redeliver;
 mod resync;
 mod schedule;
@@ -63,6 +68,7 @@ mod sweep;
 
 pub use resync::resync;
 pub use status::{SyncStatus, status};
+pub(crate) use sweep::SECONDARY_WAIT;
 
 use crate::App;
 use crate::config::ReconcileConfig;
@@ -138,6 +144,47 @@ pub struct Reconcile {
     wake: tokio::sync::Notify,
     /// How many full sweeps may run at once, across installations.
     full_slots: tokio::sync::Semaphore,
+    /// What the events-feed poller keeps of each repo's feed.
+    feed: feed::Feed,
+    /// Each installation's quota, as last seen; shared with the read-backs (`edges.rs`).
+    budgets: Arc<Budgets>,
+}
+
+/// Each installation's [`Budget`], shared by every background reader: sweeps, probes, the
+/// events-feed poller and the read-backs.
+#[derive(Default)]
+pub(crate) struct Budgets(Mutex<HashMap<i64, Budget>>);
+
+impl Budgets {
+    fn with<T>(&self, f: impl FnOnce(&mut HashMap<i64, Budget>) -> T) -> T {
+        f(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub(crate) fn get(&self, installation: i64) -> Budget {
+        self.with(|b| b.get(&installation).copied().unwrap_or_default())
+    }
+
+    pub(crate) fn set(&self, installation: i64, f: impl FnOnce(&mut Budget)) {
+        self.with(|b| f(b.entry(installation).or_default()));
+    }
+
+    /// GitHub asked `installation` to wait `wait` (a rate limit, primary or secondary): every
+    /// background reader of it holds off until then.
+    pub(crate) fn pause(&self, installation: i64, wait: std::time::Duration) {
+        let until = Instant::now() + wait;
+        self.set(installation, |b| {
+            if b.paused_until.is_none_or(|u| u < until) {
+                eprintln!(
+                    "reconcile: installation {installation}: rate limited; background reads wait {wait:?}"
+                );
+                b.paused_until = Some(until);
+            }
+        });
+    }
+
+    fn retain(&self, keep: impl Fn(i64) -> bool) {
+        self.with(|b| b.retain(|i, _| keep(*i)));
+    }
 }
 
 #[derive(Default)]
@@ -152,8 +199,6 @@ struct State {
     whole: HashMap<i64, Whole>,
     /// Installations with a sweep job running.
     busy: HashSet<i64>,
-    /// Each installation's quota, as last seen.
-    budgets: HashMap<i64, Budget>,
     accounts: HashMap<i64, AccountSync>,
     /// Repos whose last full sweeps failed: how many in a row, and when a repair may try again.
     failing: HashMap<i64, Failing>,
@@ -267,15 +312,35 @@ pub(crate) struct Budget {
     pub graphql: Option<Quota>,
     /// When `/rate_limit` was last asked.
     pub read: Option<Instant>,
+    /// Until when GitHub asked the installation to wait (a rate limit's answer): sweeps, probes
+    /// and the events-feed poller all hold off until then.
+    pub paused_until: Option<Instant>,
+}
+
+impl Budget {
+    /// How long GitHub still asks the installation to wait, if at all.
+    pub fn paused(&self) -> Option<std::time::Duration> {
+        self.paused_until
+            .and_then(|u| u.checked_duration_since(Instant::now()))
+            .filter(|d| !d.is_zero())
+    }
+
+    /// Whether background reads (sweeps, probes, the poller) hold off now: GitHub asked the
+    /// installation to wait, or its core quota is below a fifth until its reset.
+    pub fn holds_off_core(&self) -> bool {
+        self.paused().is_some() || self.core.is_some_and(|q| q.low() && q.reset > crate::now())
+    }
 }
 
 impl Reconcile {
-    pub fn new(cfg: ReconcileConfig) -> Reconcile {
+    pub fn new(cfg: ReconcileConfig, budgets: Arc<Budgets>) -> Reconcile {
         Reconcile {
+            budgets,
             full_slots: tokio::sync::Semaphore::new(cfg.full_sweeps_at_once.max(1)),
             cfg,
             state: Mutex::default(),
             wake: tokio::sync::Notify::new(),
+            feed: feed::Feed::default(),
         }
     }
 
@@ -296,11 +361,16 @@ impl Reconcile {
     }
 
     pub(crate) fn budget(&self, installation: i64) -> Budget {
-        self.with(|s| s.budgets.get(&installation).copied().unwrap_or_default())
+        self.budgets.get(installation)
     }
 
     pub(crate) fn set_budget(&self, installation: i64, f: impl FnOnce(&mut Budget)) {
-        self.with(|s| f(s.budgets.entry(installation).or_default()));
+        self.budgets.set(installation, f);
+    }
+
+    /// GitHub asked `installation` to wait `wait`: see [`Budgets::pause`].
+    pub(crate) fn pause(&self, installation: i64, wait: std::time::Duration) {
+        self.budgets.pause(installation, wait);
     }
 
     /// A sweep of `repo` repaired a change the webhooks missed in `account`'s mirror.
@@ -510,12 +580,13 @@ pub async fn opened(app: &App, account: i64, id: i64) {
 }
 
 /// Starts reconciliation, once the server listens and the deliveries acked but not processed
-/// are resumed (`Opened::start`): the redelivery job (its first run covers the downtime) and the
-/// sweeps' scheduler. Both are jobs, spawned and not awaited: the drain stops them, and the
+/// are resumed (`Opened::start`): the redelivery job (its first run covers the downtime), the
+/// sweeps' scheduler and the events-feed poller. All are jobs, spawned and not awaited: the drain stops them, and the
 /// sweeps they start, at their next await.
 pub fn start(app: &App) {
     app.spawn(redeliver::job);
     app.spawn(schedule::schedule);
+    app.spawn(feed::poller);
 }
 
 /// The repos sweeps read, by installation: every repo an active account syncs, as the mirrors of
@@ -570,7 +641,6 @@ pub(crate) async fn targets(app: &App) -> Result<Arc<Targets>, Error> {
             node_id: r.node_id,
             owner: r.owner,
             name: r.name,
-            private: r.private,
             accounts,
         });
     }

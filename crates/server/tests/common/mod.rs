@@ -389,12 +389,14 @@ impl Stack {
             backup_every: beghu::default_backup_every(),
             assets_kept_for: beghu::default_assets_kept_for(),
             drain_for: beghu::default_drain_for(),
-            // Sweeps and periodic redelivery stay out of the way of tests about other things: a
-            // test about them sets its own schedule (tests/reconcile.rs). Redelivery still runs
-            // once at each start, and a full sweep asked for (a Resync) still runs.
+            // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
+            // tests about other things: a test about them sets its own schedule
+            // (tests/reconcile.rs, tests/prs.rs). Redelivery still runs once at each start, and
+            // a full sweep asked for (a Resync) still runs.
             reconcile: beghu::ReconcileConfig {
                 tick: Duration::from_secs(3600),
                 redeliver_every: Duration::from_secs(3600),
+                feed_every: Duration::from_secs(3600),
                 ..beghu::ReconcileConfig::default()
             },
         }

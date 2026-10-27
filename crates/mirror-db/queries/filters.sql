@@ -85,7 +85,8 @@ i.id IN (SELECT c.item_id FROM comments_fts f CROSS JOIN comments c ON c.id = f.
 -- name: hydrate :many
 -- param: ids &[i64]
 SELECT i.id, i.kind, i.number, i.title, i.state, i.state_reason, i.created_at, i.updated_at,
-       i.closed_at, i.last_commented_at, i.comments_count, i.issue_type, r.owner, r.name AS repo
+       i.closed_at, i.last_commented_at, i.comments_count, i.issue_type, i.draft AS "draft: bool",
+       i.merged_at, i.review_decision, r.owner, r.name AS repo
 FROM json_each(:ids) j
 JOIN items i ON i.id = j.value
 JOIN repos r ON r.id = i.repo_id

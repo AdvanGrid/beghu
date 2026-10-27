@@ -106,10 +106,10 @@ async fn tick(app: &App) -> Result<(), Error> {
         s.suspects.retain(|x| swept.contains(&x.repo));
         s.unlisted_labels.retain(|id, _| swept.contains(id));
         s.failing.retain(|id, _| swept.contains(id));
-        s.budgets.retain(|i, _| all.contains_key(i));
         s.accounts.retain(|_, a| !a.idle());
         stale
     });
+    r.budgets.retain(|i| all.contains_key(&i));
     for (repo, by) in stale {
         r.done_full(app, repo, by, Outcome::Done).await;
     }
@@ -299,6 +299,12 @@ async fn job(app: App, installation: i64, targets: Vec<Target>) {
             match sweeper.probe(&t).await {
                 Ok(()) | Err(sweep::Stop::Failed(_)) => {}
                 Err(sweep::Stop::Sealed) => return,
+            }
+            // A repo with a live stream has its feed read every couple of seconds already.
+            if !super::feed::live(&app, &t)
+                && let Err(e) = super::feed::poll(&app, installation, &t, false).await
+            {
+                eprintln!("reconcile: {}/{}: its events feed: {e}", t.owner, t.name);
             }
             r.with(|s| s.repos.entry(t.id).or_default().probed = Some(Instant::now()));
         }

@@ -1,10 +1,12 @@
 // The detail's relationships (part of the issue panel's chunk): the parent breadcrumb with its
 // progress above the title; the Blocks section above the body, blocked by on the left and
 // blocking mirrored on the right; Relates to under it; and the Sub-issues section after the body.
+// Also the linked PRs, which aren't relationships but list the same way: an issue's "Linked PRs"
+// and a PR's "Closes", each a property row.
 // An end in a repo that isn't synced is a stub: "not synced", opening on GitHub (↗).
 import * as stylex from "@stylexjs/stylex";
 import { For, Show } from "solid-js";
-import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
+import { Avatar, issueState, PrIcon, ProgressRing, StateIcon } from "./bits";
 import type { Related } from "./bindings/Related";
 import type { Relationships } from "./bindings/Relationships";
 import { colors, fonts } from "./tokens.stylex";
@@ -170,7 +172,9 @@ function RelRow(props: { r: Related; search: string; progress?: boolean }) {
   const closed = () => r().state === "closed";
   return (
     <div {...stylex.attrs(s.relRow, closed() && s.closed)} data-perf="rel-item" data-id={r().id}>
-      <StateIcon state={issueState(r())} />
+      <Show when={r().pr_status} fallback={<StateIcon state={issueState(r())} />}>
+        {(st) => <PrIcon status={st()} />}
+      </Show>
       <TitleLink r={r()} search={props.search} />
       <span {...stylex.attrs(s.ref)}>
         {r().repo}#{r().number}
@@ -187,6 +191,17 @@ function RelRow(props: { r: Related; search: string; progress?: boolean }) {
         )}
       </Show>
       <Show when={r().assignee}>{(who) => <Avatar login={who()} size={14} />}</Show>
+    </div>
+  );
+}
+
+/** An issue's linked PRs, or the issues a PR closes, in their property row: one line each. */
+export function Linked(props: { items: Related[]; search: string; empty: string; perf: string }) {
+  return (
+    <div data-perf={props.perf} {...stylex.attrs(s.linked)}>
+      <For each={props.items} keyed={(r) => r.id} fallback={<span {...stylex.attrs(s.muted)}>{props.empty}</span>}>
+        {(r) => <RelRow r={r()} search={props.search} />}
+      </For>
     </div>
   );
 }
@@ -425,6 +440,12 @@ const s = stylex.create({
   relates: {
     paddingInline: 16,
     paddingBottom: 8,
+  },
+  linked: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minWidth: 0,
   },
   relRow: {
     borderRadius: 4,

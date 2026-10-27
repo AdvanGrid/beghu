@@ -75,9 +75,13 @@ Commands:
             [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
             [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N]
             [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]
-            [--prioritize-sub-issue R#N] [--delete]
+            [--prioritize-sub-issue R#N] [--link-issue R#N] [--unlink-issue R#N]
+            [--review approve|request_changes|comment|dismiss] [--delete]
                               An outside edit on "GitHub" (as an agent with gh would make
                               it); its webhooks reach the server about a second later.
+                              On a PR, --link-issue/--unlink-issue link an issue in the
+                              Development sidebar (no webhook: the events feed shows it),
+                              and --review reviews it (pull_request_review).
                               --delete deletes the issue instead (issues deleted). REPO
                               is a fixture repo name (web) or owner/name (acme/web). R#N may
                               be in an unsynced repo (partner-sdk#100), or #N in REPO.
@@ -428,7 +432,7 @@ async function control(method: string, path: string, body?: unknown): Promise<un
 /** `./dev-ctl fake edit REPO#N …`: the control port's `POST /edit` body. */
 function editBody(target: string | undefined, opts: Record<string, string>, set: Set<string>): Record<string, unknown> {
   const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
-  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N] [--prioritize-sub-issue R#N] [--delete]");
+  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N] [--prioritize-sub-issue R#N] [--link-issue R#N] [--unlink-issue R#N] [--review KIND] [--delete]");
   if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
   const list = (v: string | undefined) => (v === undefined ? [] : v.split(",").map((l) => l.trim()).filter(Boolean));
   const body: Record<string, unknown> = { repo: m[1], number: Number(m[2]) };
@@ -458,6 +462,9 @@ function editBody(target: string | undefined, opts: Record<string, string>, set:
     ["--relate", "add_relates_to"],
     ["--unrelate", "remove_relates_to"],
     ["--prioritize-sub-issue", "prioritize_sub_issue"],
+    ["--link-issue", "add_linked_issue"],
+    ["--unlink-issue", "remove_linked_issue"],
+    ["--review", "review"],
   ];
   for (const [flag, field] of links) if (opts[flag]) body[field] = opts[flag];
   if (Object.keys(body).length === 2) throw new Usage("fake edit needs something to change; see ./dev-ctl help");
@@ -496,6 +503,9 @@ async function fake(args: string[]): Promise<void> {
       "--rename",
       "--color",
       "--prioritize-sub-issue",
+      "--link-issue",
+      "--unlink-issue",
+      "--review",
       "--only",
     ],
     ["--close", "--reopen", "--delete"],

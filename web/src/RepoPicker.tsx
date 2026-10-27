@@ -286,13 +286,13 @@ const s = stylex.create({
   },
   save: {
     font: "inherit",
-    borderColor: colors.accent,
+    borderColor: colors.accentBg,
     borderRadius: 6,
     borderStyle: "solid",
     borderWidth: 1,
     paddingBlock: 4,
     paddingInline: 14,
-    backgroundColor: colors.accent,
+    backgroundColor: colors.accentBg,
     color: colors.accentFg,
     cursor: {
       default: "pointer",

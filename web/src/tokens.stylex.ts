@@ -13,6 +13,9 @@ export const colors = stylex.defineVars({
   selected: "light-dark(#eef2ff, #1e2235)",
   accent: "light-dark(#2563eb, #3b82f6)",
   accentFg: "light-dark(#ffffff, #ffffff)",
+  // A filled accent control under accentFg text: dark mode's accent (#3b82f6) is too light for
+  // white text (3.68:1), so it fills with the deeper blue there too (5.17:1; light: 5.17:1).
+  accentBg: "light-dark(#2563eb, #2563eb)",
   open: "light-dark(#1a7f37, #3fb950)",
   done: "light-dark(#8250df, #a371f7)",
   notPlanned: "light-dark(#6e7781, #8b949e)",
@@ -29,6 +32,8 @@ export const colors = stylex.defineVars({
   openBg: "light-dark(#1f883d, #238636)",
   doneBg: "light-dark(#8250df, #8957e5)",
   notPlannedBg: "light-dark(#6e7781, #6e7681)",
+  // A closed (unmerged) PR's badge.
+  dangerBg: "light-dark(#cf222e, #da3633)",
   avatarFg: "light-dark(#ffffff, #ffffff)",
   avatar0: "light-dark(#b45309, #92400e)",
   avatar1: "light-dark(#047857, #065f46)",

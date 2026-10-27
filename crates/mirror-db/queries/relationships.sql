@@ -55,13 +55,15 @@ GROUP BY t.root;
 
 -- Everything an item is related to, one row per relationship, as `rel`: its `parent`, its `sub`
 -- issues in GitHub's order, what it is `blocked_by` and `blocking`, and what it `relates` to (these
--- three by id: every account, and every re-import, lists them alike). With each, who has it and
--- how many open issues block it.
+-- three by id: every account, and every re-import, lists them alike); and its linked PRs, which
+-- aren't relationships: the issues a PR `closes`, and the PRs that close an issue (`linked_pr`),
+-- by id too. With each, who has it, how many open issues block it, and a PR's draft and merge.
 -- name: item_relationships :many
 -- param: id i64
 SELECT e.rel AS "rel!: String", i.id AS "id!: i64", i.kind AS "kind!: String",
        i.number AS "number!: i64", i.title AS "title!: String", i.state AS "state!: String",
        i.state_reason AS "state_reason?: String", i.is_stub AS "is_stub!: bool",
+       i.draft AS "draft?: bool", i.merged_at AS "merged_at?: i64",
        r.synced AS "synced!: bool", r.owner AS "owner!: String", r.name AS "repo!: String",
        (SELECT u.login FROM item_assignees ia JOIN users u ON u.id = ia.user_id
         WHERE ia.item_id = i.id ORDER BY u.login COLLATE NOCASE LIMIT 1) AS "assignee?: String",
@@ -80,6 +82,10 @@ FROM (
   SELECT 'relates', x.dst_id, 0.0 FROM relationships x WHERE x.kind = 'relates' AND x.src_id = :id
   UNION ALL
   SELECT 'relates', x.src_id, 0.0 FROM relationships x WHERE x.kind = 'relates' AND x.dst_id = :id
+  UNION ALL
+  SELECT 'closes', x.dst_id, 0.0 FROM relationships x WHERE x.kind = 'closes' AND x.src_id = :id
+  UNION ALL
+  SELECT 'linked_pr', x.src_id, 0.0 FROM relationships x WHERE x.kind = 'closes' AND x.dst_id = :id
 ) e
 JOIN items i ON i.id = e.other
 JOIN repos r ON r.id = i.repo_id
@@ -207,7 +213,13 @@ SELECT e.dst_id FROM json_each(:ids) j CROSS JOIN relationships e
 WHERE e.kind = 'blocks' AND e.src_id = j.value
 UNION
 SELECT e.src_id FROM json_each(:ids) j CROSS JOIN relationships e
-WHERE e.kind = 'blocks' AND e.dst_id = j.value;
+WHERE e.kind = 'blocks' AND e.dst_id = j.value
+UNION
+SELECT e.dst_id FROM json_each(:ids) j CROSS JOIN relationships e
+WHERE e.kind = 'closes' AND e.src_id = j.value
+UNION
+SELECT e.src_id FROM json_each(:ids) j CROSS JOIN relationships e
+WHERE e.kind = 'closes' AND e.dst_id = j.value;
 
 -- The repo of each of `ids`: whether it is private, whether the account syncs it, and the App
 -- installation it's synced through (none for a stub's repo).

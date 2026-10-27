@@ -28,9 +28,11 @@
 //! marked `needs_resync`, and a fresh lane takes its next deliveries. Every minute, any delivery
 //! unprocessed for over 30 s and not in flight is queued again, so nothing waits for a restart.
 //!
-//! Handled here: `issues`, `issue_comment`, `label`, `milestone`, `repository`, and the
-//! relationship events `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`).
-//! Comments and milestones are guarded by `updated_at` (newer or equal wins), so a replay or an
+//! Handled here: `issues`, `issue_comment`, `label`, `milestone`, `repository`, the
+//! relationship events `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`),
+//! and a PR's `pull_request` and `pull_request_review`, which write nothing themselves: the PR is
+//! read back at once, its own fields and the issues it closes (`pulls.rs`). Comments and
+//! milestones are guarded by `updated_at` (newer or equal wins), so a replay or an
 //! older delivery that arrives late changes nothing. Items too, but `updated_at` is in whole
 //! seconds and picks made within one share it, so an equal one is applied only when it says what
 //! the mirror has (a replay: nothing to do); `labeled`, `unlabeled`, `assigned` and `unassigned`
@@ -522,14 +524,7 @@ impl Drop for Ticket {
                 // Only now, with the delivery in every account's mirror (or given up there), so
                 // no lagging lane can apply it over the read-back. Each lane applies in delivery
                 // order, so whatever came before it is in too.
-                let mut read_backs: Vec<_> = job
-                    .change
-                    .refetch()
-                    .map(|(subject, kind, at_once)| {
-                        job.edges.schedule(subject, ReadBack::Edges(kind), at_once)
-                    })
-                    .into_iter()
-                    .collect();
+                let mut read_backs: Vec<_> = job.change.refetch(&job.edges).into_iter().collect();
                 if job.reread.load(Ordering::Acquire)
                     && let Some(subject) = job.change.reread()
                 {
@@ -874,6 +869,9 @@ struct Installation {
 #[derive(Deserialize)]
 struct Repository {
     id: i64,
+    /// `owner/name`: where a PR read-back reads.
+    #[serde(default)]
+    full_name: String,
     #[serde(default)]
     node_id: String,
     #[serde(default)]
@@ -881,6 +879,12 @@ struct Repository {
     owner: Option<Owner>,
     #[serde(default)]
     private: bool,
+}
+
+/// The PR a `pull_request` or `pull_request_review` delivery is about: only its number is kept.
+#[derive(Deserialize)]
+struct PullRef {
+    number: i64,
 }
 
 #[derive(Deserialize)]
@@ -1006,6 +1010,8 @@ struct Payload {
     blocking_issue_id: Option<i64>,
     related_issue: Option<Issue>,
     related_issue_id: Option<i64>,
+    // `pull_request` and `pull_request_review` deliveries.
+    pull_request: Option<PullRef>,
 }
 
 /// One delivery's change to a repo, ready to write to each account's mirror.
@@ -1037,6 +1043,13 @@ enum Change {
     Milestone(Milestone),
     MilestoneDeleted(i64),
     Relationship(Relationship),
+    /// A PR changed (or was reviewed): it is read back, nothing written from the payload.
+    Pull {
+        owner: String,
+        name: String,
+        number: i64,
+        installation: Option<i64>,
+    },
     Transfer(Transfer),
     /// `repository` `archived` (true) or `unarchived` (false).
     Archived(bool),
@@ -1184,6 +1197,8 @@ impl RepoChange {
                 | "sub_issues"
                 | "issue_dependencies"
                 | "issue_relates_to"
+                | "pull_request"
+                | "pull_request_review"
                 | "repository"
         ) {
             return Ok(None);
@@ -1299,6 +1314,27 @@ impl RepoChange {
             ("label", _) => p.label.map(Change::Label),
             ("milestone", "deleted") => p.milestone.map(|m| Change::MilestoneDeleted(m.id)),
             ("milestone", _) => p.milestone.map(Change::Milestone),
+            // A push to the branch, or merge-queue and auto-merge bookkeeping, changes nothing
+            // the mirror holds.
+            (
+                "pull_request",
+                "synchronize"
+                | "enqueued"
+                | "dequeued"
+                | "auto_merge_enabled"
+                | "auto_merge_disabled",
+            ) => None,
+            ("pull_request" | "pull_request_review", _) => {
+                match (p.pull_request, repository.full_name.split_once('/')) {
+                    (Some(pr), Some((owner, name))) => Some(Change::Pull {
+                        owner: owner.to_owned(),
+                        name: name.to_owned(),
+                        number: pr.number,
+                        installation,
+                    }),
+                    _ => None,
+                }
+            }
             ("repository", "archived") => Some(Change::Archived(true)),
             ("repository", "unarchived") => Some(Change::Archived(false)),
             _ => None,
@@ -1339,9 +1375,32 @@ impl RepoChange {
         })
     }
 
-    /// The read-back a relationship delivery calls for: its repo's issue, the kind, and whether
-    /// it runs at once (the other end is in another repo, or the delivery didn't say).
-    fn refetch(&self) -> Option<(Subject, Kind, bool)> {
+    /// Schedules the read-back a delivery calls for, if any. A relationship delivery's: its repo's
+    /// issue and the kind, at once when the other end is in another repo (or the delivery didn't
+    /// say). A PR's: the PR, at once.
+    fn refetch(&self, edges: &Refetcher) -> Option<tokio::sync::oneshot::Receiver<()>> {
+        if let Change::Pull {
+            owner,
+            name,
+            number,
+            installation,
+        } = &self.change
+        {
+            let Some(installation) = *installation else {
+                eprintln!(
+                    "webhooks: a delivery for PR {owner}/{name}#{number} names no installation; no read-back"
+                );
+                return None;
+            };
+            let pull = crate::pulls::Pull {
+                repo: self.repo,
+                owner: owner.clone(),
+                name: name.clone(),
+                number: *number,
+                installation,
+            };
+            return Some(edges.schedule_pull(pull, true));
+        }
         let Change::Relationship(r) = &self.change else {
             return None;
         };
@@ -1352,17 +1411,14 @@ impl RepoChange {
             );
             return None;
         };
-        Some((
-            Subject {
-                id: r.subject.id,
-                node_id: r.subject.node_id.clone(),
-                number: r.subject.number,
-                repo: self.repo,
-                installation,
-            },
-            r.kind,
-            !r.same_repo,
-        ))
+        let subject = Subject {
+            id: r.subject.id,
+            node_id: r.subject.node_id.clone(),
+            number: r.subject.number,
+            repo: self.repo,
+            installation,
+        };
+        Some(edges.schedule(subject, ReadBack::Edges(r.kind), !r.same_repo))
     }
 
     /// Whether this account may miss a relationship change for good, and why
@@ -1466,6 +1522,7 @@ impl RepoChange {
                 let (ids, gone) = delete_milestone(tx, *id, seq)?;
                 definition(ids, gone)
             }
+            Change::Pull { .. } => Vec::new().into(),
         })
     }
 }

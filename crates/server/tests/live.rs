@@ -953,11 +953,35 @@ async fn accounts_syncing_different_repos_each_hear_only_their_own_repos_changes
     owner_st.reset().await;
     member_st.reset().await;
 
+    // An issue's push names it and the PRs that close it, whose "Closes" show it.
+    let named = |id: &Value, d: Value| {
+        let mut ids: Vec<i64> = d["linked_prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_i64().unwrap())
+            .chain([id.as_i64().unwrap()])
+            .collect();
+        ids.sort();
+        ids
+    };
+    let a_named = named(
+        &a["id"],
+        s.api(&mut owner, &format!("/api/issues/{}", a["id"]))
+            .await
+            .1,
+    );
+    let b_named = named(
+        &b["id"],
+        s.api(&mut member, &format!("/api/issues/{}", b["id"]))
+            .await
+            .1,
+    );
     s.edit(json!({ "repo": a["repo"], "number": a["number"], "title": "Only for tomsj" }))
         .await;
     assert_eq!(
         ids_of(&owner_st.event_within(4 * SECS).await.unwrap()),
-        [a["id"].as_i64().unwrap()]
+        a_named
     );
     assert_eq!(member_st.events_for(SECS).await, Vec::<Sse>::new());
 
@@ -965,7 +989,7 @@ async fn accounts_syncing_different_repos_each_hear_only_their_own_repos_changes
         .await;
     assert_eq!(
         ids_of(&member_st.event_within(4 * SECS).await.unwrap()),
-        [b["id"].as_i64().unwrap()]
+        b_named
     );
     assert_eq!(owner_st.events_for(SECS).await, Vec::<Sse>::new());
 }

@@ -6,7 +6,8 @@
 //!   installation token minted with its permissions, how many GraphQL calls came with each kind
 //!   of token, how often the assignee list was answered in full or 304, how many delivery
 //!   attempts the App's log holds (failed and redelivered among them), each token owner's quota
-//!   used, and how many conditional requests were answered 304.
+//!   used, how many conditional requests were answered 304, and how often each repo's issue
+//!   events feed was read (and answered 304: `feeds`).
 //! - `POST /faults/latency {endpoint, ms, count?, after?}`: delay calls to `endpoint` (only the
 //!   next `count`, with one); with `after: true` the call is made at once and its answer held
 //!   back instead; `ms: 0` removes the rule.
@@ -30,8 +31,9 @@
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
 //!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see
-//!   `edits.rs` and `relationships.rs`), with its webhooks. `delete: true` deletes the issue
-//!   instead (`issues` `deleted`); its number answers 410 from then on.
+//!   `edits.rs` and `relationships.rs`), with its webhooks; on a PR also `add_linked_issue?`,
+//!   `remove_linked_issue?` (the Development sidebar) and `review?` (`pulls.rs`). `delete: true`
+//!   deletes the issue instead (`issues` `deleted`); its number answers 410 from then on.
 //! - `POST /label {repo, name, rename?, color?, description?, as?}`: edits one of the repo's
 //!   labels (a rename, a new colour), or creates it if the repo has none by that name, with
 //!   GitHub's `label` `edited` or `created` delivery (`edits.rs`).
@@ -151,6 +153,7 @@ async fn state(State(fake): State<Fake>) -> Response {
         "clock": { "offset": fake.clock_offset() },
         "quota": fake.state().quotas.snapshot(),
         "not_modified": fake.state().not_modified.load(std::sync::atomic::Ordering::Relaxed),
+        "feeds": fake.state().feeds.snapshot(),
         "setup_url": fake.setup_url(),
     }))
     .into_response()
@@ -491,6 +494,7 @@ async fn reset(State(fake): State<Fake>) -> Response {
             fake.state()
                 .not_modified
                 .store(0, std::sync::atomic::Ordering::Relaxed);
+            fake.state().feeds.clear();
             fake.set_clock_offset(0);
             *fake.state().ttl.lock().unwrap_or_else(|e| e.into_inner()) =
                 Ttl::of(&fake.state().cfg);

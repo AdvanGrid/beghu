@@ -2967,6 +2967,278 @@ async fn deleting_an_issue_sends_issues_deleted_and_github_no_longer_counts_it_o
     assert_eq!(res.status(), 400);
 }
 
+impl Fake {
+    /// The first PR in `acme/web` the fixture closes nothing with: its `web#n`, issue-side id and
+    /// node id.
+    async fn a_pr(&self, token: &Value) -> (String, i64, String) {
+        let page: Vec<Value> = self
+            .get(
+                "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+                token,
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        for p in page.iter().filter(|i| i["pull_request"].is_object()) {
+            let node = p["node_id"].as_str().unwrap().to_owned();
+            let read = self
+                .query(token, "PullReadBack", json!({ "id": node }))
+                .await;
+            if read["data"]["node"]["closingIssuesReferences"]["totalCount"] == 0 {
+                return (
+                    format!("web#{}", p["number"]),
+                    p["id"].as_i64().unwrap(),
+                    node,
+                );
+            }
+        }
+        panic!("no PR in acme/web closes nothing");
+    }
+
+    /// The first PR in `acme/web` whose review decision is null (`required: false`, a base
+    /// branch that requires no reviews) or isn't: its `web#n` and node id.
+    async fn a_pr_reviewed(&self, token: &Value, required: bool) -> (String, String) {
+        let page: Vec<Value> = self
+            .get(
+                "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+                token,
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        for p in page.iter().filter(|i| i["pull_request"].is_object()) {
+            let node = p["node_id"].as_str().unwrap().to_owned();
+            let read = self
+                .query(token, "PullReadBack", json!({ "id": node }))
+                .await;
+            if read["data"]["node"]["reviewDecision"].is_null() != required {
+                return (format!("web#{}", p["number"]), node);
+            }
+        }
+        panic!("no PR in acme/web with the review decision asked for");
+    }
+
+    /// The numbers of the issues PR `node` closes, as `PullReadBack` answers.
+    async fn closes(&self, token: &Value, node: &str) -> Vec<i64> {
+        let read = self
+            .query(token, "PullReadBack", json!({ "id": node }))
+            .await;
+        read["data"]["node"]["closingIssuesReferences"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["number"].as_i64().unwrap())
+            .collect()
+    }
+
+    /// `acme/web`'s issue events feed, newest first: `(id, event, issue number)` of each.
+    async fn feed(&self, token: &Value) -> Vec<(i64, String, i64)> {
+        let res = self
+            .get("/repos/acme/web/issues/events?per_page=100", token)
+            .await;
+        assert_eq!(res.status(), 200);
+        let events: Vec<Value> = res.json().await.unwrap();
+        events
+            .iter()
+            .map(|e| {
+                (
+                    e["id"].as_i64().unwrap(),
+                    e["event"].as_str().unwrap().to_owned(),
+                    e["issue"]["number"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn number_of(target: &str) -> i64 {
+    target.split_once('#').unwrap().1.parse().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prs_own_edits_send_pull_request_deliveries_and_its_bodys_keywords_set_what_it_closes() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, pr_id, node) = fake.a_pr(&token).await;
+    let issue = unlinked_in("web")[0].0.clone();
+    let n = number_of(&issue);
+    let mut rx = receiver(&fake).await;
+
+    let sent = fake
+        .edit(edit_of(
+            &pr,
+            json!({ "body": format!("Reworks the list.\n\nCloses #{n}."), "add_labels": ["bug"] }),
+        ))
+        .await;
+    assert_eq!(sent["deliveries"], 2, "{sent}");
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(
+        shapes(&got),
+        [
+            (
+                "pull_request".into(),
+                "edited".into(),
+                "web".into(),
+                keys(&["changes", "number", "pull_request"])
+            ),
+            (
+                "pull_request".into(),
+                "labeled".into(),
+                "web".into(),
+                keys(&["label", "number", "pull_request"])
+            ),
+        ]
+    );
+    let p = got[0].payload();
+    let pull = &p["pull_request"];
+    assert_eq!(p["number"], number_of(&pr));
+    assert_eq!(pull["number"], number_of(&pr));
+    assert_eq!(pull["node_id"], node.as_str());
+    // The PR's own id, not the issue-side one.
+    assert_ne!(pull["id"], pr_id);
+    assert!(pull["head"]["ref"].is_string() && pull["base"]["ref"].is_string());
+    assert!(pull["draft"].is_boolean() && pull["merged"].is_boolean());
+    assert!(p["changes"]["body"]["from"].is_string() || p["changes"]["body"]["from"].is_null());
+    assert_eq!(fake.closes(&token, &node).await, [n]);
+
+    // A link the sidebar made stays when the keyword goes; the keyword's link goes with it.
+    let other = unlinked_in("web")[1].0.clone();
+    fake.edit(edit_of(&pr, json!({ "add_linked_issue": other })))
+        .await;
+    fake.edit(edit_of(&pr, json!({ "body": "Reworks the list." })))
+        .await;
+    assert_eq!(fake.closes(&token, &node).await, [number_of(&other)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sidebar_link_sends_no_webhook_and_shows_in_both_feeds_with_ids_out_of_order() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, _, node) = fake.a_pr(&token).await;
+    let web = unlinked_in("web");
+    let (a, b) = (&web[0].0, &web[1].0);
+    let mut rx = receiver(&fake).await;
+    let before = fake.feed(&token).await;
+
+    let sent = fake
+        .edit(edit_of(&pr, json!({ "add_linked_issue": a })))
+        .await;
+    assert_eq!(sent["deliveries"], 0, "{sent}");
+    fake.edit(edit_of(&pr, json!({ "add_linked_issue": b })))
+        .await;
+    fake.edit(edit_of(&pr, json!({ "remove_linked_issue": a })))
+        .await;
+    assert!(
+        received_for(&mut rx, Duration::from_secs(2))
+            .await
+            .is_empty()
+    );
+    assert_eq!(fake.closes(&token, &node).await, [number_of(b)]);
+
+    let feed = fake.feed(&token).await;
+    let new: Vec<(String, i64)> = feed[..feed.len() - before.len()]
+        .iter()
+        .map(|(_, e, n)| (e.clone(), *n))
+        .collect();
+    let (p, a, b) = (number_of(&pr), number_of(a), number_of(b));
+    // Newest first, on the issue and on the PR.
+    assert_eq!(
+        new,
+        [
+            ("disconnected".into(), a),
+            ("disconnected".into(), p),
+            ("connected".into(), b),
+            ("connected".into(), p),
+            ("connected".into(), a),
+            ("connected".into(), p),
+        ]
+    );
+    // Ids don't follow the feed's order: some newer event has a lower id than an older one.
+    let ids: Vec<i64> = feed[..6].iter().map(|(id, _, _)| *id).collect();
+    assert!(ids.windows(2).any(|w| w[0] < w[1]), "{ids:?}");
+    assert!(ids.windows(2).any(|w| w[0] > w[1]), "{ids:?}");
+
+    // Asked again with its ETag, an unchanged feed is a 304.
+    let res = fake
+        .get("/repos/acme/web/issues/events?per_page=100", &token)
+        .await;
+    let tag = res.headers()["etag"].to_str().unwrap().to_owned();
+    let again = fake
+        .http
+        .get(format!(
+            "{}/repos/acme/web/issues/events?per_page=100",
+            fake.api
+        ))
+        .bearer_auth(token.as_str().unwrap())
+        .header("if-none-match", tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 304);
+    let state = fake.state().await;
+    assert_eq!(state["feeds"]["acme/web"]["not_modified"], 1, "{state}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_sets_the_prs_review_decision_and_sends_pull_request_review() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, node) = fake.a_pr_reviewed(&token, true).await;
+    let mut rx = receiver(&fake).await;
+    let decision = |v: Value| v["data"]["node"]["reviewDecision"].clone();
+
+    let sent = fake
+        .edit(edit_of(
+            &pr,
+            json!({ "as": "ilze-k", "review": "request_changes" }),
+        ))
+        .await;
+    assert_eq!(sent["deliveries"], 1, "{sent}");
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(
+        shapes(&got),
+        [(
+            "pull_request_review".into(),
+            "submitted".into(),
+            "web".into(),
+            keys(&["pull_request", "review"])
+        )]
+    );
+    let p = got[0].payload();
+    assert_eq!(p["review"]["state"], "changes_requested");
+    assert_eq!(p["review"]["user"]["login"], "ilze-k");
+    assert_eq!(p["pull_request"]["node_id"], node.as_str());
+    assert_eq!(
+        decision(
+            fake.query(&token, "PullReadBack", json!({ "id": node }))
+                .await
+        ),
+        "CHANGES_REQUESTED"
+    );
+    // The same reviewer approves: their request for changes no longer stands.
+    fake.edit(edit_of(&pr, json!({ "as": "ilze-k", "review": "approve" })))
+        .await;
+    assert_eq!(
+        decision(
+            fake.query(&token, "PullReadBack", json!({ "id": node }))
+                .await
+        ),
+        "APPROVED"
+    );
+    // Only a PR takes a review.
+    let issue = &unlinked_in("web")[0].0;
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&edit_of(issue, json!({ "review": "approve" })))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
 // --- labels, assignees and milestone ------------------------------------------------------------
 
 /// The `issues` deliveries' actions and what each names (a label's or milestone's name, an
@@ -3003,12 +3275,13 @@ fn names(labels: &Value) -> Vec<&str> {
 async fn labels_are_added_and_removed_by_name_with_triage_and_answer_the_labels_left() {
     let fake = start().await;
     let mut rx = receiver(&fake).await;
-    // Triage on `infra`; start from an issue without the two labels.
-    fake.edit(json!({ "repo": "infra", "number": 4, "remove_labels": ["p0", "good first issue"] }))
+    // Triage on `infra`; start from an issue (not a PR: its label deliveries are
+    // `pull_request` ones) without the two labels.
+    fake.edit(json!({ "repo": "infra", "number": 3, "remove_labels": ["p0", "good first issue"] }))
         .await;
     received_for(&mut rx, Duration::from_millis(1500)).await;
     let token = &fake.sign_in("ilze-k").await["access_token"];
-    let issue = "/repos/acme/infra/issues/4";
+    let issue = "/repos/acme/infra/issues/3";
 
     let (status, labels) = fake
         .rest(
@@ -3406,6 +3679,247 @@ async fn a_deleted_issue_answers_410_as_on_github_and_sends_issues_deleted() {
     );
     assert_eq!(p["issue"]["id"], before["id"]);
     assert_eq!(p["sender"]["login"], "tomsj");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pr_cant_be_deleted_and_sends_nothing() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, _, _) = fake.a_pr(&token).await;
+    let mut rx = receiver(&fake).await;
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&edit_of(&pr, json!({ "delete": true })))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(
+        received_for(&mut rx, Duration::from_secs(2))
+            .await
+            .is_empty()
+    );
+    let n = number_of(&pr);
+    let res = fake
+        .get(&format!("/repos/acme/web/issues/{n}"), &token)
+        .await;
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issues_linked_prs_name_each_pr_by_repo_and_number_wherever_it_lives() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, pr_id, _) = fake.a_pr(&token).await;
+    let issue = &unlinked_in("api")[0];
+    let (target, node) = (&issue.0, &issue.2);
+    let linked = |v: &Value| v["data"]["node"]["closedByPullRequestsReferences"]["nodes"].clone();
+    let before = fake
+        .query(&token, "IssueLinkedPulls", json!({ "id": node }))
+        .await;
+    assert_eq!(linked(&before), json!([]), "{before}");
+
+    let res = fake
+        .edit(edit_of(
+            &pr,
+            json!({ "add_linked_issue": format!("acme/{target}") }),
+        ))
+        .await;
+    assert_eq!(res["deliveries"], 0, "{res}");
+    let after = fake
+        .query(&token, "IssueLinkedPulls", json!({ "id": node }))
+        .await;
+    let nodes = linked(&after);
+    assert_eq!(nodes.as_array().unwrap().len(), 1, "{after}");
+    let n = &nodes[0];
+    assert_eq!(n["__typename"], "PullRequest");
+    assert_eq!(n["number"], number_of(&pr));
+    assert_eq!(n["repository"]["name"], "web");
+    // A PR's GraphQL databaseId is its own, not the issue-side id REST lists it by.
+    assert_ne!(n["databaseId"], pr_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissal_dismisses_the_latest_review_and_reviews_name_the_head_and_reviewer() {
+    // (Every fixture PR's base branch requires reviews, so none has a null decision to keep.)
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let decision = |v: Value| v["data"]["node"]["reviewDecision"].clone();
+    let mut rx = receiver(&fake).await;
+    let (pr, node) = fake.a_pr_reviewed(&token, true).await;
+
+    fake.edit(edit_of(
+        &pr,
+        json!({ "as": "ilze-k", "review": "request_changes" }),
+    ))
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let asked = got[0].payload();
+    assert_eq!(
+        asked["review"]["commit_id"],
+        asked["pull_request"]["head"]["sha"]
+    );
+    assert!(asked["review"]["commit_id"].is_string(), "{asked}");
+    assert_eq!(asked["review"]["author_association"], "MEMBER");
+    let first = asked["review"]["id"].clone();
+
+    // tomsj dismisses it: the delivery carries ilze-k's review, and with no review standing the
+    // decision is REVIEW_REQUIRED.
+    fake.edit(edit_of(&pr, json!({ "as": "tomsj", "review": "dismiss" })))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let p = got[0].payload();
+    assert_eq!(p["action"], "dismissed");
+    assert_eq!(p["sender"]["login"], "tomsj");
+    assert_eq!(p["review"]["id"], first);
+    assert_eq!(p["review"]["user"]["login"], "ilze-k");
+    assert_eq!(p["review"]["state"], "dismissed");
+    let read = fake
+        .query(&token, "PullReadBack", json!({ "id": node }))
+        .await;
+    assert_eq!(decision(read), "REVIEW_REQUIRED");
+
+    // The review ids are the truth's: a reset starts them again.
+    fake.control(reqwest::Method::POST, "/reset", json!({}))
+        .await;
+    let token = fake.installation_token_value().await;
+    let mut rx = receiver(&fake).await;
+    let (pr, _) = fake.a_pr_reviewed(&token, true).await;
+    fake.edit(edit_of(&pr, json!({ "as": "ilze-k", "review": "approve" })))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got[0].payload()["review"]["id"], first);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issues_linked_prs_leave_closed_unmerged_prs_out_unless_include_closed_prs() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let open: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=open&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pr = open
+        .iter()
+        .find(|i| i["pull_request"].is_object())
+        .expect("an open PR in acme/web");
+    let pr = format!("web#{}", pr["number"]);
+    let issue = &unlinked_in("api")[0];
+    let (target, node) = (&issue.0, &issue.2);
+    fake.edit(edit_of(
+        &pr,
+        json!({ "add_linked_issue": format!("acme/{target}"), "state": "closed" }),
+    ))
+    .await;
+    let linked = |include: Option<bool>| {
+        let fake = &fake;
+        let token = &token;
+        async move {
+            let arg = include.map_or(String::new(), |b| format!(", includeClosedPrs: {b}"));
+            let query = format!(
+                "query IssueLinkedPulls($id: ID!) {{ node(id: $id) {{ ... on Issue {{ closedByPullRequestsReferences(first: 50{arg}) {{ nodes {{ number }} }} }} }} }}"
+            );
+            let res: Value = fake
+                .http
+                .post(format!("{}/graphql", fake.api))
+                .bearer_auth(token.as_str().unwrap())
+                .json(&json!({ "query": query, "variables": { "id": node } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            res["data"]["node"]["closedByPullRequestsReferences"]["nodes"]
+                .as_array()
+                .unwrap()
+                .len()
+        }
+    };
+    // GitHub's default leaves the closed PR out.
+    assert_eq!(linked(None).await, 0);
+    assert_eq!(linked(Some(false)).await, 0);
+    assert_eq!(linked(Some(true)).await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prs_author_cant_approve_or_request_changes_on_it_but_can_comment() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let all: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let fixture = ["tomsj", "ilze-k", "octo-ext"];
+    let pr = all
+        .iter()
+        .find(|i| {
+            i["pull_request"].is_object()
+                && fixture.contains(&i["user"]["login"].as_str().unwrap_or_default())
+        })
+        .expect("a PR in acme/web by a fixture account");
+    let (target, author) = (format!("web#{}", pr["number"]), &pr["user"]["login"]);
+    let mut rx = receiver(&fake).await;
+    for (review, message) in [
+        ("approve", "Can not approve your own pull request"),
+        (
+            "request_changes",
+            "Can not request changes on your own pull request",
+        ),
+    ] {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit_of(&target, json!({ "as": author, "review": review })))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 422);
+        assert_eq!(res.json::<Value>().await.unwrap()["message"], message);
+    }
+    assert!(
+        received_for(&mut rx, Duration::from_secs(2))
+            .await
+            .is_empty()
+    );
+    let res = fake
+        .edit(edit_of(
+            &target,
+            json!({ "as": author, "review": "comment" }),
+        ))
+        .await;
+    assert_eq!(res["deliveries"], 1, "{res}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissal_names_the_commit_the_review_was_made_on() {
+    let fake = start().await;
+    let token = fake.installation_token_value().await;
+    let (pr, _) = fake.a_pr_reviewed(&token, true).await;
+    let mut rx = receiver(&fake).await;
+    fake.edit(edit_of(&pr, json!({ "as": "ilze-k", "review": "approve" })))
+        .await;
+    let made = received_for(&mut rx, Duration::from_secs(3)).await[0].payload();
+    fake.edit(edit_of(&pr, json!({ "as": "tomsj", "review": "dismiss" })))
+        .await;
+    let dismissed = received_for(&mut rx, Duration::from_secs(3)).await[0].payload();
+    assert_eq!(dismissed["action"], "dismissed");
+    assert_eq!(dismissed["review"]["id"], made["review"]["id"]);
+    assert_eq!(
+        dismissed["review"]["commit_id"],
+        made["review"]["commit_id"]
+    );
 }
 
 impl Fake {

@@ -15,11 +15,11 @@
 //! once the mirror connection is back in the pool (through the cache), and then reads `refs`.
 
 use crate::App;
-use crate::api::{CommentOrder, Label, User};
+use crate::api::{CommentOrder, Label, PrStatus, ReviewDecision, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
 use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
-use crate::relationships::{self, Relationships};
+use crate::relationships::{self, Related, Relationships};
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use dbrt::filter::Filter;
@@ -72,6 +72,27 @@ pub struct IssueDetail {
     /// Every comment the thread has.
     pub comment_total: i64,
     pub relationships: Relationships,
+    /// A PR's own fields; `null` for an issue.
+    pub pr: Option<PullDetail>,
+    /// On a PR, the issues it closes when it merges ("Closes"); empty on an issue.
+    pub closes: Vec<Related>,
+    /// On an issue, the PRs that close it when they merge ("Linked PRs"); empty on a PR.
+    pub linked_prs: Vec<Related>,
+}
+
+/// What the detail shows of a PR beside its issue fields.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct PullDetail {
+    pub status: PrStatus,
+    /// The branch it merges from; `null` if GitHub didn't say.
+    pub head: Option<String>,
+    /// The branch it merges into.
+    pub base: Option<String>,
+    /// `null` when the repo requires no review.
+    pub review: Option<ReviewDecision>,
+    /// Unix seconds; `null` unless merged.
+    pub merged_at: Option<i64>,
 }
 
 #[derive(Serialize, TS)]
@@ -273,7 +294,14 @@ pub async fn issue(
             )))
         })
         .await??;
-    let (labels, assignees, thread, comment_total, relationships, mut item) = read;
+    let (labels, assignees, thread, comment_total, (relationships, linked), mut item) = read;
+    let pr = (item.kind == "pr").then(|| PullDetail {
+        status: PrStatus::of(&item.state, item.draft, item.merged_at),
+        head: item.head_ref.take(),
+        base: item.base_ref.take(),
+        review: ReviewDecision::parse(item.review_decision.as_deref()),
+        merged_at: item.merged_at,
+    });
     let body = Post {
         kind: PostKind::Body,
         id,
@@ -329,6 +357,9 @@ pub async fn issue(
         comments,
         comment_total,
         relationships,
+        pr,
+        closes: linked.closes,
+        linked_prs: linked.linked_prs,
     }))
 }
 

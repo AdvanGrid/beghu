@@ -68,8 +68,8 @@ const s = stylex.create({
   },
   pressed: {
     backgroundColor: {
-      default: colors.accent,
-      ":hover": colors.accent,
+      default: colors.accentBg,
+      ":hover": colors.accentBg,
     },
     color: colors.accentFg,
   },

@@ -270,6 +270,7 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         fake.state()
             .not_modified
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fake.state().feeds.count(&path, true);
         return r;
     } else {
         if assignees {
@@ -283,6 +284,7 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
     };
     res.headers_mut()
         .insert(header::ETAG, HeaderValue::from_str(&tag).expect("hex"));
+    fake.state().feeds.count(&path, false);
     let q = quotas.take(&owner, resource, now, spend);
     headers(res.headers_mut(), q, resource);
     res

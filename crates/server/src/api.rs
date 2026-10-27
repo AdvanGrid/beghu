@@ -182,6 +182,62 @@ pub struct IssueRow {
     pub progress: Option<Progress>,
     /// The fields the search's words were found in, in this order; empty without free text.
     pub matched: Vec<SearchField>,
+    /// A PR's status and review decision; `null` for an issue.
+    pub pr: Option<PullRow>,
+}
+
+/// What a PR shows beside its issue fields on a list row: its status icon, and the review chip
+/// in the labels column.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct PullRow {
+    pub status: PrStatus,
+    /// `null` when the repo requires no review.
+    pub review: Option<ReviewDecision>,
+}
+
+/// A PR's status, as its icon and badge show it: merged, else closed, else a draft, else open.
+#[derive(Serialize, TS, Debug, Clone, Copy, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PrStatus {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+impl PrStatus {
+    pub fn of(state: &str, draft: Option<bool>, merged_at: Option<i64>) -> PrStatus {
+        match (merged_at, state, draft) {
+            (Some(_), _, _) => PrStatus::Merged,
+            (None, "closed", _) => PrStatus::Closed,
+            (None, _, Some(true)) => PrStatus::Draft,
+            _ => PrStatus::Open,
+        }
+    }
+}
+
+/// A PR's review decision (GitHub's `reviewDecision`).
+#[derive(Serialize, TS, Debug, Clone, Copy, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+impl ReviewDecision {
+    /// The mirror's spelling; `None` for none (or one it doesn't know).
+    pub fn parse(s: Option<&str>) -> Option<ReviewDecision> {
+        match s? {
+            "approved" => Some(ReviewDecision::Approved),
+            "changes_requested" => Some(ReviewDecision::ChangesRequested),
+            "review_required" => Some(ReviewDecision::ReviewRequired),
+            _ => None,
+        }
+    }
 }
 
 /// A field free text searches (`in:`) and matches in (a row's icons): `search::Field` on the
@@ -332,6 +388,10 @@ pub async fn issues(
         .map(|r| {
             let (labels, assignees) = by_item.remove(&r.id).unwrap_or_default();
             let rel = related.remove(&r.id).unwrap_or_default();
+            let pr = (r.kind == "pr").then(|| PullRow {
+                status: PrStatus::of(&r.state, r.draft, r.merged_at),
+                review: ReviewDecision::parse(r.review_decision.as_deref()),
+            });
             IssueRow {
                 id: r.id,
                 kind: r.kind,
@@ -360,6 +420,7 @@ pub async fn issues(
                     .into_iter()
                     .map(SearchField::from)
                     .collect(),
+                pr,
             }
         })
         .collect();

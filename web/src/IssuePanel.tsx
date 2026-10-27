@@ -12,6 +12,10 @@
 // Labels, Assignees and Milestone rows each open a picker (Pickers.tsx, another chunk, loaded the
 // first time one opens); a pick shows on its own row only, which grows only itself, and its dot
 // and failure in the row's marker slot, a line the row always keeps.
+// A PR opens in the same layout, read-only: no composer, no pickers and no write affordances.
+// What only a PR shows (its status badge, branches and review chip, "Open on GitHub" as the
+// primary action, the link out to reviews) is a chunk of its own too (Pull.tsx); an issue shows
+// its linked PRs, and a PR the issues it closes, each in a property row.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
@@ -46,7 +50,7 @@ import { touch } from "./keys";
 import { coalesced, onPush, resetAt } from "./live";
 import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
-import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
+import { Blocks, Linked, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
 import { md } from "./md/tokens.stylex";
 import { marked } from "./md/walker";
@@ -80,6 +84,12 @@ const Picker = lazy(
     }),
   { export: "Picker" },
 );
+
+/** What only a PR's panel shows: its own chunk, which an issue's panel never loads. */
+const PullBadge = lazy(() => import("./Pull"), { export: "PullBadge" });
+const PullBranches = lazy(() => import("./Pull"), { export: "PullBranches" });
+const OpenOnGitHub = lazy(() => import("./Pull"), { export: "OpenOnGitHub" });
+const ReviewsElsewhere = lazy(() => import("./Pull"), { export: "ReviewsElsewhere" });
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
@@ -493,10 +503,17 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
         <div {...stylex.attrs(s.status)}>
-          <span {...stylex.attrs(s.badge, badgeBg[state()])} data-perf="badge" aria-describedby={`state-note-${d().id}`}>
-            <StateIcon state={state()} plain />
-            {BADGE_TEXT[state()]}
-          </span>
+          <Show
+            when={d().pr}
+            fallback={
+              <span {...stylex.attrs(s.badge, badgeBg[state()])} data-perf="badge" aria-describedby={`state-note-${d().id}`}>
+                <StateIcon state={state()} plain />
+                {BADGE_TEXT[state()]}
+              </span>
+            }
+          >
+            {(pr) => <PullBadge status={pr().status} />}
+          </Show>
           <span {...stylex.attrs(s.ref)} title={`${d().owner}/${d().repo}#${d().number}`}>
             {d().repo}#{d().number}
           </span>
@@ -505,12 +522,21 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
               Locked
             </span>
           </Show>
-          <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
+          <Show when={!d().pr}>
+            <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
+          </Show>
           <span {...stylex.attrs(s.spacer)} />
-          <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
-            GitHub ↗
-          </a>
-          <a href={`/${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label="Close the issue" title="Close">
+          <Show
+            when={d().pr}
+            fallback={
+              <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
+                GitHub ↗
+              </a>
+            }
+          >
+            <OpenOnGitHub href={githubUrl(d())} />
+          </Show>
+          <a href={`/${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
             ×
           </a>
         </div>
@@ -518,6 +544,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         <h2 {...stylex.attrs(s.title)} data-perf="title">
           {marked(d().title, terms("title"))}
         </h2>
+        <Show when={d().pr}>{(pr) => <PullBranches pr={pr()} />}</Show>
         <dl {...stylex.attrs(s.props)}>
           <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")}>
             <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
@@ -544,6 +571,22 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
               {(m) => <span data-perf="milestone-title">{m().title}</span>}
             </Show>
           </PropRow>
+          <Show
+            when={d().pr}
+            fallback={
+              <>
+                <dt {...stylex.attrs(s.key)}>Linked PRs</dt>
+                <dd {...stylex.attrs(s.value)}>
+                  <Linked items={d().linked_prs} search={props.search} empty="None" perf="linked-prs" />
+                </dd>
+              </>
+            }
+          >
+            <dt {...stylex.attrs(s.key)}>Closes</dt>
+            <dd {...stylex.attrs(s.value)}>
+              <Linked items={d().closes} search={props.search} empty="Nothing" perf="closes" />
+            </dd>
+          </Show>
         </dl>
         <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
         <RelatesTo rels={d().relationships} search={props.search} />
@@ -560,10 +603,15 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
             </div>
           </div>
         </div>
-        <SubIssues rels={d().relationships} search={props.search} />
+        <Show when={!d().pr}>
+          <SubIssues rels={d().relationships} search={props.search} />
+        </Show>
         <h3 {...stylex.attrs(s.section)}>
           Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
           <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>
+          <Show when={d().pr}>
+            <ReviewsElsewhere href={githubUrl(d())} />
+          </Show>
         </h3>
         <div {...stylex.attrs(s.comments)} data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>

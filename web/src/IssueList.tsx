@@ -2,8 +2,10 @@ import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
 import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
+import type { Label } from "./bindings/Label";
+import type { ReviewDecision } from "./bindings/ReviewDecision";
 import type { SearchField } from "./bindings/SearchField";
-import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
+import { Avatar, issueState, PrIcon, ProgressRing, ReviewChip, StateIcon } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { StillImporting } from "./WhileImporting";
@@ -531,10 +533,13 @@ function Row(props: {
       data-id={r().id}
       data-blocked={blocked() ? "" : undefined}
       aria-current={props.current ? "page" : undefined}
+      onPointerEnter={r().pr ? preloadPull : undefined}
       {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked)}
     >
       <span {...stylex.attrs(s.state)}>
-        <StateIcon state={issueState(r())} />
+        <Show when={r().pr} fallback={<StateIcon state={issueState(r())} />}>
+          {(p) => <PrIcon status={p().status} />}
+        </Show>
       </span>
       <span {...stylex.attrs(s.title)}>
         <span {...stylex.attrs(s.titleText)}>{r().title}</span>
@@ -571,6 +576,15 @@ function Row(props: {
       </span>
     </a>
   );
+}
+
+/**
+ * A PR's panel shows parts an issue's doesn't, in a chunk of their own (Pull.tsx): the pointer
+ * reaching a PR's row starts loading it with the panel, so a click finds it there.
+ */
+function preloadPull() {
+  // A failure shows when the panel needs the chunk, which asks again.
+  import("./Pull").catch(() => undefined);
 }
 
 const MATCHED: Record<SearchField, string> = {
@@ -657,24 +671,32 @@ function Stack<T>(props: {
   );
 }
 
-/** A row's labels, stacked when there's more than one. */
+/** A row's labels, stacked when there's more than one; a PR's review chip comes first. */
 function Labels(props: { r: IssueRow; width: number; card: Card }) {
+  const items = (): (Label | { review: ReviewDecision })[] => {
+    const review = props.r.pr?.review;
+    return review ? [{ review }, ...props.r.labels] : props.r.labels;
+  };
   return (
     <Stack
       stack={LABELS}
       r={props.r}
-      items={props.r.labels}
-      total={props.r.labels.length}
+      items={items()}
+      total={items().length}
       width={props.width}
       card={props.card}
       xstyle={[s.cell, s.wide, s.w(props.width)]}
     >
-      {(l, stacked) => (
-        <span {...stylex.attrs(stacked() ? s.stacked : s.pill)} title={l.name}>
-          <LabelDot color={l.color} />
-          <span {...stylex.attrs(s.clip)}>{l.name}</span>
-        </span>
-      )}
+      {(l, stacked) =>
+        "review" in l ? (
+          <ReviewChip review={l.review} compact />
+        ) : (
+          <span {...stylex.attrs(stacked() ? s.stacked : s.pill)} title={l.name}>
+            <LabelDot color={l.color} />
+            <span {...stylex.attrs(s.clip)}>{l.name}</span>
+          </span>
+        )
+      }
     </Stack>
   );
 }

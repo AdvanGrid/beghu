@@ -20,14 +20,15 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|writes|markdown-style|pickers|repos|sync|moves)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|relationships|writes|markdown-style|pickers|repos|sync|prs|moves)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts with
-    // markdown-style.spec.ts, pickers.spec.ts, repos.spec.ts, sync.spec.ts, moves.spec.ts):
-    // their edits reach every signed-in tab, push refetches and reorder the list; writes.spec.ts
-    // sets faults for the whole stack, and repos.spec.ts slows GraphQL (the read-backs' too) and
-    // installs the App, which has every account re-read its repos; sync.spec.ts marks accounts for
-    // a resync and sweeps their repos. So they run once the rest are done, one after the other,
-    // never beside anything else.
+    // markdown-style.spec.ts, pickers.spec.ts, repos.spec.ts, sync.spec.ts, prs.spec.ts and
+    // moves.spec.ts): their edits reach every signed-in tab, push refetches and reorder the list;
+    // writes.spec.ts sets faults for the whole stack, and repos.spec.ts slows GraphQL (the
+    // read-backs' too) and installs the App, which has every account re-read its repos;
+    // sync.spec.ts marks accounts for a resync and sweeps their repos; prs.spec.ts edits PRs and
+    // links them to issues; moves.spec.ts deletes and transfers issues. So they run once the rest
+    // are done, one after the other, never beside anything else.
     //
     // Their tests wait on outside edits (Fake GitHub's webhook, then the server's mirror write) on
     // top of their own steps, and a test's cleanup waits for its close to land: one delivery's
@@ -43,8 +44,10 @@ export default defineConfig({
     { name: "pickers", testMatch: /pickers\.spec\.ts$/, dependencies: ["writes"], timeout: 60_000 },
     { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["pickers"], workers: 1 },
     { name: "sync", testMatch: /sync\.spec\.ts$/, dependencies: ["repos"], timeout: 60_000 },
+    // prs.spec.ts edits PRs and links them to issues, whose panels other specs read.
+    { name: "prs", testMatch: /prs\.spec\.ts$/, dependencies: ["sync"], timeout: 60_000, workers: 1 },
     // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
     // label every tab shows: last, alone.
-    { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["sync"], timeout: 60_000, workers: 1 },
+    { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["prs"], timeout: 60_000, workers: 1 },
   ],
 });

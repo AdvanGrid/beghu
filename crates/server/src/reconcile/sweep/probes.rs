@@ -113,7 +113,13 @@ impl Sweeper {
         Ok((next, first_etag.filter(|_| next == since)))
     }
 
-    /// Writes REST's issues and PRs (a PR with its details), under the webhooks' guards.
+    /// Writes REST's issues and PRs (a PR with its details), under the webhooks' guards. Each
+    /// PR's linked issues (`closes`) are replaced as a set with what GitHub read, so a link
+    /// removed on GitHub goes too, under the relationship read-backs' rules (`edges::replace`):
+    /// but not where a delivery or read-back since the read began stamped the PR or an issue the
+    /// replacing would touch (what was read is stale, and the newer write stands), and not for a
+    /// PR whose closing references go past the page read, which is read back on its own
+    /// (`pulls.rs`) instead.
     pub(super) async fn write_items(
         &self,
         t: &Target,
@@ -122,7 +128,18 @@ impl Sweeper {
         let (prs, issues): (Vec<RestIssue>, Vec<RestIssue>) =
             items.into_iter().partition(|i| i.pull_request.is_some());
         let mut data: Vec<ItemData> = issues.iter().map(ItemData::from_rest).collect();
-        let mut closes = Vec::new();
+        let mut closes: Vec<(i64, edges::Fetched)> = Vec::new();
+        // Each account's last write before the read: anything stamped later is newer than it.
+        let starts = Arc::new(if prs.is_empty() {
+            HashMap::new()
+        } else {
+            self.seqs(t).await
+        });
+        let synced = if prs.is_empty() {
+            Arc::default()
+        } else {
+            self.synced(t).await
+        };
         if !prs.is_empty() {
             let details = self.pull_details(&prs).await?;
             for p in &prs {
@@ -141,11 +158,31 @@ impl Sweeper {
                     base_ref: d.base_ref_name.clone(),
                     review_decision: d.review_decision.as_deref().map(str::to_lowercase),
                 });
-                let me = it.target_at(t.id, &t.owner, &t.name, t.private);
-                // TODO(#92 follow-up): only the first 50 closing references are read; a PR
-                // closing more keeps the rest as the import or webhooks left them.
-                if let Some(refs) = &d.closing_issues_references {
-                    closes.extend(refs.nodes.iter().flatten().map(|e| (me.clone(), e.clone())));
+                let refs = d.closing_issues_references.as_ref();
+                if refs.is_none() {
+                    // GitHub left the field null (an error beside the data): what the PR closes
+                    // is unknown, not none, so its links stay as they are.
+                } else if refs
+                    .and_then(|r| r.page_info.as_ref())
+                    .is_some_and(|p| p.has_next_page)
+                {
+                    // More than the page read: the PR read-back pages them all.
+                    let pull = crate::pulls::Pull {
+                        repo: t.id,
+                        owner: t.owner.clone(),
+                        name: t.name.clone(),
+                        number: p.number,
+                        installation: self.installation,
+                    };
+                    drop(self.app.edges().schedule_pull(pull, true));
+                } else {
+                    let me = it.id;
+                    let edges = refs
+                        .into_iter()
+                        .flat_map(|r| r.nodes.iter().flatten())
+                        .map(|e| (me, e.database_id, edges::End::from(e)))
+                        .collect();
+                    closes.push((me, edges::Fetched { edges }));
                 }
                 data.push(it);
             }
@@ -156,20 +193,34 @@ impl Sweeper {
             .map(|i| i.id)
             .collect();
         let data = Arc::new((data, closes));
-        let repo = t.id;
+        let (repo, installation) = (t.id, self.installation);
         let missed = self
             .write(
                 t,
                 "issues",
-                move |tx, seq, _| {
+                move |tx, seq, account| {
                     let mut changed = Vec::new();
                     for it in &data.0 {
                         if newer(tx, it)? && write_item(tx, seq, repo, it)? {
                             changed.push(it.id);
                         }
                     }
-                    for (pr, issue) in &data.1 {
-                        changed.extend(write_linked_pr(tx, seq, pr, issue)?);
+                    let (Some(&start), Some(synced)) = (starts.get(&account), synced.get(&account))
+                    else {
+                        return Ok(changed);
+                    };
+                    'pr: for (pr, f) in &data.1 {
+                        if !q::item_updated(tx, *pr)?.is_some_and(|h| !h.is_stub) {
+                            continue;
+                        }
+                        for end in edges::ends(tx, Kind::Closes, *pr, f)? {
+                            if q::edges_seq(tx, end)? > start {
+                                continue 'pr;
+                            }
+                        }
+                        let r =
+                            edges::replace(tx, seq, Kind::Closes, installation, *pr, f, synced)?;
+                        changed.extend(r.ids);
                     }
                     Ok(changed)
                 },

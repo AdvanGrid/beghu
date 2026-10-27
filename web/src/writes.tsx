@@ -1087,8 +1087,8 @@ const s = stylex.create({
   },
   primary: {
     backgroundColor: {
-      default: colors.accent,
-      ":hover": colors.accent,
+      default: colors.accentBg,
+      ":hover": colors.accentBg,
     },
     color: colors.accentFg,
   },

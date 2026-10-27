@@ -278,6 +278,111 @@ async fn one_close_that_meets_three_5xx_marks_github_down() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_feed_pollers_answers_dont_hide_an_outage_from_a_close() {
+    // The poller reads the open stream's feeds every 50 ms, so its answers (304s, mostly) fall
+    // between the close's tries, each held back 300 ms: they mustn't reset the streak.
+    let s = start_with(|c| {
+        c.github_probe_every = Duration::from_millis(300);
+        c.reconcile.feed_every = Duration::from_millis(50);
+    })
+    .await;
+    let mut b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    assert_eq!(st.github_within(SECS).await.as_deref(), Some("up"));
+    let (id, _) = an_open_issue(&s, &mut b).await;
+    let reads = || feed_reads(&s);
+    more_feed_reads(&s, 1).await;
+
+    s.fake(
+        "POST",
+        "/faults/latency",
+        json!({ "endpoint": ISSUE, "ms": 300, "count": 3 }),
+    )
+    .await;
+    s.fail(ISSUE, 500, 3, None).await;
+    s.fail("/rate_limit", 503, 1, None).await;
+    let before = reads().await;
+    let (status, err) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "close", "issue": id, "reason": "completed" }),
+        )
+        .await;
+    assert!(
+        reads().await > before + 2,
+        "the poller kept reading meanwhile"
+    );
+    assert_eq!((status, err["error"].as_str()), (503, Some("github_down")));
+    assert_eq!(st.github_within(SECS).await.as_deref(), Some("down"));
+}
+
+/// Every repo's events feed, for faults.
+const FEEDS: &str = "GET /repos/*/*/issues/events";
+
+/// The fake's count of answered feed reads, every repo's (a failed call isn't one).
+async fn feed_reads(s: &Stack) -> u64 {
+    let st = s.fake("GET", "/state", Value::Null).await;
+    st["feeds"].as_object().map_or(0, |f| {
+        f.values()
+            .map(|r| r["reads"].as_u64().unwrap())
+            .sum::<u64>()
+    })
+}
+
+/// Waits for `n` more answered feed reads than now.
+async fn more_feed_reads(s: &Stack, n: u64) {
+    let want = feed_reads(s).await + n;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while feed_reads(s).await < want {
+        assert!(
+            Instant::now() < deadline,
+            "the poller didn't read the feeds"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A stack whose poller reads the open stream's feeds every 50 ms, probing every 300 ms.
+async fn polling_stack() -> (Stack, Browser, common::Stream) {
+    let s = start_with(|c| {
+        c.github_probe_every = Duration::from_millis(300);
+        c.reconcile.feed_every = Duration::from_millis(50);
+    })
+    .await;
+    let b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    assert_eq!(st.github_within(SECS).await.as_deref(), Some("up"));
+    more_feed_reads(&s, 1).await;
+    (s, b, st)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pollers_scattered_failures_between_its_answers_dont_mark_github_down() {
+    // A day of polling meets the odd 502: each one is followed by answers (304s, mostly), so
+    // they never make three in a row.
+    let (s, _b, mut st) = polling_stack().await;
+    for _ in 0..5 {
+        s.fail(FEEDS, 502, 1, None).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while s.fail_rules().await != json!([]) {
+            assert!(Instant::now() < deadline, "the poller never met the 502");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        more_feed_reads(&s, 1).await;
+    }
+    assert_eq!(st.github_within(SECS).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn three_poller_failures_in_a_row_mark_github_down() {
+    let (s, _b, mut st) = polling_stack().await;
+    s.fail(FEEDS, 502, 3, None).await;
+    s.fail("/rate_limit", 503, 1, None).await;
+    assert_eq!(st.github_within(5 * SECS).await.as_deref(), Some("down"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn three_failed_ops_in_a_row_mark_github_down_until_rate_limit_answers_again() {
     let s = start_with(|c| c.github_probe_every = Duration::from_millis(300)).await;
     let mut b = s.sign_in("tomsj").await;

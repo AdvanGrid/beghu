@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{Browser, Stack, ids_of, start, summary};
+use common::{Browser, Sse, Stack, ids_of, start, summary};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -198,12 +198,13 @@ async fn a_search_right_after_a_change_sees_it() {
     let r = all(&s, &mut b, "is:open").await[4].clone();
 
     // The push comes once the change is committed, and the index went in the same
-    // transaction: no wait, no retry.
+    // transaction: no wait, no retry. (It also names any PR that closes the issue, whose
+    // "Closes" shows it.)
+    let pushed = |ev: Sse| ids_of(&ev).contains(&id(&r));
     edit(&s, &r, json!({ "title": "Okapi migration" })).await;
-    assert_eq!(
-        ids_of(&st.event_within(Duration::from_secs(5)).await.unwrap()),
-        [id(&r)]
-    );
+    assert!(pushed(
+        st.event_within(Duration::from_secs(5)).await.unwrap()
+    ));
     assert_eq!(ids(&s, &mut b, "okapi").await, [id(&r)].into());
 
     // Renamed again: the old words are out of the index, the new ones in.
@@ -213,20 +214,18 @@ async fn a_search_right_after_a_change_sees_it() {
         json!({ "title": "Tapir migration", "body": "Moved off okapi." }),
     )
     .await;
-    assert_eq!(
-        ids_of(&st.event_within(Duration::from_secs(5)).await.unwrap()),
-        [id(&r)]
-    );
+    assert!(pushed(
+        st.event_within(Duration::from_secs(5)).await.unwrap()
+    ));
     assert_eq!(ids(&s, &mut b, "tapir").await, [id(&r)].into());
     assert!(ids(&s, &mut b, "okapi in:title").await.is_empty());
     assert_eq!(ids(&s, &mut b, "okapi in:body").await, [id(&r)].into());
 
     // A new comment.
     edit(&s, &r, json!({ "comment": "Capybara says hi" })).await;
-    assert_eq!(
-        ids_of(&st.event_within(Duration::from_secs(5)).await.unwrap()),
-        [id(&r)]
-    );
+    assert!(pushed(
+        st.event_within(Duration::from_secs(5)).await.unwrap()
+    ));
     assert_eq!(
         ids(&s, &mut b, "capybara in:comments").await,
         [id(&r)].into()

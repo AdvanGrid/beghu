@@ -1,8 +1,11 @@
 //! Relationships on the read side: what a list row shows of them (its open blockers, up to 8,
 //! and its sub-issue progress) and what the detail shows (the parent, the sub-issues, both sides
-//! of the dependencies and the relates-to relationships). Progress always counts every descendant, closed
-//! against total. An end in a repo that isn't synced is a stub: the client opens it on GitHub.
+//! of the dependencies and the relates-to relationships), with its linked PRs, which aren't
+//! relationships: the issues a PR closes, and the PRs that close an issue. Progress always counts
+//! every descendant, closed against total. An end in a repo that isn't synced is a stub: the
+//! client opens it on GitHub.
 
+use crate::api::PrStatus;
 use mirror_db::{QueryResult, Reader, q};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -109,6 +112,8 @@ pub struct Related {
     pub blocked_by: i64,
     /// Its own sub-issue progress, if it has sub-issues.
     pub progress: Option<Progress>,
+    /// A PR's status; `null` for an issue.
+    pub pr_status: Option<PrStatus>,
 }
 
 /// Everything an issue is related to.
@@ -123,8 +128,15 @@ pub struct Relationships {
     pub relates_to: Vec<Related>,
 }
 
-/// The relationships of one item.
-pub fn for_item(c: &Reader, id: i64) -> QueryResult<Relationships> {
+/// One item's linked PRs: on a PR, the issues it closes; on an issue, the PRs that close it.
+#[derive(Default)]
+pub struct Linked {
+    pub closes: Vec<Related>,
+    pub linked_prs: Vec<Related>,
+}
+
+/// The relationships and the linked PRs of one item.
+pub fn for_item(c: &Reader, id: i64) -> QueryResult<(Relationships, Linked)> {
     let rows = q::item_relationships(c, id)?;
     // Progress for the parent and each sub-issue, in one query.
     let tree: Vec<i64> = rows
@@ -134,7 +146,9 @@ pub fn for_item(c: &Reader, id: i64) -> QueryResult<Relationships> {
         .collect();
     let mut progress = progress(c, &tree)?;
     let mut out = Relationships::default();
+    let mut linked = Linked::default();
     for r in rows {
+        let pr_status = (r.kind == "pr").then(|| PrStatus::of(&r.state, r.draft, r.merged_at));
         let related = Related {
             id: r.id,
             kind: r.kind,
@@ -148,14 +162,17 @@ pub fn for_item(c: &Reader, id: i64) -> QueryResult<Relationships> {
             assignee: r.assignee,
             blocked_by: r.open_blockers,
             progress: progress.remove(&r.id),
+            pr_status,
         };
         match r.rel.as_str() {
             "parent" => out.parent = Some(related),
             "sub" => out.sub_issues.push(related),
             "blocked_by" => out.blocked_by.push(related),
             "blocking" => out.blocking.push(related),
+            "closes" => linked.closes.push(related),
+            "linked_pr" => linked.linked_prs.push(related),
             _ => out.relates_to.push(related),
         }
     }
-    Ok(out)
+    Ok((out, linked))
 }

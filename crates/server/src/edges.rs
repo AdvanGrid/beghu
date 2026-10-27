@@ -1,4 +1,6 @@
-//! Relationship writes: from webhooks, and from the read-backs that follow them.
+//! Relationship writes: from webhooks, and from the read-backs that follow them. The same
+//! scheduler runs the PR read-backs (`pulls.rs`), one at a time per PR, which bring a PR's own
+//! fields and its linked PRs (`closes` edges, replaced as a set by [`replace`]).
 //!
 //! A relationship delivery carries no timestamp, so it can't be ordered against others the way
 //! an issue's `updated_at` orders issue deliveries. Within a repo it names both ends and is
@@ -27,6 +29,11 @@
 //! it; one GitHub answers with a 301 (transferred since) marks none, since its transfer's own
 //! deliveries move it.
 //!
+//! A rate limit is none of those failures: it pauses the installation's background reads
+//! (`reconcile::Budgets`, which the sweeps and the poller honour too), and the read-back is tried
+//! again once the pause is over, however long that takes, never given up for it. A read-back due
+//! while its installation is paused waits the pause out before it reads.
+//!
 //! The read-back is fetched once, with the App's installation token, and written to every account
 //! syncing the issue's repo; a read-back never spends an account's own token. The installation
 //! token sees only its installation's repos and public ones, so an edge into a private repo an
@@ -43,6 +50,7 @@ use crate::import::writes::{CommentData, write_comments};
 use crate::installations::{Installations, Scope};
 use crate::jobs::Jobs;
 use crate::live::{Hub, Push};
+use crate::reconcile::Budgets;
 use crate::webhook;
 use control_db::Control;
 use mirror_db::{Caller, Mirrors, q};
@@ -78,6 +86,9 @@ pub enum Kind {
     Blocks,
     /// Smaller id → larger id.
     Relates,
+    /// PR → the issue it closes: a linked PR, read back with the PR (`pulls.rs`), never by
+    /// `IssueEdges`.
+    Closes,
 }
 
 impl Kind {
@@ -86,6 +97,7 @@ impl Kind {
             Kind::Sub => "sub",
             Kind::Blocks => "blocks",
             Kind::Relates => "relates",
+            Kind::Closes => "closes",
         }
     }
 }
@@ -103,10 +115,13 @@ pub struct Subject {
 /// What a read-back reads of its issue.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ReadBack {
-    /// Its edges of one kind.
+    /// Its edges of one kind (not `Closes`, which is read with the PR).
     Edges(Kind),
     /// The issue itself: its fields, labels and assignees.
     Issue,
+    /// Its linked PRs in repos an account syncing it doesn't sync (`pulls.rs`): what only the
+    /// issue's side shows of them.
+    LinkedPulls,
     /// Its comment thread, after a transfer brought it into a synced repo (`webhook.rs`).
     Comments,
 }
@@ -116,7 +131,57 @@ impl std::fmt::Display for ReadBack {
         match self {
             ReadBack::Edges(k) => write!(f, "{} edges", k.name()),
             ReadBack::Issue => f.write_str("fields"),
+            ReadBack::LinkedPulls => f.write_str("linked PRs"),
             ReadBack::Comments => f.write_str("comments"),
+        }
+    }
+}
+
+/// A read-back to run: something of an issue, or a PR (`pulls.rs`).
+#[derive(Clone, Debug)]
+enum Task {
+    Item(Subject, ReadBack),
+    Pull(crate::pulls::Pull),
+}
+
+/// One read-back per issue and what it reads, and per PR, runs at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Key {
+    Item(i64, ReadBack),
+    /// A PR by its repo and number: what every signal about it names.
+    Pull(i64, i64),
+}
+
+impl Task {
+    fn key(&self) -> Key {
+        match self {
+            Task::Item(s, what) => Key::Item(s.id, *what),
+            Task::Pull(p) => Key::Pull(p.repo, p.number),
+        }
+    }
+
+    /// The repo whose accounts a read-back given up on are marked for resync.
+    fn repo(&self) -> i64 {
+        match self {
+            Task::Item(s, _) => s.repo,
+            Task::Pull(p) => p.repo,
+        }
+    }
+
+    /// The installation whose token reads it, and whose rate limits it honours.
+    fn installation(&self) -> i64 {
+        match self {
+            Task::Item(s, _) => s.installation,
+            Task::Pull(p) => p.installation,
+        }
+    }
+}
+
+impl std::fmt::Display for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Task::Item(s, what) => write!(f, "issue {}'s {what}", s.id),
+            Task::Pull(p) => write!(f, "PR {}/{}#{}", p.owner, p.name, p.number),
         }
     }
 }
@@ -184,17 +249,19 @@ pub fn with_neighbours(tx: &Transaction, ids: BTreeSet<i64>) -> rusqlite::Result
 /// read-back still waiting or running: their deliveries stay unprocessed for the next start.
 pub struct Refetcher(Arc<Inner>);
 
-struct Inner {
-    control: Arc<Control>,
-    mirrors: Mirrors,
-    hub: Arc<Hub>,
-    installations: Arc<Installations>,
+pub(crate) struct Inner {
+    pub(crate) control: Arc<Control>,
+    pub(crate) mirrors: Mirrors,
+    pub(crate) hub: Arc<Hub>,
+    pub(crate) installations: Arc<Installations>,
+    /// Each installation's rate-limit pause, shared with the sweeps and the poller.
+    budgets: Arc<Budgets>,
     /// The waits between tries of a read-back GitHub fails; past the last, it gives up.
     retries: Vec<Duration>,
     /// Where the workers run, so the drain stops them (see `jobs.rs`).
     jobs: Jobs,
-    /// The read-backs waiting or running, by issue and what they read.
-    pending: Mutex<HashMap<(i64, ReadBack), Pending>>,
+    /// The read-backs waiting or running, by issue and what they read, and by PR.
+    pending: Mutex<HashMap<Key, Pending>>,
 }
 
 struct Pending {
@@ -206,8 +273,8 @@ struct Pending {
     /// When the first delivery the next read-back waits for arrived: the debounce never pushes
     /// `due` past [`MAX_DEBOUNCE`] from it.
     first: Instant,
-    /// The issue as the latest delivery named it.
-    subject: Subject,
+    /// What to read, as the latest delivery named it.
+    subject: Task,
     /// How many tries in a row GitHub has failed. A delivery may bring the next try forward but
     /// doesn't start the count again: only a read-back that lands does.
     failures: usize,
@@ -238,6 +305,7 @@ impl Refetcher {
         mirrors: Mirrors,
         hub: Arc<Hub>,
         installations: Arc<Installations>,
+        budgets: Arc<Budgets>,
         retries: Vec<Duration>,
         jobs: Jobs,
     ) -> Refetcher {
@@ -246,6 +314,7 @@ impl Refetcher {
             mirrors,
             hub,
             installations,
+            budgets,
             retries,
             jobs,
             pending: Mutex::default(),
@@ -265,6 +334,12 @@ impl Refetcher {
     ) -> oneshot::Receiver<()> {
         schedule(&self.0, subject, kind, at_once)
     }
+
+    /// Reads PR `pull` back (`pulls.rs`), as [`Refetcher::schedule`] does an issue: one
+    /// read-back per PR at a time.
+    pub fn schedule_pull(&self, pull: crate::pulls::Pull, at_once: bool) -> oneshot::Receiver<()> {
+        enqueue(&self.0, Task::Pull(pull), at_once)
+    }
 }
 
 /// [`Refetcher::schedule`], from inside a read-back too.
@@ -274,9 +349,14 @@ fn schedule(
     kind: ReadBack,
     at_once: bool,
 ) -> oneshot::Receiver<()> {
+    enqueue(inner, Task::Item(subject, kind), at_once)
+}
+
+/// Schedules `subject`'s read-back, as [`Refetcher::schedule`] says.
+fn enqueue(inner: &Arc<Inner>, subject: Task, at_once: bool) -> oneshot::Receiver<()> {
     let (done, heard) = oneshot::channel();
     let now = Instant::now();
-    let key = (subject.id, kind);
+    let key = subject.key();
     let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(p) = all.get_mut(&key) {
         if p.due.is_none() {
@@ -320,16 +400,21 @@ fn schedule(
     heard
 }
 
-/// Runs the read-backs for one issue and `what` until none is due.
-async fn worker(inner: Arc<Inner>, key: (i64, ReadBack)) {
+/// Runs the read-backs for one issue and `what`, or one PR, until none is due.
+async fn worker(inner: Arc<Inner>, key: Key) {
     loop {
         let (due, subject, wake, answers) = {
             let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = all.get_mut(&key) else { return };
-            let Some(due) = p.due else {
+            let Some(mut due) = p.due else {
                 all.remove(&key);
                 return;
             };
+            // GitHub asked the installation to wait (a rate limit): the read-back waits it out.
+            if let Some(wait) = inner.budgets.get(p.subject.installation()).paused() {
+                due = due.max(Instant::now() + wait);
+                p.due = Some(due);
+            }
             if due > Instant::now() {
                 (Some(due), p.subject.clone(), p.wake.clone(), Vec::new())
             } else {
@@ -339,10 +424,14 @@ async fn worker(inner: Arc<Inner>, key: (i64, ReadBack)) {
             }
         };
         let Some(due) = due else {
-            let tried = match key.1 {
-                ReadBack::Edges(kind) => refetch(&inner, &subject, kind).await,
-                ReadBack::Issue => reread(&inner, &subject).await,
-                ReadBack::Comments => rethread(&inner, &subject).await,
+            let tried = match &subject {
+                Task::Item(s, ReadBack::Edges(kind)) => refetch(&inner, s, *kind).await,
+                Task::Item(s, ReadBack::Issue) => reread(&inner, s).await,
+                Task::Item(s, ReadBack::Comments) => rethread(&inner, s).await,
+                Task::Item(s, ReadBack::LinkedPulls) => {
+                    crate::pulls::refetch_linked(&inner, s).await
+                }
+                Task::Pull(p) => crate::pulls::refetch(&inner, p).await,
             };
             conclude(&inner, key, &subject, tried, answers).await;
             continue;
@@ -356,11 +445,25 @@ async fn worker(inner: Arc<Inner>, key: (i64, ReadBack)) {
 }
 
 /// Why a read-back didn't land.
-enum Failure {
+pub(crate) enum Failure {
     /// GitHub failed, or the control DB did: worth trying again.
     Retry(String),
     /// Nothing to try again: the installation is gone, say.
     GiveUp(String),
+    /// GitHub's rate limit: the installation's background reads pause this long, and the
+    /// read-back is tried again after it, however often (a rate limit lifts).
+    Limited(Duration),
+}
+
+/// A call GitHub failed, as a read-back's failure: a rate limit pauses, anything else is worth
+/// trying again.
+pub(crate) fn failure(e: crate::github::CallError) -> Failure {
+    use crate::github::CallError;
+    match e {
+        CallError::RateLimited(wait) => Failure::Limited(wait),
+        CallError::SecondaryLimit => Failure::Limited(crate::reconcile::SECONDARY_WAIT),
+        e => Failure::Retry(e.to_string()),
+    }
 }
 
 /// After one try at a read-back: schedules the next try of a failed one (unless a delivery
@@ -370,8 +473,8 @@ enum Failure {
 /// landed or was given up tells the deliveries it answers for.
 async fn conclude(
     inner: &Inner,
-    key: (i64, ReadBack),
-    s: &Subject,
+    key: Key,
+    s: &Task,
     tried: Result<(), Failure>,
     answers: Vec<oneshot::Sender<()>>,
 ) {
@@ -392,10 +495,7 @@ async fn conclude(
                         p.debounced = false;
                     }
                     p.waiting.extend(answers);
-                    eprintln!(
-                        "edges: reading issue {}'s {} failed, trying again in {wait:?}: {why}",
-                        s.id, key.1
-                    );
+                    eprintln!("edges: reading {s} failed, trying again in {wait:?}: {why}");
                     return;
                 }
                 None => {
@@ -407,14 +507,24 @@ async fn conclude(
                 p.failures = 0;
                 Some(why)
             }
+            Err(Failure::Limited(wait)) => {
+                inner.budgets.pause(s.installation(), wait);
+                let retry = Instant::now() + wait;
+                if p.due.is_none_or(|d| d < retry) {
+                    p.due = Some(retry);
+                    p.debounced = false;
+                }
+                p.waiting.extend(answers);
+                eprintln!("edges: reading {s} was rate limited, trying again in {wait:?}");
+                return;
+            }
         }
     };
     if let Some(why) = why {
+        let repo = s.repo();
         eprintln!(
-            "edges: giving up reading issue {}'s {} ({why}); marking the accounts syncing repo {} for resync",
-            s.id, key.1, s.repo
+            "edges: giving up reading {s} ({why}); marking the accounts syncing repo {repo} for resync"
         );
-        let repo = s.repo;
         let what = format!("reading who syncs repo {repo}");
         for account in webhook::syncing(&inner.control, repo, &what).await {
             webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
@@ -426,10 +536,22 @@ async fn conclude(
     }
 }
 
+/// One end of a relationship or a linked PR, with its repository: [`End`].
+macro_rules! end_fragment {
+    () => {
+        "\nfragment End on Issue {
+  id databaseId number title state
+  repository { databaseId id name owner { login } isPrivate }
+}"
+    };
+}
+pub(crate) use end_fragment;
+
 /// `IssueEdges`: an issue's relationships of the kinds asked for, each end with its repository.
 /// GitHub caps sub-issues at 100 and dependencies at 50 of each kind, so one page holds them;
 /// relates-to has no documented cap and is paged, `$relatesAfter` naming the page before.
-const QUERY: &str = "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!, $relatesAfter: String) {
+const QUERY: &str = concat!(
+    "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!, $relatesAfter: String) {
   node(id: $id) {
     ... on Issue {
       databaseId
@@ -443,11 +565,9 @@ const QUERY: &str = "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean
       }
     }
   }
-}
-fragment End on Issue {
-  id databaseId number title state
-  repository { databaseId id name owner { login } isPrivate }
-}";
+}",
+    end_fragment!()
+);
 
 #[derive(Deserialize)]
 struct Data {
@@ -477,17 +597,17 @@ impl Node {
 
 #[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Nodes {
+pub(crate) struct Nodes {
     #[serde(default)]
-    nodes: Vec<Option<End>>,
-    page_info: Option<PageInfo>,
+    pub(crate) nodes: Vec<Option<End>>,
+    pub(crate) page_info: Option<PageInfo>,
 }
 
 #[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
-struct PageInfo {
-    has_next_page: bool,
-    end_cursor: Option<String>,
+pub(crate) struct PageInfo {
+    pub(crate) has_next_page: bool,
+    pub(crate) end_cursor: Option<String>,
 }
 
 /// The most pages of relates-to one read-back follows: 10,000 links.
@@ -501,9 +621,9 @@ impl Nodes {
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct End {
+pub(crate) struct End {
     id: String,
-    database_id: i64,
+    pub(crate) database_id: i64,
     number: i64,
     title: String,
     state: String,
@@ -521,18 +641,39 @@ struct EndRepo {
 }
 
 #[derive(Deserialize, Clone)]
-struct Owner {
-    login: String,
+pub(crate) struct Owner {
+    pub(crate) login: String,
+}
+
+impl From<&crate::import::shapes::Target> for End {
+    fn from(t: &crate::import::shapes::Target) -> End {
+        End {
+            id: t.id.clone(),
+            database_id: t.database_id,
+            number: t.number,
+            title: t.title.clone(),
+            state: t.state.clone(),
+            repository: EndRepo {
+                database_id: t.repository.database_id,
+                id: t.repository.id.clone(),
+                name: t.repository.name.clone(),
+                owner: Owner {
+                    login: t.repository.owner.login.clone(),
+                },
+                is_private: t.repository.is_private,
+            },
+        }
+    }
 }
 
 /// An issue's edges of one kind as GitHub has them: `(src, dst, end)`, the end being the other
 /// issue, with sub-issues in GitHub's order.
 pub(crate) struct Fetched {
-    edges: Vec<(i64, i64, End)>,
+    pub(crate) edges: Vec<(i64, i64, End)>,
 }
 
 /// A read-back token for `s`'s installation.
-async fn token(inner: &Inner, s: &Subject) -> Result<String, Failure> {
+pub(crate) async fn token(inner: &Inner, s: &Subject) -> Result<String, Failure> {
     match inner
         .installations
         .token(s.installation, Scope::ReadBack)
@@ -544,7 +685,7 @@ async fn token(inner: &Inner, s: &Subject) -> Result<String, Failure> {
             "installation {} is gone",
             s.installation
         ))),
-        Err(e) => Err(Failure::Retry(e.to_string())),
+        Err(e) => Err(failure(e.into())),
     }
 }
 
@@ -594,7 +735,7 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
                         .installations
                         .drop_token(s.installation, Scope::ReadBack, &token);
                 }
-                return Err(Failure::Retry(e.to_string()));
+                return Err(failure(e.into()));
             }
         }
     };
@@ -651,14 +792,15 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
     }
     let settled_never = {
         let mut all = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-        all.get_mut(&(s.id, ReadBack::Issue)).is_some_and(|p| {
-            p.rereads = if again { p.rereads + 1 } else { 0 };
-            let over = p.rereads >= MAX_REREADS;
-            if over {
-                p.rereads = 0;
-            }
-            over
-        })
+        all.get_mut(&Key::Item(s.id, ReadBack::Issue))
+            .is_some_and(|p| {
+                p.rereads = if again { p.rereads + 1 } else { 0 };
+                let over = p.rereads >= MAX_REREADS;
+                if over {
+                    p.rereads = 0;
+                }
+                over
+            })
     };
     if settled_never {
         return Err(Failure::GiveUp(format!(
@@ -721,7 +863,7 @@ async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
                         .installations
                         .drop_token(s.installation, Scope::ReadBack, &token);
                 }
-                return Err(Failure::Retry(e.to_string()));
+                return Err(failure(e.into()));
             }
         }
     };
@@ -790,7 +932,7 @@ async fn fetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<Option<Fetched>
                             .installations
                             .drop_token(s.installation, Scope::ReadBack, token);
                     }
-                    Err(Failure::Retry(e.to_string()))
+                    Err(failure(e.into()))
                 }
             }
         }
@@ -880,6 +1022,8 @@ pub(crate) fn fetched(me: i64, kind: Kind, node: Node) -> Fetched {
                 edges.push((me.min(other), me.max(other), o));
             }
         }
+        // Read with the PR, never by `IssueEdges`.
+        Kind::Closes => {}
     }
     Fetched { edges }
 }

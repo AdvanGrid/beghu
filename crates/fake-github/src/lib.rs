@@ -2,7 +2,8 @@
 //! `GITHUB_WEB_URL` both point at its API listener, so the real client code runs against it.
 //!
 //! - The API listener serves the OAuth web flow (`/login/oauth/…`), the REST endpoints beghu
-//!   calls (reads in `api.rs`, writes in `writes.rs`), the App's grant and token revocation, the
+//!   calls (reads in `api.rs` and `repos.rs`, each repo's issue events feed in `events.rs`,
+//!   writes in `writes.rs`), the App's grant and token revocation, the
 //!   App's installation tokens and the GraphQL queries beghu makes. Later tickets add endpoints as
 //!   they need them.
 //! - The control listener takes runtime faults (latency, the next N calls failing, down, and
@@ -22,12 +23,14 @@ mod api;
 mod app;
 mod control;
 mod edits;
+mod events;
 mod faults;
 mod graphql;
 mod hook_deliveries;
 mod issue_edges;
 mod moves;
 mod oauth;
+mod pulls;
 mod quota;
 mod relationships;
 mod repos;
@@ -88,6 +91,8 @@ pub(crate) struct State {
     quotas: quota::Quotas,
     /// How many conditional requests were answered 304 since the start (or the last reset).
     not_modified: std::sync::atomic::AtomicU64,
+    /// Each issue events feed's reads, and its 304s.
+    feeds: events::Reads,
     /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
     /// expiry, and the times edits stamp, follow it.
     clock: std::sync::atomic::AtomicI64,
@@ -210,6 +215,7 @@ impl Fake {
             app_tokens: app::Minted::default(),
             quotas: quota::Quotas::default(),
             not_modified: Default::default(),
+            feeds: Default::default(),
             clock: Default::default(),
         })))
     }
@@ -229,6 +235,7 @@ impl Fake {
             .merge(hook_deliveries::router())
             .merge(graphql::router())
             .merge(repos::router())
+            .merge(events::router())
             .fallback(api::not_found)
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),

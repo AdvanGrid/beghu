@@ -2,6 +2,7 @@
 import type { Blocker } from "./Blocker";
 import type { Label } from "./Label";
 import type { Progress } from "./Progress";
+import type { PullRow } from "./PullRow";
 import type { SearchField } from "./SearchField";
 import type { User } from "./User";
 
@@ -53,4 +54,8 @@ progress: Progress | null,
 /**
  * The fields the search's words were found in, in this order; empty without free text.
  */
-matched: Array<SearchField>, };
+matched: Array<SearchField>, 
+/**
+ * A PR's status and review decision; `null` for an issue.
+ */
+pr: PullRow | null, };

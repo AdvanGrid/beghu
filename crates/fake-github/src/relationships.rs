@@ -199,7 +199,7 @@ fn check(
 }
 
 /// `repo#n`, `owner/repo#n` or `#n` (in `default_repo`): the issue's id, or why there's none.
-fn find_issue(
+pub(crate) fn find_issue(
     c: &Connection,
     target: &str,
     default_repo: i64,
@@ -230,11 +230,13 @@ fn find_issue(
     Ok(q::any_issue_id(c, repo, number)?.ok_or_else(|| format!("no issue {target}")))
 }
 
-/// Writes the changes and returns their deliveries, in the order GitHub sends them.
+/// Writes the changes, with their events in each issue's feed (`events.rs`), and returns their
+/// deliveries, in the order GitHub sends them.
 pub(crate) fn apply(
     tx: &Connection,
     changes: &[Change],
     sender: &Value,
+    at: i64,
 ) -> rusqlite::Result<Vec<Delivery>> {
     let mut out = Vec::new();
     for ch in changes {
@@ -244,6 +246,23 @@ pub(crate) fn apply(
         } else if q::remove_edge(tx, kind, ch.src, ch.dst)? == 0 {
             // Nothing to remove: GitHub answers 200 and sends nothing.
             continue;
+        }
+        let verb = if ch.add { "added" } else { "removed" };
+        let actor = sender["id"].as_i64();
+        // Each side's event, and the other end it names.
+        let sides = match ch.kind {
+            Kind::Sub => [
+                (ch.src, "sub_issue", Some(ch.dst)),
+                (ch.dst, "parent_issue", Some(ch.src)),
+            ],
+            Kind::Blocks => [
+                (ch.dst, "blocked_by", Some(ch.src)),
+                (ch.src, "blocking", Some(ch.dst)),
+            ],
+            Kind::Relates => [(ch.src, "relates_to", None), (ch.dst, "relates_to", None)],
+        };
+        for (issue, stem, other) in sides {
+            crate::events::record(tx, issue, &format!("{stem}_{verb}"), actor, other, at)?;
         }
         out.extend(deliveries(tx, ch, sender)?);
     }

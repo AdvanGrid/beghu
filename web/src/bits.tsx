@@ -1,7 +1,9 @@
-// Small pieces the list and the detail share: an issue's state icon, a user's avatar, sub-issue
-// progress as a ring, and the button that reads as a link.
+// Small pieces the list and the detail share: an issue's state icon, a PR's status icon and its
+// review chip, a user's avatar, sub-issue progress as a ring, and the button that reads as a link.
 import * as stylex from "@stylexjs/stylex";
 import { Show } from "solid-js";
+import type { PrStatus } from "./bindings/PrStatus";
+import type { ReviewDecision } from "./bindings/ReviewDecision";
 import { colors } from "./tokens.stylex";
 
 /** A button that reads as a link: underlined, in the accent colour (Retry, Resync). */
@@ -55,6 +57,77 @@ export function StateIcon(props: { state: IssueState; plain?: boolean }) {
         <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" stroke-width="1.5" />
       </Show>
     </svg>
+  );
+}
+
+export const PR_LABEL: Record<PrStatus, string> = {
+  open: "Open pull request",
+  draft: "Draft pull request",
+  merged: "Merged pull request",
+  closed: "Closed pull request",
+};
+
+/** A PR's status icon (GitHub's pull-request shape; merged, its merge shape), in the status's colour unless `plain`. */
+export function PrIcon(props: { status: PrStatus; plain?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      role="img"
+      aria-label={PR_LABEL[props.status]}
+      data-pr-status={props.status}
+      {...stylex.attrs(s.icon, !props.plain && pr[props.status])}
+    >
+      <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <Show
+        when={props.status === "merged"}
+        fallback={
+          <>
+            <path d="M4 5.25v5.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <circle cx="12" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <path
+              d="M12 10.75V6.5a2 2 0 0 0-2-2H7.25M8.75 3l-1.5 1.5 1.5 1.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-dasharray={props.status === "draft" ? "1.5 1.5" : undefined}
+            />
+          </>
+        }
+      >
+        <path d="M4 5.25v5.5M4 5.5c0 3 2.5 3.5 6.25 3.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="9" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </Show>
+    </svg>
+  );
+}
+
+export const REVIEW_LABEL: Record<ReviewDecision, string> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  review_required: "Review required",
+};
+
+/** The review decision in a list row's labels column, where room is short. */
+const REVIEW_SHORT: Record<ReviewDecision, string> = {
+  approved: "Approved",
+  changes_requested: "Changes",
+  review_required: "Review",
+};
+
+/** A PR's review decision as a chip, in its colour; `compact` in a list row. */
+export function ReviewChip(props: { review: ReviewDecision; compact?: boolean }) {
+  return (
+    <span
+      {...stylex.attrs(s.chip, props.compact && s.compactChip, review[props.review])}
+      data-perf="review"
+      data-review={props.review}
+      title={`Review: ${REVIEW_LABEL[props.review]}`}
+    >
+      {(props.compact ? REVIEW_SHORT : REVIEW_LABEL)[props.review]}
+    </span>
   );
 }
 
@@ -124,12 +197,47 @@ const s = stylex.create({
     height: 18,
     width: 18,
   },
+  chip: {
+    borderRadius: 999,
+    borderStyle: "solid",
+    borderWidth: 1,
+    overflow: "hidden",
+    paddingInline: 7,
+    alignItems: "center",
+    boxSizing: "border-box",
+    display: "inline-flex",
+    flexShrink: 0,
+    fontSize: 11,
+    fontWeight: 500,
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    height: 18,
+    maxWidth: "100%",
+  },
+  compactChip: {
+    paddingInline: 5,
+    fontSize: 10,
+    height: 14,
+  },
   ring: {
     stroke: colors.line,
   },
   ringDone: {
     stroke: colors.done,
   },
+});
+
+const pr = stylex.create({
+  open: { color: colors.open },
+  draft: { color: colors.notPlanned },
+  merged: { color: colors.done },
+  closed: { color: colors.danger },
+});
+
+const review = stylex.create({
+  approved: { borderColor: colors.open, color: colors.open },
+  changes_requested: { borderColor: colors.danger, color: colors.danger },
+  review_required: { borderColor: colors.unowned, color: colors.unowned },
 });
 
 const sizes = stylex.create({

@@ -25,8 +25,7 @@ use crate::import::shapes::{
     RestComment, RestIssue,
 };
 use crate::import::writes::{
-    CommentData, ItemData, PrData, publish, write_comments, write_item, write_linked_pr,
-    write_synced,
+    CommentData, ItemData, PrData, publish, write_comments, write_item, write_synced,
 };
 use crate::installations::Scope;
 use crate::webhook::{parse_time, rfc3339, time};
@@ -44,7 +43,10 @@ const PAGE: usize = 100;
 /// land a few seconds out of order (docs/research/mirror-import-and-reconciliation.md §4).
 const OVERLAP: i64 = 5 * 60;
 /// How often `/rate_limit` is asked when the quota's last reading is older.
-const BUDGET_FRESH: Duration = Duration::from_secs(60);
+pub(crate) const BUDGET_FRESH: Duration = Duration::from_secs(60);
+/// How long a secondary rate limit that names no wait is waited out: GitHub asks for at least a
+/// minute.
+pub(crate) const SECONDARY_WAIT: Duration = Duration::from_secs(60);
 /// 5xx and dropped calls tried this many times before the sweep of the repo fails.
 const TRANSIENT_TRIES: u32 = 5;
 
@@ -55,7 +57,6 @@ pub(crate) struct Target {
     pub node_id: String,
     pub owner: String,
     pub name: String,
-    pub private: bool,
     pub accounts: Vec<i64>,
 }
 
@@ -229,8 +230,14 @@ impl Sweeper {
                     auth_tries += 1;
                     continue;
                 }
-                Err(CallError::RateLimited(w)) => w,
-                Err(CallError::SecondaryLimit) => Duration::from_secs(60),
+                Err(CallError::RateLimited(w)) => {
+                    self.reconcile().pause(self.installation, w);
+                    w
+                }
+                Err(CallError::SecondaryLimit) => {
+                    self.reconcile().pause(self.installation, SECONDARY_WAIT);
+                    SECONDARY_WAIT
+                }
                 Err(e) if e.is_transient() && transient + 1 < TRANSIENT_TRIES => {
                     transient += 1;
                     let w = backoff;

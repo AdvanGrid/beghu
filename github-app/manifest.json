@@ -13,6 +13,7 @@
     "label",
     "milestone",
     "pull_request",
+    "pull_request_review",
     "sub_issues",
     "issue_dependencies",
     "issue_relates_to"

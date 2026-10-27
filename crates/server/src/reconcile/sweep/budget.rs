@@ -1,4 +1,5 @@
-//! The wait for the installation's quota: sweeps pause while it's below a fifth.
+//! The wait for the installation's quota: sweeps pause while it's below a fifth, and while a
+//! rate limit GitHub answered (to a sweep or to the events-feed poller) still holds.
 
 use super::*;
 
@@ -10,6 +11,13 @@ impl Sweeper {
         let mut paused = false;
         loop {
             let b = self.reconcile().budget(self.installation);
+            // GitHub asked the installation to wait (a sweep's call or the poller's met a rate
+            // limit): no read before then.
+            if let Some(wait) = b.paused() {
+                paused = true;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
             if paused || b.read.is_none_or(|t| t.elapsed() >= BUDGET_FRESH) {
                 self.read_budget().await;
             }
@@ -40,7 +48,7 @@ impl Sweeper {
     }
 
     /// Asks GitHub for the installation's quotas; a failure leaves the last reading.
-    pub(super) async fn read_budget(&self) {
+    pub(crate) async fn read_budget(&self) {
         let installations = self.app.installations();
         let read = match installations.token(self.installation, Scope::Import).await {
             Ok(t) => self.app.github().rate_limit(&t).await,

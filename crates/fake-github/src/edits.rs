@@ -15,10 +15,15 @@
 //! `relationships.rs` for GitHub's rules and deliveries). `prioritize_sub_issue` moves one of the
 //! edited issue's sub-issues before its siblings, which GitHub does without a webhook.
 //!
+//! On a PR, `add_linked_issue`/`remove_linked_issue` link an issue in the Development sidebar,
+//! and `review` (`approve`, `request_changes`, `comment`, `dismiss`) reviews it; its own changes
+//! send `pull_request` deliveries rather than `issues` ones (see `pulls.rs`).
+//!
 //! `"delete": true` deletes the issue instead (GitHub's `deleteIssue` mutation, or an admin in its
 //! sidebar), with its labels, assignees, comments and relationships, and sends `issues` `deleted`
 //! with the issue as it was; its number answers 410 from then on. (Whether GitHub also sends
-//! relationship deliveries for the links that go is unrecorded: the fake sends none.)
+//! relationship deliveries for the links that go is unrecorded: the fake sends none.) A PR can't
+//! be deleted, on GitHub or here: it's refused.
 //!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
@@ -72,6 +77,12 @@ pub(crate) struct Edit {
     /// Sub-issue, dependency and relates-to changes (see `relationships.rs`).
     #[serde(flatten)]
     relationships: relationships::Asks,
+    /// On a PR: an issue (`#n`, `repo#n` or `owner/repo#n`) linked to it, or unlinked, in the
+    /// Development sidebar (see `pulls.rs`).
+    add_linked_issue: Option<String>,
+    remove_linked_issue: Option<String>,
+    /// On a PR: a review by the sender, `approve`, `request_changes`, `comment` or `dismiss`.
+    review: Option<String>,
     /// The issue is deleted, and nothing else in the edit is made.
     #[serde(default)]
     delete: bool,
@@ -82,8 +93,9 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
     Option::<String>::deserialize(d).map(Some)
 }
 
-/// Why an edit can't be made: the control port answers 400 with it.
-struct Refused(String);
+/// Why an edit can't be made: the control port answers 400 with it, or with `unprocessable`
+/// 422, as GitHub answers a call it validates and refuses.
+struct Refused(String, bool);
 
 pub(crate) async fn edit(State(fake): State<Fake>, axum::Json(e): axum::Json<Edit>) -> Response {
     if let Some(s) = e.state.as_deref()
@@ -99,7 +111,8 @@ pub(crate) async fn edit(State(fake): State<Fake>, axum::Json(e): axum::Json<Edi
             fake.state().webhooks.send(deliveries);
             axum::Json(json!({ "ok": true, "issue": issue, "deliveries": n })).into_response()
         }
-        Ok(Err(Refused(why))) => bad_request(why),
+        Ok(Err(Refused(why, false))) => bad_request(why),
+        Ok(Err(Refused(why, true))) => crate::writes::unprocessable(&why),
         Err(e) => api::internal(e),
     }
 }
@@ -133,7 +146,7 @@ fn apply(
     e: &Edit,
     now: i64,
 ) -> rusqlite::Result<Result<Edited, Refused>> {
-    let refuse = |why: String| Ok(Err(Refused(why)));
+    let refuse = |why: String| Ok(Err(Refused(why, false)));
     let repo = match find_repo(tx, &e.repo)? {
         Ok(id) => q::repo(tx, id)?,
         Err(why) => return refuse(why),
@@ -160,6 +173,14 @@ fn apply(
         sender_row.avatar_url.as_deref(),
     );
     if e.delete {
+        // GitHub deletes issues only: `deleteIssue` takes no PR, and no PR is ever deleted (it
+        // can only be closed), so there's no `pull_request` `deleted` either.
+        if q::issue(tx, id)?.kind == "pr" {
+            return refuse(format!(
+                "{}#{} is a pull request: GitHub doesn't delete pull requests",
+                e.repo, e.number
+            ));
+        }
         return delete(tx, &repo, id, &sender_json).map(Ok);
     }
     let links = match relationships::plan(tx, id, repo.id, &e.relationships)? {
@@ -170,7 +191,44 @@ fn apply(
         Ok(child) => child,
         Err(why) => return refuse(why),
     };
-    if e.issue_type.is_some() && q::issue(tx, id)?.kind == "pr" {
+    let pr = q::issue(tx, id)?.kind == "pr";
+    let pr_only =
+        e.add_linked_issue.is_some() || e.remove_linked_issue.is_some() || e.review.is_some();
+    if pr_only && !pr {
+        return refuse(format!(
+            "{}#{} is an issue: only a pull request links issues or takes reviews",
+            e.repo, e.number
+        ));
+    }
+    if let Some(r) = e.review.as_deref()
+        && !matches!(r, "approve" | "request_changes" | "comment" | "dismiss")
+    {
+        return refuse("review is approve, request_changes, comment or dismiss".into());
+    }
+    // GitHub refuses a PR's author approving or requesting changes on their own PR (422);
+    // commenting is fine.
+    if let Some(r @ ("approve" | "request_changes")) = e.review.as_deref()
+        && q::issue(tx, id)?.author_id == Some(sender)
+    {
+        let what = if r == "approve" {
+            "approve"
+        } else {
+            "request changes on"
+        };
+        return Ok(Err(Refused(
+            format!("Can not {what} your own pull request"),
+            true,
+        )));
+    }
+    let mut linked = Vec::new();
+    for (target, add) in [(&e.add_linked_issue, true), (&e.remove_linked_issue, false)] {
+        let Some(target) = target else { continue };
+        match relationships::find_issue(tx, target, repo.id)? {
+            Ok(issue) => linked.push((issue, add)),
+            Err(why) => return refuse(why),
+        }
+    }
+    if e.issue_type.is_some() && pr {
         return refuse(format!(
             "{}#{} is a pull request: it has no type",
             e.repo, e.number
@@ -205,14 +263,24 @@ fn apply(
         return refuse("the sender isn't a user".into());
     };
     let mut deliveries = done.deliveries;
-    deliveries.extend(relationships::apply(tx, &links, &sender_json)?);
+    deliveries.extend(relationships::apply(tx, &links, &sender_json, now)?);
     if let Some(child) = reorder {
         // Silent: GitHub sends nothing for a reorder.
         q::move_sub_issue_first(tx, id, child)?;
     }
+    for (issue, add) in linked {
+        crate::pulls::sidebar(tx, id, issue, add, sender, now)?;
+    }
+    let mut issue = done.issue;
+    if let Some(r) = e.review.as_deref()
+        && let Some(d) = crate::pulls::review(tx, &repo, id, r, sender, now)?
+    {
+        deliveries.push(d);
+        issue = crate::webhooks::issue_json(tx, id)?;
+    }
     // A relationship change doesn't touch the issue's own fields, so the issue `done` read back
     // is still the issue afterwards.
-    Ok(Ok((done.issue, deliveries)))
+    Ok(Ok((issue, deliveries)))
 }
 
 /// Deletes issue `id` of `repo`, as GitHub's `deleteIssue` does: it, its comments and its
@@ -317,6 +385,18 @@ impl Change {
             || !self.remove_assignees.is_empty()
             || self.milestone.is_some()
             || self.comment.is_some();
+        let pr = before.kind == "pr";
+        if pr && body != before.body {
+            crate::pulls::relink(tx, id, repo.id, before.body.as_deref(), body.as_deref())?;
+        }
+        if state_changed {
+            let event = if state == "closed" {
+                "closed"
+            } else {
+                "reopened"
+            };
+            crate::events::record(tx, id, event, sender["id"].as_i64(), None, at)?;
+        }
         if props {
             q::update_issue(
                 tx,
@@ -396,10 +476,26 @@ impl Change {
         };
 
         let issue = issue_json(tx, id)?;
+        // A PR's own changes are `pull_request` deliveries, carrying the PR (`pulls.rs`).
+        let pull = if pr {
+            Some(crate::pulls::pr_json(tx, id)?)
+        } else {
+            None
+        };
         let delivery = |event: &'static str, action: &str, extra: Value| {
             let mut p = envelope(repo, &sender);
             p["action"] = json!(action);
-            p["issue"] = issue.clone();
+            let event = match (&pull, event) {
+                (Some(pr), "issues") => {
+                    p["number"] = json!(before.number);
+                    p["pull_request"] = pr.clone();
+                    "pull_request"
+                }
+                _ => {
+                    p["issue"] = issue.clone();
+                    event
+                }
+            };
             if let Value::Object(extra) = extra {
                 for (k, v) in extra {
                     p[k] = v;

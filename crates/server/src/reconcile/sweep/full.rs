@@ -11,9 +11,8 @@ impl Sweeper {
     /// What's gone is never inferred from the pages read for content: REST lists page by offset,
     /// and GraphQL's issues come per state, so an item updated (or reopened) meanwhile can be
     /// passed over. Issues and PRs go by the cursor-paged id lists; a comment only when GitHub
-    /// answers 404 for it.
-    ///
-    /// TODO(#92 follow-up): a PR's `closes` links the mirror holds but GitHub dropped are kept.
+    /// answers 404 for it. Every PR's linked issues are replaced as a set with GitHub's
+    /// (`write_items`), so a `closes` link GitHub dropped goes too.
     pub async fn full(&self, t: &Target) -> Result<HashSet<i64>, Stop> {
         let seqs = self.seqs(t).await;
         let mut missed = HashSet::new();
