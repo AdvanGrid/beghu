@@ -8,7 +8,9 @@
 //! mirror in delivery order, one transaction (one `seq`) per delivery, followed by one push to
 //! that account's streams; lanes run independently, so a slow or failing mirror holds up only its
 //! own account. A failed write marks that account `needs_resync` and its lane carries on. The
-//! last lane to finish a delivery marks it processed, which clears its payload; processed
+//! last lane to finish a delivery marks it processed, which clears its payload (a relationship
+//! delivery waits first for the read-back it schedules to land or be given up, so a process that
+//! stops in between replays it at the next start); processed
 //! deliveries are kept [`Config::deliveries_kept_for`](crate::Config) (GitHub's three-day
 //! redelivery window and a day's margin) to dedupe redeliveries, then pruned.
 //!
@@ -23,7 +25,8 @@
 //! marked `needs_resync`, and a fresh lane takes its next deliveries. Every minute, any delivery
 //! unprocessed for over 30 s and not in flight is queued again, so nothing waits for a restart.
 //!
-//! Handled here: `issues`, `issue_comment`, `label` and `milestone`. Items, comments and
+//! Handled here: `issues`, `issue_comment`, `label`, `milestone`, and the relationship events
+//! `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`). Items, comments and
 //! milestones are guarded by `updated_at` (newer or equal wins), so a replay or an older delivery
 //! that arrives late changes nothing. A webhook delete is recorded, and an older delivery that
 //! arrives after it never brings the row back. Labels carry no `updated_at`: a `label` delivery
@@ -33,6 +36,7 @@
 //! dropped until their slices handle them.
 
 use crate::App;
+use crate::edges::{self, Edge, Kind, Refetcher, Subject};
 use crate::live::{Hub, Push};
 use axum::body::Bytes;
 use axum::extract::State;
@@ -44,7 +48,7 @@ use mirror_db::{Caller, Mirrors, q};
 use rusqlite::Transaction;
 use serde::Deserialize;
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -163,6 +167,8 @@ pub struct Sinks {
     pub control: Arc<Control>,
     pub mirrors: Mirrors,
     pub hub: Arc<Hub>,
+    /// Reads relationships back from GitHub after their deliveries.
+    pub edges: Arc<Refetcher>,
 }
 
 /// Starts the dispatcher with every delivery acked but not processed before this start queued
@@ -387,6 +393,8 @@ struct Job {
     started: Instant,
     control: Arc<Control>,
     in_flight: Arc<InFlight>,
+    /// Reads a relationship delivery's edges back once every account has applied it.
+    edges: Arc<Refetcher>,
 }
 
 /// One account's share of a [`Job`]. However it ends (applied, dropped on a full queue, or lost
@@ -420,6 +428,13 @@ impl Drop for Ticket {
             let job = self.job.clone();
             // None only while the runtime shuts down, when the delivery stays unprocessed anyway.
             if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                // Only now, with the delivery in every account's mirror (or given up there), so
+                // no lagging lane can apply it over the read-back. Each lane applies in delivery
+                // order, so whatever came before it is in too.
+                let read_back = job
+                    .change
+                    .refetch()
+                    .map(|(subject, kind, at_once)| job.edges.schedule(subject, kind, at_once));
                 rt.spawn(async move {
                     if job.given_up.load(Ordering::Acquire) {
                         eprintln!(
@@ -436,6 +451,18 @@ impl Drop for Ticket {
                         job.accounts,
                         job.started.elapsed().as_millis()
                     );
+                    // Settled only once its read-back has landed or been given up: a process
+                    // that stops first leaves it unprocessed, and the next start replays it.
+                    if let Some(read_back) = read_back
+                        && read_back.await.is_err()
+                    {
+                        eprintln!(
+                            "webhooks: {} {} stopped before its read-back finished; it waits for the next start",
+                            job.event, job.guid
+                        );
+                        job.in_flight.release(&job.guid);
+                        return;
+                    }
                     settle(&job.control, &job.in_flight, &job.guid).await;
                 });
             }
@@ -497,12 +524,7 @@ async fn dispatch(
         };
         let repo = change.repo;
         // Waited out here, so no later delivery goes ahead of this one.
-        let targets = until_ok(&format!("fanning out {}", d.guid), || {
-            sinks
-                .control
-                .read(move |c| control_db::q::fan_out_targets(c, repo))
-        })
-        .await;
+        let targets = syncing(&sinks.control, repo, &format!("fanning out {}", d.guid)).await;
         if targets.is_empty() {
             spawn_settle(&sinks, &in_flight, d.guid);
             continue;
@@ -517,6 +539,7 @@ async fn dispatch(
             started,
             control: sinks.control.clone(),
             in_flight: in_flight.clone(),
+            edges: sinks.edges.clone(),
         });
         for account in targets {
             let mut ticket = Ticket::new(&job);
@@ -589,13 +612,24 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
     let written = sinks
         .mirrors
         .write(account, Caller::Webhook, move |tx, seq| {
-            j.change.write(tx, seq)
+            Ok((j.change.write(tx, seq)?, j.change.hidden(tx)?))
         })
         .await;
     match written {
-        Ok(ids) if ids.is_empty() => {}
-        Ok(ids) if ids.len() > MAX_IDS => sinks.hub.publish(account, Push::Reset),
-        Ok(ids) => sinks.hub.publish(account, Push::Ids(ids.into())),
+        Ok((ids, hidden)) => {
+            if ids.len() > MAX_IDS {
+                sinks.hub.publish(account, Push::Reset);
+            } else if !ids.is_empty() {
+                sinks.hub.publish(account, Push::Ids(ids.into()));
+            }
+            if hidden {
+                eprintln!(
+                    "webhooks: {} {} names an end no installation token shows account {account}; marking it for resync",
+                    job.event, job.guid
+                );
+                mark_for_resync(&sinks.control, account).await;
+            }
+        }
         Err(e) => {
             eprintln!(
                 "webhooks: delivery {} failed for account {account}: {e}",
@@ -606,7 +640,16 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
     }
 }
 
-async fn mark_for_resync(control: &Control, account: i64) {
+/// The accounts syncing `repo`, read until the control DB lets it through; `what` names the read
+/// in the log.
+pub(crate) async fn syncing(control: &Control, repo: i64, what: &str) -> Vec<i64> {
+    until_ok(what, || {
+        control.read(move |c| control_db::q::fan_out_targets(c, repo))
+    })
+    .await
+}
+
+pub(crate) async fn mark_for_resync(control: &Control, account: i64) {
     until_ok(&format!("marking account {account} for resync"), || {
         control.write(move |tx| control_db::q::set_needs_resync(tx, account))
     })
@@ -615,7 +658,7 @@ async fn mark_for_resync(control: &Control, account: i64) {
 
 /// Runs `call` until the control DB lets it through: again after each of [`RETRIES`], then
 /// every [`RETRY_EVERY`], logging each failure as `what`.
-async fn until_ok<T, F>(what: &str, mut call: impl FnMut() -> F) -> T
+pub(crate) async fn until_ok<T, F>(what: &str, mut call: impl FnMut() -> F) -> T
 where
     F: Future<Output = Result<T, control_db::Error>>,
 {
@@ -699,6 +742,8 @@ struct Issue {
     updated_at: String,
     closed_at: Option<String>,
     pull_request: Option<serde_json::Value>,
+    /// Which repo it's in, to tell a same-repo relationship delivery from a cross-repo one.
+    repository_url: Option<String>,
     /// The GitHub issue type: `null` (or, from an older payload, absent) when untyped.
     #[serde(rename = "type")]
     issue_type: Option<IssueType>,
@@ -731,6 +776,18 @@ struct Payload {
     comment: Option<Comment>,
     label: Option<Label>,
     milestone: Option<Milestone>,
+    installation: Option<Installation>,
+    // Relationship deliveries: `sub_issues`, `issue_dependencies` and `issue_relates_to`.
+    parent_issue: Option<Issue>,
+    parent_issue_id: Option<i64>,
+    sub_issue: Option<Issue>,
+    sub_issue_id: Option<i64>,
+    blocked_issue: Option<Issue>,
+    blocked_issue_id: Option<i64>,
+    blocking_issue: Option<Issue>,
+    blocking_issue_id: Option<i64>,
+    related_issue: Option<Issue>,
+    related_issue_id: Option<i64>,
 }
 
 /// One delivery's change to a repo, ready to write to each account's mirror.
@@ -748,19 +805,157 @@ enum Change {
     LabelDeleted(i64),
     Milestone(Milestone),
     MilestoneDeleted(i64),
+    Relationship(Relationship),
+}
+
+/// A relationship delivery: the issue in the delivery's repo whose edges changed, and the edge
+/// itself when the delivery names the other end's id.
+struct Relationship {
+    subject: Issue,
+    kind: Kind,
+    /// Within a repo it applies as is. Across repos a removal applies by id wherever it is, and an
+    /// addition only for an account whose mirror holds the other end in a repo it syncs: that
+    /// account may see it, and only then.
+    edge: Option<Edge>,
+    /// Both ends are in the delivery's repo: its read-back can wait out the debounce.
+    same_repo: bool,
+    installation: Option<i64>,
+}
+
+impl Relationship {
+    /// From a relationship delivery to `installation`: `subject` is its repo's issue; `other`
+    /// and `other_id` the other end, as far as the payload has it; `edge` orders
+    /// `(subject, other)` as `src → dst`.
+    fn new(
+        installation: Option<i64>,
+        kind: Kind,
+        add: bool,
+        subject: Option<Issue>,
+        other: Option<Issue>,
+        other_id: Option<i64>,
+        edge: fn(i64, i64) -> (i64, i64),
+    ) -> Option<Relationship> {
+        let subject = subject?;
+        let same_repo = other.as_ref().is_some_and(|o| {
+            o.repository_url.is_some() && o.repository_url == subject.repository_url
+        });
+        let edge = match other_id.or(other.as_ref().map(|o| o.id)) {
+            Some(o) if o != subject.id => {
+                let (src, dst) = edge(subject.id, o);
+                Some(Edge {
+                    kind,
+                    src,
+                    dst,
+                    add,
+                })
+            }
+            _ => None,
+        };
+        Some(Relationship {
+            subject,
+            kind,
+            edge,
+            same_repo,
+            installation,
+        })
+    }
+}
+
+impl Relationship {
+    /// The edge as this account's mirror may apply it: within a repo; across repos a removal, or
+    /// an addition whose other end the mirror holds in a repo it syncs.
+    fn applicable(&self, tx: &Transaction) -> rusqlite::Result<Option<&Edge>> {
+        let Some(e) = &self.edge else {
+            return Ok(None);
+        };
+        if self.same_repo || !e.add {
+            return Ok(Some(e));
+        }
+        let other = if e.src == self.subject.id {
+            e.dst
+        } else {
+            e.src
+        };
+        let held = q::item_repos(tx, &[other])?.iter().any(|r| r.synced);
+        Ok(held.then_some(e))
+    }
+
+    /// Whether this account may miss the change for good. Across repos, what the delivery
+    /// doesn't apply is left to the read-back, which reads with the delivery's installation
+    /// token: blind to a private repo the account syncs through another installation (another
+    /// owner). Only a sweep can find an end there; the account's own token is never spent on it.
+    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<bool> {
+        if self.same_repo || self.applicable(tx)?.is_some() {
+            return Ok(false);
+        }
+        match self.installation {
+            Some(i) => q::syncs_beyond_installation(tx, i),
+            // No read-back at all.
+            None => Ok(true),
+        }
+    }
 }
 
 impl RepoChange {
     /// The change a delivery carries; `None` for events and actions not handled here.
     fn parse(event: &str, payload: &[u8]) -> Result<Option<RepoChange>, serde_json::Error> {
-        if !matches!(event, "issues" | "issue_comment" | "label" | "milestone") {
+        if !matches!(
+            event,
+            "issues"
+                | "issue_comment"
+                | "label"
+                | "milestone"
+                | "sub_issues"
+                | "issue_dependencies"
+                | "issue_relates_to"
+        ) {
             return Ok(None);
         }
-        let p: Payload = serde_json::from_slice(payload)?;
+        let mut p: Payload = serde_json::from_slice(payload)?;
         let Some(repo) = p.repository.map(|r| r.id) else {
             return Ok(None);
         };
-        let change = match (event, p.action.as_str()) {
+        let action = std::mem::take(&mut p.action);
+        let installation = p.installation.as_ref().map(|i| i.id);
+        let add = action.ends_with("_added");
+        let rel = add || action.ends_with("_removed");
+        let change = match (event, action.as_str()) {
+            ("sub_issues", a) if rel && a.starts_with("sub_issue_") => {
+                let (s, o, oid) = (p.parent_issue.take(), p.sub_issue.take(), p.sub_issue_id);
+                Relationship::new(installation, Kind::Sub, add, s, o, oid, |me, o| (me, o))
+                    .map(Change::Relationship)
+            }
+            ("sub_issues", a) if rel && a.starts_with("parent_issue_") => {
+                let (s, o, oid) = (p.sub_issue.take(), p.parent_issue.take(), p.parent_issue_id);
+                Relationship::new(installation, Kind::Sub, add, s, o, oid, |me, o| (o, me))
+                    .map(Change::Relationship)
+            }
+            ("issue_dependencies", a) if rel && a.starts_with("blocked_by_") => {
+                let (s, o, oid) = (
+                    p.blocked_issue.take(),
+                    p.blocking_issue.take(),
+                    p.blocking_issue_id,
+                );
+                Relationship::new(installation, Kind::Blocks, add, s, o, oid, |me, o| (o, me))
+                    .map(Change::Relationship)
+            }
+            ("issue_dependencies", a) if rel && a.starts_with("blocking_") => {
+                let (s, o, oid) = (
+                    p.blocking_issue.take(),
+                    p.blocked_issue.take(),
+                    p.blocked_issue_id,
+                );
+                Relationship::new(installation, Kind::Blocks, add, s, o, oid, |me, o| (me, o))
+                    .map(Change::Relationship)
+            }
+            ("issue_relates_to", _) if rel => {
+                let (s, o, oid) = (p.issue.take(), p.related_issue.take(), p.related_issue_id);
+                Relationship::new(installation, Kind::Relates, add, s, o, oid, |me, o| {
+                    (me.min(o), me.max(o))
+                })
+                .map(Change::Relationship)
+            }
+            ("sub_issues" | "issue_dependencies" | "issue_relates_to", _) => None,
             // Transfers re-point relationships and come with their own slice.
             ("issues", "transferred") => None,
             ("issues", "deleted") => p.issue.map(|i| Change::IssueDeleted(i.id)),
@@ -787,20 +982,75 @@ impl RepoChange {
         Ok(change.map(|change| RepoChange { repo, change }))
     }
 
+    /// The read-back a relationship delivery calls for: its repo's issue, the kind, and whether
+    /// it runs at once (the other end is in another repo, or the delivery didn't say).
+    fn refetch(&self) -> Option<(Subject, Kind, bool)> {
+        let Change::Relationship(r) = &self.change else {
+            return None;
+        };
+        let Some(installation) = r.installation else {
+            eprintln!(
+                "webhooks: a relationship delivery for issue {} names no installation; no read-back",
+                r.subject.id
+            );
+            return None;
+        };
+        Some((
+            Subject {
+                id: r.subject.id,
+                node_id: r.subject.node_id.clone(),
+                repo: self.repo,
+                installation,
+            },
+            r.kind,
+            !r.same_repo,
+        ))
+    }
+
+    /// Whether this account may miss a relationship change for good, so that only a sweep can
+    /// repair it ([`Relationship::hidden`]).
+    fn hidden(&self, tx: &Transaction) -> rusqlite::Result<bool> {
+        match &self.change {
+            Change::Relationship(r) => r.hidden(tx),
+            _ => Ok(false),
+        }
+    }
+
     /// Writes the change in one account's transaction; the ids of the items whose rows it
-    /// changed (none when the guard kept everything as it was).
+    /// changed (none when the guard kept everything as it was), and of the items that show
+    /// something of them (an ancestor's progress, a blocked issue's chips).
     fn write(&self, tx: &Transaction, seq: i64) -> rusqlite::Result<Vec<i64>> {
         let repo = self.repo;
         Ok(match &self.change {
-            Change::Issue(i) => ids_if(upsert_issue(tx, repo, i, seq)?, i.id),
+            Change::Issue(i) => {
+                if upsert_issue(tx, repo, i, seq)? {
+                    edges::with_neighbours(tx, BTreeSet::from([i.id]))?
+                } else {
+                    Vec::new()
+                }
+            }
             Change::IssueDeleted(id) => {
                 q::record_deleted(tx, "item", *id)?;
+                // Whatever showed something of it, before its edges go.
+                let shown = edges::with_neighbours(tx, BTreeSet::from([*id]))?;
+                let ends = edges::ends_of(tx, *id)?;
                 let gone = q::delete_item(tx, *id)? > 0;
                 q::clear_item_labels(tx, *id)?;
                 q::clear_item_assignees(tx, *id)?;
                 q::delete_item_comments(tx, *id)?;
                 q::delete_item_edges(tx, *id)?;
-                ids_if(gone, *id)
+                q::prune_stubs(tx, &ends)?;
+                if gone { shown } else { Vec::new() }
+            }
+            Change::Relationship(r) => {
+                let mut ids = BTreeSet::new();
+                if upsert_issue(tx, repo, &r.subject, seq)? {
+                    ids.extend(edges::with_neighbours(tx, BTreeSet::from([r.subject.id]))?);
+                }
+                if let Some(e) = r.applicable(tx)? {
+                    ids.extend(edges::apply_delivery(tx, seq, e)?);
+                }
+                ids.into_iter().collect()
             }
             Change::Comment { issue, comment } => {
                 let mut changed = upsert_issue(tx, repo, issue, seq)?;
@@ -952,7 +1202,7 @@ fn time(s: &str) -> i64 {
     parse_time(s).unwrap_or(0)
 }
 
-fn parse_time(s: &str) -> Option<i64> {
+pub(crate) fn parse_time(s: &str) -> Option<i64> {
     // Every slice below is by byte offset, which is safe only on ASCII.
     if !s.is_ascii() {
         return None;

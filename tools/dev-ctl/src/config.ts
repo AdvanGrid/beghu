@@ -44,6 +44,13 @@ export const CLIENT = { id: "Iv1.fakegithub", secret: "fake-github-secret" };
 /** The App's webhook secret in dev: the fake signs deliveries with it, the server checks them. */
 export const DEV_WEBHOOK_SECRET = "fake-github-webhook-secret";
 
+/**
+ * The dev App: its id, and its private key, which signs the JWTs the server trades with the fake
+ * for installation tokens. Fake GitHub checks them against the same key (crates/fake-github).
+ * Dev data only: never use it elsewhere.
+ */
+export const DEV_APP = { id: "1000001", keyFile: join(ROOT, "crates", "fake-github", "src", "dev-app-key.pem") };
+
 /** The dev server's BEGHU_TOKEN_KEY (base64, 38 bytes). Dev data only: never use it elsewhere. */
 export const DEV_TOKEN_KEY = "ZGV2LW9ubHkgYmVnaHUgdG9rZW4ga2V5LCBub3QgYSBzZWNyZXQ=";
 

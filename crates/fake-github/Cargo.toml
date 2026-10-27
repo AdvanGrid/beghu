@@ -14,6 +14,8 @@ hmac = "0.12"
 mirror-db = { workspace = true }
 rand = "0.9"
 reqwest = { workspace = true }
+# RS256, to check the App's JWTs: already in the build through rustls.
+ring = "0.17"
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

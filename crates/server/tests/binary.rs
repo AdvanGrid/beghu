@@ -19,9 +19,17 @@ fn valid_env(dir: &std::path::Path, port: u16) -> Vec<(&'static str, String)> {
             "BEGHU_TOKEN_KEY",
             "c21va2UgdGVzdCBrZXkgdGhhdCBpcyAzMiBieXRlcyE=".into(),
         ),
+        // Fake GitHub's dev App key below is refused against real GitHub.
+        ("GITHUB_API_URL", "http://127.0.0.1:9".into()),
         ("GITHUB_CLIENT_ID", "Iv1.smoke".into()),
         ("GITHUB_CLIENT_SECRET", "smoke-secret".into()),
         ("GITHUB_WEBHOOK_SECRET", "smoke-webhook-secret".into()),
+        ("GITHUB_APP_ID", fake_github::DEV_APP_ID.to_string()),
+        // As an env var often carries it: newlines escaped.
+        (
+            "GITHUB_APP_PRIVATE_KEY",
+            fake_github::DEV_APP_KEY.replace('\n', "\\n"),
+        ),
     ]
 }
 
@@ -65,6 +73,51 @@ fn it_refuses_to_start_without_a_required_variable_and_names_it() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("GITHUB_CLIENT_ID is required"), "{stderr}");
+}
+
+#[test]
+fn it_refuses_an_app_key_it_cant_sign_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let env: Vec<_> = valid_env(dir.path(), 1)
+        .into_iter()
+        .map(|(k, v)| match k {
+            "GITHUB_APP_PRIVATE_KEY" => (
+                k,
+                "-----BEGIN RSA PRIVATE KEY-----\nbm9wZQ==\n-----END RSA PRIVATE KEY-----".into(),
+            ),
+            _ => (k, v),
+        })
+        .collect();
+    let out = beghu(&env).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("GITHUB_APP_PRIVATE_KEY"), "{stderr}");
+}
+
+#[test]
+fn it_refuses_the_committed_dev_app_key_against_anything_but_a_local_fake() {
+    let dir = tempfile::tempdir().unwrap();
+    for api in [
+        None,
+        Some("https://api.github.com"),
+        Some("https://api.github.com/"),
+        // GitHub Enterprise Server.
+        Some("https://github.example.com/api/v3"),
+        Some("http://127.0.0.1.example.com:3100"),
+    ] {
+        let env: Vec<_> = valid_env(dir.path(), 1)
+            .into_iter()
+            .filter(|(k, _)| *k != "GITHUB_API_URL")
+            .chain(api.map(|a| ("GITHUB_API_URL", a.to_owned())))
+            .collect();
+        let out = beghu(&env).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{api:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("GITHUB_APP_PRIVATE_KEY is Fake GitHub's dev App key"),
+            "{stderr}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

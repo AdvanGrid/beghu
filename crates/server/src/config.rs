@@ -35,6 +35,18 @@ pub struct Config {
     /// How long a processed webhook delivery's GUID is kept to dedupe redeliveries (4 days:
     /// GitHub's 3-day redelivery window with a day's margin); older ones are pruned.
     pub deliveries_kept_for: Duration,
+    /// The waits between tries of a relationship read-back that GitHub fails (about 10 minutes
+    /// in all). Past the last, the accounts syncing the issue's repo are marked `needs_resync`
+    /// for a sweep to repair.
+    pub read_back_retries: Vec<Duration>,
+}
+
+/// [`Config::read_back_retries`]: doubling from a second, then every minute, 15 tries in all.
+pub fn default_read_back_retries() -> Vec<Duration> {
+    [1, 2, 4, 8, 16, 32, 60, 60, 60, 60, 60, 60, 60, 60, 60]
+        .into_iter()
+        .map(Duration::from_secs)
+        .collect()
 }
 
 pub struct GitHubConfig {
@@ -46,6 +58,12 @@ pub struct GitHubConfig {
     pub client_id: String,
     /// `GITHUB_CLIENT_SECRET`.
     pub client_secret: String,
+    /// `GITHUB_APP_ID`: the App's id, the `iss` of the JWTs it signs.
+    pub app_id: String,
+    /// `GITHUB_APP_PRIVATE_KEY`: the App's private key (PEM, as GitHub hands it out), which signs
+    /// those JWTs. The App trades them for installation tokens: imports, sweeps and webhook
+    /// follow-up fetches use those.
+    pub app_key: String,
 }
 
 impl Config {
@@ -62,16 +80,28 @@ impl Config {
                 "BEGHU_PUBLIC_URL must be an http(s) URL, got {public_url:?}"
             ));
         }
+        // A key in an env var often has its newlines escaped.
+        let app_key = secret("GITHUB_APP_PRIVATE_KEY")?.replace("\\n", "\n");
+        let api_url = optional("GITHUB_API_URL", "https://api.github.com");
+        if crate::installations::is_dev_key(&crate::installations::parse_key(&app_key)?)
+            && !is_loopback(&api_url)
+        {
+            return Err(format!(
+                "GITHUB_APP_PRIVATE_KEY is Fake GitHub's dev App key, which is public: it signs only for a Fake GitHub on this machine, and GITHUB_API_URL is {api_url}"
+            ));
+        }
         Ok(Config {
             build_id: std::env::var("BEGHU_BUILD_ID").unwrap_or_else(|_| "dev".into()),
             public_url: public_url.trim_end_matches('/').to_owned(),
             data_dir: PathBuf::from(required("BEGHU_DATA_DIR")?),
             token_key,
             github: GitHubConfig {
-                api_url: optional("GITHUB_API_URL", "https://api.github.com"),
+                api_url,
                 web_url: optional("GITHUB_WEB_URL", "https://github.com"),
                 client_id: required("GITHUB_CLIENT_ID")?,
                 client_secret: secret("GITHUB_CLIENT_SECRET")?,
+                app_id: required("GITHUB_APP_ID")?.trim().to_owned(),
+                app_key,
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
@@ -80,6 +110,7 @@ impl Config {
             webhook_secret: secret("GITHUB_WEBHOOK_SECRET")?,
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(4 * 24 * 60 * 60),
+            read_back_retries: default_read_back_retries(),
         })
     }
 
@@ -99,6 +130,22 @@ impl Config {
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
     }
+}
+
+/// Whether `api_url` is on this machine (`localhost` or a loopback address), where Fake GitHub
+/// runs in dev and tests: the only place the committed dev App key may sign for.
+fn is_loopback(api_url: &str) -> bool {
+    let rest = api_url.split_once("://").map_or(api_url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        // `[::1]:3100`
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn required(name: &str) -> Result<String, String> {

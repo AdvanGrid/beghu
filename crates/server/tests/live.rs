@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Browser, Sse, Stack, ids_of, start, start_with};
+use common::{Browser, Sse, Stack, WriteLock, ids_of, start, start_with};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -611,24 +611,6 @@ async fn account_id(s: &Stack, b: &mut Browser) -> i64 {
     s.api(b, "/api/me").await.1["account"]["id"]
         .as_i64()
         .unwrap()
-}
-
-/// Holds the write lock on a SQLite file, as another writer would, until dropped. Writers that
-/// meet it wait out SQLite's 5 s busy timeout and then fail.
-struct WriteLock(rusqlite::Connection);
-
-impl WriteLock {
-    fn take(path: &std::path::Path) -> WriteLock {
-        let c = rusqlite::Connection::open(path).unwrap();
-        // `BEGIN IMMEDIATE` through rusqlite's own transaction, kept open by forgetting it.
-        let mut lock = WriteLock(c);
-        std::mem::forget(
-            lock.0
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap(),
-        );
-        lock
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

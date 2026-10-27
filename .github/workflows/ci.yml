@@ -39,6 +39,23 @@ jobs:
       - name: Fixture still loads after the migrations
         run: cargo test -p fixture --locked
 
+  secrets:
+    # gitleaks over the whole history: its default rules, with .gitleaks.toml allowing the dev and
+    # test keys committed on purpose. The official image rather than gitleaks-action, which wants
+    # a paid licence for an organisation's repos.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            ghcr.io/gitleaks/gitleaks:v8.24.0@sha256:2bcceac45179b3a91bff11a824d0fb952585b429e54fc928728b1d4d5c3e5176 \
+            git --config .gitleaks.toml --redact --no-banner --verbose .
+
   dev-ctl:
     runs-on: ubuntu-latest
     steps:

@@ -2,8 +2,8 @@
 //! `GITHUB_WEB_URL` both point at its API listener, so the real client code runs against it.
 //!
 //! - The API listener serves the OAuth web flow (`/login/oauth/…`), the REST endpoints beghu
-//!   calls, and the App's grant and token revocation. Later tickets add endpoints as they need
-//!   them.
+//!   calls, the App's grant and token revocation, the App's installation tokens and the GraphQL
+//!   queries beghu makes. Later tickets add endpoints as they need them.
 //! - The control listener takes runtime faults (latency, the next N calls failing, down, and
 //!   webhook drops, delays, duplicates and reorders), outside edits, token lifetimes,
 //!   revocations and a reset, and reports the fake's state.
@@ -17,13 +17,16 @@
 
 mod accounts;
 mod api;
+mod app;
 mod control;
 mod edits;
 mod faults;
 mod oauth;
+mod relationships;
 mod webhooks;
 
 pub use accounts::{ACCOUNTS, Role, pristine_mirrors};
+pub use app::{DEV_APP_ID, DEV_APP_KEY};
 pub use webhooks::{DELAY as WEBHOOK_DELAY, sign as sign_webhook};
 
 use std::path::PathBuf;
@@ -61,7 +64,10 @@ pub(crate) struct State {
     ttl: Mutex<Ttl>,
     faults: faults::Faults,
     refreshes: Refreshes,
+    graphql: GraphqlCalls,
     webhooks: webhooks::Webhooks,
+    /// The App's installation tokens.
+    app_tokens: app::InstallationTokens,
     /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
     /// expiry, and the times edits stamp, follow it.
     clock: std::sync::atomic::AtomicI64,
@@ -86,6 +92,30 @@ impl Refreshes {
         use std::sync::atomic::Ordering::Relaxed;
         self.ok.store(0, Relaxed);
         self.reused.store(0, Relaxed);
+    }
+}
+
+/// How many GraphQL calls came with an installation token, and how many with a user's, since the
+/// start (or the last reset).
+#[derive(Default)]
+pub(crate) struct GraphqlCalls {
+    pub installation: std::sync::atomic::AtomicU64,
+    pub user: std::sync::atomic::AtomicU64,
+}
+
+impl GraphqlCalls {
+    pub(crate) fn snapshot(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        serde_json::json!({
+            "installation": self.installation.load(Relaxed),
+            "user": self.user.load(Relaxed),
+        })
+    }
+
+    pub(crate) fn clear(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.installation.store(0, Relaxed);
+        self.user.store(0, Relaxed);
     }
 }
 
@@ -115,6 +145,8 @@ impl Fake {
             cfg,
             faults: faults::Faults::default(),
             refreshes: Refreshes::default(),
+            graphql: GraphqlCalls::default(),
+            app_tokens: app::InstallationTokens::default(),
             clock: Default::default(),
         })))
     }
@@ -128,6 +160,7 @@ impl Fake {
         let api_app = axum::Router::new()
             .merge(oauth::router())
             .merge(api::router())
+            .merge(app::router())
             .fallback(api::not_found)
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),

@@ -88,3 +88,7 @@ ON CONFLICT (user_id, repo_id) DO UPDATE SET role = excluded.role;
 -- param: user_id i64
 -- param: repo_id i64
 DELETE FROM fake_permissions WHERE user_id = :user_id AND repo_id = :repo_id;
+
+-- name: installation_exists :one
+-- param: id i64
+SELECT EXISTS (SELECT 1 FROM fake_installations i WHERE i.id = :id) AS "x!: bool";

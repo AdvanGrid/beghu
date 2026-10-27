@@ -1,22 +1,26 @@
-//! The beghu server: sign-in, the browser session, the shell, the JSON API, webhooks and the live
-//! stream. Jobs land here as later slices add them.
+//! The beghu server: sign-in, the browser session, the shell, the JSON API, webhooks (with the
+//! relationship read-backs that follow them) and the live stream. Jobs land here as later slices
+//! add them.
 
 mod api;
 mod auth;
 mod config;
 mod crypto;
 mod detail;
+mod edges;
 mod error;
 mod facets;
 mod github;
+mod installations;
 mod live;
 mod query;
+mod relationships;
 mod repos;
 mod shell;
 mod tokens;
 mod webhook;
 
-pub use config::{Config, GitHubConfig, MirrorsConfig};
+pub use config::{Config, GitHubConfig, MirrorsConfig, default_read_back_retries};
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -67,11 +71,20 @@ impl App {
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
         let tokens = tokens::Tokens::new(control.clone(), github.clone(), keys.clone());
         let hub = Arc::new(live::Hub::default());
+        let installations = installations::Installations::new(github.clone(), &cfg.github)?;
+        let edges = Arc::new(edges::Refetcher::new(
+            control.clone(),
+            mirrors.clone(),
+            hub.clone(),
+            installations,
+            cfg.read_back_retries.clone(),
+        ));
         let webhooks = webhook::resume(
             webhook::Sinks {
                 control: control.clone(),
                 mirrors: mirrors.clone(),
                 hub: hub.clone(),
+                edges,
             },
             cfg.deliveries_kept_for,
         )

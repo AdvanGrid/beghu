@@ -1,12 +1,13 @@
-//! The GitHub calls this slice makes with a user's token: the OAuth web flow's code exchange and
-//! refresh, the user, and the installations and repos the user can see with their `permissions`.
+//! The GitHub calls beghu makes: with a user's token, the OAuth web flow's code exchange and
+//! refresh, the user, and the installations and repos the user can see with their `permissions`;
+//! with the App's JWT, installation tokens; and GraphQL queries with either kind of token.
 //! `GITHUB_API_URL` and `GITHUB_WEB_URL` point these at GitHub or at Fake GitHub.
 
 use crate::config::GitHubConfig;
 use serde::Deserialize;
 use std::time::Duration;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Error {
     /// 401: the access token is expired or revoked.
     Unauthorized,
@@ -252,6 +253,95 @@ impl GitHub {
             .await?;
         match res.status().as_u16() {
             200 => Ok(res.json().await?),
+            401 => Err(Error::Unauthorized),
+            s => Err(Error::Status(s)),
+        }
+    }
+
+    /// Trades the App's JWT for a token for `installation`, and when it expires (Unix seconds).
+    /// An installation token narrowed to `permissions` (GitHub's shape: `{"issues": "read"}`),
+    /// and when it expires (Unix seconds).
+    pub async fn installation_token(
+        &self,
+        jwt: &str,
+        installation: i64,
+        permissions: serde_json::Value,
+    ) -> Result<(String, i64), Error> {
+        #[derive(Deserialize)]
+        struct Answer {
+            token: String,
+            expires_at: String,
+        }
+        let res = self
+            .http
+            .post(format!(
+                "{}/app/installations/{installation}/access_tokens",
+                self.api
+            ))
+            .bearer_auth(jwt)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+            .json(&serde_json::json!({ "permissions": permissions }))
+            .send()
+            .await?;
+        match res.status().as_u16() {
+            201 | 200 => {
+                let a: Answer = res.json().await?;
+                let expires = crate::webhook::parse_time(&a.expires_at)
+                    .ok_or_else(|| Error::Malformed(format!("expires_at {:?}", a.expires_at)))?;
+                Ok((a.token, expires))
+            }
+            401 => Err(Error::Unauthorized),
+            s => Err(Error::Status(s)),
+        }
+    }
+
+    /// A GraphQL query, by operation name; its `data`. `node(id:)` for an id GitHub doesn't show
+    /// the token (deleted, transferred, out of sight) answers `node: null` with a `NOT_FOUND`
+    /// error on `["node"]` (docs/research/issue-edge-cases.md): that is `data` with a null
+    /// `node`. Any other error from GitHub (a query it can't run) comes back as `Malformed`.
+    pub async fn graphql<T: serde::de::DeserializeOwned>(
+        &self,
+        token: &str,
+        operation: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<T, Error> {
+        #[derive(Deserialize)]
+        struct Answer<T> {
+            data: Option<T>,
+            #[serde(default)]
+            errors: Vec<serde_json::Value>,
+        }
+        let res = self
+            .http
+            .post(format!("{}/graphql", self.api))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "query": query, "variables": variables, "operationName": operation,
+            }))
+            .send()
+            .await?;
+        match res.status().as_u16() {
+            200 => {
+                let a: Answer<serde_json::Value> = res.json().await?;
+                let node_gone = a.data.as_ref().is_some_and(|d| d["node"].is_null());
+                let errors: Vec<_> = a
+                    .errors
+                    .iter()
+                    .filter(|e| {
+                        !(node_gone
+                            && e["type"] == "NOT_FOUND"
+                            && e["path"] == serde_json::json!(["node"]))
+                    })
+                    .collect();
+                match (a.data, errors.first()) {
+                    (Some(d), None) => serde_json::from_value(d)
+                        .map_err(|e| Error::Malformed(format!("GraphQL {operation}: {e}"))),
+                    (_, Some(e)) => Err(Error::Malformed(format!("GraphQL {operation}: {e}"))),
+                    (None, None) => Err(Error::Malformed(format!("GraphQL {operation}: no data"))),
+                }
+            }
             401 => Err(Error::Unauthorized),
             s => Err(Error::Status(s)),
         }

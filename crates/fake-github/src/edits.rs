@@ -9,6 +9,11 @@
 //!   "type": "Bug" | null }
 //! ```
 //!
+//! Relationship changes name the other issue (`repo#n`, `owner/repo#n` or `#n`), which may be in
+//! a repo the App isn't installed on: `add_sub_issue`/`remove_sub_issue` (the edited issue is the
+//! parent), `add_blocked_by`/`remove_blocked_by` and `add_relates_to`/`remove_relates_to` (see
+//! `relationships.rs` for GitHub's rules and deliveries).
+//!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
 //! (`untyped`), as GitHub's `PATCH /repos/{owner}/{repo}/issues/{number}` takes it. A PR has no
@@ -18,6 +23,7 @@
 use crate::Fake;
 use crate::api::{self, rfc3339};
 use crate::control::bad_request;
+use crate::relationships;
 use crate::webhooks::{
     Delivery, author_association, envelope, issue_json, issue_type_json, label_json, user_json,
 };
@@ -45,6 +51,9 @@ pub(crate) struct Edit {
     /// Absent: unchanged. `null`: untyped. A name: that type.
     #[serde(rename = "type", default, deserialize_with = "present")]
     issue_type: Option<Option<String>>,
+    /// Sub-issue, dependency and relates-to changes (see `relationships.rs`).
+    #[serde(flatten)]
+    relationships: relationships::Asks,
 }
 
 /// A field that's present, `null` included: `Some(None)` for `null`, so absent stays `None`.
@@ -125,6 +134,10 @@ fn apply(
         return refuse("the sender isn't a user".into());
     };
     let sender = user_json(sender.id, &sender.login, sender.avatar_url.as_deref());
+    let links = match relationships::plan(tx, id, repo.id, &e.relationships)? {
+        Ok(links) => links,
+        Err(why) => return refuse(why),
+    };
     let mut add = Vec::new();
     let mut remove = Vec::new();
     for (names, into) in [(&e.add_labels, &mut add), (&e.remove_labels, &mut remove)] {
@@ -167,16 +180,25 @@ fn apply(
             before.closed_at,
         ),
     };
-    q::update_issue(
-        tx,
-        id,
-        &title,
-        body.as_deref(),
-        &state,
-        state_reason.as_deref(),
-        closed_at,
-        at,
-    )?;
+    // Relationship changes alone don't bump `updated_at` on GitHub.
+    let props = e.title.is_some()
+        || e.body.is_some()
+        || e.state.is_some()
+        || !e.add_labels.is_empty()
+        || !e.remove_labels.is_empty()
+        || e.comment.is_some();
+    if props {
+        q::update_issue(
+            tx,
+            id,
+            &title,
+            body.as_deref(),
+            &state,
+            state_reason.as_deref(),
+            closed_at,
+            at,
+        )?;
+    }
     // Setting the type it already has changes nothing and sends nothing.
     let typed = match &e.issue_type {
         Some(t) if *t != before.issue_type => {
@@ -273,5 +295,6 @@ fn apply(
             json!({ "comment": c }),
         ));
     }
+    out.extend(relationships::apply(tx, &links, &sender)?);
     Ok(Ok((issue, out)))
 }

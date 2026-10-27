@@ -59,14 +59,45 @@ pub struct Summary {
     pub detail_targets: Vec<i64>,
     /// Every stub's id: issues in the unsynced repo.
     pub stub_ids: Vec<i64>,
+    /// Their numbers, in the same order.
+    pub stub_numbers: Vec<i64>,
+    /// The numbers of the stubs no edge references (yet).
+    pub unlinked_stubs: Vec<i64>,
+    /// Open issues with no relationships of any kind, outside `detail_targets`, for tests to
+    /// link: 8 in `web`, 4 in `api` and 2 in `docs`.
+    pub unlinked: Vec<Unlinked>,
+    /// Closed issues in `web` with no relationships: 2.
+    pub unlinked_closed: Vec<Unlinked>,
+}
+
+/// An issue with no relationships.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unlinked {
+    pub repo: &'static str,
+    pub number: i64,
+    pub id: i64,
+    pub node_id: String,
 }
 
 impl Summary {
     pub fn to_json(&self, scale: Scale) -> String {
         let targets: Vec<String> = self.detail_targets.iter().map(i64::to_string).collect();
         let stubs: Vec<String> = self.stub_ids.iter().map(i64::to_string).collect();
+        let stub_numbers: Vec<String> = self.stub_numbers.iter().map(i64::to_string).collect();
+        let unlinked_stubs: Vec<String> = self.unlinked_stubs.iter().map(i64::to_string).collect();
+        let json = |us: &[Unlinked]| -> String {
+            us.iter()
+                .map(|u| {
+                    format!(
+                        "{{ \"repo\": \"{}\", \"number\": {}, \"id\": {}, \"node_id\": \"{}\" }}",
+                        u.repo, u.number, u.id, u.node_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",\n    ")
+        };
         format!(
-            "{{\n  \"scale\": \"{}\",\n  \"generator\": \"{GENERATOR_HASH}\",\n  \"fixture_now\": {FIXTURE_NOW},\n  \"issues\": {},\n  \"prs\": {},\n  \"stubs\": {},\n  \"comments\": {},\n  \"relationships\": {{ \"sub\": {}, \"blocks\": {}, \"relates\": {}, \"closes\": {}, \"stub_edges\": {} }},\n  \"open_issues\": {},\n  \"detail_targets\": [{}],\n  \"stub_ids\": [{}]\n}}\n",
+            "{{\n  \"scale\": \"{}\",\n  \"generator\": \"{GENERATOR_HASH}\",\n  \"fixture_now\": {FIXTURE_NOW},\n  \"issues\": {},\n  \"prs\": {},\n  \"stubs\": {},\n  \"comments\": {},\n  \"relationships\": {{ \"sub\": {}, \"blocks\": {}, \"relates\": {}, \"closes\": {}, \"stub_edges\": {} }},\n  \"open_issues\": {},\n  \"detail_targets\": [{}],\n  \"stub_ids\": [{}],\n  \"stub_numbers\": [{}],\n  \"unlinked_stubs\": [{}],\n  \"unlinked\": [\n    {}\n  ],\n  \"unlinked_closed\": [\n    {}\n  ]\n}}\n",
             scale.name(),
             self.issues,
             self.prs,
@@ -79,7 +110,11 @@ impl Summary {
             self.stub_edges,
             self.open_issues,
             targets.join(", "),
-            stubs.join(", ")
+            stubs.join(", "),
+            stub_numbers.join(", "),
+            unlinked_stubs.join(", "),
+            json(&self.unlinked),
+            json(&self.unlinked_closed)
         )
     }
 }
@@ -378,6 +413,7 @@ impl Words {
 struct Item {
     id: i64,
     repo: i64,
+    number: i64,
     kind: &'static str,
     open: bool,
     created: i64,
@@ -474,6 +510,8 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             milestones,
         });
     }
+    // Public, so every account and the App's installation can see its issues: edges to them are
+    // kept, as stubs. A private repo the App isn't installed on would be invisible to both.
     let unsynced_repo = 9_000_100;
     q::insert_repo(
         tx,
@@ -481,7 +519,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
         &format!("R_kw{unsynced_repo}"),
         OWNER,
         UNSYNCED_REPO,
-        true,
+        false,
         None,
         false,
         None,
@@ -599,6 +637,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             items.push(Item {
                 id,
                 repo: repo.id,
+                number: idx as i64 + 1,
                 kind,
                 open: !closed,
                 created: created_at,
@@ -666,6 +705,8 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     };
     let (mut sub, mut blocks, mut relates, mut closes) = (0, 0, 0, 0);
     let mut has_parent = std::collections::HashSet::new();
+    // Every item at either end of an edge.
+    let mut linked = std::collections::HashSet::new();
     for parent in &issues {
         if !r.chance(0.03) {
             continue;
@@ -682,6 +723,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                 continue;
             }
             q::add_relationship(tx, "sub", parent.id, child, Some(position), seq)?;
+            linked.extend([parent.id, child]);
             position += 1.0;
             sub += 1;
         }
@@ -695,6 +737,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                     other_repo_issue(r, it.repo)
                 };
                 if blocker != it.id {
+                    linked.extend([blocker, it.id]);
                     blocks += q::add_relationship(tx, "blocks", blocker, it.id, None, seq)?;
                 }
             }
@@ -707,6 +750,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                     other_repo_issue(r, it.repo)
                 };
                 if other != it.id {
+                    linked.extend([other, it.id]);
                     relates += q::add_relationship(
                         tx,
                         "relates",
@@ -723,13 +767,15 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     // Linked PRs: some PRs close an issue in their repo.
     for pr in items.iter().filter(|i| i.kind == "pr") {
         if r.chance(0.3) {
-            closes +=
-                q::add_relationship(tx, "closes", pr.id, r.pick(in_repo(pr.repo)).id, None, seq)?;
+            let issue = r.pick(in_repo(pr.repo)).id;
+            linked.extend([pr.id, issue]);
+            closes += q::add_relationship(tx, "closes", pr.id, issue, None, seq)?;
         }
     }
 
     // Stubs: issues in the unsynced repo, reached only through relationships.
     let mut stubs = Vec::new();
+    let mut stub_numbers = Vec::new();
     for s in 0..40 {
         let id = next_item;
         next_item += 1;
@@ -746,6 +792,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             seq,
         )?;
         stubs.push(id);
+        stub_numbers.push(100 + s * 7);
     }
     let mut stub_edges = 0;
     for _ in 0..60 {
@@ -760,13 +807,53 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
             (it, stub)
         };
         stub_edges += q::add_relationship(tx, kind, src, dst, None, seq)?;
+        linked.extend([src, dst]);
     }
+
+    let unlinked_stubs = stubs
+        .iter()
+        .zip(&stub_numbers)
+        .filter(|(id, _)| !linked.contains(*id))
+        .map(|(_, n)| *n)
+        .collect();
+    let free = |name: &'static str, open: bool, n: usize| -> Vec<Unlinked> {
+        let repo = repos[REPOS.iter().position(|(r, _)| *r == name).unwrap()].id;
+        let mut free: Vec<&Item> = issues
+            .iter()
+            .copied()
+            .filter(|i| {
+                i.repo == repo
+                    && i.open == open
+                    && !linked.contains(&i.id)
+                    && !detail_targets.contains(&i.id)
+            })
+            .collect();
+        free.sort_by_key(|i| i.number);
+        free.into_iter()
+            .take(n)
+            .map(|i| Unlinked {
+                repo: name,
+                number: i.number,
+                id: i.id,
+                node_id: format!("I_kw{}", radix36(i.id)),
+            })
+            .collect()
+    };
+    let mut unlinked = Vec::new();
+    for (name, n) in [("web", 8), ("api", 4), ("docs", 2)] {
+        unlinked.extend(free(name, true, n));
+    }
+    let unlinked_closed = free("web", false, 2);
 
     Ok(Summary {
         issues: issues.len(),
         prs: items.len() - issues.len(),
         stubs: stubs.len(),
         stub_ids: stubs,
+        stub_numbers,
+        unlinked_stubs,
+        unlinked,
+        unlinked_closed,
         comments: comment_total,
         sub,
         blocks,

@@ -179,6 +179,8 @@ impl Stack {
                 web_url: self.fake_api.clone(),
                 client_id: CLIENT_ID.into(),
                 client_secret: CLIENT_SECRET.into(),
+                app_id: fake_github::DEV_APP_ID.to_string(),
+                app_key: fake_github::DEV_APP_KEY.into(),
             },
             web_dir: Some(self.web.clone()),
             mirrors: mirror_db_config(),
@@ -187,6 +189,7 @@ impl Stack {
             webhook_secret: WEBHOOK_SECRET.into(),
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
+            read_back_retries: beghu::default_read_back_retries(),
         };
         adjust(&mut cfg);
         let app = beghu::App::open(cfg).await?;
@@ -513,4 +516,22 @@ pub fn ids_of(ev: &Sse) -> Vec<i64> {
         .iter()
         .map(|i| i.as_i64().unwrap())
         .collect()
+}
+
+/// Holds the write lock on a SQLite file, as another writer would, until dropped. Writers that
+/// meet it wait out SQLite's 5 s busy timeout and then fail.
+pub struct WriteLock(rusqlite::Connection);
+
+impl WriteLock {
+    pub fn take(path: &std::path::Path) -> WriteLock {
+        let c = rusqlite::Connection::open(path).unwrap();
+        // `BEGIN IMMEDIATE` through rusqlite's own transaction, kept open by forgetting it.
+        let mut lock = WriteLock(c);
+        std::mem::forget(
+            lock.0
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap(),
+        );
+        lock
+    }
 }

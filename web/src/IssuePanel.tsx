@@ -29,6 +29,7 @@ import {
 import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
 import type { User } from "./bindings/User";
 import { coalesced, onPush, resetAt } from "./live";
+import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { IssueNotice, resetOnChange } from "./Root";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
@@ -328,6 +329,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           ×
         </a>
       </div>
+      <ParentCrumb rels={d().relationships} search={props.search} />
       <h2 {...stylex.attrs(s.title)}>{d().title}</h2>
       <dl {...stylex.attrs(s.props)}>
         <dt {...stylex.attrs(s.key)}>Assignees</dt>
@@ -359,6 +361,8 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           </Show>
         </dd>
       </dl>
+      <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
+      <RelatesTo rels={d().relationships} search={props.search} />
       <Byline author={d().author} top>
         opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
       </Byline>
@@ -368,6 +372,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           {d().body}
         </Show>
       </div>
+      <SubIssues rels={d().relationships} search={props.search} />
       <h3 {...stylex.attrs(s.section)}>
         Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
         <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>

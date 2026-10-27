@@ -5,6 +5,7 @@
 
 use crate::auth::Session;
 use crate::error::ApiError;
+use crate::relationships::{self, Blocker, Progress};
 use crate::{App, query, repos};
 use axum::Json;
 use axum::extract::{Extension, Query, State};
@@ -167,6 +168,12 @@ pub struct IssueRow {
     pub issue_type: Option<String>,
     pub labels: Vec<Label>,
     pub assignees: Vec<User>,
+    /// How many open issues block it.
+    pub blocked_by: i64,
+    /// The first 8 of them, enough for the chips and the hover card.
+    pub blockers: Vec<Blocker>,
+    /// Sub-issue progress: every descendant. `null` without sub-issues.
+    pub progress: Option<Progress>,
 }
 
 #[derive(Serialize, TS)]
@@ -219,7 +226,7 @@ pub async fn issues(
     };
     let filter = list::filter(&view, s.account);
     let sort = view.sort;
-    let (rows, labels, assignees, next, last) = app
+    let (rows, labels, assignees, mut related, next, last) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
             // A refetch stops at its cursor, not at a page's end: the list goes on if any row
@@ -242,6 +249,7 @@ pub async fn issues(
                 rows,
                 q::hydrate_labels(c, &ids)?,
                 q::hydrate_assignees(c, &ids)?,
+                relationships::for_rows(c, &ids)?,
                 next,
                 last,
             ))
@@ -265,6 +273,7 @@ pub async fn issues(
         .into_iter()
         .map(|r| {
             let (labels, assignees) = by_item.remove(&r.id).unwrap_or_default();
+            let rel = related.remove(&r.id).unwrap_or_default();
             IssueRow {
                 id: r.id,
                 kind: r.kind,
@@ -284,6 +293,9 @@ pub async fn issues(
                 comments: r.comments_count,
                 labels,
                 assignees,
+                blocked_by: rel.blocked_by,
+                blockers: rel.blockers,
+                progress: rel.progress,
             }
         })
         .collect();

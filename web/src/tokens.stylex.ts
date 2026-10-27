@@ -16,7 +16,13 @@ export const colors = stylex.defineVars({
   open: "light-dark(#1a7f37, #3fb950)",
   done: "light-dark(#8250df, #a371f7)",
   notPlanned: "light-dark(#6e7781, #8b949e)",
+  // Also a blocked issue's edge and count, and a blocker that is itself blocked.
   danger: "light-dark(#cf222e, #f85149)",
+  // A blocker nobody owns.
+  unowned: "light-dark(#9a6700, #d29922)",
+  // Hover cards, over the list.
+  pop: "light-dark(#ffffff, #18181b)",
+  popShadow: "light-dark(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.6))",
   // State badges: filled, under accentFg text.
   openBg: "light-dark(#1f883d, #238636)",
   doneBg: "light-dark(#8250df, #8957e5)",

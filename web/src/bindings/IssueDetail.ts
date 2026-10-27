@@ -3,6 +3,7 @@ import type { CommentOrder } from "./CommentOrder";
 import type { CommentPage } from "./CommentPage";
 import type { Label } from "./Label";
 import type { Milestone } from "./Milestone";
+import type { Relationships } from "./Relationships";
 import type { User } from "./User";
 
 export type IssueDetail = { id: number, 
@@ -49,4 +50,4 @@ comments: CommentPage,
 /**
  * Every comment the thread has.
  */
-comment_total: number, };
+comment_total: number, relationships: Relationships, };

@@ -31,8 +31,7 @@ async function fake(path: string, body: unknown, method = "POST"): Promise<void>
 /** `repo` and `number` of the `i`th row on screen. */
 async function rowRef(page: Page, i: number): Promise<{ repo: string; number: number; id: string }> {
   const row = page.locator('[data-perf="row"]').nth(i);
-  const texts = await row.locator(":scope > span").allTextContents();
-  const ref = texts.map((t) => /^([\w.-]+)#(\d+)$/.exec(t.trim())).find(Boolean)!;
+  const ref = /^([\w.-]+)#(\d+)$/.exec((await row.locator('[data-perf="ref"]').textContent())!.trim())!;
   return { repo: ref[1]!, number: Number(ref[2]), id: (await row.getAttribute("data-id"))! };
 }
 

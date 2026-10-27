@@ -63,9 +63,12 @@ Commands:
   fake down | fake up         GitHub unreachable (new connections dropped), or back.
   fake edit REPO#N [--title T] [--body B] [--close [--reason not_planned]] [--reopen]
             [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
+            [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N]
+            [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]
                               An outside edit on "GitHub" (as an agent with gh would make
                               it); its webhooks reach the server about a second later. REPO
-                              is a fixture repo name (web) or owner/name (acme/web).
+                              is a fixture repo name (web) or owner/name (acme/web). R#N may
+                              be in an unsynced repo (partner-sdk#100), or #N in REPO.
   fake webhooks drop|duplicate|reorder N
                               The next N deliveries are lost, sent twice under one GUID,
                               or (reorder, N >= 2) held and sent newest first.
@@ -363,7 +366,7 @@ async function control(method: string, path: string, body?: unknown): Promise<un
 /** `./dev-ctl fake edit REPO#N …`: the control port's `POST /edit` body. */
 function editBody(target: string | undefined, opts: Record<string, string>, set: Set<string>): Record<string, unknown> {
   const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
-  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]");
+  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]");
   if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
   const list = (v: string | undefined) => (v === undefined ? [] : v.split(",").map((l) => l.trim()).filter(Boolean));
   const body: Record<string, unknown> = { repo: m[1], number: Number(m[2]) };
@@ -379,6 +382,15 @@ function editBody(target: string | undefined, opts: Record<string, string>, set:
   if (opts["--label"]) body.add_labels = list(opts["--label"]);
   if (opts["--unlabel"]) body.remove_labels = list(opts["--unlabel"]);
   if (opts["--comment"] !== undefined) body.comment = opts["--comment"];
+  const links: [string, string][] = [
+    ["--add-sub-issue", "add_sub_issue"],
+    ["--remove-sub-issue", "remove_sub_issue"],
+    ["--add-blocked-by", "add_blocked_by"],
+    ["--remove-blocked-by", "remove_blocked_by"],
+    ["--relate", "add_relates_to"],
+    ["--unrelate", "remove_relates_to"],
+  ];
+  for (const [flag, field] of links) if (opts[flag]) body[field] = opts[flag];
   if (Object.keys(body).length === 2) throw new Usage("fake edit needs something to change; see ./dev-ctl help");
   return body;
 }
@@ -393,7 +405,25 @@ async function fake(args: string[]): Promise<void> {
   const [sub = "state", ...rest] = args;
   const { opts, set, pos, json } = parse(
     rest,
-    ["--count", "--retry-after", "--access-ttl", "--refresh-ttl", "--title", "--body", "--reason", "--label", "--unlabel", "--comment", "--as"],
+    [
+      "--count",
+      "--retry-after",
+      "--access-ttl",
+      "--refresh-ttl",
+      "--title",
+      "--body",
+      "--reason",
+      "--label",
+      "--unlabel",
+      "--comment",
+      "--as",
+      "--add-sub-issue",
+      "--remove-sub-issue",
+      "--add-blocked-by",
+      "--remove-blocked-by",
+      "--relate",
+      "--unrelate",
+    ],
     ["--close", "--reopen"],
   );
   const done = (text: string) => print(json, { ok: true }, text);

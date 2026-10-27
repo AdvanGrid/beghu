@@ -1,0 +1,21 @@
+# gitleaks: the default rules, plus the private keys committed on purpose.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dev and test keys, public on purpose"
+paths = [
+  # Fake GitHub's dev App key. Fake GitHub checks JWTs against it in local dev and CI. It is
+  # public, so it signs for nothing else: the server refuses it unless GITHUB_API_URL is on the
+  # same machine (crates/server/src/config.rs).
+  '''^crates/fake-github/src/dev-app-key\.pem$''',
+  # A second key that the dev App doesn't hold, so Fake GitHub's tests can check it refuses a
+  # JWT signed with the wrong key.
+  '''^crates/fake-github/tests/other-key\.pem$''',
+  # Bench probes saved from github.com: rendered issue HTML and GraphQL answers whose
+  # private-user-images URLs carry short-lived `?jwt=` tokens (long expired), and a Markdown
+  # corpus whose sample text trips the generic-api-key rule. Throwaway bench material, no secrets.
+  '''^bench/candidates/''',
+  # DEV_TOKEN_KEY: the dev server's BEGHU_TOKEN_KEY for local dev data only, public on purpose.
+  '''^tools/dev-ctl/src/config\.ts$''',
+]

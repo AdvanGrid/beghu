@@ -1,8 +1,9 @@
 //! The control port: what dev tooling (`./dev-ctl fake …`) and tests use to steer the fake at
 //! runtime. JSON in and out.
 //!
-//! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules, and
-//!   how many refresh tokens were honoured and how many arrived already spent.
+//! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules,
+//!   how many refresh tokens were honoured and how many arrived already spent, and each
+//!   installation token minted with its permissions.
 //! - `POST /faults/latency {endpoint, ms}`: delay calls to `endpoint`; `ms: 0` removes the rule.
 //! - `POST /faults/fail {endpoint, count, status, retry_after?}`: the next `count` calls fail.
 //! - `POST /faults/down {down}`: GitHub unreachable, or back.
@@ -12,7 +13,9 @@
 //! - `DELETE /faults`: clear every fault rule, webhook ones included.
 //! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
-//!   remove_labels?, comment?}`: an outside edit (see `edits.rs`), with its webhooks.
+//!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
+//!   remove_blocked_by?, add_relates_to?, remove_relates_to?}`: an outside edit (see `edits.rs`
+//!   and `relationships.rs`), with its webhooks.
 //! - `PUT /tokens {access_ttl?, refresh_ttl?}`: token lifetimes in seconds, for new tokens.
 //! - `PUT /clock {offset}`: run the fake's clock `offset` seconds ahead of the real one, so
 //!   tokens and codes expire without waiting.
@@ -92,6 +95,8 @@ async fn state(State(fake): State<Fake>) -> Response {
             "faults": fake.state().webhooks.rules(),
         },
         "refreshes": fake.state().refreshes.snapshot(),
+        "graphql": fake.state().graphql.snapshot(),
+        "installation_tokens": fake.state().app_tokens.minted(),
         "clock": { "offset": fake.clock_offset() },
     }))
     .into_response()
@@ -295,6 +300,8 @@ async fn reset(State(fake): State<Fake>) -> Response {
             fake.state().faults.clear();
             fake.state().webhooks.clear();
             fake.state().refreshes.clear();
+            fake.state().graphql.clear();
+            fake.state().app_tokens.clear();
             fake.set_clock_offset(0);
             *fake.state().ttl.lock().unwrap_or_else(|e| e.into_inner()) =
                 Ttl::of(&fake.state().cfg);

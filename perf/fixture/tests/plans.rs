@@ -2,7 +2,7 @@
 //! under each state and none (its first page, the page after a cursor and a live refetch through
 //! one), and the filter bar's
 //! suggestions (`/api/facets` and the facet counts) read their rows through an index on the 1k
-//! fixture. Each query is the app's own (`mirror_db::list`, `mirror_db::q`), caught with its
+//! fixture, as do a page's blockers and sub-issue progress. Each query is the app's own (`mirror_db::list`, `mirror_db::q`), caught with its
 //! parameters from SQLite's trace hook and handed to `dbrt::plan::explain`.
 
 use fixture::{Scale, cached};
@@ -42,6 +42,15 @@ fn fixture() -> (MutexGuard<'static, ()>, Connection) {
 
 /// The plan of the first statement `run` makes whose SQL contains `marker`, one line per step.
 fn plan_of(c: &Connection, marker: &str, run: impl FnOnce(&Connection)) -> Vec<String> {
+    plan_and_sql(c, marker, run).0
+}
+
+/// `plan_of`, with the statement's SQL.
+fn plan_and_sql(
+    c: &Connection,
+    marker: &str,
+    run: impl FnOnce(&Connection),
+) -> (Vec<String>, String) {
     RAN.lock().unwrap().clear();
     run(c);
     // FTS5 runs statements of its own on its shadow tables around the app's.
@@ -52,7 +61,7 @@ fn plan_of(c: &Connection, marker: &str, run: impl FnOnce(&Connection)) -> Vec<S
         .find(|s| s.contains(marker))
         .cloned()
         .unwrap_or_else(|| panic!("no statement with {marker:?} ran"));
-    dbrt::plan::explain(c, &sql).unwrap()
+    (dbrt::plan::explain(c, &sql).unwrap(), sql)
 }
 
 const ME: i64 = 1000; // tomsj, as the fixture numbers its users
@@ -492,6 +501,60 @@ fn facet_counts_read_only_the_views_rows() {
             let p = plan_of(&c, "FROM items i", |c| run(c, &f));
             if p.iter().any(|l| l.starts_with("SCAN i ")) {
                 bad.push(format!("{what} under {view:?}: {p:#?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The mirror's tables the relationship queries read.
+const TABLES: [&str; 5] = ["items", "relationships", "repos", "users", "item_assignees"];
+
+/// Whether a `SCAN <alias>` step reads a whole table of the mirror: `sql` names one of `TABLES`
+/// as that alias (`items i`, `relationships AS e`). A scan of the query's own intermediate
+/// results (a CTE such as `tree t`, a subquery, `json_each`), all built from the page's ids,
+/// passes.
+fn scans_a_table(sql: &str, line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("SCAN ") else {
+        return false;
+    };
+    if rest.contains("VIRTUAL TABLE") {
+        return false;
+    }
+    let alias = rest.split(' ').next().unwrap_or(rest);
+    let words: Vec<&str> = sql
+        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == '(' || ch == ')')
+        .filter(|w| !w.is_empty() && !w.eq_ignore_ascii_case("AS"))
+        .collect();
+    TABLES.contains(&alias)
+        || words
+            .windows(2)
+            .any(|w| w[1] == alias && TABLES.contains(&w[0]))
+}
+
+/// What a page's rows carry of their relationships (`relationships::for_rows` in the server):
+/// each row's open blockers and its sub-issue progress, for a whole page at once. Each reads the
+/// page's ids and finds their edges and ends through an index, never a walk of every edge or
+/// item, under every sort's first page.
+#[test]
+fn a_pages_blockers_and_progress_read_through_indexes() {
+    let (_g, c) = fixture();
+    type Run = fn(&Connection, &[i64]);
+    let queries: [(&str, Run); 2] = [
+        ("row_blockers", |c, ids| drop(q::row_blockers(c, ids))),
+        ("progress", |c, ids| drop(q::progress(c, ids))),
+    ];
+    let mut bad = Vec::new();
+    for (what, view) in ordered_views() {
+        let ids: Vec<i64> = list::ids(&c, view.sort, list::filter(&view, ME), Span::Top, 100)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        for (name, run) in queries {
+            let (p, sql) = plan_and_sql(&c, "json_each", |c| run(c, &ids));
+            if p.iter().any(|l| scans_a_table(&sql, l)) {
+                bad.push(format!("{name} for {what}: {p:#?}"));
             }
         }
     }

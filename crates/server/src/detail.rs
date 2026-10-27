@@ -16,6 +16,7 @@ use crate::App;
 use crate::api::{CommentOrder, Label, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
+use crate::relationships::{self, Relationships};
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use dbrt::filter::Filter;
@@ -62,6 +63,7 @@ pub struct IssueDetail {
     pub comments: CommentPage,
     /// Every comment the thread has.
     pub comment_total: i64,
+    pub relationships: Relationships,
 }
 
 #[derive(Serialize, TS)]
@@ -209,10 +211,11 @@ pub async fn issue(
                 q::hydrate_assignees(c, &[id])?,
                 comments(c, id, order, span)?,
                 q::comment_total(c, id)?,
+                relationships::for_item(c, id)?,
             )))
         })
         .await??;
-    let (item, labels, assignees, comments, comment_total) = read;
+    let (item, labels, assignees, comments, comment_total, relationships) = read;
     let milestone = match (item.milestone_title, item.milestone_state) {
         (Some(title), Some(state)) => Some(Milestone {
             title,
@@ -252,6 +255,7 @@ pub async fn issue(
         comment_order: order,
         comments,
         comment_total,
+        relationships,
     }))
 }
 

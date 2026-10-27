@@ -960,3 +960,573 @@ async fn webhook_faults_drop_duplicate_delay_and_reorder_the_next_deliveries() {
     assert_eq!(titles(&got), ["title 8"]);
     assert!(got[0].at.duration_since(sent) < Duration::from_millis(1800));
 }
+
+/// A fixture issue with no relationships: `(repo#number, id, node id)`.
+fn unlinked(i: usize) -> (String, i64, String) {
+    let path = fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH));
+    let summary: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let u = &summary["unlinked"][i];
+    (
+        format!("{}#{}", u["repo"].as_str().unwrap(), u["number"]),
+        u["id"].as_i64().unwrap(),
+        u["node_id"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// The first fixture issues in `repo` with no relationships, as [`unlinked`] gives them.
+fn unlinked_in(repo: &str) -> Vec<(String, i64, String)> {
+    (0..14)
+        .map(unlinked)
+        .filter(|(r, _, _)| r.starts_with(&format!("{repo}#")))
+        .collect()
+}
+
+/// An edit of the issue `target` (`repo#n`), with `fields`.
+fn edit_of(target: &str, fields: Value) -> Value {
+    let (repo, number) = target.split_once('#').unwrap();
+    let mut e = json!({ "repo": repo, "number": number.parse::<i64>().unwrap() });
+    for (k, v) in fields.as_object().unwrap() {
+        e[k] = v.clone();
+    }
+    e
+}
+
+/// `(event, action, repo, the keys the payload carries besides the envelope)` of each delivery.
+fn shapes(got: &[Received]) -> Vec<(String, String, String, Vec<String>)> {
+    got.iter()
+        .map(|r| {
+            let p = r.payload();
+            let mut keys: Vec<String> = p
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|k| {
+                    !["action", "repository", "sender", "installation"].contains(&k.as_str())
+                })
+                .cloned()
+                .collect();
+            keys.sort();
+            (
+                r.event.clone(),
+                p["action"].as_str().unwrap().to_owned(),
+                p["repository"]["name"].as_str().unwrap().to_owned(),
+                keys,
+            )
+        })
+        .collect()
+}
+
+fn keys(k: &[&str]) -> Vec<String> {
+    k.iter().map(|s| s.to_string()).collect()
+}
+
+#[tokio::test]
+async fn a_sub_issue_or_dependency_change_sends_a_delivery_per_side_and_across_repos_each_omits_the_other_issue()
+ {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let (parent, child, blocked) = (&web[0].0, &web[1].0, &web[2].0);
+    let blocker = &api[0].0;
+
+    fake.edit(edit_of(parent, json!({ "add_sub_issue": child })))
+        .await;
+    fake.edit(edit_of(blocked, json!({ "add_blocked_by": blocker })))
+        .await;
+    fake.edit(edit_of(blocked, json!({ "remove_blocked_by": blocker })))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let both_subs = keys(&[
+        "parent_issue",
+        "parent_issue_id",
+        "sub_issue",
+        "sub_issue_id",
+    ]);
+    assert_eq!(
+        shapes(&got),
+        [
+            (
+                "sub_issues".into(),
+                "sub_issue_added".into(),
+                "web".into(),
+                both_subs.clone()
+            ),
+            (
+                "sub_issues".into(),
+                "parent_issue_added".into(),
+                "web".into(),
+                both_subs
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocked_by_added".into(),
+                "web".into(),
+                keys(&["blocked_issue", "blocked_issue_id"])
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocking_added".into(),
+                "api".into(),
+                keys(&["blocking_issue", "blocking_issue_id"])
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocked_by_removed".into(),
+                "web".into(),
+                keys(&["blocked_issue", "blocked_issue_id"])
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocking_removed".into(),
+                "api".into(),
+                keys(&["blocking_issue", "blocking_issue_id"])
+            ),
+        ]
+    );
+    let sub = got[0].payload();
+    assert_eq!(sub["parent_issue_id"], web[0].1);
+    assert_eq!(sub["sub_issue_id"], web[1].1);
+    assert_eq!(sub["sub_issue"]["id"], web[1].1);
+    assert_eq!(got[2].payload()["blocked_issue_id"], web[2].1);
+    assert_eq!(got[3].payload()["blocking_issue_id"], api[0].1);
+}
+
+#[tokio::test]
+async fn relates_to_sends_one_delivery_within_a_repo_one_per_repo_across_and_none_where_the_app_isnt_installed()
+ {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let summary: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stub = format!("partner-sdk#{}", summary["stub_numbers"][0]);
+
+    for other in [&web[1].0, &api[0].0, &stub] {
+        fake.edit(edit_of(&web[0].0, json!({ "add_relates_to": other })))
+            .await;
+    }
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let own = keys(&["issue", "issue_id"]);
+    assert_eq!(
+        shapes(&got),
+        [
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "web".into(),
+                keys(&["issue", "issue_id", "related_issue", "related_issue_id"])
+            ),
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "web".into(),
+                own.clone()
+            ),
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "api".into(),
+                own.clone()
+            ),
+            // partner-sdk has no installation: only web hears of it.
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "web".into(),
+                own
+            ),
+        ]
+    );
+    // Within a repo, `issue` is the side the change was made from.
+    assert_eq!(got[0].payload()["issue_id"], web[0].1);
+    assert_eq!(got[0].payload()["related_issue_id"], web[1].1);
+    assert_eq!(got[2].payload()["issue_id"], api[0].1);
+}
+
+#[tokio::test]
+async fn a_relationship_github_would_refuse_is_refused_and_sends_nothing() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let web = unlinked_in("web");
+    let (a, b, c) = (&web[0].0, &web[1].0, &web[2].0);
+    // a > b, and c blocked by a.
+    fake.edit(edit_of(a, json!({ "add_sub_issue": b }))).await;
+    fake.edit(edit_of(c, json!({ "add_blocked_by": a }))).await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+
+    for (target, ask) in [
+        // Itself.
+        (a, json!({ "add_relates_to": a })),
+        // A second parent.
+        (c, json!({ "add_sub_issue": b })),
+        // A loop.
+        (b, json!({ "add_sub_issue": a })),
+        (a, json!({ "add_blocked_by": c })),
+        // A duplicate.
+        (c, json!({ "add_blocked_by": a })),
+        // A sub-issue that isn't one.
+        (a, json!({ "remove_sub_issue": c })),
+        // Nothing there.
+        (a, json!({ "add_blocked_by": "web#999999" })),
+    ] {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit_of(target, ask.clone()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{target} {ask}");
+    }
+    // Removing a dependency or a relates-to link that isn't there succeeds, quietly.
+    let done = fake
+        .edit(edit_of(
+            b,
+            json!({ "remove_blocked_by": c, "remove_relates_to": a }),
+        ))
+        .await;
+    assert_eq!(done["deliveries"], 0);
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn sub_issues_nest_at_most_8_levels() {
+    let fake = start().await;
+    let mut chain: Vec<String> = unlinked_in("web").into_iter().map(|u| u.0).collect();
+    chain.extend(unlinked_in("api").into_iter().map(|u| u.0).take(1));
+    // web#0 > web#1 > … > web#7: 8 levels.
+    for w in chain[..8].windows(2) {
+        fake.edit(edit_of(&w[0], json!({ "add_sub_issue": w[1] })))
+            .await;
+    }
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&edit_of(&chain[7], json!({ "add_sub_issue": chain[8] })))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+/// The dev App's JWT: RS256 over `{iat, exp, iss}` with its private key.
+fn app_jwt(iat: i64, exp: i64, key_pem: &str) -> String {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let der: String = key_pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(der)
+        .unwrap();
+    let key = ring::rsa::KeyPair::from_der(&der).unwrap();
+    let msg = format!(
+        "{}.{}",
+        b64.encode(br#"{"alg":"RS256","typ":"JWT"}"#),
+        b64.encode(
+            json!({ "iat": iat, "exp": exp, "iss": fake_github::DEV_APP_ID.to_string() })
+                .to_string()
+        )
+    );
+    let mut sig = vec![0; key.public().modulus_len()];
+    key.sign(
+        &ring::signature::RSA_PKCS1_SHA256,
+        &ring::rand::SystemRandom::new(),
+        msg.as_bytes(),
+        &mut sig,
+    )
+    .unwrap();
+    format!("{msg}.{}", b64.encode(sig))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+const EDGES: &str = "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!) { node(id: $id) { ... on Issue { databaseId } } }";
+
+impl Fake {
+    async fn installation_token(&self, jwt: &str) -> reqwest::Response {
+        self.http
+            .post(format!(
+                "{}/app/installations/41000001/access_tokens",
+                self.api
+            ))
+            .bearer_auth(jwt)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    async fn edges(&self, token: &str, node_id: &str) -> Value {
+        let res = self
+            .http
+            .post(format!("{}/graphql", self.api))
+            .bearer_auth(token)
+            .json(&json!({
+                "query": EDGES,
+                "variables": { "id": node_id, "sub": true, "blocks": true, "relates": true },
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json().await.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn the_app_trades_a_signed_jwt_for_an_installation_token() {
+    let fake = start().await;
+    let now = unix_now();
+    let res = fake
+        .installation_token(&app_jwt(now - 30, now + 540, fake_github::DEV_APP_KEY))
+        .await;
+    assert_eq!(res.status(), 201);
+    let body: Value = res.json().await.unwrap();
+    assert!(body["token"].as_str().unwrap().starts_with("ghs_"));
+    assert!(body["expires_at"].is_string());
+
+    // Expired, over 10 minutes long, signed with another key, or not a JWT: each a 401 with
+    // GitHub's error body. Its message text is unverified (#118), so only its shape is checked.
+    let other = include_str!("other-key.pem");
+    for (jwt, what) in [
+        (
+            app_jwt(now - 700, now - 100, fake_github::DEV_APP_KEY),
+            "expired",
+        ),
+        (
+            app_jwt(now, now + 1200, fake_github::DEV_APP_KEY),
+            "too long",
+        ),
+        (app_jwt(now - 30, now + 540, other), "another key"),
+        ("not.a.jwt".to_owned(), "not a JWT"),
+    ] {
+        let res = fake.installation_token(&jwt).await;
+        assert_eq!(res.status(), 401, "{what}");
+        let body: Value = res.json().await.unwrap();
+        assert!(body["message"].is_string(), "{what}: {body}");
+        assert_eq!(body["status"], "401", "{what}");
+    }
+}
+
+#[tokio::test]
+async fn graphql_shows_an_issues_edges_only_where_the_token_can_see_the_other_end() {
+    let fake = start().await;
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let summary: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stub = format!("partner-sdk#{}", summary["stub_numbers"][0]);
+    let (me, node) = (&web[0].0, &web[0].2);
+    fake.edit(edit_of(
+        me,
+        json!({ "add_sub_issue": web[1].0, "add_blocked_by": api[0].0, "add_relates_to": stub }),
+    ))
+    .await;
+    fake.edit(edit_of(&web[2].0, json!({ "add_sub_issue": me })))
+        .await;
+
+    let now = unix_now();
+    let res = fake
+        .installation_token(&app_jwt(now - 30, now + 540, fake_github::DEV_APP_KEY))
+        .await;
+    let token = res.json::<Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let got = fake.edges(&token, node).await;
+    let issue = &got["data"]["node"];
+    assert_eq!(issue["databaseId"], web[0].1);
+    assert_eq!(issue["parent"]["databaseId"], web[2].1);
+    assert_eq!(issue["subIssues"]["nodes"][0]["databaseId"], web[1].1);
+    assert_eq!(issue["blockedBy"]["nodes"][0]["databaseId"], api[0].1);
+    assert_eq!(issue["blockedBy"]["nodes"][0]["repository"]["name"], "api");
+    assert_eq!(issue["blocking"]["nodes"], json!([]));
+    // The App isn't installed on partner-sdk, but it's public.
+    let rel = &issue["relatesTo"]["nodes"][0];
+    assert_eq!(rel["repository"]["name"], "partner-sdk");
+    assert_eq!(rel["repository"]["isPrivate"], false);
+    assert_eq!(
+        rel["state"].as_str().map(|s| s == "OPEN" || s == "CLOSED"),
+        Some(true)
+    );
+
+    // octo-ext sees web and docs, and partner-sdk (public), but not api: that end is left out.
+    let user = fake.sign_in("octo-ext").await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let got = fake.edges(&user, node).await;
+    let issue = &got["data"]["node"];
+    assert_eq!(issue["blockedBy"]["nodes"], json!([]));
+    assert_eq!(issue["subIssues"]["nodes"][0]["databaseId"], web[1].1);
+    assert_eq!(issue["relatesTo"]["nodes"].as_array().unwrap().len(), 1);
+    // And an issue in api isn't there at all: `node` is null, with GitHub's NOT_FOUND error on
+    // it (docs/research/issue-edge-cases.md).
+    let got = fake.edges(&user, &api[0].2).await;
+    assert_eq!(got["data"]["node"], Value::Null);
+    assert_eq!(got["errors"][0]["type"], "NOT_FOUND");
+    assert_eq!(got["errors"][0]["path"], json!(["node"]));
+    // Nor is an id GitHub never had.
+    let got = fake.edges(&user, "I_unknown").await;
+    assert_eq!(got["data"]["node"], Value::Null);
+    assert_eq!(got["errors"][0]["type"], "NOT_FOUND");
+
+    // The control port counts the calls by the kind of token they came with.
+    assert_eq!(
+        fake.state().await["graphql"],
+        json!({ "installation": 1, "user": 3 })
+    );
+}
+
+#[tokio::test]
+async fn graphql_pages_relates_to_100_at_a_time_newest_first() {
+    let fake = start().await;
+    let web = unlinked_in("web");
+    let (me, node) = (&web[0].0, &web[0].2);
+    // 101 links: web issues by number, skipping what GitHub refuses (PRs, itself).
+    let mut linked = 0;
+    for n in 1.. {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit_of(
+                me,
+                json!({ "add_relates_to": format!("web#{n}") }),
+            ))
+            .send()
+            .await
+            .unwrap();
+        linked += usize::from(res.status().is_success());
+        if linked == 101 {
+            break;
+        }
+    }
+    let now = unix_now();
+    let token = fake
+        .installation_token(&app_jwt(now - 30, now + 540, fake_github::DEV_APP_KEY))
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let page = |after: Value| {
+        let (http, api, token) = (fake.http.clone(), fake.api.clone(), token.clone());
+        async move {
+            let res = http
+                .post(format!("{api}/graphql"))
+                .bearer_auth(token)
+                .json(&json!({
+                    "query": EDGES,
+                    "variables": {
+                        "id": node, "sub": false, "blocks": false, "relates": true,
+                        "relatesAfter": after,
+                    },
+                }))
+                .send()
+                .await
+                .unwrap();
+            res.json::<Value>().await.unwrap()["data"]["node"]["relatesTo"].clone()
+        }
+    };
+    let first = page(Value::Null).await;
+    let nodes = first["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 100);
+    assert_eq!(first["pageInfo"]["hasNextPage"], true);
+    let second = page(first["pageInfo"]["endCursor"].clone()).await;
+    assert_eq!(second["pageInfo"]["hasNextPage"], false);
+    let rest = second["nodes"].as_array().unwrap();
+    assert_eq!(rest.len(), 1);
+    // Newest first: the links went in by ascending number.
+    let numbers: Vec<i64> = nodes
+        .iter()
+        .chain(rest)
+        .map(|n| n["number"].as_i64().unwrap())
+        .collect();
+    let mut newest_first = numbers.clone();
+    newest_first.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(numbers, newest_first);
+}
+
+#[tokio::test]
+async fn an_installation_token_gets_the_permissions_asked_for_within_the_apps() {
+    let fake = start().await;
+    let now = unix_now();
+    let jwt = app_jwt(now - 30, now + 540, fake_github::DEV_APP_KEY);
+    let mint = |body: Value| {
+        let (http, api, jwt) = (fake.http.clone(), fake.api.clone(), jwt.clone());
+        async move {
+            http.post(format!("{api}/app/installations/41000001/access_tokens"))
+                .bearer_auth(jwt)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Without a body: everything the installation has.
+    let all: Value = fake.installation_token(&jwt).await.json().await.unwrap();
+    assert_eq!(
+        all["permissions"],
+        json!({ "issues": "write", "metadata": "read", "pull_requests": "read" })
+    );
+    // Narrowed to what's asked.
+    let res = mint(json!({ "permissions": { "issues": "read" } })).await;
+    assert_eq!(res.status(), 201);
+    let narrow: Value = res.json().await.unwrap();
+    assert_eq!(narrow["permissions"], json!({ "issues": "read" }));
+    // A body that isn't JSON: GitHub's 400.
+    let res = fake
+        .http
+        .post(format!(
+            "{}/app/installations/41000001/access_tokens",
+            fake.api
+        ))
+        .bearer_auth(&jwt)
+        .body("{permissions")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["message"], "Problems parsing JSON");
+    // More than the installation has: GitHub's 422.
+    for body in [
+        json!({ "permissions": { "administration": "write" } }),
+        json!({ "permissions": { "pull_requests": "write" } }),
+    ] {
+        assert_eq!(mint(body.clone()).await.status(), 422, "{body}");
+    }
+    // The control port lists each token minted, with its permissions.
+    let state = fake.state().await;
+    let minted: Vec<&Value> = state["installation_tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| &t["permissions"])
+        .collect();
+    assert_eq!(minted, [&all["permissions"], &narrow["permissions"]]);
+}

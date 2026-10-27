@@ -1,4 +1,5 @@
-// Small pieces the list and the detail share: an issue's state icon and a user's avatar.
+// Small pieces the list and the detail share: an issue's state icon, a user's avatar, and
+// sub-issue progress as a ring.
 import * as stylex from "@stylexjs/stylex";
 import { Show } from "solid-js";
 import { colors } from "./tokens.stylex";
@@ -42,14 +43,36 @@ export function StateIcon(props: { state: IssueState; plain?: boolean }) {
 }
 
 /** A user's initial on a colour that stays the same for their login. */
-export function Avatar(props: { login: string; size?: 18 | 20 }) {
+export function Avatar(props: { login: string; size?: 11 | 14 | 18 | 20 }) {
   return (
     <span
       title={props.login}
-      {...stylex.attrs(s.avatar, props.size === 20 && s.avatar20, AVATARS[hash(props.login) % AVATARS.length])}
+      {...stylex.attrs(s.avatar, props.size && SIZES[props.size], AVATARS[hash(props.login) % AVATARS.length])}
     >
       {props.login.slice(0, 1).toUpperCase()}
     </span>
+  );
+}
+
+/** Sub-issue progress: closed descendants against all of them, as a ring. */
+export function ProgressRing(props: { done: number; total: number }) {
+  // The ring's circumference (r = 6).
+  const C = 37.7;
+  const filled = () => (props.total > 0 ? (props.done / props.total) * C : 0);
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" {...stylex.attrs(s.icon)}>
+      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" {...stylex.attrs(s.ring)} />
+      <circle
+        cx="8"
+        cy="8"
+        r="6"
+        fill="none"
+        stroke-width="3"
+        stroke-dasharray={`${filled()} ${C}`}
+        transform="rotate(-90 8 8)"
+        {...stylex.attrs(s.ringDone)}
+      />
+    </svg>
   );
 }
 
@@ -85,12 +108,20 @@ const s = stylex.create({
     height: 18,
     width: 18,
   },
-  avatar20: {
-    fontSize: 11,
-    height: 20,
-    width: 20,
+  ring: {
+    stroke: colors.line,
+  },
+  ringDone: {
+    stroke: colors.done,
   },
 });
+
+const sizes = stylex.create({
+  s11: { fontSize: 7, height: 11, width: 11 },
+  s14: { fontSize: 8, height: 14, width: 14 },
+  s20: { fontSize: 11, height: 20, width: 20 },
+});
+const SIZES = { 11: sizes.s11, 14: sizes.s14, 18: undefined, 20: sizes.s20 };
 
 const a = stylex.create({
   c0: { backgroundColor: colors.avatar0 },

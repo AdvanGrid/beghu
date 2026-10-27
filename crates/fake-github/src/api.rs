@@ -59,8 +59,9 @@ impl FromRequestParts<Fake> for TokenUser {
     }
 }
 
-async fn authenticate(fake: &Fake, headers: &HeaderMap) -> Result<i64, Response> {
-    let token = headers
+/// The token in `Authorization: Bearer|token <token>`.
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
@@ -68,7 +69,11 @@ async fn authenticate(fake: &Fake, headers: &HeaderMap) -> Result<i64, Response>
                 .or_else(|| v.strip_prefix("bearer "))
                 .or_else(|| v.strip_prefix("token "))
         })
-        .map(str::to_owned);
+        .map(str::to_owned)
+}
+
+async fn authenticate(fake: &Fake, headers: &HeaderMap) -> Result<i64, Response> {
+    let token = bearer(headers);
     let Some(token) = token else {
         return Err(error(StatusCode::UNAUTHORIZED, "Requires authentication"));
     };
@@ -108,11 +113,6 @@ async fn user(State(fake): State<Fake>, TokenUser(id): TokenUser) -> Response {
         Ok(None) => error(StatusCode::UNAUTHORIZED, "Bad credentials"),
         Err(e) => internal(e),
     }
-}
-
-/// The App's permissions and events, as GitHub reports them on an installation.
-fn app_permissions() -> Value {
-    json!({ "issues": "write", "metadata": "read", "pull_requests": "read" })
 }
 
 const EVENTS: [&str; 10] = [
@@ -181,7 +181,7 @@ async fn installations(State(fake): State<Fake>, TokenUser(user): TokenUser) -> 
                 "app_slug": "beghu-dev",
                 "target_id": i.account_id,
                 "target_type": i.account_type,
-                "permissions": app_permissions(),
+                "permissions": crate::app::installation_permissions(),
                 "events": EVENTS,
                 "created_at": rfc3339(i.created_at),
                 "updated_at": rfc3339(i.created_at),
