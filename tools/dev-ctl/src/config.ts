@@ -45,11 +45,15 @@ export const CLIENT = { id: "Iv1.fakegithub", secret: "fake-github-secret" };
 export const DEV_WEBHOOK_SECRET = "fake-github-webhook-secret";
 
 /**
- * The dev App: its id, and its private key, which signs the JWTs the server trades with the fake
- * for installation tokens. Fake GitHub checks them against the same key (crates/fake-github).
- * Dev data only: never use it elsewhere.
+ * The dev App (crates/fake-github/src/app.rs): its id, its slug, and its private key, which signs
+ * the JWTs the server trades with the fake for installation tokens. Fake GitHub checks them
+ * against the same key. Dev data only: never use it elsewhere.
  */
-export const DEV_APP = { id: "1000001", keyFile: join(ROOT, "crates", "fake-github", "src", "dev-app-key.pem") };
+export const DEV_APP = {
+  id: "1000001",
+  slug: "beghu-dev",
+  keyFile: join(ROOT, "crates", "fake-github", "src", "dev-app-key.pem"),
+};
 
 /** The dev server's BEGHU_TOKEN_KEY (base64, 38 bytes). Dev data only: never use it elsewhere. */
 export const DEV_TOKEN_KEY = "ZGV2LW9ubHkgYmVnaHUgdG9rZW4ga2V5LCBub3QgYSBzZWNyZXQ=";
@@ -165,7 +169,7 @@ export interface FakeState {
       remaining: number;
       status: number | null;
       retry_after: number | null;
-      secondary_rate_limit?: boolean;
+      limit: "primary" | "secondary" | "graphql" | null;
       reset?: boolean;
     }[];
     rewrite: { endpoint: string; remaining: number; body: string }[];
@@ -176,6 +180,8 @@ export interface FakeState {
   webhooks: { url: string | null; faults: WebhookFaults };
   /** Seconds the fake's clock runs ahead of the real one. */
   clock: { offset: number };
+  /** Where the install page sends the browser afterwards. */
+  setup_url: string | null;
 }
 
 export interface WebhookFaults {

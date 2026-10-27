@@ -30,6 +30,17 @@ pub struct Config {
     /// How long after a failed re-read of the roles the next is tried (a minute): long enough
     /// that a failing GitHub isn't asked on every request, short enough to recover soon.
     pub roles_retry_after_failure: Duration,
+    /// How old the account's repos must be before the App's setup URL re-reads them (a minute).
+    /// Any site can send a browser there, so this bounds what it can make beghu ask GitHub; a
+    /// user back from installing sooner sees the new repos when the installation's webhook lands.
+    pub setup_reread_after: Duration,
+    /// How long after a repo's import fails (GitHub refusing a call for good) it's tried again (a
+    /// minute), doubling with each failure in a row up to six hours.
+    pub import_retry_after: Duration,
+    /// How long one of the import's calls keeps retrying a 5xx or an unanswered call (five
+    /// minutes, or ten tries, whichever comes first) before its repo's import fails for the
+    /// round. A rate limit is waited out however long it lasts.
+    pub import_give_up_after: Duration,
     /// `GITHUB_WEBHOOK_SECRET`: the App's webhook secret, which signs every delivery.
     pub webhook_secret: String,
     /// How often `/api/stream` sends a heartbeat (15 s): under the edge's idle timeout.
@@ -67,10 +78,13 @@ pub struct GitHubConfig {
     pub client_secret: String,
     /// `GITHUB_APP_ID`: the App's id, the `iss` of the JWTs it signs.
     pub app_id: String,
-    /// `GITHUB_APP_PRIVATE_KEY`: the App's private key (PEM, as GitHub hands it out), which signs
-    /// those JWTs. The App trades them for installation tokens: imports, sweeps and webhook
-    /// follow-up fetches use those.
+    /// `GITHUB_APP_PRIVATE_KEY`: the App's private key (PEM, as GitHub hands it out: PKCS#1, or
+    /// PKCS#8), which signs those JWTs. The App trades them for installation tokens: the import,
+    /// sweeps and webhook follow-up fetches use those.
     pub app_key: String,
+    /// `GITHUB_APP_SLUG` (optional): the App's URL name (`github.com/apps/<slug>`). Where
+    /// installing starts when GitHub can't be asked (`GET /app` failing).
+    pub app_slug: Option<String>,
 }
 
 impl Config {
@@ -102,13 +116,20 @@ impl Config {
                 web_url: optional("GITHUB_WEB_URL", "https://github.com"),
                 client_id: required("GITHUB_CLIENT_ID")?,
                 client_secret: secret("GITHUB_CLIENT_SECRET")?,
-                app_id: required("GITHUB_APP_ID")?.trim().to_owned(),
+                app_id: app_id()?,
                 app_key,
+                app_slug: std::env::var("GITHUB_APP_SLUG")
+                    .ok()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty()),
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
+            setup_reread_after: Duration::from_secs(60),
+            import_retry_after: Duration::from_secs(60),
+            import_give_up_after: Duration::from_secs(5 * 60),
             webhook_secret: secret("GITHUB_WEBHOOK_SECRET")?,
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(4 * 24 * 60 * 60),
@@ -133,6 +154,16 @@ impl Config {
 
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
+    }
+}
+
+fn app_id() -> Result<String, String> {
+    let id = required("GITHUB_APP_ID")?.trim().to_owned();
+    match id.parse::<u64>() {
+        Ok(_) => Ok(id),
+        Err(_) => Err(format!(
+            "GITHUB_APP_ID must be the App's numeric id, got {id:?}"
+        )),
     }
 }
 

@@ -52,7 +52,7 @@ pub struct Account {
 }
 
 /// Who the authorize page offers, in order.
-pub const ACCOUNTS: [Account; 3] = [
+pub const ACCOUNTS: [Account; 4] = [
     // An org owner: admin everywhere.
     Account {
         login: "tomsj",
@@ -78,7 +78,20 @@ pub const ACCOUNTS: [Account; 3] = [
         role: |repo| matches!(repo, "web" | "docs").then_some(Role::Read),
         member: false,
     },
+    // Someone new: no access to the org's repos, and a repo of their own the App isn't installed
+    // on, so signing in leads to installing it (see `newcomer`).
+    Account {
+        login: NEWCOMER,
+        name: "New Comer",
+        role: |_| None,
+        member: false,
+    },
 ];
+
+/// The account with no installation, and its own repo, `newcomer/notes`.
+pub const NEWCOMER: &str = "newcomer";
+const NEWCOMER_ID: i64 = 1_100;
+const NOTES_REPO: i64 = 9_000_200;
 
 /// The org that owns the fixture repos and installed the App.
 const ORG_ID: i64 = 61_000_001;
@@ -86,6 +99,7 @@ const INSTALLED_AT: i64 = 1_756_684_800; // 2025-09-01T00:00:00Z
 
 /// Fills the fake's tables in a fresh copy of the fixture.
 pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
+    newcomer(tx)?;
     let repos = q::installed_repos(tx)?;
     let mut installations: Vec<(i64, &str)> = repos
         .iter()
@@ -102,6 +116,118 @@ pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
             if let Some(role) = (a.role)(&r.name) {
                 q::add_permission(tx, user.id, r.id, role.as_str())?;
             }
+        }
+    }
+    q::add_permission(tx, NEWCOMER_ID, NOTES_REPO, Role::Admin.as_str())?;
+    Ok(())
+}
+
+/// The newcomer and their repo, in the truth only (the fixture mirror is what the org's accounts
+/// sync): a few issues, a PR, labels, a milestone and comments, enough to watch an import land.
+/// The App isn't installed on the repo until the newcomer installs it.
+fn newcomer(tx: &Transaction) -> rusqlite::Result<()> {
+    use mirror_db::q as m;
+    /// The fixture's "now" (2026-10-01T00:00:00Z).
+    const NOW: i64 = 1_790_812_800;
+    const DAY: i64 = 86_400;
+    let seq = m::bump_seq(tx)?;
+    let user = NEWCOMER_ID;
+    m::insert_user(
+        tx,
+        user,
+        NEWCOMER,
+        &format!("https://avatars.githubusercontent.com/u/{user}?v=4"),
+    )?;
+    m::insert_repo(
+        tx,
+        NOTES_REPO,
+        &format!("R_kw{NOTES_REPO}"),
+        NEWCOMER,
+        "notes",
+        true,
+        None,
+        true,
+        None,
+    )?;
+    let labels = [
+        (5_100_000, "idea", "0e8a16"),
+        (5_100_001, "chore", "c2e0c6"),
+    ];
+    for (id, name, color) in labels {
+        m::insert_label(tx, id, NOTES_REPO, name, color, &format!("{name} notes"))?;
+    }
+    m::insert_milestone(
+        tx,
+        7_100_001,
+        NOTES_REPO,
+        1,
+        "Someday",
+        "open",
+        NOW + 30 * DAY,
+        NOW - 40 * DAY,
+    )?;
+    // (title, open, PR)
+    let items = [
+        ("Write down the reading list", true, false),
+        ("Sort the photo archive", true, false),
+        ("Plan the garden beds", true, false),
+        ("Fix the bike's back brake", true, false),
+        ("Try the new sourdough recipe", true, false),
+        ("Renew the passport", false, false),
+        ("Back up the old laptop", false, false),
+        ("Add a notes index page", true, true),
+    ];
+    let mut comment = 2_950_000_000;
+    for (n, (title, open, pr)) in items.into_iter().enumerate() {
+        let n = n as i64;
+        let id = 3_950_000_000 + n;
+        let created = NOW - (40 - n) * DAY;
+        let updated = NOW - (20 - n) * DAY;
+        m::insert_item(
+            tx,
+            id,
+            &format!("I_kwnew{id}"),
+            NOTES_REPO,
+            n + 1,
+            if pr { "pr" } else { "issue" },
+            title,
+            &format!("{title}, when there's a free evening."),
+            if open { "open" } else { "closed" },
+            (!open && !pr).then_some("completed"),
+            user,
+            (n % 3 == 0).then_some(7_100_001),
+            created,
+            updated,
+            (!open).then_some(updated),
+            pr.then_some(2_450_000_000 + n),
+            pr.then_some(false),
+            None,
+            pr.then_some("notes-index"),
+            pr.then_some("main"),
+            pr.then_some("review_required"),
+            (!pr && n % 2 == 0).then_some("Task"),
+            seq,
+        )?;
+        m::add_item_label(tx, id, labels[(n % 2) as usize].0)?;
+        if open {
+            m::add_item_assignee(tx, id, user)?;
+        }
+        let count = n % 3;
+        for k in 0..count {
+            m::insert_comment(
+                tx,
+                comment,
+                &format!("IC_kwnew{comment}"),
+                id,
+                user,
+                &format!("Note {} on this.", k + 1),
+                created + (k + 1) * 3600,
+                seq,
+            )?;
+            comment += 1;
+        }
+        if count > 0 {
+            m::set_comment_stats(tx, id, count, created + count * 3600)?;
         }
     }
     Ok(())
@@ -146,6 +272,10 @@ pub async fn pristine_mirrors(
                 for r in &roles {
                     mirror_db::q::set_repo_role(&tx, r.repo_id, &r.role)?;
                 }
+                // A mirror holds a stub only while a relationship reaches it, as the import
+                // leaves one: it can't learn of a stub nothing points to. The truth keeps them
+                // all, as the unsynced repo's issues.
+                mirror_db::q::drop_orphan_stubs(&tx)?;
                 tx.commit()?;
                 Ok::<_, fake_db::Error>(())
             })?;

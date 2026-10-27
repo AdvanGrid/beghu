@@ -11,6 +11,7 @@ mod edges;
 mod error;
 mod facets;
 mod github;
+mod import;
 mod installations;
 mod live;
 mod ops;
@@ -53,6 +54,10 @@ struct Inner {
     hub: Arc<live::Hub>,
     /// Webhook deliveries on their way to the mirrors.
     webhooks: webhook::Queue,
+    /// The App's JWT and installation tokens, shared by the import and the read-backs.
+    installations: Arc<installations::Installations>,
+    /// Each account's import.
+    imports: import::Imports,
     /// Writes in flight and lately done.
     ops: ops::Ops,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
@@ -86,21 +91,24 @@ impl App {
             control.clone(),
             mirrors.clone(),
             hub.clone(),
-            installations,
+            installations.clone(),
             cfg.read_back_retries.clone(),
         ));
+        let (installs, installs_rx) = tokio::sync::mpsc::unbounded_channel();
         let webhooks = webhook::resume(
             webhook::Sinks {
                 control: control.clone(),
                 mirrors: mirrors.clone(),
                 hub: hub.clone(),
+                installs,
                 edges,
             },
             cfg.deliveries_kept_for,
         )
         .await
         .map_err(|e| format!("can't read the unprocessed webhook deliveries: {e}"))?;
-        Ok(App(Arc::new(Inner {
+        let notices = mirrors.notices();
+        let app = App(Arc::new(Inner {
             cfg,
             control,
             mirrors,
@@ -111,9 +119,14 @@ impl App {
             roles: repos::Roles::default(),
             hub,
             webhooks,
+            installations,
+            imports: import::Imports::default(),
             ops: ops::Ops::default(),
             draining: tokio::sync::watch::channel(false).0,
-        })))
+        }));
+        tokio::spawn(follow_notices(app.clone(), notices));
+        tokio::spawn(follow_installations(app.clone(), installs_rx));
+        Ok(app)
     }
 
     fn cfg(&self) -> &Config {
@@ -156,6 +169,14 @@ impl App {
         &self.0.webhooks
     }
 
+    fn installations(&self) -> &installations::Installations {
+        &self.0.installations
+    }
+
+    fn imports(&self) -> &import::Imports {
+        &self.0.imports
+    }
+
     fn ops(&self) -> &ops::Ops {
         &self.0.ops
     }
@@ -168,6 +189,60 @@ impl App {
     /// The drain flag as it changes.
     fn drain_watch(&self) -> tokio::sync::watch::Receiver<bool> {
         self.0.draining.subscribe()
+    }
+}
+
+/// A mirror created empty (none on disk, or a rebuild) gets the account's synced repos imported:
+/// the re-read of its repos brings the new mirror in line with its pick.
+async fn follow_notices(app: App, mut rx: tokio::sync::broadcast::Receiver<mirror_db::Notice>) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match rx.recv().await {
+            Ok(mirror_db::Notice::NeedsImport { account, why }) => {
+                eprintln!("account {account}: {why}; importing its synced repos");
+                let app = app.clone();
+                tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+            }
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return,
+        }
+    }
+}
+
+/// An installation changed (installed, uninstalled, suspended, repos added or removed): every
+/// account's visible repos are due for a re-read; the accounts syncing a repo that left get
+/// theirs now, so its rows leave their mirrors at once, and so does whoever made the change, so
+/// the picker they're on shows it.
+async fn follow_installations(
+    app: App,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<webhook::InstallChange>,
+) {
+    while let Some(change) = rx.recv().await {
+        app.roles().all_stale();
+        let mut accounts = std::collections::BTreeSet::new();
+        if let Some(sender) = change.sender {
+            let known = app
+                .control()
+                .read(move |c| control_db::q::account(c, sender))
+                .await;
+            if matches!(known, Ok(Some(_))) {
+                accounts.insert(sender);
+            }
+        }
+        for repo in change.removed {
+            match app
+                .control()
+                .read(move |c| control_db::q::fan_out_targets(c, repo))
+                .await
+            {
+                Ok(t) => accounts.extend(t),
+                Err(e) => eprintln!("installation change: reading who syncs {repo}: {e}"),
+            }
+        }
+        for account in accounts {
+            let app = app.clone();
+            tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+        }
     }
 }
 
@@ -193,6 +268,7 @@ pub fn router(app: App) -> Router {
         .route("/facets/{facet}/counts", get(facets::counts))
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
+        .route("/repos", get(repos::list).put(repos::pick))
         .route("/stream", get(live::stream))
         .route("/ops", post(ops::post))
         .route_layer(middleware::from_fn_with_state(
@@ -213,12 +289,14 @@ pub fn router(app: App) -> Router {
     let shell = Router::new()
         .route("/", get(shell::shell))
         .route("/issues/{id}", get(shell::shell))
+        .route("/repos", get(shell::shell))
         .layer(compression());
     let mut r = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
+        .route("/auth/setup", get(auth::setup))
         .route(
             "/webhook",
             post(webhook::receive).layer(axum::extract::DefaultBodyLimit::max(webhook::MAX_BODY)),

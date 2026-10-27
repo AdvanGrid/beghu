@@ -188,8 +188,18 @@ async fn authorize(
         "{redirect_uri}{sep}{}",
         serde_urlencoded::to_string(&back).unwrap_or_default()
     );
-    // GitHub redirects back with a 302.
-    (StatusCode::FOUND, [(header::LOCATION, to)]).into_response()
+    // GitHub redirects back with a 302. The user is now signed in to github.com too, which the
+    // App's install page goes by (app.rs).
+    let session = format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Lax",
+        crate::app::SESSION_COOKIE,
+        login
+    );
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, to), (header::SET_COOKIE, session)],
+    )
+        .into_response()
 }
 
 #[derive(Deserialize, Default)]

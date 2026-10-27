@@ -1,7 +1,7 @@
 //! Runtime faults on the GitHub side: latency per endpoint (for every call, or the next N), the
 //! next N calls failing with a chosen status or dropping the connection unanswered, the next N
-//! answers carrying a rewritten `body` (or cut short), and down. Set through the control port; a reset clears
-//! them.
+//! answers carrying a rewritten `body` (or cut short), and down. Set through the control port; a
+//! reset clears them.
 //!
 //! A failing call never reaches the endpoint: GitHub didn't act on it. A rewrite does: GitHub
 //! acted, and its answer differs from what was asked (payload drift, or GitHub keeping a text in
@@ -16,6 +16,10 @@
 //!
 //! When several latency rules match a call, the longest applies. When several fail rules match,
 //! the first one added wins and uses up one of its calls; the others wait their turn.
+//!
+//! A fail rule can be one of GitHub's rate limits ([`Limit`]), in the documented shape: the
+//! primary limit (403/429 with the quota at 0), the secondary limit (403/429 saying so, with
+//! `retry-after` only when given), or GraphQL's primary limit (200 with a `RATE_LIMITED` error).
 
 use crate::Fake;
 use crate::writes::CoreLimit;
@@ -55,13 +59,29 @@ pub(crate) struct Fail {
     pub status: Option<u16>,
     /// Seconds, sent as `retry-after` (and, for a primary rate limit, as its reset).
     pub retry_after: Option<u64>,
-    /// A 403 or 429 is GitHub's secondary rate limit: its message, and requests left in the
-    /// primary limit.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub secondary_rate_limit: bool,
+    /// Which of GitHub's rate limits the failure is, if one.
+    pub limit: Option<Limit>,
     /// The connection is dropped before any answer.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reset: bool,
+}
+
+/// GitHub's rate limits, each in its documented shape
+/// (`/rest/using-the-rest-api/rate-limits-for-the-rest-api`,
+/// `/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Limit {
+    /// 403 or 429, `x-ratelimit-remaining: 0` and `x-ratelimit-reset` (`retry_after` seconds
+    /// out, a minute without), and `retry-after` when given.
+    Primary,
+    /// 403 or 429 saying "You have exceeded a secondary rate limit", with its
+    /// `documentation_url`, primary quota left as `/rate_limit` says, and `retry-after` only
+    /// when given: without it, GitHub's advice is to wait at least a minute.
+    Secondary,
+    /// GraphQL's primary limit: 200, no data, an error of type `RATE_LIMITED`, and the primary
+    /// headers as above.
+    Graphql,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -238,7 +258,13 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
     }
     match (fail, rewrite) {
         (Some(f), _) if f.reset => dropped(),
-        (Some(f), _) => failure(&f, fake.now()),
+        (Some(f), _) => {
+            let who = match f.limit {
+                Some(Limit::Graphql) => caller(&fake, req.headers()).await,
+                _ => None,
+            };
+            failure(&f, fake.now(), who.as_deref())
+        }
         (None, Some(RewriteTo::Body(body))) => rewritten(next.run(req).await, body).await,
         (None, Some(RewriteTo::Raw(raw))) => {
             let (parts, _) = next.run(req).await.into_parts();
@@ -282,51 +308,93 @@ async fn rewritten(res: Response, body: String) -> Response {
 /// The `documentation_url` GitHub sends with a secondary rate limit.
 const SECONDARY_DOCS: &str = "https://docs.github.com/free-pro-team@latest/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits";
 
-/// The response GitHub gives for `f`'s status, at `now` on the fake's clock.
-fn failure(f: &Fail, now: i64) -> Response {
+/// Whose quota GraphQL's rate limit names: the installation behind a `ghs_` token
+/// (`installation ID …`), or the user behind an access token (`user ID …`).
+async fn caller(fake: &Fake, headers: &axum::http::HeaderMap) -> Option<String> {
+    let token = crate::api::bearer(headers)?;
+    let now = fake.now();
+    fake.state()
+        .truth
+        .read(move |c| {
+            Ok(if token.starts_with("ghs_") {
+                fake_db::q::installation_token(c, &token, now)?
+                    .map(|i| format!("installation ID {i}"))
+            } else {
+                fake_db::q::access_token_user(c, &token, now)?.map(|u| format!("user ID {u}"))
+            })
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The response GitHub gives for `f`, at `now` on the fake's clock. `who` is whose quota a
+/// GraphQL rate limit names.
+fn failure(f: &Fail, now: i64, who: Option<&str>) -> Response {
     let code = f.status.unwrap_or(500);
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let limit = matches!(code, 403 | 429);
-    let secondary = limit && f.secondary_rate_limit;
-    let rate_limited = limit && !secondary && f.retry_after.is_some();
-    let message = match code {
+    // A 403 or 429 with a wait and no named limit is the primary one, as before limits had names.
+    let limit = f.limit.or_else(|| {
+        (matches!(code, 403 | 429) && f.retry_after.is_some()).then_some(Limit::Primary)
+    });
+    let mut res = match limit {
+        Some(Limit::Graphql) => axum::Json(serde_json::json!({
+            "errors": [{
+                "type": "RATE_LIMITED",
+                "message": match who {
+                    Some(w) => format!("API rate limit already exceeded for {w}."),
+                    None => "API rate limit already exceeded.".to_owned(),
+                },
+            }],
+        }))
+        .into_response(),
         // GitHub's documented message for a secondary rate limit.
-        _ if secondary => {
-            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. If you reach out to GitHub Support for help, please include the request ID (fake)."
+        Some(Limit::Secondary) => crate::api::error_documented(
+            status,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. If you reach out to GitHub Support for help, please include the request ID (fake).",
+            SECONDARY_DOCS,
+        ),
+        Some(Limit::Primary) => crate::api::error(status, "API rate limit exceeded. (fake)"),
+        None => {
+            let message = match code {
+                401 => "Bad credentials",
+                403 => "Resource not accessible by integration",
+                409 => "Conflict",
+                s if s >= 500 => "Server Error",
+                _ => status.canonical_reason().unwrap_or("Error"),
+            };
+            crate::api::error(status, message)
         }
-        _ if rate_limited => "API rate limit exceeded. (fake)",
-        401 => "Bad credentials",
-        403 => "Resource not accessible by integration",
-        409 => "Conflict",
-        s if s >= 500 => "Server Error",
-        _ => status.canonical_reason().unwrap_or("Error"),
-    };
-    let mut res = if secondary {
-        crate::api::error_documented(status, message, SECONDARY_DOCS)
-    } else {
-        crate::api::error(status, message)
     };
     let h = res.headers_mut();
     if let Some(secs) = f.retry_after {
         h.insert(header::RETRY_AFTER, HeaderValue::from(secs));
     }
+    let resource = if limit == Some(Limit::Graphql) {
+        "graphql"
+    } else {
+        "core"
+    };
     let core = CoreLimit::at(now);
-    if secondary {
-        // The primary limit isn't what ran out: it stands as `/rate_limit` says.
-        h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
-        h.insert("x-ratelimit-remaining", HeaderValue::from(core.remaining()));
-        h.insert("x-ratelimit-used", HeaderValue::from(core.used));
-        h.insert("x-ratelimit-reset", HeaderValue::from(core.reset));
-        h.insert("x-ratelimit-resource", HeaderValue::from_static("core"));
-    }
-    if rate_limited {
-        // The primary limit ran out, and resets after `retry_after`.
-        let reset = now + f.retry_after.unwrap_or(0) as i64;
-        h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
-        h.insert("x-ratelimit-remaining", HeaderValue::from(0));
-        h.insert("x-ratelimit-used", HeaderValue::from(core.limit));
-        h.insert("x-ratelimit-reset", HeaderValue::from(reset));
-        h.insert("x-ratelimit-resource", HeaderValue::from_static("core"));
+    match limit {
+        Some(Limit::Primary | Limit::Graphql) => {
+            // The primary limit ran out, and resets after `retry_after` (a minute without).
+            let reset = now + f.retry_after.unwrap_or(60) as i64;
+            h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
+            h.insert("x-ratelimit-remaining", HeaderValue::from(0));
+            h.insert("x-ratelimit-used", HeaderValue::from(core.limit));
+            h.insert("x-ratelimit-reset", HeaderValue::from(reset));
+            h.insert("x-ratelimit-resource", HeaderValue::from_static(resource));
+        }
+        Some(Limit::Secondary) => {
+            // The primary limit isn't what ran out: it stands as `/rate_limit` says.
+            h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
+            h.insert("x-ratelimit-remaining", HeaderValue::from(core.remaining()));
+            h.insert("x-ratelimit-used", HeaderValue::from(core.used));
+            h.insert("x-ratelimit-reset", HeaderValue::from(core.reset));
+            h.insert("x-ratelimit-resource", HeaderValue::from_static(resource));
+        }
+        None => {}
     }
     res
 }

@@ -65,7 +65,7 @@ async fn an_outside_edit_reaches_the_list_and_the_streams_of_every_account_synci
     for b in [&owner, &member, &outsider] {
         let mut st = s.stream(b).await;
         // Every stream opens with a reset.
-        assert_eq!(st.event_within(SECS).await.unwrap().event, "reset");
+        st.reset().await;
         streams.push(st);
     }
 
@@ -107,7 +107,7 @@ async fn a_comment_bumps_its_issues_count_and_pushes_the_issue() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     s.edit(json!({ "repo": r["repo"], "number": r["number"], "comment": "On it." }))
@@ -127,7 +127,7 @@ async fn a_replayed_delivery_changes_nothing_and_pushes_nothing() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -154,7 +154,7 @@ async fn a_duplicated_webhook_from_github_is_applied_and_pushed_once() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     s.fake("POST", "/faults/webhooks", json!({ "duplicate": 1 }))
         .await;
@@ -170,7 +170,7 @@ async fn an_older_updated_at_never_overwrites_a_newer_row() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -202,7 +202,7 @@ async fn label_and_milestone_changes_push_every_issue_they_touch() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -253,7 +253,7 @@ async fn a_deleted_issue_leaves_the_list() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -402,6 +402,7 @@ async fn the_stream_is_origin_checked_unbuffered_and_keeps_a_heartbeat() {
                 data: "{}".into()
             })
         );
+        assert_eq!(st.next_within(SECS).await.unwrap().event, "status");
         // Then GitHub's state as it is now.
         assert_eq!(
             st.next_within(SECS).await,
@@ -510,7 +511,7 @@ async fn a_live_refetch_follows_the_views_filter_and_sort() {
         .expect("an uncommented bug")
         .clone();
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     s.edit(json!({ "repo": moved["repo"], "number": moved["number"], "comment": "Seen." }))
         .await;
     assert_eq!(
@@ -535,7 +536,7 @@ async fn a_webhook_sets_the_issue_type_and_type_filters_find_it() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     // No fixture issue has the type Epic.
     assert_eq!(epics(&s, &mut b).await["rows"], json!([]));
 
@@ -586,8 +587,8 @@ async fn an_account_that_loses_access_to_a_repo_stops_getting_its_changes() {
     let mut owner = s.sign_in("tomsj").await;
     let mut member = s.sign_in("ilze-k").await;
     let (mut owner_st, mut member_st) = (s.stream(&owner).await, s.stream(&member).await);
-    owner_st.event_within(SECS).await;
-    member_st.event_within(SECS).await;
+    owner_st.reset().await;
+    member_st.reset().await;
     let r = top(&s, &mut owner).await;
     let id = r["id"].as_i64().unwrap();
 
@@ -600,6 +601,8 @@ async fn an_account_that_loses_access_to_a_repo_stops_getting_its_changes() {
     .await;
     let (status, _) = s.api(&mut member, "/api/me").await;
     assert_eq!(status, 200);
+    // The repo's rows leave ilze-k's mirror, and its tabs refetch what they show.
+    member_st.reset().await;
 
     s.edit(json!({ "repo": r["repo"], "number": r["number"], "title": "Not for ilze-k" }))
         .await;
@@ -608,10 +611,8 @@ async fn an_account_that_loses_access_to_a_repo_stops_getting_its_changes() {
         [id]
     );
     assert_eq!(member_st.events_for(SECS).await, Vec::<Sse>::new());
-    // Nor is it written to ilze-k's mirror.
-    if let Some(row) = row(&s.api(&mut member, "/api/issues").await.1, id) {
-        assert_eq!(row["title"], r["title"]);
-    }
+    // Nor is it in ilze-k's mirror any more.
+    assert_eq!(row(&s.api(&mut member, "/api/issues").await.1, id), None);
 }
 
 /// The account's id, from `/api/me`.
@@ -636,8 +637,8 @@ async fn one_accounts_failed_write_marks_it_for_resync_without_holding_up_the_ot
         a.sort_by_key(|(id, _)| *id);
         a
     };
-    stuck.event_within(SECS).await;
-    other.event_within(SECS).await;
+    stuck.reset().await;
+    other.reset().await;
     let mut b = owner.clone();
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
@@ -668,7 +669,7 @@ async fn a_delivery_whose_processed_mark_fails_is_marked_on_a_retry_not_reapplie
     let mut s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let mirror = s
         .data
         .join("mirrors")
@@ -707,7 +708,7 @@ async fn processed_deliveries_past_their_keep_are_pruned_at_startup() {
     let mut s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
     let first = issues_payload("edited", repo, &r, "first", "2030-01-01T00:00:00Z");
@@ -745,7 +746,7 @@ async fn every_open_tab_of_an_account_gets_its_pushes_as_tabs_come_and_go() {
     };
     let open = || async {
         let mut st = s.stream(&b).await;
-        assert_eq!(st.event_within(SECS).await.unwrap().event, "reset");
+        st.reset().await;
         st
     };
 
@@ -784,7 +785,7 @@ async fn an_older_edit_arriving_after_the_delete_never_brings_the_issue_back() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -814,7 +815,7 @@ async fn an_older_milestone_change_arriving_late_changes_nothing() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -850,7 +851,7 @@ async fn a_late_issue_payload_never_renames_a_label_or_brings_a_deleted_one_back
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let r = top(&s, &mut b).await;
     let id = r["id"].as_i64().unwrap();
     let repo = repo_id(&s, &mut b, r["repo"].as_str().unwrap()).await;
@@ -934,8 +935,8 @@ async fn accounts_syncing_different_repos_each_hear_only_their_own_repos_changes
         assert_eq!(s.api(br, "/api/me").await.0, 200);
     }
     let (mut owner_st, mut member_st) = (s.stream(&owner).await, s.stream(&member).await);
-    owner_st.event_within(SECS).await;
-    member_st.event_within(SECS).await;
+    owner_st.reset().await;
+    member_st.reset().await;
 
     s.edit(json!({ "repo": a["repo"], "number": a["number"], "title": "Only for tomsj" }))
         .await;
@@ -952,4 +953,21 @@ async fn accounts_syncing_different_repos_each_hear_only_their_own_repos_changes
         [b["id"].as_i64().unwrap()]
     );
     assert_eq!(owner_st.events_for(SECS).await, Vec::<Sse>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_stream_opens_with_a_reset_then_the_status_slot_even_when_nothing_is_importing() {
+    // A tab that reconnects after an import ended must hear that it ended: the stream says what
+    // the status slot holds as it opens, `null` included.
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    assert_eq!(st.event_within(SECS).await.unwrap().event, "reset");
+    assert_eq!(
+        st.event_within(SECS).await,
+        Some(Sse {
+            event: "status".into(),
+            data: r#"{"import":null}"#.into()
+        })
+    );
 }

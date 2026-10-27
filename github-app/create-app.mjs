@@ -37,6 +37,10 @@ const manifest = {
   redirect_url: `http://${args.host}:${port}/created`,
   callback_urls: args["callback-url"] ?? [`http://${args.host}:3000/auth/callback`],
 };
+// GitHub sends the browser here after an install, and after the repos it covers change: beghu
+// re-reads what the user can see and goes on to repo picking (crates/server/src/auth.rs).
+manifest.setup_url = manifest.callback_urls[0].replace(/\/auth\/callback$/, "/auth/setup");
+manifest.setup_on_update = true;
 const target = args.org
   ? `https://github.com/organizations/${args.org}/settings/apps/new?state=${state}`
   : `https://github.com/settings/apps/new?state=${state}`;

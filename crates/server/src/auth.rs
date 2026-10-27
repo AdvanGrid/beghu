@@ -6,7 +6,11 @@
 //!   through (GitHub's account hint; Fake GitHub signs that fixture user in at once).
 //! - `GET /auth/callback?code&state` checks `state` against that cookie, trades the code for the
 //!   user's token pair, stores it encrypted, adds the account to the browser session and makes
-//!   it active, then lands on `next`.
+//!   it active, then lands on `next`. A user who can reach no installation of the App gets the
+//!   install step instead, and an account that hasn't picked repos yet goes to the picker.
+//! - `GET /auth/setup` is the App's setup URL, where GitHub sends the browser after an install:
+//!   it goes on to the picker (`/repos`), re-reading the account's visible repos only if stale
+//!   (the installation's webhook re-reads them).
 //! - `__Host-beghu_sid` is 256 random bits, `HttpOnly; Secure; SameSite=Lax; Path=/` with no
 //!   `Domain`, sliding 30 days. Only its SHA-256 is stored. Every sign-in rotates it: a new id,
 //!   the session's accounts moved over, the old id deleted, so an id planted or seen before
@@ -324,9 +328,23 @@ pub async fn callback(
             return upstream(e);
         }
     };
-    match finish(&app, &headers, &user, &pair).await {
+    // Whether the user can reach an installation, asked beside the sign-in's re-read of the
+    // repos and bounded as it is: a slow GitHub costs the sign-in 2 s, not 4.
+    let installations = tokio::time::timeout(
+        crate::repos::WAIT,
+        app.github().user_installations(&pair.access),
+    );
+    let (finished, installations) =
+        tokio::join!(finish(&app, &headers, &user, &pair), installations);
+    match finished {
         Ok(cookies) => {
-            let mut res = (StatusCode::FOUND, [(header::LOCATION, next)]).into_response();
+            let mut res = match landing(&app, user.id, installations).await {
+                Landing::Install(url) => install_step(url.as_deref()),
+                Landing::Pick => {
+                    (StatusCode::FOUND, [(header::LOCATION, "/repos")]).into_response()
+                }
+                Landing::Next => (StatusCode::FOUND, [(header::LOCATION, next)]).into_response(),
+            };
             res.headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             for c in cookies {
@@ -349,6 +367,136 @@ pub async fn callback(
     }
 }
 
+/// Where a sign-in lands.
+enum Landing {
+    /// The user can reach no installation of the App: install it (from this URL, when GitHub
+    /// said where).
+    Install(Option<String>),
+    /// The account syncs nothing yet: pick repos.
+    Pick,
+    /// Where the sign-in started.
+    Next,
+}
+
+/// Decided by `/user/installations`, asked with the sign-in's own token: none at all means
+/// installing the App. An installation with no repos, or one whose repos are slow to list, is
+/// still an installation; if GitHub doesn't answer in time, the sign-in goes on as if it had one
+/// (the picker says when there's nothing to pick).
+async fn landing(
+    app: &App,
+    account: i64,
+    installations: Result<
+        Result<Vec<crate::github::Installation>, crate::github::Error>,
+        tokio::time::error::Elapsed,
+    >,
+) -> Landing {
+    match installations {
+        Ok(Ok(i)) if i.is_empty() => {
+            let url = app
+                .installations()
+                .install_url(app.cfg().github.app_slug.as_deref())
+                .await;
+            return Landing::Install(url);
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => eprintln!("sign-in: reading the user's installations failed: {e}"),
+        Err(_) => eprintln!("sign-in: GitHub was slow to list the user's installations"),
+    }
+    match app
+        .control()
+        .read(move |c| q::synced_repo_ids(c, account))
+        .await
+    {
+        Ok(ids) if ids.is_empty() => Landing::Pick,
+        _ => Landing::Next,
+    }
+}
+
+/// The install step: a plain page linking to the App's install page on GitHub, which comes back
+/// through the setup URL. System colours only.
+fn install_step(url: Option<&str>) -> Response {
+    let link = match url {
+        Some(u) => format!(
+            r#"<p><a href="{}" rel="external">Install beghu on GitHub</a></p>"#,
+            u.replace('&', "&amp;").replace('"', "&quot;")
+        ),
+        None => "<p>GitHub didn't say where to install the App.</p>".into(),
+    };
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Install beghu</title>
+<style>
+  :root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
+  body {{ background: Canvas; color: CanvasText; margin: 0; padding: 48px 16px; }}
+  main {{ max-width: 420px; margin: 0 auto; }}
+  h1 {{ font-size: 20px; font-weight: 600; }}
+  p {{ color: GrayText; }}
+  a {{ color: LinkText; }}
+</style>
+</head>
+<body><main>
+<h1>Install beghu</h1>
+<p>beghu reads issues through its GitHub App, and none of your accounts or organizations has it
+installed yet. Install it, pick the repos to sync, and you'll come straight back here.</p>
+{link}
+<p>Installed it already? <a href="/repos">Pick your repos</a>.</p>
+</main></body>
+</html>
+"#
+    );
+    let mut res = Html(html).into_response();
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+/// `GET /auth/setup`: GitHub's redirect after the App is installed or its repos change. On to
+/// the picker, re-reading the account's visible repos first once the last re-read is
+/// `setup_reread_after` (a minute) old, so the repos just installed are there without waiting
+/// for the installation's webhook. Any site can send a browser here, but one re-read per account
+/// runs at a time and a younger one isn't repeated, so it forces at most one re-read a minute per
+/// account. A re-read costs the user's rate limit one call for their installations plus one per
+/// 100 repos of each, and a mirror write. Signed out, it signs in first.
+pub async fn setup(State(app): State<App>, headers: HeaderMap) -> Response {
+    let Some(account) = active_account(&app, &headers).await else {
+        let to = format!(
+            "/auth/login?{}",
+            serde_urlencoded::to_string([("next", "/repos")]).unwrap_or_default()
+        );
+        return (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+    };
+    // A signed-out answer here only means the picker signs in again.
+    let _ = crate::repos::refresh_roles_if_older_than(&app, account, app.cfg().setup_reread_after)
+        .await;
+    let mut res = (StatusCode::FOUND, [(header::LOCATION, "/repos")]).into_response();
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+/// The active account of the request's live session, if it has one that can be used.
+async fn active_account(app: &App, headers: &HeaderMap) -> Option<i64> {
+    let raw = cookie(headers, SESSION_COOKIE)
+        .and_then(|c| unb64(&c))
+        .filter(|r| r.len() == 32)?;
+    let h = sha256(&raw);
+    let t = now();
+    let row = app
+        .control()
+        .read(move |c| q::session(c, &h, t))
+        .await
+        .ok()??;
+    match (row.active_account_id, row.status.as_deref()) {
+        (Some(a), Some(crate::tokens::account_status::ACTIVE)) => Some(a),
+        _ => None,
+    }
+}
+
 /// Records the account and its tokens, and adds it to this browser's session (a new one if the
 /// browser has none) as the active account, under a new session id. Returns the cookies to set.
 async fn finish(
@@ -359,10 +507,18 @@ async fn finish(
 ) -> Result<[HeaderValue; 2], ApiError> {
     let t = now();
     let (id, login) = (user.id, user.login.clone());
-    app.control()
-        .write(move |tx| q::sign_in_account(tx, id, &login, t))
+    let created = app
+        .control()
+        .write(move |tx| {
+            let new = q::account(tx, id)?.is_none();
+            q::sign_in_account(tx, id, &login, t)?;
+            Ok(new)
+        })
         .await?;
     app.tokens().sign_in(id, pair).await?;
+    if created {
+        crate::repos::adopt_mirror_pick(app, id).await?;
+    }
 
     // Always a new id. A live session the browser already has keeps its accounts under it.
     let old = cookie(headers, SESSION_COOKIE)

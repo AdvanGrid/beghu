@@ -59,11 +59,14 @@ Commands:
   fake latency ENDPOINT MS [--count N]
                               Delay calls to ENDPOINT by MS (0 removes the rule); with
                               --count, only the next N.
-  fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--secondary]
+  fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--limit KIND]
                               The next N calls (default 1) to ENDPOINT fail with STATUS
-                              (409, 403/429 with --retry-after for a rate limit, 5xx;
-                              403/429 --secondary: a secondary rate limit), or with
-                              reset get no answer (the connection drops).
+                              (409, 403/429 with --retry-after for a rate limit, 5xx),
+                              or with reset get no answer (the connection drops).
+                              --limit makes it one of GitHub's rate limits, in its own
+                              shape: primary or secondary (403/429; a secondary limit
+                              sends retry-after only if given), or graphql (status 200, a
+                              RATE_LIMITED error).
   fake down | fake up         GitHub unreachable (new connections dropped), or back.
   fake edit REPO#N [--title T] [--body B] [--close [--reason not_planned]] [--reopen]
             [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
@@ -81,11 +84,19 @@ Commands:
   fake tokens [--access-ttl T] [--refresh-ttl T]
                               Lifetimes of new tokens: 30s, 5m, 8h, 184d.
   fake revoke USER            USER revokes beghu's authorization on "GitHub".
+  fake uninstall USER         USER uninstalls the App from their own account (GitHub sends
+                              installation deleted); signing in again offers to install it.
+  fake suspend USER | fake unsuspend USER
+                              USER suspends the App's installation on their own account,
+                              or lifts it (GitHub sends installation suspend/unsuspend):
+                              it still lists, but beghu reads nothing through it.
   reset [--all] [--fresh]     Restore pristine mirrors and the fake's state (sign-ins,
                               faults, its data), keeping the control DB. Restarts the stack
                               if it's running.
                               --all also wipes the control DB.
-                              --fresh deletes the mirrors instead, so accounts re-import.
+                              --fresh deletes the mirrors instead, so every account imports
+                              its synced repos through the fake on its next use (with --all,
+                              each picks its repos again after signing in).
   help                        This help.
 
 ENDPOINT is * (everything) or a path with an optional method: "/user", "GET /user",
@@ -93,7 +104,9 @@ ENDPOINT is * (everything) or a path with an optional method: "/user", "GET /use
 (everything under it). When several fail rules match a call, the first one added wins.
 
 Fixture accounts: tomsj (admin everywhere), ilze-k (write/triage/read), octo-ext (read on
-two repos). Pristine mirrors exist for tomsj and ilze-k; octo-ext has none until it imports.
+two repos), newcomer (no installation: signing in leads to installing the App on its own
+newcomer/notes, then picking repos). Pristine mirrors exist for tomsj and ilze-k; octo-ext
+picks its repos and imports them on its first sign-in.
 
 URLs: app ${URLS.app}, server ${URLS.server}, fake ${URLS.fake} (control ${URLS.control}).
 Ports: DEV_APP_PORT, DEV_SERVER_PORT, DEV_FAKE_PORT, DEV_FAKE_CONTROL_PORT.
@@ -224,7 +237,8 @@ function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["fault
   for (const l of f.latency) lines.push(`latency ${l.endpoint}: ${l.ms} ms${l.remaining === undefined ? "" : `, next ${l.remaining}`}`);
   for (const r of f.fail) {
     const ra = r.retry_after === null ? "" : `, retry-after ${r.retry_after}s`;
-    const what = r.reset ? "no answer (reset)" : `${r.status}${r.secondary_rate_limit ? " (secondary rate limit)" : ""}`;
+    const limit = r.limit === null ? "" : ` (${r.limit} rate limit)`;
+    const what = r.reset ? "no answer (reset)" : `${r.status}${limit}`;
     lines.push(`fail ${r.endpoint}: next ${r.remaining} with ${what}${ra}`);
   }
   for (const r of f.rewrite) lines.push(`rewrite ${r.endpoint}: next ${r.remaining} answer with body ${JSON.stringify(r.body)}`);
@@ -414,6 +428,7 @@ async function fake(args: string[]): Promise<void> {
     [
       "--count",
       "--retry-after",
+      "--limit",
       "--access-ttl",
       "--refresh-ttl",
       "--title",
@@ -430,7 +445,7 @@ async function fake(args: string[]): Promise<void> {
       "--relate",
       "--unrelate",
     ],
-    ["--close", "--reopen", "--secondary"],
+    ["--close", "--reopen"],
   );
   const done = (text: string) => print(json, { ok: true }, text);
   switch (sub) {
@@ -463,12 +478,16 @@ async function fake(args: string[]): Promise<void> {
     case "fail": {
       const [endpoint, status] = pos;
       if (!endpoint || !status || !/^(\d{3}|reset)$/.test(status)) {
-        throw new Usage("usage: ./dev-ctl fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--secondary]");
+        throw new Usage("usage: ./dev-ctl fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--limit KIND]");
       }
       const count = Number(opts["--count"] ?? 1);
       const retryAfter = opts["--retry-after"] === undefined ? null : Number(opts["--retry-after"]);
       if (!Number.isInteger(count) || count < 1) throw new Usage("--count takes a number of calls, at least 1");
       if (retryAfter !== null && !(Number.isInteger(retryAfter) && retryAfter >= 0)) throw new Usage("--retry-after takes seconds");
+      const limit = opts["--limit"] ?? null;
+      if (limit !== null && !["primary", "secondary", "graphql"].includes(limit)) {
+        throw new Usage("--limit takes primary, secondary or graphql");
+      }
       const reset = status === "reset";
       await control("POST", "/faults/fail", {
         endpoint,
@@ -476,7 +495,7 @@ async function fake(args: string[]): Promise<void> {
         reset,
         count,
         retry_after: retryAfter,
-        secondary_rate_limit: set.has("--secondary"),
+        limit,
       });
       return done(`${endpoint}: the next ${count} call(s) ${reset ? "get no answer" : `fail with ${status}`}`);
     }
@@ -527,6 +546,19 @@ async function fake(args: string[]): Promise<void> {
       if (!user) throw new Usage("usage: ./dev-ctl fake revoke USER");
       await control("POST", "/revoke", { login: user });
       return done(`${user} revoked beghu's authorization`);
+    }
+    case "uninstall": {
+      const [user] = pos;
+      if (!user) throw new Usage("usage: ./dev-ctl fake uninstall USER");
+      await control("POST", "/uninstall", { login: user });
+      return done(`${user} uninstalled the App`);
+    }
+    case "suspend":
+    case "unsuspend": {
+      const [user] = pos;
+      if (!user) throw new Usage(`usage: ./dev-ctl fake ${sub} USER`);
+      await control("POST", `/${sub}`, { login: user });
+      return done(sub === "suspend" ? `${user} suspended the App's installation` : `${user} lifted the suspension`);
     }
     default:
       throw new Usage(`unknown fake command ${sub}; see ./dev-ctl help`);

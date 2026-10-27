@@ -4,8 +4,12 @@
 //! - `reset`: refetch everything shown. Every stream opens with one, so a change that landed
 //!   between the tab's data response and the stream opening is never missed; a stream that falls
 //!   more than [`BUFFER`] events behind gets one in place of what it missed.
+//! - `status` (`{"import":…}`): what the status slot shows, whenever it changes: the import's
+//!   phase and progress, `null` once it's done. Every `reset` is followed by the current one,
+//!   `null` included, so a tab that missed the change (it was reconnecting) catches up.
 //! - `github` (`{"state":"up"|"down"}`): whether GitHub is answering, process-wide. Sent right
-//!   after the opening `reset`, then on every change; while it's down the tab pauses writes.
+//!   after the opening `reset` and its `status`, then on every change; while it's down the tab
+//!   pauses writes.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //!
 //! Each account has one broadcast channel, created with its first stream and dropped with its
@@ -14,6 +18,7 @@
 use crate::App;
 use crate::auth::Session;
 use crate::error::ApiError;
+use crate::import::ImportStatus;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -35,6 +40,16 @@ pub enum Push {
     Ids(Arc<[i64]>),
     /// Refetch everything shown.
     Reset,
+    /// The status slot's state changed.
+    Status(Option<ImportStatus>),
+}
+
+/// The `status` event's data.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct StreamStatus {
+    /// The import running, if any.
+    pub import: Option<ImportStatus>,
 }
 
 /// The `ids` event's data.
@@ -142,6 +157,12 @@ fn event(push: &Push) -> Event {
             .data(serde_json::to_string(&StreamIds { ids: ids.to_vec() }).expect("plain struct")),
         // An event with no data is never dispatched by EventSource.
         Push::Reset => Event::default().event("reset").data("{}"),
+        Push::Status(import) => Event::default().event("status").data(
+            serde_json::to_string(&StreamStatus {
+                import: import.clone(),
+            })
+            .expect("plain struct"),
+        ),
     }
 }
 
@@ -162,35 +183,52 @@ pub async fn stream(
         }
         .into_response();
     }
-    // Subscribed before the first event, so nothing published after the `reset` is missed.
+    // Subscribed before the first event, so nothing published after the `reset` is missed. Every
+    // `reset` (the first, and one in place of pushes missed by falling behind) is followed by the
+    // status slot's state, read after it, so a change is either in it or pushed after; `null`
+    // too, so a tab that reconnects after an import ended stops showing it.
     let sub = app.hub().subscribe(s.account);
     let health = app.github().health();
     let draining = app.drain_watch();
-    /// Where a stream is: its opening `reset`, then GitHub's state, then whatever comes.
+    let (imports, account) = (app.clone(), s.account);
+    /// Where a stream is: its opening `reset`, the status slot's state, GitHub's state, then
+    /// whatever comes; every later `reset` is followed by the status slot's state too.
     enum Step {
         Reset,
+        Status { opening: bool },
         GitHub,
         Live,
     }
     // The stream ends when the drain starts: the tab reconnects to the next server.
     let events = futures_util::stream::unfold(
         (sub, health, draining, Step::Reset),
-        |(mut sub, mut health, mut draining, step)| async move {
-            let ev = match step {
-                Step::Reset => event(&Push::Reset),
-                Step::GitHub => github_event(*health.borrow_and_update()),
-                Step::Live => tokio::select! {
-                    push = sub.next() => event(&push),
-                    // A closed channel (never, while the app lives) leaves only the pushes.
-                    Ok(()) = health.changed() => github_event(*health.borrow_and_update()),
-                    _ = draining.wait_for(|d| *d) => return None,
-                },
-            };
-            let next = match step {
-                Step::Reset => Step::GitHub,
-                _ => Step::Live,
-            };
-            Some((Ok::<_, Infallible>(ev), (sub, health, draining, next)))
+        move |(mut sub, mut health, mut draining, step)| {
+            let imports = imports.clone();
+            async move {
+                let (ev, next) = match step {
+                    Step::Reset => (event(&Push::Reset), Step::Status { opening: true }),
+                    Step::Status { opening } => (
+                        event(&Push::Status(imports.imports().status(account))),
+                        if opening { Step::GitHub } else { Step::Live },
+                    ),
+                    Step::GitHub => (github_event(*health.borrow_and_update()), Step::Live),
+                    Step::Live => tokio::select! {
+                        push = sub.next() => {
+                            let next = match push {
+                                Push::Reset => Step::Status { opening: false },
+                                _ => Step::Live,
+                            };
+                            (event(&push), next)
+                        }
+                        // A closed channel (never, while the app lives) leaves only the pushes.
+                        Ok(()) = health.changed() => {
+                            (github_event(*health.borrow_and_update()), Step::Live)
+                        }
+                        _ = draining.wait_for(|d| *d) => return None,
+                    },
+                };
+                Some((Ok::<_, Infallible>(ev), (sub, health, draining, next)))
+            }
         },
     );
     let mut res = Sse::new(events)

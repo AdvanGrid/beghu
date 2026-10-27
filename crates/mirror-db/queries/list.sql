@@ -18,9 +18,19 @@
 -- a deep page walks every row before the cursor, and a refetch every row after it. The range
 -- is the row value's first half, so it changes no result.
 --
+-- Every id query reads only synced repos' items (the `EXISTS` on `repos`): an unsync deletes a
+-- repo's rows a chunk at a time after marking it unsynced, and one a restart cut short is
+-- finished at the next reconcile (repos.rs). Meanwhile none of its rows is listed. The check
+-- reads `repo_id` from the row, so the sort indexes no longer cover the query: one row lookup
+-- per row read, plus a primary-key lookup in `repos` (a handful of rows), still in the index's
+-- order and still stopping at the page's end. Measured at 50k, before the check and with it:
+-- a refetch 23–28 ms → 87–103 ms, a kind-less sort 18 → ~75 ms, `count_labels` over closed
+-- items 63 → ~170 ms. Appending `repo_id` to the sort indexes (about 4% more index) would cover
+-- it again and roughly halve those; #117 decides.
+--
 -- With no kind (`is:any`, or `is:issue is:pr`) only `sort:updated` has an index
 -- (`items_updated_any_kind`). Every other sort reads all the view's rows and sorts them: about
--- 20 ms at 50k. An accepted cost, rather than 8 more indexes every item write pays for; the
+-- 75 ms at 50k. An accepted cost, rather than 8 more indexes every item write pays for; the
 -- plan check (perf/fixture/tests/plans.rs) holds it apart.
 
 -- `sort:updated`: newest update first.
@@ -28,7 +38,8 @@
 -- param: limit i64
 SELECT i.id, i.updated_at AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.updated_at DESC, i.id DESC
 LIMIT :limit;
 
@@ -47,7 +58,8 @@ LIMIT :limit;
 -- param: limit i64
 SELECT i.id, i.updated_at AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.updated_at ASC, i.id ASC
 LIMIT :limit;
 
@@ -66,7 +78,8 @@ LIMIT :limit;
 -- param: limit i64
 SELECT i.id, i.created_at AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.created_at DESC, i.id DESC
 LIMIT :limit;
 
@@ -85,7 +98,8 @@ LIMIT :limit;
 -- param: limit i64
 SELECT i.id, i.created_at AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.created_at ASC, i.id ASC
 LIMIT :limit;
 
@@ -104,7 +118,8 @@ LIMIT :limit;
 -- param: limit i64
 SELECT i.id, COALESCE(i.closed_at, 0) AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY COALESCE(i.closed_at, 0) DESC, i.id DESC
 LIMIT :limit;
 
@@ -123,7 +138,8 @@ COALESCE(i.closed_at, 0) >= :key AND (COALESCE(i.closed_at, 0), i.id) >= (:key, 
 -- param: limit i64
 SELECT i.id, COALESCE(i.closed_at, 9223372036854775807) AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY COALESCE(i.closed_at, 9223372036854775807) ASC, i.id ASC
 LIMIT :limit;
 
@@ -144,7 +160,8 @@ COALESCE(i.closed_at, 9223372036854775807) <= :key
 -- param: limit i64
 SELECT i.id, COALESCE(i.last_commented_at, 0) AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY COALESCE(i.last_commented_at, 0) DESC, i.id DESC
 LIMIT :limit;
 
@@ -165,7 +182,8 @@ COALESCE(i.last_commented_at, 0) >= :key
 -- param: limit i64
 SELECT i.id, COALESCE(i.last_commented_at, 9223372036854775807) AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY COALESCE(i.last_commented_at, 9223372036854775807) ASC, i.id ASC
 LIMIT :limit;
 
@@ -186,7 +204,8 @@ COALESCE(i.last_commented_at, 9223372036854775807) <= :key
 -- param: limit i64
 SELECT i.id, i.comments_count AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.comments_count DESC, i.id DESC
 LIMIT :limit;
 
@@ -205,7 +224,8 @@ LIMIT :limit;
 -- param: limit i64
 SELECT i.id, i.comments_count AS "key!: i64"
 FROM items i
-WHERE i.is_stub = 0 AND /* filter */
+WHERE i.is_stub = 0 AND EXISTS (SELECT 1 FROM repos r WHERE r.id = i.repo_id AND r.synced = 1)
+  AND /* filter */
 ORDER BY i.comments_count ASC, i.id ASC
 LIMIT :limit;
 

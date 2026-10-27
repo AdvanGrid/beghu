@@ -32,6 +32,7 @@ import {
   type IssueRef,
 } from "./api";
 import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
+import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
 import { coalesced, onPush, resetAt } from "./live";
 import { overlay, type ShownComment } from "./overlay";
@@ -411,6 +412,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
             Loading more comments…
           </p>
         </Show>
+        <StillImporting />
       </div>
       {/* PRs take no writes in beghu. If the composer's code doesn't load, it says so in its
           place, and the detail stays. */}

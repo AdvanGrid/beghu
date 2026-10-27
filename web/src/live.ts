@@ -8,11 +8,17 @@
 // `reconnecting()` turns true once the stream has been down for 3 s. `githubDown()` follows the
 // server's `github` event, sent as each stream opens and whenever it changes: writes pause while
 // it's true.
+//
+// `status` events say what the status slot shows besides: `importing()` is the account's import
+// while one runs. Every `reset` (each stream open sends one) clears it and is followed by the
+// current status, `null` included, so a tab that was reconnecting when an import ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { forgetRemembered } from "./api";
+import type { ImportStatus } from "./bindings/ImportStatus";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
+import type { StreamStatus } from "./bindings/StreamStatus";
 
 export type Push = { kind: "ids"; ids: number[] } | { kind: "reset" };
 
@@ -21,10 +27,13 @@ const RECONNECTING_AFTER_MS = 3000;
 
 const listeners = new Set<(p: Push) => void>();
 const [reconnecting, setReconnecting] = createSignal(false);
+const [importing, setImporting] = createSignal<ImportStatus | null>(null);
 const [githubDown, setGithubDown] = createSignal(false);
 
 /** True while the stream has been down for 3 s or more. */
 export { reconnecting };
+/** The account's import while one runs: its phase and how many repos are through it. */
+export { importing };
 /** True while the server finds GitHub unreachable. */
 export { githubDown };
 
@@ -79,7 +88,13 @@ export function connectLive(): () => void {
       down = undefined;
       setReconnecting(false);
     });
-    es.addEventListener("reset", () => emit({ kind: "reset" }));
+    es.addEventListener("reset", () => {
+      setImporting(null);
+      emit({ kind: "reset" });
+    });
+    es.addEventListener("status", (e) => {
+      setImporting((JSON.parse((e as MessageEvent<string>).data) as StreamStatus).import);
+    });
     es.addEventListener("github", (e) => setGithubDown((JSON.parse((e as MessageEvent<string>).data) as StreamGitHub).state === "down"));
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;

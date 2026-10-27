@@ -4,6 +4,7 @@ import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type Iss
 import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
+import { StillImporting } from "./WhileImporting";
 import { coalesced, onPush } from "./live";
 import { overlay } from "./overlay";
 import { queryOf, sortOf, type SortKey } from "./query";
@@ -326,6 +327,7 @@ function Rows(props: {
           </div>
         </div>
       </Show>
+      <StillImporting />
     </div>
   );
 }

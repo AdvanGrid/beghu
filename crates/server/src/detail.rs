@@ -191,6 +191,8 @@ pub async fn issue(
         None => Span::First,
     };
     let account = s.account;
+    // During an import, an issue whose comments haven't landed yet fetches them now.
+    crate::import::comments_on_demand(&app, account, id).await;
     let pref = app
         .control()
         .read(move |c| control_db::q::account(c, account))

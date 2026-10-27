@@ -140,10 +140,47 @@ async fn a_sign_in_during_a_running_roles_refresh_gets_a_fresh_one_after_it() {
     assert_eq!(running.await.unwrap(), 200);
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
+    // Three calls: the running re-read, the sign-in's own check of the user's installations,
+    // and the sign-in's re-read after the running one.
     let state = s.fake("GET", "/state", json!(null)).await;
     assert_eq!(
         calls_left(&state),
-        48,
+        47,
         "the sign-in got a re-read of its own: {state}"
     );
+}
+
+/// The App's setup URL, three times, as GitHub (or any site) sends the browser there.
+async fn setup_thrice(s: &common::Stack, b: &mut common::Browser) {
+    for _ in 0..3 {
+        let res = s
+            .get(b, "/auth/setup?installation_id=1&setup_action=update")
+            .await;
+        assert_eq!(res.status(), 302);
+        assert_eq!(common::location(&res), "/repos");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_setup_url_re_reads_repos_past_its_floor_once_however_often_its_hit() {
+    // `/auth/setup` is a GET any site can send the browser to: it re-reads the repos only once
+    // the last re-read is `setup_reread_after` old (a minute; 5 s here), one at a time, and a
+    // failed one backs off.
+    let s = common::start_with(|c| c.setup_reread_after = Duration::from_secs(5)).await;
+    let mut b = s.sign_in("tomsj").await;
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": INSTALLATIONS, "status": 502, "count": 50 }),
+    )
+    .await;
+    // The sign-in's re-read is fresh: nothing to do.
+    setup_thrice(&s, &mut b).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_left(&s.fake("GET", "/state", json!(null)).await), 50);
+    // Past the floor, one re-read (failing here) for all three.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    setup_thrice(&s, &mut b).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_left(&s.fake("GET", "/state", json!(null)).await), 49);
 }

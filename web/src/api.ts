@@ -164,10 +164,11 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
   }
 }
 
-async function request<T>(url: string): Promise<T> {
+/** A call to beghu's API: its JSON, or the named error for how it failed. */
+export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url);
+    res = await fetch(url, init);
   } catch (e) {
     throw new Unreachable(`can't reach beghu: ${String(e)}`);
   }

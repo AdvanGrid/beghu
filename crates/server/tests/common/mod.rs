@@ -40,10 +40,22 @@ pub fn twin_repo_fixture() -> PathBuf {
     .unwrap()
 }
 
+/// The test run's GitHub App key: the server signs with it, the fake checks with its public
+/// half. Generated once per test binary.
 /// The fixture generator's summary: the independent oracle for what the default list holds.
 pub fn summary() -> Value {
     let path = fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A stub a relationship reaches: one every mirror holds (a mirror drops the rest, as the
+/// import never learns of them).
+pub fn linked_stub() -> i64 {
+    let s = summary();
+    let unlinked = s["unlinked_stubs"].as_array().unwrap();
+    let numbers = s["stub_numbers"].as_array().unwrap();
+    let at = numbers.iter().position(|n| !unlinked.contains(n)).unwrap();
+    s["stub_ids"][at].as_i64().unwrap()
 }
 
 pub struct Stack {
@@ -51,11 +63,14 @@ pub struct Stack {
     pub fake_ctl: String,
     pub data: PathBuf,
     pub http: reqwest::Client,
-    /// What a restart needs to build the server's config again.
-    fake_api: String,
+    /// Fake GitHub's API (and web) origin.
+    pub fake_api: String,
     /// The built web app the server serves: `index.html`, `assets/` and Vite's manifest.
     pub web: PathBuf,
-    /// The running server, stopped when a restart replaces it.
+    /// The running server's own runtime, shut down when a restart replaces it, so nothing the
+    /// old process had in flight (a request, an import, an unsync) runs on, as after a crash.
+    server_rt: Option<tokio::runtime::Runtime>,
+    /// The running server, until it stops.
     server_task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
     /// Signals the running server as SIGTERM does: the first drains, a second stops it at once.
     signals: Option<tokio::sync::mpsc::UnboundedSender<()>>,
@@ -98,13 +113,78 @@ pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
 
 /// Starts a fake and a server on `fixture` (a variant of the 1k fixture, say).
 pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+    start_seeded(fixture, true, adjust).await
+}
+
+/// Starts a fake and a server with no mirrors at all, as after `./dev-ctl reset --fresh`: every
+/// account imports what it syncs.
+pub async fn start_fresh() -> Stack {
+    start_seeded(fixture(), false, |_| {}).await
+}
+
+/// `start_fresh`, letting the test adjust the server's config first.
+pub async fn start_fresh_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+    start_seeded(fixture(), false, adjust).await
+}
+
+/// `start_fresh`, on another fixture (a variant of the 1k one, say).
+pub async fn start_fresh_on(fixture: PathBuf) -> Stack {
+    start_seeded(fixture, false, |_| {}).await
+}
+
+/// The 1k fixture's `WideRelates` variant (an issue related to 60 stubs), generated once per
+/// test run.
+pub fn wide_relates_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::WideRelates,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
+/// The 1k fixture's `WideLinks` variant (an issue with over 100 labels, a PR closing over 50
+/// issues), generated once per test run.
+pub fn wide_links_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::WideLinks,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
+/// The 1k fixture's `PrivateRelationship` variant (a relationship from a private repo no account sees),
+/// generated once per test run.
+pub fn private_relationship_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::PrivateRelationship,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
+async fn start_seeded(
+    fixture: PathBuf,
+    pristine: bool,
+    adjust: impl FnOnce(&mut beghu::Config),
+) -> Stack {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let truth = dir.path().join("fake").join("truth.db");
     // As `./dev-ctl start` does: pristine mirrors for the accounts that see every repo.
-    fake_github::pristine_mirrors(&fixture, &truth, &data.join("mirrors"))
-        .await
-        .unwrap();
+    if pristine {
+        fake_github::pristine_mirrors(&fixture, &truth, &data.join("mirrors"))
+            .await
+            .unwrap();
+    }
     let fake_cfg = fake_github::Config {
         fixture,
         db: truth,
@@ -115,6 +195,7 @@ pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config))
         // Set once the server is listening (see `restart_with`).
         webhook_url: None,
         webhook_secret: WEBHOOK_SECRET.into(),
+        setup_url: None,
     };
     let fake = tokio::task::spawn_blocking(move || fake_github::Fake::open(fake_cfg))
         .await
@@ -144,6 +225,7 @@ pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config))
             .unwrap(),
         fake_api: api_url,
         web,
+        server_rt: None,
         server_task: None,
         signals: None,
         _dir: dir,
@@ -166,11 +248,9 @@ impl Stack {
         &mut self,
         adjust: impl FnOnce(&mut beghu::Config),
     ) -> Result<(), String> {
-        if let Some(old) = self.server_task.take() {
-            old.abort();
-            let _ = old.await;
-        }
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        self.stop();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
         let mut cfg = beghu::Config {
             build_id: BUILD.into(),
@@ -184,11 +264,15 @@ impl Stack {
                 client_secret: CLIENT_SECRET.into(),
                 app_id: fake_github::DEV_APP_ID.to_string(),
                 app_key: fake_github::DEV_APP_KEY.into(),
+                app_slug: Some(fake_github::APP_SLUG.to_owned()),
             },
             web_dir: Some(self.web.clone()),
             mirrors: mirror_db_config(),
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
+            setup_reread_after: Duration::from_secs(60),
+            import_retry_after: Duration::from_secs(60),
+            import_give_up_after: Duration::from_secs(5 * 60),
             webhook_secret: WEBHOOK_SECRET.into(),
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
@@ -197,11 +281,28 @@ impl Stack {
             read_back_retries: beghu::default_read_back_retries(),
         };
         adjust(&mut cfg);
-        let app = beghu::App::open(cfg).await?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
         let (signals, received) = tokio::sync::mpsc::unbounded_channel();
-        // A stack that restarts or goes away drops `signals`: that server is aborted instead.
+        let started = rt.spawn(async move {
+            let app = beghu::App::open(cfg).await?;
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            Ok::<_, String>(tokio::spawn(beghu::serve_until(listener, app, received)))
+        });
+        let task = match started.await.unwrap() {
+            Ok(task) => task,
+            Err(e) => {
+                rt.shutdown_background();
+                return Err(e);
+            }
+        };
+        // A stack that restarts or goes away shuts the server's runtime down instead.
         self.signals = Some(signals);
-        self.server_task = Some(tokio::spawn(beghu::serve_until(listener, app, received)));
+        self.server_task = Some(task);
+        self.server_rt = Some(rt);
         self.server = server;
         self.fake(
             "PUT",
@@ -209,11 +310,28 @@ impl Stack {
             serde_json::json!({ "url": format!("{}/webhook", self.server) }),
         )
         .await;
+        self.fake(
+            "PUT",
+            "/setup-url",
+            serde_json::json!({ "url": format!("{}/auth/setup", self.server) }),
+        )
+        .await;
         Ok(())
     }
 }
 
 impl Stack {
+    /// Stops the running server, if any, as a crash would: its runtime goes, and with it every
+    /// task it had, at the task's next await. Blocking work already under way (a mirror
+    /// transaction) runs to its end.
+    fn stop(&mut self) {
+        self.signals = None;
+        self.server_task = None;
+        if let Some(rt) = self.server_rt.take() {
+            rt.shutdown_background();
+        }
+    }
+
     /// Stops the server as SIGTERM does: the task that ends when it has stopped.
     pub fn sigterm(&mut self) -> tokio::task::JoinHandle<std::io::Result<()>> {
         self.signal_again();
@@ -225,6 +343,13 @@ impl Stack {
         if let Some(signals) = &self.signals {
             let _ = signals.send(());
         }
+    }
+}
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        // A runtime can't be dropped inside another's async context; shut it down instead.
+        self.stop();
     }
 }
 
@@ -546,6 +671,24 @@ impl Stream {
                 _ => self.others.push_back(ev),
             }
         }
+    }
+
+    /// Reads a `reset` and the status slot's state, which follows every one (a stream opens with
+    /// both).
+    pub async fn reset(&mut self) {
+        let wait = Duration::from_secs(1);
+        let first = self.event_within(wait).await;
+        assert_eq!(
+            first.as_ref().map(|e| e.event.as_str()),
+            Some("reset"),
+            "{first:?}"
+        );
+        let second = self.event_within(wait).await;
+        assert_eq!(
+            second.as_ref().map(|e| e.event.as_str()),
+            Some("status"),
+            "{second:?}"
+        );
     }
 
     /// Every event (heartbeats aside) that arrives within `wait`.

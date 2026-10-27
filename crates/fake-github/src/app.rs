@@ -1,115 +1,89 @@
-//! The App's own credentials, and the GraphQL API.
+//! The GitHub App's own side: the endpoints an App calls with its JWT (`GET /app`, and minting an
+//! installation's access token), and the install pages a user goes through to install it.
 //!
-//! - `POST /app/installations/{id}/access_tokens`: the App signs a JWT (RS256, `iss` its App id
-//!   or client id, at most 10 minutes from `iat` to `exp`) with its private key and trades it for
-//!   an installation token (`ghs_…`, an hour). The fake checks the signature against the dev
-//!   App's key, [`DEV_APP_KEY`]. A body's `permissions` narrow the token, as GitHub's do; asking
-//!   for one the installation hasn't got, or a higher level, is GitHub's 422, and a body that isn't
-//!   JSON its 400. The control port's
-//!   `/state` lists each token minted with its permissions.
-//! - `POST /graphql`: the queries beghu makes, matched by operation name (the fake parses no
-//!   GraphQL). A token sees what GitHub would let it: an installation token the installation's
-//!   repos, a user token the repos the user has access to, and either one every public repo.
-//!   Issues in repos the token can't see are left out of lists without a trace, as GitHub does.
-//!
-//! `IssueEdges($id, $sub, $blocks, $relates, $relatesAfter)`: an issue's relationships of the
-//! kinds asked for (`@include(if: …)`), each end with its repository. `relatesTo` is a page of
-//! at most 100 (GitHub's largest page), newest first as GitHub orders it by default, with its
-//! `pageInfo`; `$relatesAfter` is the `endCursor` of the page before. The other lists are whole:
-//! GitHub caps them at 100 sub-issues and 50 dependencies of each kind.
+//! - A JWT is RS256, signed with the App's private key, with `iat`, `exp` (at most 10 minutes
+//!   after `iat`) and `iss` (the App's id or client id), as GitHub checks them. The fake checks
+//!   the signature against the dev App's key, [`DEV_APP_KEY`].
+//! - `POST /app/installations/{id}/access_tokens` mints a `ghs_` token good for an hour, which
+//!   reads the installation's repos (and anything public). A body's `permissions` narrow the
+//!   token, as GitHub's do; asking for one the installation hasn't got, or a higher level, is
+//!   GitHub's 422, and a body that isn't JSON its 400. The control port's `/state` lists each
+//!   token minted with its permissions.
+//! - `GET /apps/{slug}/installations/new` is the install page. GitHub knows who is installing by
+//!   their github.com session: the fake's is the `fake_gh_user` cookie its authorize page sets,
+//!   or a `login=` parameter, as on the authorize page. A user installs the App on their own
+//!   account, covering all their repos; the fake then sends `installation` `created` and sends the
+//!   browser to the App's setup URL with `installation_id` and `setup_action=install`.
+//! - Uninstalling (`POST /uninstall` on the control port, as the user would in their settings)
+//!   deletes the installation, revokes its tokens and sends `installation` `deleted`.
+//! - Suspending (`POST /suspend`, and `POST /unsuspend`) keeps the installation listed, with
+//!   `suspended_at`, but it mints no tokens (403) and its tokens stop working; GitHub sends
+//!   `installation` `suspend` (or `unsuspend`). Unverified: what GitHub answers a token minted
+//!   before the suspension. Its docs (and docs/research) don't say; the fake answers 401 "Bad
+//!   credentials", as for any dead token. To check against the real App with `--github` (#118).
 
 use crate::Fake;
 use crate::api::{self, bearer, rfc3339};
+use crate::webhooks::{Delivery, repo_json, user_json};
 use axum::Router;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
 use base64::Engine as _;
 use fake_db::q;
-use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// The dev App's id, as its installations report it.
 pub const DEV_APP_ID: i64 = 1_000_001;
+/// The dev App's URL slug (`/apps/beghu-dev`).
+pub const SLUG: &str = "beghu-dev";
 
 /// The dev App's private key (PKCS#1 PEM, as GitHub hands App keys out). Dev and test data only:
 /// it signs JWTs for Fake GitHub, never for GitHub.
 pub const DEV_APP_KEY: &str = include_str!("dev-app-key.pem");
 
-/// The most nodes GitHub returns in one page of a connection.
-const MAX_PAGE: usize = 100;
-
 /// GitHub's installation tokens last an hour.
-const INSTALLATION_TTL: i64 = 3600;
+const TOKEN_TTL: i64 = 3600;
 /// GitHub refuses a JWT whose lifetime is over 10 minutes.
 const MAX_JWT_LIFETIME: i64 = 600;
+/// Who the fake's github.com session belongs to: set by the authorize page.
+pub(crate) const SESSION_COOKIE: &str = "fake_gh_user";
 
 pub(crate) fn router() -> Router<Fake> {
     Router::new()
+        .route("/app", get(app))
         .route(
             "/app/installations/{installation_id}/access_tokens",
             post(access_token),
         )
-        .route("/graphql", post(graphql))
+        .route(
+            "/apps/{slug}/installations/new",
+            get(install_page).post(install),
+        )
 }
 
-/// What the App's installations may do, as GitHub reports it on each.
-pub(crate) fn installation_permissions() -> serde_json::Map<String, Value> {
-    [
-        ("issues", "write"),
-        ("metadata", "read"),
-        ("pull_requests", "read"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_owned(), json!(v)))
-    .collect()
-}
-
-/// The installation tokens issued: by token, the installation and expiry of each; and, in the
-/// order minted, each one's installation and permissions.
+/// Each installation token minted, in order: its installation and permissions.
 #[derive(Default)]
-pub(crate) struct InstallationTokens(Mutex<Issued>);
+pub(crate) struct Minted(Mutex<Vec<Value>>);
 
-#[derive(Default)]
-struct Issued {
-    live: HashMap<String, (i64, i64)>,
-    minted: Vec<Value>,
-}
-
-impl InstallationTokens {
-    fn issue(&self, installation: i64, expires_at: i64, permissions: &Value) -> String {
-        let token = format!("ghs_{}", crate::random(36));
-        let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        all.live.insert(token.clone(), (installation, expires_at));
-        all.minted
+impl Minted {
+    fn record(&self, installation: i64, permissions: &Value) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .push(json!({ "installation": installation, "permissions": permissions }));
-        token
-    }
-
-    /// The installation a live token belongs to.
-    fn installation(&self, token: &str, now: i64) -> Option<i64> {
-        let all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        all.live
-            .get(token)
-            .filter(|(_, expires)| *expires > now)
-            .map(|(i, _)| *i)
     }
 
     /// Each token minted, oldest first: its installation and permissions.
     pub(crate) fn minted(&self) -> Vec<Value> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .minted
-            .clone()
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub(crate) fn clear(&self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Issued::default();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -126,22 +100,22 @@ fn level(l: &str) -> Option<u8> {
 /// The permissions a token request's body asks for, within the installation's; none asked is
 /// all of them. GitHub's status and message when the body isn't JSON (400) or asks for more
 /// (422).
-fn permissions(body: &[u8]) -> Result<Value, (StatusCode, &'static str)> {
+fn asked_permissions(body: &[u8]) -> Result<Value, (StatusCode, &'static str)> {
     const REFUSED: (StatusCode, &str) = (
         StatusCode::UNPROCESSABLE_ENTITY,
         "The permissions requested are not granted to this installation.",
     );
-    let all = installation_permissions();
+    let all = permissions();
     if body.iter().all(u8::is_ascii_whitespace) {
-        return Ok(Value::Object(all));
+        return Ok(all);
     }
     let req: Value = serde_json::from_slice(body)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Problems parsing JSON"))?;
     let Some(asked) = req.get("permissions").and_then(Value::as_object) else {
-        return Ok(Value::Object(all));
+        return Ok(all);
     };
     for (name, want) in asked {
-        let have = all.get(name).and_then(Value::as_str).and_then(level);
+        let have = all[name].as_str().and_then(level);
         let want = want.as_str().and_then(level);
         match (have, want) {
             (Some(h), Some(w)) if w <= h => {}
@@ -175,294 +149,550 @@ struct Claims {
     exp: i64,
 }
 
-/// Why GitHub would refuse the App's JWT, if it would: a 401 each time. The messages are
-/// unverified: docs/research doesn't record GitHub's own wording, so check them against real
-/// GitHub with `--github` (#118) before anything relies on the text.
-fn check_jwt(fake: &Fake, jwt: &str) -> Result<(), &'static str> {
+/// Checks the request's `Authorization: Bearer <JWT>` as GitHub does for an App: GitHub's 401
+/// when it wouldn't take it. The messages are unverified: docs/research doesn't record GitHub's
+/// own wording, so check them against real GitHub with `--github` (#118) before anything relies
+/// on the text.
+fn check_jwt(fake: &Fake, headers: &HeaderMap) -> Result<(), Response> {
     const UNREADABLE: &str = "A JSON web token could not be decoded";
+    let refuse = |why: &str| api::error(StatusCode::UNAUTHORIZED, why);
+    let jwt = bearer(headers).ok_or_else(|| refuse(UNREADABLE))?;
     let mut parts = jwt.split('.');
     let (Some(head), Some(body), Some(sig), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return Err(UNREADABLE);
+        return Err(refuse(UNREADABLE));
     };
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header: Value = b64
         .decode(head)
         .ok()
         .and_then(|h| serde_json::from_slice(&h).ok())
-        .ok_or(UNREADABLE)?;
+        .ok_or_else(|| refuse(UNREADABLE))?;
     if header["alg"] != "RS256" {
-        return Err(UNREADABLE);
+        return Err(refuse(UNREADABLE));
     }
-    let sig = b64.decode(sig).map_err(|_| UNREADABLE)?;
-    let key = public_key().ok_or("the dev App key is unreadable")?;
+    let sig = b64.decode(sig).map_err(|_| refuse(UNREADABLE))?;
+    let key = public_key().ok_or_else(|| refuse("the dev App key is unreadable"))?;
     ring::signature::UnparsedPublicKey::new(&ring::signature::RSA_PKCS1_2048_8192_SHA256, key)
         .verify(format!("{head}.{body}").as_bytes(), &sig)
-        .map_err(|_| UNREADABLE)?;
+        .map_err(|_| refuse(UNREADABLE))?;
     let claims: Claims = b64
         .decode(body)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or(UNREADABLE)?;
+        .ok_or_else(|| refuse(UNREADABLE))?;
     let ours = match &claims.iss {
         Value::Number(n) => n.as_i64() == Some(DEV_APP_ID),
         Value::String(s) => s == &DEV_APP_ID.to_string() || s == &fake.state().cfg.client_id,
-        _ => return Err("'Issuer' claim ('iss') must be an Integer"),
+        _ => return Err(refuse("'Issuer' claim ('iss') must be an Integer")),
     };
     if !ours {
-        return Err("Integration not found");
+        return Err(refuse("Integration not found"));
     }
     let now = fake.now();
     if claims.exp <= now {
-        return Err(
+        return Err(refuse(
             "'Expiration time' claim ('exp') must be a numeric value representing the future time at which the assertion expires",
-        );
+        ));
     }
     if claims.exp - claims.iat > MAX_JWT_LIFETIME {
-        return Err("'Expiration time' claim ('exp') is too far in the future");
+        return Err(refuse(
+            "'Expiration time' claim ('exp') is too far in the future",
+        ));
     }
     if claims.iat > now + 60 {
-        return Err("'Issued at' claim ('iat') must be an Integer representing a time in the past");
+        return Err(refuse(
+            "'Issued at' claim ('iat') must be an Integer representing a time in the past",
+        ));
     }
     Ok(())
 }
 
+fn host(headers: &HeaderMap) -> String {
+    headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost")
+        .to_owned()
+}
+
+/// GitHub's App permissions, as on an installation and in a minted token.
+pub(crate) fn permissions() -> Value {
+    json!({ "issues": "write", "metadata": "read", "pull_requests": "read" })
+}
+
+/// `GET /app`: the authenticated App. Its `html_url` is where installing starts.
+async fn app(State(fake): State<Fake>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_jwt(&fake, &headers) {
+        return r;
+    }
+    let host = host(&headers);
+    axum::Json(json!({
+        "id": DEV_APP_ID,
+        "slug": SLUG,
+        "node_id": format!("A_kw{DEV_APP_ID}"),
+        "client_id": fake.state().cfg.client_id,
+        "owner": { "login": "AdvanGrid", "id": 61_000_000, "type": "Organization" },
+        "name": SLUG,
+        "description": "beghu, against Fake GitHub",
+        "external_url": "https://beghu.dev",
+        "html_url": format!("http://{host}/apps/{SLUG}"),
+        "created_at": rfc3339(1_756_684_800),
+        "updated_at": rfc3339(1_756_684_800),
+        "permissions": permissions(),
+        "events": crate::api::EVENTS,
+    }))
+    .into_response()
+}
+
+/// `POST /app/installations/{id}/access_tokens`.
 async fn access_token(
     State(fake): State<Fake>,
     headers: HeaderMap,
     Path(installation): Path<i64>,
     body: axum::body::Bytes,
 ) -> Response {
-    // The message is unverified, as `check_jwt`'s are (#118).
-    let Some(jwt) = bearer(&headers) else {
-        return api::error(
-            StatusCode::UNAUTHORIZED,
-            "A JSON web token could not be decoded",
-        );
-    };
-    if let Err(why) = check_jwt(&fake, &jwt) {
-        return api::error(StatusCode::UNAUTHORIZED, why);
+    if let Err(r) = check_jwt(&fake, &headers) {
+        return r;
     }
-    let known = fake
-        .state()
-        .truth
-        .read(move |c| q::installation_exists(c, installation))
-        .await;
-    match known {
-        Ok(true) => {}
-        Ok(false) => return api::not_found().await,
-        Err(e) => return api::internal(e),
-    }
-    let granted = match permissions(&body) {
+    let granted = match asked_permissions(&body) {
         Ok(p) => p,
         Err((status, why)) => return api::error(status, why),
     };
-    let expires_at = fake.now() + INSTALLATION_TTL;
-    let token = fake
+    let now = fake.now();
+    let token = format!("ghs_{}", crate::random(36));
+    let t = token.clone();
+    let made = fake
         .state()
-        .app_tokens
-        .issue(installation, expires_at, &granted);
-    (
-        StatusCode::CREATED,
-        axum::Json(json!({
-            "token": token,
-            "expires_at": rfc3339(expires_at),
-            "permissions": granted,
-            "repository_selection": "all",
-        })),
-    )
-        .into_response()
+        .truth
+        .write(move |tx| {
+            let Some(i) = q::installation(tx, installation)? else {
+                return Ok(Minting::NoSuch);
+            };
+            if i.suspended_at.is_some() {
+                return Ok(Minting::Suspended);
+            }
+            q::insert_installation_token(tx, &t, installation, now, now + TOKEN_TTL)?;
+            Ok(Minting::Made)
+        })
+        .await;
+    match made {
+        Ok(Minting::Made) => {
+            fake.state().app_tokens.record(installation, &granted);
+            (
+                StatusCode::CREATED,
+                axum::Json(json!({
+                    "token": token,
+                    "expires_at": rfc3339(now + TOKEN_TTL),
+                    "permissions": granted,
+                    "repository_selection": "all",
+                })),
+            )
+                .into_response()
+        }
+        Ok(Minting::NoSuch) => api::error(StatusCode::NOT_FOUND, "Not Found"),
+        Ok(Minting::Suspended) => api::error(
+            StatusCode::FORBIDDEN,
+            "This installation has been suspended",
+        ),
+        Err(e) => api::internal(e),
+    }
 }
 
-/// Who a token speaks for.
-#[derive(Clone, Copy)]
-enum Caller {
-    Installation(i64),
-    User(i64),
+/// What minting a token found.
+enum Minting {
+    Made,
+    NoSuch,
+    Suspended,
+}
+
+fn page(title: &str, body: &str) -> Html<String> {
+    // System colours only, so the page follows the light or dark scheme by itself.
+    Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{title}</title>
+<style>
+  :root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
+  body {{ background: Canvas; color: CanvasText; margin: 0; padding: 48px 16px; }}
+  main {{ max-width: 420px; margin: 0 auto; }}
+  h1 {{ font-size: 20px; font-weight: 600; }}
+  p, small {{ color: GrayText; }}
+  ul {{ list-style: none; padding: 0; margin: 24px 0 0; }}
+  li + li {{ margin-top: 8px; }}
+  li {{ padding: 12px 16px; border: 1px solid GrayText; border-radius: 6px; }}
+  a {{ color: LinkText; }}
+  button {{ font: inherit; color: ButtonText; background: ButtonFace; border: 1px solid GrayText;
+            border-radius: 6px; padding: 4px 12px; margin-left: 8px; cursor: pointer; }}
+</style>
+</head>
+<body><main>
+{body}
+</main></body>
+</html>
+"#
+    ))
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|c| c.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_owned())
 }
 
 #[derive(Deserialize)]
-struct Request {
-    query: String,
-    #[serde(default)]
-    variables: Value,
-    #[serde(rename = "operationName")]
-    operation_name: Option<String>,
+struct InstallQuery {
+    login: Option<String>,
+    state: Option<String>,
 }
 
-async fn graphql(
+/// Who is on the install page: the `login` parameter, else the fake's github.com session.
+fn who(q: &InstallQuery, headers: &HeaderMap) -> Option<String> {
+    q.login
+        .clone()
+        .or_else(|| cookie(headers, SESSION_COOKIE))
+        .filter(|l| !l.is_empty())
+}
+
+/// `GET /apps/{slug}/installations/new`: pick the account to install on.
+async fn install_page(
     State(fake): State<Fake>,
+    Path(slug): Path<String>,
     headers: HeaderMap,
-    axum::Json(req): axum::Json<Request>,
+    Query(q): Query<InstallQuery>,
 ) -> Response {
-    let Some(token) = bearer(&headers) else {
-        return api::error(StatusCode::UNAUTHORIZED, "Requires authentication");
-    };
-    let now = fake.now();
-    let caller = match fake.state().app_tokens.installation(&token, now) {
-        Some(i) => Caller::Installation(i),
-        None => match fake
-            .state()
-            .truth
-            .read(move |c| q::access_token_user(c, &token, now))
-            .await
-        {
-            Ok(Some(u)) => Caller::User(u),
-            Ok(None) => return api::error(StatusCode::UNAUTHORIZED, "Bad credentials"),
-            Err(e) => return api::internal(e),
-        },
-    };
-    let calls = &fake.state().graphql;
-    match caller {
-        Caller::Installation(_) => &calls.installation,
-        Caller::User(_) => &calls.user,
+    if slug != SLUG {
+        return api::not_found().await;
     }
-    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let op = req.operation_name.clone().or_else(|| {
-        let rest = req.query.trim_start().strip_prefix("query")?;
-        let name: String = rest
-            .trim_start()
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+    let accounts = match fake.state().truth.read(q::accounts).await {
+        Ok(a) => a,
+        Err(e) => return api::internal(e),
+    };
+    let Some(login) = who(&q, &headers).filter(|l| accounts.iter().any(|a| a.login == *l)) else {
+        // Signed out of the fake's github.com: pick who you are, as on the authorize page.
+        let items: String = accounts
+            .iter()
+            .map(|a| {
+                let mut params = vec![("login", a.login.clone())];
+                if let Some(s) = &q.state {
+                    params.push(("state", s.clone()));
+                }
+                format!(
+                    "<li><a href=\"/apps/{SLUG}/installations/new?{}\">{}</a> <small>{}</small></li>\n",
+                    escape(&serde_urlencoded::to_string(&params).unwrap_or_default()),
+                    escape(&a.login),
+                    escape(&a.name)
+                )
+            })
             .collect();
-        (!name.is_empty()).then_some(name)
-    });
-    match op.as_deref() {
-        Some("IssueEdges") => {
-            let vars = req.variables;
-            let done = fake
-                .state()
-                .truth
-                .read(move |c| issue_edges(c, caller, &vars))
-                .await;
-            match done {
-                Ok(answer) => axum::Json(answer).into_response(),
-                Err(e) => api::internal(e),
-            }
+        return page(
+            "Sign in to Fake GitHub",
+            &format!("<h1>Sign in to Fake GitHub</h1>\n<p>Pick who installs {SLUG}.</p>\n<ul>\n{items}</ul>"),
+        )
+        .into_response();
+    };
+    let l = login.clone();
+    let installed = match fake
+        .state()
+        .truth
+        .read(move |c| q::installation_on(c, &l))
+        .await
+    {
+        Ok(i) => i,
+        Err(e) => return api::internal(e),
+    };
+    let row = match (&installed, fake.setup_url()) {
+        (Some(id), Some(setup)) => format!(
+            "Installed · <a href=\"{}\">Configure</a>",
+            escape(&setup_redirect(&setup, *id, "update", q.state.as_deref()))
+        ),
+        (Some(_), None) => "Installed".to_owned(),
+        (None, _) => {
+            let state = q
+                .state
+                .as_deref()
+                .map(|s| {
+                    format!(
+                        "<input type=\"hidden\" name=\"state\" value=\"{}\">",
+                        escape(s)
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                "<form method=\"post\" action=\"/apps/{SLUG}/installations/new\" style=\"display:inline\">\
+<input type=\"hidden\" name=\"login\" value=\"{l}\"><input type=\"hidden\" name=\"target\" value=\"{l}\">{state}\
+<button type=\"submit\">Install</button></form>",
+                l = escape(&login)
+            )
         }
-        other => axum::Json(json!({
-            "errors": [{ "message": format!("Fake GitHub doesn't know the operation {other:?}") }],
-        }))
+    };
+    page(
+        &format!("Install {SLUG}"),
+        &format!(
+            "<h1>Install {SLUG}</h1>\n<p>Where do you want to install {SLUG}? It gets all repositories of the account.</p>\n<ul>\n<li>{} {row}</li>\n</ul>",
+            escape(&login)
+        ),
+    )
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct InstallForm {
+    login: String,
+    target: String,
+    state: Option<String>,
+}
+
+fn setup_redirect(setup: &str, installation: i64, action: &str, state: Option<&str>) -> String {
+    let mut params = vec![
+        ("installation_id", installation.to_string()),
+        ("setup_action", action.to_owned()),
+    ];
+    if let Some(s) = state {
+        params.push(("state", s.to_owned()));
+    }
+    let sep = if setup.contains('?') { '&' } else { '?' };
+    format!(
+        "{setup}{sep}{}",
+        serde_urlencoded::to_string(&params).unwrap_or_default()
+    )
+}
+
+/// The installation as GitHub's webhooks carry it; `suspended_by` is who suspended it, while it
+/// is suspended (the account's owner, as the API lists it).
+fn installation_json(i: &q::InstallationRow, suspended_by: Value) -> Value {
+    json!({
+        "id": i.id,
+        "client_id": null,
+        "account": {
+            "login": i.account_login,
+            "id": i.account_id,
+            "node_id": format!("U_kg{}", i.account_id),
+            "type": i.account_type,
+        },
+        "repository_selection": "all",
+        "app_id": DEV_APP_ID,
+        "app_slug": SLUG,
+        "target_id": i.account_id,
+        "target_type": i.account_type,
+        "permissions": permissions(),
+        "events": crate::api::EVENTS,
+        "created_at": rfc3339(i.created_at),
+        "updated_at": rfc3339(i.suspended_at.unwrap_or(i.created_at)),
+        "suspended_by": suspended_by,
+        "suspended_at": i.suspended_at.map(rfc3339),
+    })
+}
+
+/// An `installation` delivery (`created`, `deleted`, `suspend`, `unsuspend`), naming the
+/// installation's repos.
+fn installation_delivery(
+    c: &rusqlite::Connection,
+    action: &str,
+    i: &q::InstallationRow,
+    repos: &[i64],
+    sender: &Value,
+) -> rusqlite::Result<Delivery> {
+    let repos: Vec<Value> = repos
+        .iter()
+        .map(|id| {
+            let r = q::repo(c, *id)?;
+            let full = repo_json(&r);
+            Ok(json!({
+                "id": full["id"], "node_id": full["node_id"], "name": full["name"],
+                "full_name": full["full_name"], "private": full["private"],
+            }))
+        })
+        .collect::<rusqlite::Result<_>>()?;
+    let suspended_by = match i.suspended_at {
+        Some(_) => q::user_row(c, i.account_id)?.map_or(Value::Null, |u| {
+            user_json(u.id, &u.login, u.avatar_url.as_deref())
+        }),
+        None => Value::Null,
+    };
+    Ok(Delivery::new(
+        "installation",
+        json!({
+            "action": action,
+            "installation": installation_json(i, suspended_by),
+            "repositories": repos,
+            "requester": null,
+            "sender": sender,
+        }),
+    ))
+}
+
+/// The install page's form: installs the App on the user's own account.
+async fn install(
+    State(fake): State<Fake>,
+    Path(slug): Path<String>,
+    Form(f): Form<InstallForm>,
+) -> Response {
+    if slug != SLUG {
+        return api::not_found().await;
+    }
+    if !f.login.eq_ignore_ascii_case(&f.target) {
+        return api::error(
+            StatusCode::FORBIDDEN,
+            "You can only install the App on an account you administer",
+        );
+    }
+    let now = fake.now();
+    let login = f.login.clone();
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let Some(user) = q::account_by_login(tx, &login)? else {
+                return Ok(Err("no such account"));
+            };
+            if q::installation_on(tx, &login)?.is_some() {
+                return Ok(Err("already installed"));
+            }
+            let id = q::next_installation_id(tx)?;
+            q::add_installation(tx, id, user.id, &user.login, "User", now)?;
+            let repos = q::owned_repos(tx, &user.login)?;
+            for r in &repos {
+                q::set_repo_installation(tx, *r, Some(id))?;
+            }
+            let i = q::installation(tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let u = q::user_row(tx, user.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let sender = user_json(u.id, &u.login, u.avatar_url.as_deref());
+            let d = installation_delivery(tx, "created", &i, &repos, &sender)?;
+            Ok(Ok((id, d)))
+        })
+        .await;
+    let (id, delivery) = match done {
+        Ok(Ok(v)) => v,
+        Ok(Err(why)) => return api::error(StatusCode::UNPROCESSABLE_ENTITY, why),
+        Err(e) => return api::internal(e),
+    };
+    fake.state().webhooks.send(vec![delivery]);
+    match fake.setup_url() {
+        Some(setup) => (
+            StatusCode::FOUND,
+            [(
+                header::LOCATION,
+                setup_redirect(&setup, id, "install", f.state.as_deref()),
+            )],
+        )
+            .into_response(),
+        None => page(
+            "Installed",
+            &format!(
+                "<h1>Installed</h1>\n<p>{SLUG} is installed on {}.</p>",
+                escape(&f.login)
+            ),
+        )
         .into_response(),
     }
 }
 
-fn visible(c: &Connection, caller: Caller, repo: i64) -> rusqlite::Result<bool> {
-    let (inst, user) = match caller {
-        Caller::Installation(i) => (Some(i), None),
-        Caller::User(u) => (None, Some(u)),
-    };
-    q::repo_visible(c, repo, inst, user)
-}
-
-/// One end of a relationship, as GraphQL's `Issue` gives it with its repository.
-fn end(c: &Connection, id: i64) -> rusqlite::Result<Value> {
-    let i = q::graphql_issue(c, id)?;
-    Ok(json!({
-        "id": i.node_id,
-        "databaseId": i.id,
-        "number": i.number,
-        "title": i.title,
-        "state": i.state.to_uppercase(),
-        "repository": {
-            "databaseId": i.repo_id,
-            "id": i.repo_node_id,
-            "name": i.repo_name,
-            "owner": { "login": i.repo_owner },
-            "isPrivate": i.repo_private,
-        },
-    }))
-}
-
-/// The ends among `ids` the caller can see, in order.
-fn ends(c: &Connection, caller: Caller, ids: Vec<i64>) -> rusqlite::Result<Value> {
-    let mut nodes = Vec::new();
-    for id in ids {
-        if visible(c, caller, q::graphql_issue(c, id)?.repo_id)? {
-            nodes.push(end(c, id)?);
-        }
-    }
-    Ok(json!({ "nodes": nodes }))
-}
-
-/// `IssueEdges`'s answer: `data`, and the errors beside it. An id GitHub doesn't know (deleted,
-/// transferred) or doesn't show the caller is `node: null` with a `NOT_FOUND` error on `node`
-/// (docs/research/issue-edge-cases.md, mirror-import-and-reconciliation.md).
-fn issue_edges(c: &Connection, caller: Caller, vars: &Value) -> rusqlite::Result<Value> {
-    let node_id = vars["id"].as_str().unwrap_or_default();
-    let not_found = || {
-        json!({
-            "data": { "node": null },
-            "errors": [{
-                "type": "NOT_FOUND",
-                "path": ["node"],
-                "locations": [{ "line": 2, "column": 3 }],
-                "message": format!("Could not resolve to a node with the global id of '{node_id}'"),
-            }],
-        })
-    };
-    let Some(id) = q::issue_by_node_id(c, node_id)? else {
-        return Ok(not_found());
-    };
-    let issue = q::graphql_issue(c, id)?;
-    if !visible(c, caller, issue.repo_id)? {
-        return Ok(not_found());
-    }
-    let mut node = json!({ "__typename": "Issue", "databaseId": id });
-    let flag = |k: &str| vars[k].as_bool().unwrap_or(false);
-    if flag("sub") {
-        node["parent"] = match q::parent_of(c, id)? {
-            Some(p) if visible(c, caller, q::graphql_issue(c, p)?.repo_id)? => end(c, p)?,
-            _ => Value::Null,
-        };
-        node["subIssues"] = ends(c, caller, q::sub_issues(c, id)?)?;
-    }
-    if flag("blocks") {
-        node["blockedBy"] = ends(c, caller, q::blocked_by(c, id)?)?;
-        node["blocking"] = ends(c, caller, q::blocking(c, id)?)?;
-    }
-    if flag("relates") {
-        // Newest first: GitHub's default order, `RELATES_TO_ADDED_AT DESC`.
-        let mut all = q::relates_to(c, id)?;
-        all.reverse();
-        let mut seen = Vec::new();
-        for other in all {
-            if visible(c, caller, q::graphql_issue(c, other)?.repo_id)? {
-                seen.push(other);
+/// Uninstalls the App from `login`'s own account, as the user would in their settings: the
+/// installation and its tokens go, and GitHub sends `installation` `deleted`. False when the App
+/// isn't installed there.
+pub(crate) async fn uninstall(fake: &Fake, login: String) -> Result<bool, fake_db::Error> {
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let Some(id) = q::installation_on(tx, &login)? else {
+                return Ok(None);
+            };
+            let i = q::installation(tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let repos = q::installation_repos(tx, i.id)?;
+            let sender = match q::user_row(tx, i.account_id)? {
+                Some(u) => user_json(u.id, &u.login, u.avatar_url.as_deref()),
+                None => Value::Null,
+            };
+            let d = installation_delivery(tx, "deleted", &i, &repos, &sender)?;
+            for r in &repos {
+                q::set_repo_installation(tx, *r, None)?;
             }
+            q::revoke_installation_tokens(tx, i.id)?;
+            q::delete_installation(tx, i.id)?;
+            Ok(Some(d))
+        })
+        .await?;
+    Ok(match done {
+        Some(d) => {
+            fake.state().webhooks.send(vec![d]);
+            true
         }
-        let from = vars["relatesAfter"]
-            .as_str()
-            .and_then(from_cursor)
-            .unwrap_or(0)
-            .min(seen.len());
-        let to = (from + MAX_PAGE).min(seen.len());
-        let mut page = Vec::new();
-        for other in &seen[from..to] {
-            page.push(end(c, *other)?);
+        None => false,
+    })
+}
+
+/// Suspends (or unsuspends) the App's installation on `login`'s own account, as the user would in
+/// their settings: GitHub sends `installation` `suspend` (or `unsuspend`). While suspended, the
+/// installation still lists, mints no tokens, and its tokens stop working. False when the App
+/// isn't installed there.
+pub(crate) async fn suspend(
+    fake: &Fake,
+    login: String,
+    suspended: bool,
+) -> Result<bool, fake_db::Error> {
+    let now = fake.now();
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let Some(id) = q::installation_on(tx, &login)? else {
+                return Ok(None);
+            };
+            q::set_installation_suspended(tx, id, suspended.then_some(now))?;
+            let i = q::installation(tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let repos = q::installation_repos(tx, i.id)?;
+            let sender = match q::user_row(tx, i.account_id)? {
+                Some(u) => user_json(u.id, &u.login, u.avatar_url.as_deref()),
+                None => Value::Null,
+            };
+            let action = if suspended { "suspend" } else { "unsuspend" };
+            Ok(Some(installation_delivery(
+                tx, action, &i, &repos, &sender,
+            )?))
+        })
+        .await?;
+    Ok(match done {
+        Some(d) => {
+            fake.state().webhooks.send(vec![d]);
+            true
         }
-        node["relatesTo"] = json!({
-            "pageInfo": {
-                "hasNextPage": to < seen.len(),
-                "endCursor": (to > from).then(|| cursor(to)),
-            },
-            "nodes": page,
-        });
+        None => false,
+    })
+}
+
+impl Fake {
+    pub(crate) fn setup_url(&self) -> Option<String> {
+        self.state()
+            .setup_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
-    Ok(json!({ "data": { "node": node } }))
-}
 
-/// An opaque cursor past the first `n` nodes of a list, as GitHub's look (base64).
-fn cursor(n: usize) -> String {
-    base64::engine::general_purpose::STANDARD.encode(format!("cursor:v2:{n}"))
-}
-
-fn from_cursor(c: &str) -> Option<usize> {
-    let raw = base64::engine::general_purpose::STANDARD.decode(c).ok()?;
-    String::from_utf8(raw)
-        .ok()?
-        .strip_prefix("cursor:v2:")?
-        .parse()
-        .ok()
+    pub(crate) fn set_setup_url(&self, url: Option<String>) {
+        *self
+            .state()
+            .setup_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = url;
+    }
 }

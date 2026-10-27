@@ -65,6 +65,58 @@ impl FromRequestParts<Fake> for TokenUser {
     }
 }
 
+/// What a request's token can read: a user's (their repos) or an App installation's (its repos).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Token {
+    User(i64),
+    Installation(i64),
+}
+
+/// The request's `Authorization: Bearer|token <ghu_…|ghs_…>`. Extracting it answers GitHub's
+/// 401 when there's no live token of either kind.
+pub(crate) struct AnyToken(pub Token);
+
+impl FromRequestParts<Fake> for AnyToken {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, fake: &Fake) -> Result<Self, Response> {
+        let Some(token) = bearer(&parts.headers) else {
+            return Err(error(StatusCode::UNAUTHORIZED, "Requires authentication"));
+        };
+        if token.starts_with("ghs_") {
+            let now = fake.now();
+            return fake
+                .state()
+                .truth
+                .read(move |c| q::installation_token(c, &token, now))
+                .await
+                .map_err(internal)?
+                .map(|i| AnyToken(Token::Installation(i)))
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Bad credentials"));
+        }
+        authenticate(fake, &parts.headers)
+            .await
+            .map(|u| AnyToken(Token::User(u)))
+    }
+}
+
+/// Whether `token` can read the repo: a public repo anyone can; a private one, the users given
+/// access to it and the installation it belongs to.
+pub(crate) fn can_see(
+    c: &rusqlite::Connection,
+    token: Token,
+    repo_id: i64,
+) -> rusqlite::Result<bool> {
+    let r = q::repo(c, repo_id)?;
+    if !r.private {
+        return Ok(true);
+    }
+    Ok(match token {
+        Token::User(u) => q::permission(c, u, repo_id)?.is_some(),
+        Token::Installation(i) => r.installation_id == Some(i),
+    })
+}
+
 /// The token in `Authorization: Bearer|token <token>`.
 pub(crate) fn bearer(headers: &HeaderMap) -> Option<String> {
     headers
@@ -121,7 +173,7 @@ async fn user(State(fake): State<Fake>, TokenUser(id): TokenUser) -> Response {
     }
 }
 
-const EVENTS: [&str; 10] = [
+pub(crate) const EVENTS: [&str; 10] = [
     "issues",
     "issue_comment",
     "label",
@@ -156,19 +208,79 @@ pub(crate) fn rfc3339(secs: i64) -> String {
     )
 }
 
-async fn installations(State(fake): State<Fake>, TokenUser(user): TokenUser) -> Response {
-    let rows = match fake
+/// An RFC 3339 timestamp (`2026-10-13T08:22:19Z`, or with an offset or fractional seconds) as
+/// Unix seconds, as GitHub reads `since`.
+pub(crate) fn parse_time(s: &str) -> Option<i64> {
+    if !s.is_ascii() {
+        return None;
+    }
+    let b = s.as_bytes();
+    let num = |from: usize, len: usize| -> Option<i64> { s.get(from..from + len)?.parse().ok() };
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    let (y, m, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hh, mm, ss) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    let mut rest = &s[19..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        rest = frac.trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    let offset = match rest {
+        "Z" | "z" | "" => 0,
+        o if o.len() == 6 => {
+            let sign = match &o[..1] {
+                "+" => 1,
+                "-" => -1,
+                _ => return None,
+            };
+            sign * (o[1..3].parse::<i64>().ok()? * 3600 + o[4..6].parse::<i64>().ok()? * 60)
+        }
+        _ => return None,
+    };
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss - offset)
+}
+
+/// `GET /user/installations`, paged by `per_page` (at most 100) and `page`, with `Link`.
+async fn installations(
+    State(fake): State<Fake>,
+    TokenUser(user): TokenUser,
+    headers: HeaderMap,
+    Query(paging): Query<Paging>,
+) -> Response {
+    let per_page = paging.per_page.unwrap_or(30).clamp(1, 100);
+    let page = paging.page.unwrap_or(1).max(1);
+    let read = fake
         .state()
         .truth
-        .read(move |c| q::user_installations(c, user))
-        .await
-    {
+        .read(move |c| {
+            let rows = q::user_installations(c, user)?;
+            let mut out = Vec::new();
+            for i in rows {
+                let by = match i.suspended_at {
+                    Some(_) => q::user_row(c, i.account_id)?,
+                    None => None,
+                };
+                out.push((i, by));
+            }
+            Ok(out)
+        })
+        .await;
+    let rows = match read {
         Ok(rows) => rows,
         Err(e) => return internal(e),
     };
+    let total = rows.len() as i64;
     let list: Vec<Value> = rows
         .iter()
-        .map(|i| {
+        .skip(((page - 1) * per_page) as usize)
+        .take(per_page as usize)
+        .map(|(i, by)| {
             json!({
                 "id": i.id,
                 "client_id": fake.state().cfg.client_id,
@@ -187,19 +299,29 @@ async fn installations(State(fake): State<Fake>, TokenUser(user): TokenUser) -> 
                 "app_slug": "beghu-dev",
                 "target_id": i.account_id,
                 "target_type": i.account_type,
-                "permissions": crate::app::installation_permissions(),
+                "permissions": crate::app::permissions(),
                 "events": EVENTS,
                 "created_at": rfc3339(i.created_at),
-                "updated_at": rfc3339(i.created_at),
+                "updated_at": rfc3339(i.suspended_at.unwrap_or(i.created_at)),
                 "single_file_name": null,
                 "has_multiple_single_files": false,
                 "single_file_paths": [],
-                "suspended_by": null,
-                "suspended_at": null,
+                "suspended_by": by.as_ref().map(|u| json!({ "login": u.login, "id": u.id, "type": "User" })),
+                "suspended_at": i.suspended_at.map(rfc3339),
             })
         })
         .collect();
-    axum::Json(json!({ "total_count": list.len(), "installations": list })).into_response()
+    let mut res =
+        axum::Json(json!({ "total_count": total, "installations": list })).into_response();
+    link_pages(
+        &mut res,
+        &headers,
+        "/user/installations",
+        per_page,
+        page,
+        total,
+    );
+    res
 }
 
 #[derive(Deserialize)]
@@ -327,16 +449,34 @@ async fn installation_repos(
         "repositories": repos,
     }))
     .into_response();
+    link_pages(
+        &mut res,
+        &headers,
+        &format!("/user/installations/{installation}/repositories"),
+        per_page,
+        page,
+        total,
+    );
+    res
+}
+
+/// GitHub's `Link` header for page `page` of `total` items, `per_page` each, at `path`. Links
+/// point back at the fake, wherever the caller reached it.
+fn link_pages(
+    res: &mut Response,
+    headers: &HeaderMap,
+    path: &str,
+    per_page: i64,
+    page: i64,
+    total: i64,
+) {
     let last = ((total + per_page - 1) / per_page).max(1);
-    // Links point back at the fake, wherever the caller reached it.
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("localhost");
     let link = |p: i64, rel: &str| {
-        format!(
-            "<http://{host}/user/installations/{installation}/repositories?per_page={per_page}&page={p}>; rel=\"{rel}\""
-        )
+        format!("<http://{host}{path}?per_page={per_page}&page={p}>; rel=\"{rel}\"")
     };
     let mut links = Vec::new();
     if page > 1 {
@@ -352,5 +492,4 @@ async fn installation_repos(
     {
         res.headers_mut().insert(header::LINK, v);
     }
-    res
 }

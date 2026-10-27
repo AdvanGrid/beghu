@@ -31,6 +31,8 @@ pub struct Me {
     pub comment_order: CommentOrder,
     /// The synced repos and the account's role on each.
     pub repos: Vec<Repo>,
+    /// The import running, if any: the status slot's "Importing… n of m repos".
+    pub import: Option<crate::import::ImportStatus>,
 }
 
 #[derive(Serialize, TS, Clone)]
@@ -126,6 +128,7 @@ pub async fn me(
                 archived: r.archived,
             })
             .collect(),
+        import: app.imports().status(s.account),
     }))
 }
 

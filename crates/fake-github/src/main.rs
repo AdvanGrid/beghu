@@ -1,6 +1,9 @@
 //! `fake-github serve --fixture <mirror.db> --db <truth.db> [--port 3100] [--control-port 3101]
 //!   [--client-id ID] [--client-secret SECRET] [--access-ttl 8h] [--refresh-ttl 184d]
-//!   [--webhook-url URL] [--webhook-secret SECRET]`
+//!   [--webhook-url URL] [--webhook-secret SECRET] [--setup-url URL]`
+//!
+//! The App's JWTs must be signed with the committed dev App key (`DEV_APP_KEY`); `--setup-url`
+//! is where the install page sends the browser afterwards.
 //!
 //! `fake-github pristine-mirrors --fixture <mirror.db> --db <truth.db> --dir <mirrors dir>`
 //! writes a pristine mirror for each fixture account that sees every fixture repo, and prints
@@ -15,7 +18,7 @@ use std::time::Duration;
 const USAGE: &str = "usage:
   fake-github serve --fixture FILE --db FILE [--port 3100] [--control-port 3101]
                     [--client-id ID] [--client-secret SECRET] [--access-ttl 8h] [--refresh-ttl 184d]
-                    [--webhook-url URL] [--webhook-secret SECRET]
+                    [--webhook-url URL] [--webhook-secret SECRET] [--setup-url URL]
   fake-github pristine-mirrors --fixture FILE --db FILE --dir DIR";
 
 fn fail(msg: &str) -> ! {
@@ -59,6 +62,7 @@ async fn main() {
     let mut refresh_ttl = fake_github::REFRESH_TTL;
     let mut webhook_url = None;
     let mut webhook_secret = "fake-github-webhook-secret".to_owned();
+    let mut setup_url = None;
     while let Some(flag) = args.next() {
         let value = args
             .next()
@@ -79,6 +83,7 @@ async fn main() {
             "--refresh-ttl" => refresh_ttl = duration(&value),
             "--webhook-url" => webhook_url = Some(value),
             "--webhook-secret" => webhook_secret = value,
+            "--setup-url" => setup_url = Some(value),
             _ => fail(&format!("unknown flag {flag}")),
         }
     }
@@ -95,6 +100,7 @@ async fn main() {
                 refresh_ttl,
                 webhook_url,
                 webhook_secret,
+                setup_url,
             };
             let fake = tokio::task::spawn_blocking(move || Fake::open(cfg))
                 .await

@@ -5,6 +5,7 @@ import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
+import { Importing } from "./WhileImporting";
 import { connectLive, reconnecting } from "./live";
 import { overlay } from "./overlay";
 import { ChunkFailed } from "./router";
@@ -52,13 +53,21 @@ export function Root(props: { children?: Element }) {
 
 /**
  * The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. Once
- * the tab can write, the writes code fills it, failed writes first (overlay.ts).
+ * the tab can write, the writes code fills it, failed writes first (overlay.ts); otherwise a lost
+ * connection comes before the import (whose progress it can't hear meanwhile).
  */
 function StatusBar() {
   return (
     <footer {...stylex.attrs(s.bar)}>
       <span role="status" data-perf="status" {...stylex.attrs(s.status)}>
-        <Show when={overlay()?.Status} fallback={<Show when={reconnecting()}>reconnecting…</Show>}>
+        <Show
+          when={overlay()?.Status}
+          fallback={
+            <Show when={reconnecting()} fallback={<Importing />}>
+              reconnecting…
+            </Show>
+          }
+        >
           {(status) => <Dynamic component={status()} />}
         </Show>
       </span>
@@ -87,8 +96,8 @@ function reloadOnce(target: string): boolean {
 
 /**
  * The panel failed outside its own boundaries: its code didn't load (the URL reloads once, then
- * offers Retry), or something else broke in it. The list stays usable, and opening anything else
- * tries again.
+ * offers Retry), or something else broke in it. The notice names what the panel held, an issue
+ * or repo picking. The list stays usable, and opening anything else tries again.
  */
 function PanelFailure(props: { error: unknown; reset: () => void }) {
   const location = useLocation();
@@ -98,7 +107,9 @@ function PanelFailure(props: { error: unknown; reset: () => void }) {
   return (
     <div {...stylex.attrs(s.panelSlot)} aria-busy={reloading ? "true" : undefined}>
       <Show when={!reloading}>
-        <IssueNotice error={props.error} retry={props.reset} />
+        <Show when={location.pathname === "/repos"} fallback={<IssueNotice error={props.error} retry={props.reset} />}>
+          <ReposNotice error={props.error} retry={props.reset} />
+        </Show>
       </Show>
     </div>
   );
@@ -125,11 +136,28 @@ export function IssueNotice(props: { error: unknown; retry: () => void }) {
   );
 }
 
+/** Repo picking's code couldn't load: says so, with Retry (or, signed out, goes to sign in). */
+function ReposNotice(props: { error: unknown; retry: () => void }) {
+  return (
+    <Failure error={props.error}>
+      <p {...stylex.attrs(s.notice)} role="alert">
+        Couldn't load repo picking ·{" "}
+        <button type="button" {...stylex.attrs(s.link)} onClick={() => props.retry()}>
+          Retry
+        </button>
+      </p>
+    </Failure>
+  );
+}
+
 function Header() {
   return (
     <header {...stylex.attrs(s.header)}>
       <span {...stylex.attrs(s.brand)}>beghu</span>
       <span {...stylex.attrs(s.spacer)} />
+      <a href="/repos" {...stylex.attrs(s.headerLink)} data-perf="repos-link">
+        Repos
+      </a>
       <Errored fallback={(err, reset) => <AccountFailure error={err()} reset={reset} />}>
         <Loading fallback={<span />}>
           <Account />
@@ -272,6 +300,13 @@ const s = stylex.create({
   },
   account: {
     color: colors.muted,
+  },
+  headerLink: {
+    textDecoration: "none",
+    color: {
+      default: colors.muted,
+      ":hover": colors.fg,
+    },
   },
   main: {
     display: "flex",

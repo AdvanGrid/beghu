@@ -132,8 +132,8 @@ RETURNING src_id;
 UPDATE relationships SET position = :position, seq = :seq
 WHERE kind = 'sub' AND src_id = :parent AND dst_id = :child AND position <> :position;
 
--- A stub for an issue in a repo that isn't synced: its title and state refresh whenever an edge
--- to it is read. A synced item with the id is left alone, and a deleted id stays deleted.
+-- A stub for an issue (or, at the end of a linked PR, a PR) in a repo that isn't synced: its
+-- title and state refresh whenever an edge to it is read. A synced item with the id is left alone, and a deleted id stays deleted.
 -- Reports 0 when the stub was already as given.
 --
 -- In two steps, as `upsert_item` is (see `webhooks.sql`): a stub is in none of the list's partial
@@ -145,11 +145,12 @@ WHERE kind = 'sub' AND src_id = :parent AND dst_id = :child AND position <> :pos
 -- param: node_id &str
 -- param: repo_id i64
 -- param: number i64
+-- param: kind &str
 -- param: title &str
 -- param: state &str
 -- param: seq i64
 INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, state, seq)
-SELECT :id, :node_id, :repo_id, :number, 'issue', 1, :title, :state, :seq
+SELECT :id, :node_id, :repo_id, :number, :kind, 1, :title, :state, :seq
 WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = 'item' AND d.id = :id)
 ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id, title = excluded.title,
   state = excluded.state, seq = excluded.seq

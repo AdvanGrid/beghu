@@ -32,8 +32,10 @@
 //! arrives after it never brings the row back. Labels carry no `updated_at`: a `label` delivery
 //! sets the label as it is now (the last one applied wins), and an issue's payload only adds the
 //! labels the mirror lacks, never renames one, since it may predate a rename. Two renames of one
-//! label delivered out of order leave the older name until a sweep. Other events are acked and
-//! dropped until their slices handle them.
+//! label delivered out of order leave the older name until a sweep. `installation` and
+//! `installation_repositories` go to the accounts' re-read of their visible repos (repos.rs),
+//! which unsyncs what the App no longer reaches. Other events are acked and dropped until their
+//! slices handle them.
 
 use crate::App;
 use crate::edges::{self, Edge, Kind, Refetcher, Subject};
@@ -60,7 +62,7 @@ pub const MAX_BODY: usize = 25 * 1024 * 1024;
 
 /// Past this many ids, a push is a `reset`: the tab refetches what it shows either way, and the
 /// event stays small.
-const MAX_IDS: usize = 256;
+pub(crate) const MAX_IDS: usize = 256;
 
 /// The waits between the first tries of a failing control-DB call (about 8 s in all, on top of
 /// each try's own busy timeout); after them, it's tried every [`RETRY_EVERY`] until it lands.
@@ -167,8 +169,56 @@ pub struct Sinks {
     pub control: Arc<Control>,
     pub mirrors: Mirrors,
     pub hub: Arc<Hub>,
+    /// Where installation changes go: the accounts' repo re-reads (repos.rs) follow them.
+    pub installs: mpsc::UnboundedSender<InstallChange>,
     /// Reads relationships back from GitHub after their deliveries.
     pub edges: Arc<Refetcher>,
+}
+
+/// An `installation` or `installation_repositories` delivery: the App's reach changed. Its rows
+/// come and go through the accounts' re-read of their visible repos, never as deletes recorded
+/// in `deleted`, since installing again brings back the same ids.
+#[derive(Debug)]
+pub struct InstallChange {
+    /// The repos the App no longer reaches through the installation.
+    pub removed: Vec<i64>,
+    /// Who made the change (installed, suspended, picked its repos): their repos are re-read at
+    /// once, so the picker they're on shows it.
+    pub sender: Option<i64>,
+}
+
+impl InstallChange {
+    fn parse(event: &str, payload: &[u8]) -> Option<InstallChange> {
+        #[derive(Deserialize)]
+        struct Repo {
+            id: i64,
+        }
+        #[derive(Deserialize)]
+        struct Sender {
+            id: i64,
+        }
+        #[derive(Deserialize)]
+        struct P {
+            #[serde(default)]
+            action: String,
+            sender: Option<Sender>,
+            #[serde(default)]
+            repositories: Vec<Repo>,
+            #[serde(default)]
+            repositories_removed: Vec<Repo>,
+        }
+        let p: P = serde_json::from_slice(payload).ok()?;
+        let removed = match (event, p.action.as_str()) {
+            ("installation", "deleted" | "suspend") => p.repositories,
+            ("installation_repositories", "removed") => p.repositories_removed,
+            ("installation" | "installation_repositories", _) => Vec::new(),
+            _ => return None,
+        };
+        Some(InstallChange {
+            removed: removed.into_iter().map(|r| r.id).collect(),
+            sender: p.sender.map(|s| s.id),
+        })
+    }
 }
 
 /// Starts the dispatcher with every delivery acked but not processed before this start queued
@@ -510,6 +560,11 @@ async fn dispatch(
             }
         };
         let started = Instant::now();
+        if let Some(change) = InstallChange::parse(&d.event, &d.payload) {
+            let _ = sinks.installs.send(change);
+            spawn_settle(&sinks, &in_flight, d.guid);
+            continue;
+        }
         let change = match RepoChange::parse(&d.event, &d.payload) {
             Ok(Some(c)) => c,
             Ok(None) => {
@@ -1020,9 +1075,13 @@ impl RepoChange {
 
     /// Writes the change in one account's transaction; the ids of the items whose rows it
     /// changed (none when the guard kept everything as it was), and of the items that show
-    /// something of them (an ancestor's progress, a blocked issue's chips).
+    /// something of them (an ancestor's progress, a blocked issue's chips). A repo the mirror no
+    /// longer syncs (a pick unsynced it after the fan-out) gets nothing: the import's own check.
     fn write(&self, tx: &Transaction, seq: i64) -> rusqlite::Result<Vec<i64>> {
         let repo = self.repo;
+        if !crate::import::synced(tx, repo)? {
+            return Ok(Vec::new());
+        }
         Ok(match &self.change {
             Change::Issue(i) => {
                 if upsert_issue(tx, repo, i, seq)? {
@@ -1227,6 +1286,28 @@ pub(crate) fn time(s: &str) -> i64 {
     parse_time(s).unwrap_or(0)
 }
 
+/// Unix seconds as GitHub writes times (`2026-10-13T08:22:19Z`).
+pub(crate) fn rfc3339(secs: i64) -> String {
+    // Days from the civil calendar (Howard Hinnant's algorithm), as `parse_time` reads them.
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 pub(crate) fn parse_time(s: &str) -> Option<i64> {
     // Every slice below is by byte offset, which is safe only on ASCII.
     if !s.is_ascii() {
@@ -1267,7 +1348,56 @@ pub(crate) fn parse_time(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_time;
+    use super::{RepoChange, parse_time, rfc3339};
+    use mirror_db::q;
+
+    // An exception to "tests go through public seams" (AGENTS.md): a delivery is fanned out from
+    // `synced_repos` and applied later on the account's lane, and a pick that unsyncs the repo
+    // can land in between. No public seam can hold a delivery between the two (through
+    // `/webhook` the fan-out and the apply follow each other at once), so the window can't be
+    // opened from outside, and the apply's own check is tested here instead, on the fixture's
+    // mirror, whose `partner-sdk` repo isn't synced.
+    #[test]
+    fn a_change_for_a_repo_the_mirror_no_longer_syncs_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = fixture::cached(fixture::Scale::K1, dir.path()).unwrap();
+        let mut c = rusqlite::Connection::open(fixture).unwrap();
+        const PARTNER_SDK: i64 = 9_000_100;
+        let issue = serde_json::json!({
+            "action": "opened",
+            "repository": { "id": PARTNER_SDK },
+            "issue": {
+                "id": 3_990_000_000i64, "node_id": "I_late", "number": 9_999, "title": "Late",
+                "body": "", "state": "open", "state_reason": null, "locked": false,
+                "user": { "id": 1000, "login": "tomsj", "avatar_url": null }, "labels": [],
+                "assignees": [], "milestone": null, "comments": 0,
+                "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z",
+                "closed_at": null,
+            },
+        });
+        let label = serde_json::json!({
+            "action": "created",
+            "repository": { "id": PARTNER_SDK },
+            "label": { "id": 5_999_999, "name": "late", "color": "ffffff", "description": null },
+        });
+        let tx = c.transaction().unwrap();
+        for (event, payload) in [("issues", issue), ("label", label)] {
+            let change = RepoChange::parse(event, &serde_json::to_vec(&payload).unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(change.write(&tx, 99).unwrap(), Vec::<i64>::new(), "{event}");
+        }
+        assert!(
+            q::item_by_number(&tx, PARTNER_SDK, 9_999)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            q::label_by_name(&tx, PARTNER_SDK, "late")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn github_timestamps_read_as_unix_seconds() {
@@ -1278,6 +1408,14 @@ mod tests {
         assert_eq!(parse_time("2024-02-29T14:34:56+02:00"), Some(1_709_210_096));
         assert_eq!(parse_time("2024-02-29T12:34:56.789Z"), Some(1_709_210_096));
         assert_eq!(parse_time("yesterday"), None);
+    }
+
+    #[test]
+    fn unix_seconds_write_as_github_writes_times() {
+        for t in [0, 1_709_210_096, 1_790_812_800, 951_782_400] {
+            assert_eq!(parse_time(&rfc3339(t)), Some(t), "{t}");
+        }
+        assert_eq!(rfc3339(1_790_812_800), "2026-10-01T00:00:00Z");
     }
 
     #[test]

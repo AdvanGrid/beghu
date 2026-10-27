@@ -100,7 +100,7 @@ async fn a_dependency_made_on_github_shows_on_both_ends_within_2_s() {
     let s = start().await;
     let b = s.sign_in("tomsj").await;
     let mut stream = s.stream(&b).await;
-    stream.event_within(Duration::from_secs(1)).await;
+    stream.reset().await;
     let web = unlinked("web");
     let (blocked, blocker) = (&web[0], &web[1]);
 
@@ -560,6 +560,65 @@ async fn two_accounts_with_different_access_see_different_relationships_for_the_
     })
     .await;
     assert_eq!(rel_ids(&theirs, "blocked_by"), [near.2, far.2, both.2]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relationship_into_a_private_repo_the_account_sees_but_doesnt_sync_is_kept_as_a_stub() {
+    let s = start().await;
+    // ilze-k loses access to api; tomsj still sees it, but picks it out of the repos it syncs.
+    s.fake(
+        "PUT",
+        "/permissions",
+        json!({ "login": "ilze-k", "repo": "api", "role": null }),
+    )
+    .await;
+    let mut owner = s.sign_in("tomsj").await;
+    let member = s.sign_in("ilze-k").await;
+    let api_id = summary_repo_id(&s, &owner, "api").await;
+    let (_, picker) = s.api(&mut owner, "/api/repos").await;
+    let keep: Vec<i64> = picker["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .filter(|id| *id != api_id)
+        .collect();
+    let res = s
+        .http
+        .put(format!("{}/api/repos", s.server))
+        .header("cookie", owner.header())
+        .header("origin", &s.server)
+        .json(&json!({ "repos": keep }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let (web, api) = (unlinked("web"), unlinked("api"));
+    let (me, far) = (&web[0], &api[0]);
+
+    edit(&s, me, json!({ "add_blocked_by": reference(far) })).await;
+    // tomsj can see api: the blocker stays, as a stub with a link out.
+    let mine = until(5.0, "the read-back for the owner", || async {
+        let d = detail(&s, &owner, me.2).await;
+        (rel_ids(&d, "blocked_by") == [far.2]).then_some(d)
+    })
+    .await;
+    assert_eq!(
+        mine["relationships"]["blocked_by"][0]["stub"], true,
+        "{mine}"
+    );
+    assert_eq!(
+        mine["relationships"]["blocked_by"][0]["repo"], "api",
+        "{mine}"
+    );
+    // ilze-k can't: she never holds it.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let theirs = detail(&s, &member, me.2).await;
+    assert_eq!(
+        rel_ids(&theirs, "blocked_by"),
+        Vec::<i64>::new(),
+        "{theirs}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

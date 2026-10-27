@@ -88,6 +88,8 @@ async fn titles_bodies_and_comments_are_searchable_as_they_change_and_stubs_are_
             seq,
         )?;
         issue(tx, 2, "Date parsing", "Off by one", seq)?;
+        // The stub's repo, not synced.
+        q::insert_repo(tx, 2, "R_s", "acme", "sdk", false, None, false, None)?;
         q::insert_stub(tx, 3, "I_s", 2, 9, "Dark mode in the SDK", "open", seq)?;
         q::insert_comment(tx, 10, "IC_x", 2, 1, "Also broken in Firefox", 0, seq)
     })
@@ -119,6 +121,7 @@ async fn titles_bodies_and_comments_are_searchable_as_they_change_and_stubs_are_
         )?;
         // The repo becomes synced: its stub is now a real issue, written in full (a listed item
         // always has its timestamps).
+        tx.execute("UPDATE repos SET synced = 1 WHERE id = 2", [])?;
         tx.execute(
             "UPDATE items SET is_stub = 0, body = 'SDK side', created_at = 0, updated_at = 3 WHERE id = 3",
             [],

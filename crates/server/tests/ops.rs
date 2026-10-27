@@ -127,7 +127,7 @@ async fn a_comment_is_on_github_and_in_the_detail_when_the_reply_comes_and_its_e
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let mut st = s.stream(&b).await;
-    st.event_within(SECS).await;
+    st.reset().await;
     let (id, _) = an_open_issue(&s, &mut b).await;
 
     let (status, reply) = s
@@ -558,6 +558,8 @@ async fn a_resend_the_server_has_no_record_of_is_lost_and_never_sent_again() {
         .send()
         .await;
     assert!(dropped.is_err(), "the client gave up first");
+    // A deploy: SIGTERM drains the write in flight, and the next server starts.
+    s.sigterm().await.unwrap().unwrap();
     s.restart_with(|_| {}).await;
     // Any call to GitHub would use this up.
     s.fail(COMMENTS, 500, 1, None).await;
@@ -864,7 +866,7 @@ async fn a_rate_limit_that_doesnt_say_for_how_long_waits_a_minute() {
     s.fake(
         "POST",
         "/faults/fail",
-        json!({ "endpoint": ISSUE, "status": 403, "secondary_rate_limit": true }),
+        json!({ "endpoint": ISSUE, "status": 403, "limit": "secondary" }),
     )
     .await;
     for _ in 0..2 {

@@ -38,7 +38,7 @@ function apiRequests(page: Page): string[] {
 }
 
 /** The fixture generator's summary, next to the fixture the stack's Fake GitHub serves. */
-async function summary(): Promise<{ stub_ids: number[] }> {
+async function summary(): Promise<{ stub_ids: number[]; stub_numbers: number[]; unlinked_stubs: number[] }> {
   const control = `http://127.0.0.1:${process.env.DEV_FAKE_CONTROL_PORT ?? 3101}`;
   const { fixture } = (await (await fetch(`${control}/state`)).json()) as { fixture: string };
   const path = fixture.replace(/mirror-([^/]*)\.db$/, "fixture-$1.json");
@@ -279,7 +279,9 @@ test("a deleted issue shows its in-place state, and the list stays usable", asyn
 });
 
 test("an issue outside the synced repos says so in place, with a link out to GitHub", async ({ page }) => {
-  const stub = (await summary()).stub_ids[0]!;
+  // A stub a relationship reaches: a mirror holds only those.
+  const s = await summary();
+  const stub = s.stub_ids[s.stub_numbers.findIndex((n) => !s.unlinked_stubs.includes(n))]!;
   await signIn(page, `/issues/${stub}`);
   await expect(panel(page).getByText("This issue is in a repo that isn't synced.")).toBeVisible();
   await expect(panel(page).getByRole("link", { name: "Open on GitHub" })).toHaveAttribute(

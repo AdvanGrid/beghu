@@ -192,7 +192,7 @@ async fn a_deleted_or_unknown_issue_is_gone_and_one_outside_the_synced_repos_is_
         assert_eq!(status, 404, "{path}");
         assert_eq!(body["error"], "gone", "{path}");
     }
-    let stub = summary()["stub_ids"][0].as_i64().unwrap();
+    let stub = common::linked_stub();
     for path in [
         format!("/api/issues/{stub}"),
         format!("/api/issues/{stub}/comments"),
@@ -380,10 +380,59 @@ async fn through_a_position_before_every_comment_still_says_where_the_thread_goe
     );
 }
 
-// TODO: an issue in a repo that leaves the synced set (removed from the installation) is
-// NoAccess with a link out. Nothing carries that into a mirror yet: Fake GitHub's
-// `PUT /permissions` takes the repo out of what the token sees, and the role re-read in repos.rs
-// then drops it from the account's webhook fan-out (`synced_repos` in the control DB), but the
-// mirror's `repos.synced`, which the detail reads, stays set. Repo picking, or handling
-// `installation_repositories` webhooks, will clear it; the test comes with that. Stubs cover the
-// same NoAccess answer meanwhile.
+/// An issue of `repo` (by name) that a relationship from another repo's issue reaches, in the
+/// fixture.
+fn reached_issue_of(repo: &str) -> i64 {
+    let c = rusqlite::Connection::open(common::fixture()).unwrap();
+    let repo = mirror_db::q::dump_repos(&c)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == repo)
+        .unwrap()
+        .id;
+    let items = mirror_db::q::dump_items(&c).unwrap();
+    let in_repo = |id: i64| items.iter().any(|i| i.id == id && i.repo_id == repo);
+    let rel = mirror_db::q::dump_relationships(&c)
+        .unwrap()
+        .into_iter()
+        .find(|r| in_repo(r.dst_id) && !in_repo(r.src_id))
+        .unwrap();
+    rel.dst_id
+}
+
+// An issue in a repo that leaves the synced set because the account picked it out: a
+// relationship from a synced issue keeps it as a stub, NoAccess with a link out
+// (tests/import.rs, `unsyncing_a_repo_…`). Losing access to the repo is different: the account
+// may not even see a stub of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issue_in_a_repo_the_account_lost_access_to_is_gone_even_where_a_relationship_reached_it()
+ {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let issue = reached_issue_of("docs");
+    assert_eq!(s.api(&mut b, &format!("/api/issues/{issue}")).await.0, 200);
+
+    // An admin takes tomsj off acme/docs; the next re-read of its repos (a sign-in forces one)
+    // finds it gone.
+    s.fake(
+        "PUT",
+        "/permissions",
+        serde_json::json!({ "login": "tomsj", "repo": "acme/docs", "role": null }),
+    )
+    .await;
+    let mut b = s.sign_in("tomsj").await;
+    let (status, body) = s.api(&mut b, &format!("/api/issues/{issue}")).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("gone")),
+        "{body}"
+    );
+    let (_, me) = s.api(&mut b, "/api/me").await;
+    let names: Vec<&str> = me["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"docs"), "{names:?}");
+}

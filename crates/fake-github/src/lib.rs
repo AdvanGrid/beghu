@@ -22,13 +22,16 @@ mod app;
 mod control;
 mod edits;
 mod faults;
+mod graphql;
+mod issue_edges;
 mod oauth;
 mod relationships;
+mod repos;
 mod webhooks;
 mod writes;
 
 pub use accounts::{ACCOUNTS, Role, pristine_mirrors};
-pub use app::{DEV_APP_ID, DEV_APP_KEY};
+pub use app::{DEV_APP_ID, DEV_APP_KEY, SLUG as APP_SLUG};
 pub use webhooks::{DELAY as WEBHOOK_DELAY, sign as sign_webhook};
 
 use std::path::PathBuf;
@@ -51,6 +54,9 @@ pub struct Config {
     pub webhook_url: Option<String>,
     /// The App's webhook secret, which signs every delivery.
     pub webhook_secret: String,
+    /// The App's setup URL, where GitHub sends the browser after an install (`None`: nowhere,
+    /// until the control port sets one).
+    pub setup_url: Option<String>,
 }
 
 /// GitHub's own lifetimes.
@@ -63,13 +69,14 @@ pub struct Fake(Arc<State>);
 pub(crate) struct State {
     truth: fake_db::Truth,
     cfg: Config,
+    setup_url: Mutex<Option<String>>,
     ttl: Mutex<Ttl>,
     faults: faults::Faults,
     refreshes: Refreshes,
     graphql: GraphqlCalls,
     webhooks: webhooks::Webhooks,
-    /// The App's installation tokens.
-    app_tokens: app::InstallationTokens,
+    /// Each installation token minted, with its permissions.
+    app_tokens: app::Minted,
     /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
     /// expiry, and the times edits stamp, follow it.
     clock: std::sync::atomic::AtomicI64,
@@ -142,13 +149,14 @@ impl Fake {
         let truth = fake_db::Truth::open(&cfg.db, &cfg.fixture, Box::new(accounts::seed))?;
         Ok(Fake(Arc::new(State {
             truth,
+            setup_url: Mutex::new(cfg.setup_url.clone()),
             ttl: Mutex::new(Ttl::of(&cfg)),
             webhooks: webhooks::Webhooks::new(cfg.webhook_url.clone(), cfg.webhook_secret.clone()),
             cfg,
             faults: faults::Faults::default(),
             refreshes: Refreshes::default(),
             graphql: GraphqlCalls::default(),
-            app_tokens: app::InstallationTokens::default(),
+            app_tokens: app::Minted::default(),
             clock: Default::default(),
         })))
     }
@@ -164,6 +172,8 @@ impl Fake {
             .merge(api::router())
             .merge(writes::router())
             .merge(app::router())
+            .merge(graphql::router())
+            .merge(repos::router())
             .fallback(api::not_found)
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),

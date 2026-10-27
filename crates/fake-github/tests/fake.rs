@@ -42,6 +42,7 @@ async fn start() -> Fake {
         refresh_ttl: Duration::from_secs(15_897_600),
         webhook_url: None,
         webhook_secret: WEBHOOK_SECRET.into(),
+        setup_url: None,
     };
     let fake = tokio::task::spawn_blocking(move || fake_github::Fake::open(cfg))
         .await
@@ -584,7 +585,7 @@ async fn state_shows_sign_ins_and_fault_rules_and_reset_clears_both() {
         json!({
             "down": false,
             "latency": [{ "endpoint": "/user/installations", "ms": 50 }],
-            "fail": [{ "endpoint": "*", "remaining": 3, "status": 502, "retry_after": null }],
+            "fail": [{ "endpoint": "*", "remaining": 3, "status": 502, "retry_after": null, "limit": null }],
             "rewrite": [],
         })
     );
@@ -962,6 +963,340 @@ async fn webhook_faults_drop_duplicate_delay_and_reorder_the_next_deliveries() {
     assert!(got[0].at.duration_since(sent) < Duration::from_millis(1800));
 }
 
+/// A JWT for the dev App, good for 9 minutes, as an App makes one.
+fn dev_jwt() -> String {
+    let now = unix_now();
+    app_jwt(now - 60, now + 540, fake_github::DEV_APP_KEY)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_apps_own_jwt_mints_an_installation_token_and_it_reads_only_that_installation() {
+    let fake = start().await;
+    let mint = |jwt: String| {
+        fake.http
+            .post(format!(
+                "{}/app/installations/41000001/access_tokens",
+                fake.api
+            ))
+            .bearer_auth(jwt)
+            .send()
+    };
+    let now = unix_now();
+    let stranger = app_jwt(now - 60, now + 540, include_str!("other-key.pem"));
+    assert_eq!(mint(stranger).await.unwrap().status(), 401);
+    let res = mint(dev_jwt()).await.unwrap();
+    assert_eq!(res.status(), 201);
+    let token = res.json::<Value>().await.unwrap()["token"].clone();
+    assert!(token.as_str().unwrap().starts_with("ghs_"), "{token}");
+
+    // The org's repos, through the org's installation; not the newcomer's private repo.
+    assert_eq!(
+        fake.get("/repos/acme/web/labels", &token).await.status(),
+        200
+    );
+    assert_eq!(
+        fake.get("/repos/newcomer/notes/labels", &token)
+            .await
+            .status(),
+        404
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_suspended_installation_still_lists_but_mints_nothing_and_its_tokens_stop_working() {
+    let fake = start().await;
+    let mint = || {
+        fake.http
+            .post(format!(
+                "{}/app/installations/41000001/access_tokens",
+                fake.api
+            ))
+            .bearer_auth(dev_jwt())
+            .send()
+    };
+    let token = mint().await.unwrap().json::<Value>().await.unwrap()["token"].clone();
+    let user = fake.sign_in("tomsj").await["access_token"].clone();
+    let installations = || async {
+        let res = fake.get("/user/installations", &user).await;
+        res.json::<Value>().await.unwrap()["installations"][0].clone()
+    };
+    assert_eq!(installations().await["suspended_at"], Value::Null);
+
+    fake.control(
+        reqwest::Method::POST,
+        "/suspend",
+        json!({ "login": "acme" }),
+    )
+    .await;
+    let i = installations().await;
+    assert!(i["suspended_at"].is_string(), "{i}");
+    let refused = mint().await.unwrap();
+    assert_eq!(refused.status(), 403);
+    assert_eq!(
+        refused.json::<Value>().await.unwrap()["message"],
+        "This installation has been suspended"
+    );
+    assert_eq!(
+        fake.get("/repos/acme/web/labels", &token).await.status(),
+        401
+    );
+
+    fake.control(
+        reqwest::Method::POST,
+        "/unsuspend",
+        json!({ "login": "acme" }),
+    )
+    .await;
+    assert_eq!(installations().await["suspended_at"], Value::Null);
+    assert_eq!(mint().await.unwrap().status(), 201);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn suspending_sends_the_installation_with_who_suspended_it() {
+    let fake = start().await;
+    let res = fake
+        .http
+        .post(format!("{}/apps/beghu-dev/installations/new", fake.api))
+        .form(&[("login", "newcomer"), ("target", "newcomer")])
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_redirection() || res.status().is_success());
+    let mut rx = receiver(&fake).await;
+    for action in ["suspend", "unsuspend"] {
+        fake.control(
+            reqwest::Method::POST,
+            &format!("/{action}"),
+            json!({ "login": "newcomer" }),
+        )
+        .await;
+        let sent = received_for(&mut rx, Duration::from_millis(1800)).await;
+        let p = sent
+            .iter()
+            .map(Received::payload)
+            .find(|p| p["action"] == action)
+            .unwrap_or_else(|| panic!("no installation {action} delivery"));
+        let by = &p["installation"]["suspended_by"];
+        match action {
+            "suspend" => assert_eq!(by["login"], "newcomer", "{p}"),
+            _ => assert_eq!(by, &Value::Null, "{p}"),
+        }
+        assert!(
+            p["installation"]
+                .as_object()
+                .unwrap()
+                .contains_key("suspended_by"),
+            "{p}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphqls_rate_limit_names_the_callers_installation() {
+    let fake = start().await;
+    // newcomer installs the App: an installation of its own, not the org's.
+    let res = fake
+        .http
+        .post(format!("{}/apps/beghu-dev/installations/new", fake.api))
+        .form(&[("login", "newcomer"), ("target", "newcomer")])
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_redirection() || res.status().is_success());
+    let user = fake.sign_in("newcomer").await["access_token"].clone();
+    let listed = fake.get("/user/installations", &user).await;
+    let id = listed.json::<Value>().await.unwrap()["installations"][0]["id"]
+        .as_i64()
+        .unwrap();
+    assert_ne!(id, 41_000_001);
+    let token = fake
+        .http
+        .post(format!("{}/app/installations/{id}/access_tokens", fake.api))
+        .bearer_auth(dev_jwt())
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/fail",
+        json!({ "endpoint": "POST /graphql", "status": 200, "limit": "graphql", "retry_after": 1, "count": 1 }),
+    )
+    .await;
+    let answer: Value = fake
+        .http
+        .post(format!("{}/graphql", fake.api))
+        .bearer_auth(&token)
+        .json(&json!({ "query": "{ viewer { login } }" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answer["errors"][0]["type"], "RATE_LIMITED", "{answer}");
+    assert_eq!(
+        answer["errors"][0]["message"],
+        format!("API rate limit already exceeded for installation ID {id}."),
+        "{answer}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rest_since_is_exclusive_as_githubs_is() {
+    let fake = start().await;
+    let token = fake
+        .http
+        .post(format!(
+            "{}/app/installations/41000001/access_tokens",
+            fake.api
+        ))
+        .bearer_auth(dev_jwt())
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["token"]
+        .clone();
+    let base = "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100";
+    let ids = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_i64().unwrap())
+            .collect()
+    };
+    let first = fake.get(base, &token).await.json::<Value>().await.unwrap();
+    let oldest = &first[0];
+    let at = oldest["updated_at"].as_str().unwrap();
+    // "Only issues updated after the given time" (/rest/issues/issues#list-repository-issues).
+    let after = fake
+        .get(&format!("{base}&since={at}"), &token)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(
+        !ids(&after).contains(&oldest["id"].as_i64().unwrap()),
+        "{at}"
+    );
+    let comments = "/repos/acme/web/issues/comments?sort=updated&direction=asc&per_page=100";
+    let first = fake
+        .get(comments, &token)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    let at = first[0]["updated_at"].as_str().unwrap();
+    let after = fake
+        .get(&format!("{comments}&since={at}"), &token)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(
+        !ids(&after).contains(&first[0]["id"].as_i64().unwrap()),
+        "{at}"
+    );
+}
+
+#[tokio::test]
+async fn the_users_installations_page_as_github_pages_them() {
+    let fake = start().await;
+    let user = fake.sign_in("tomsj").await["access_token"].clone();
+    let res = fake
+        .get("/user/installations?per_page=1&page=1", &user)
+        .await;
+    assert!(
+        res.headers().get("link").is_none(),
+        "one installation, one page"
+    );
+    let body = res.json::<Value>().await.unwrap();
+    assert_eq!(body["total_count"], 1);
+    assert_eq!(body["installations"].as_array().unwrap().len(), 1);
+    let past = fake
+        .get("/user/installations?per_page=1&page=2", &user)
+        .await;
+    let body = past.json::<Value>().await.unwrap();
+    assert_eq!(
+        (body["total_count"].clone(), body["installations"].clone()),
+        (json!(1), json!([]))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_holds_githubs_limits_on_page_size_and_node_ids() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let ask = |query: &str, variables: Value| {
+        fake.http
+            .post(format!("{}/graphql", fake.api))
+            .bearer_auth(token.as_str().unwrap())
+            .json(&json!({ "query": query, "variables": variables }))
+            .send()
+    };
+    let too_many = ask(
+        "query ImportIssues($owner: String!) { repository(owner: $owner, name: \"web\") { issues(first: 101) { nodes { id } } } }",
+        json!({ "owner": "acme", "name": "web", "states": ["OPEN"] }),
+    )
+    .await
+    .unwrap();
+    let body: Value = too_many.json().await.unwrap();
+    assert_eq!(body["errors"][0]["type"], "EXCESSIVE_PAGINATION", "{body}");
+    assert!(body.get("data").is_none(), "{body}");
+
+    let ids: Vec<String> = (0..101).map(|i| format!("I_kw{i}")).collect();
+    let body: Value = ask(
+        "query ImportComments($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+        json!({ "ids": ids }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["errors"][0]["type"], "EXCESSIVE_PAGINATION", "{body}");
+
+    // A page within the limits, and an id nobody has: null, with GitHub's NOT_FOUND beside it.
+    let body: Value = ask(
+        "query ImportIssues($owner: String!, $name: String!, $states: [IssueState!]!, $after: String) { repository(owner: $owner, name: $name) { issues(first: 100) { nodes { id } } } }",
+        json!({ "owner": "acme", "name": "web", "states": ["OPEN"] }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        body["data"]["repository"]["issues"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        100
+    );
+    assert_eq!(
+        body["data"]["repository"]["issues"]["pageInfo"]["hasNextPage"],
+        true
+    );
+    let body: Value = ask(
+        "query ImportComments($ids: [ID!]!) { nodes(ids: $ids) { id } }",
+        json!({ "ids": ["I_nobody"] }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["data"]["nodes"], json!([null]), "{body}");
+    assert_eq!(body["errors"][0]["type"], "NOT_FOUND", "{body}");
+}
+
 // --- REST writes ----------------------------------------------------------------------------
 
 impl Fake {
@@ -1252,7 +1587,7 @@ async fn a_secondary_rate_limit_answers_as_github_documents_it() {
     fake.control(
         reqwest::Method::POST,
         "/faults/fail",
-        json!({ "endpoint": "/user", "status": 403, "secondary_rate_limit": true, "count": 2 }),
+        json!({ "endpoint": "/user", "status": 403, "limit": "secondary", "count": 2 }),
     )
     .await;
     // Without retry-after, and with requests left in the primary limit.

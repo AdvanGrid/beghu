@@ -14,6 +14,15 @@ const IssuePanel = lazy(
   { export: "IssuePanel" },
 );
 
+/** Repo picking is its own chunk too: a page visited rarely. */
+const RepoPickerPanel = lazy(
+  () =>
+    import("./RepoPicker").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load repo picking: ${String(e)}`);
+    }),
+  { export: "RepoPickerPanel" },
+);
+
 // The list is the root layout and always mounted; the view lives in the query string. An open
 // issue is its own path (`/issues/:id`, with the view kept in the query string), shown in the
 // panel beside the list. Rows are plain <a href>s under the router's one delegated click
@@ -31,6 +40,8 @@ export const Router = createRouter({
       },
       component: IssuePanel,
     },
+    // Repo picking takes the panel's place beside the list.
+    { path: "/repos", component: RepoPickerPanel },
   ],
   preloadLinks: [intentPreload(), tapPreload()],
 });

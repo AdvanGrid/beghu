@@ -46,13 +46,15 @@ INSERT INTO fake_permissions (user_id, repo_id, role) VALUES (:user_id, :repo_id
 INSERT INTO fake_installations (id, account_id, account_login, account_type, created_at)
 VALUES (:id, :account_id, :account_login, :account_type, :created_at);
 
--- Installations holding at least one repo the user can see.
+-- The installations the user can reach: those holding at least one repo the user can see, and
+-- the one on the user's own account, repos or none.
 -- name: user_installations :many
 -- param: user_id i64
-SELECT i.id, i.account_id, i.account_login, i.account_type, i.created_at
+SELECT i.id, i.account_id, i.account_login, i.account_type, i.created_at, i.suspended_at
 FROM fake_installations i
 WHERE i.id IN (SELECT r.installation_id FROM fake_permissions p JOIN repos r ON r.id = p.repo_id
                WHERE p.user_id = :user_id)
+   OR i.account_id = :user_id
 ORDER BY i.id;
 
 -- name: user_installation_repo_count :one

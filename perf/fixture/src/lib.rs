@@ -57,7 +57,9 @@ pub struct Summary {
     /// The top 40 rows of the default view (open issues, newest update first): each has exactly
     /// 30 comments.
     pub detail_targets: Vec<i64>,
-    /// Every stub's id: issues in the unsynced repo.
+    /// Every stub's id: issues in the unsynced repo. A mirror holds only those a relationship
+    /// reaches (not `unlinked_stubs`): Fake GitHub's pristine mirrors drop the rest, as an
+    /// import never learns of them.
     pub stub_ids: Vec<i64>,
     /// Their numbers, in the same order.
     pub stub_numbers: Vec<i64>,
@@ -126,7 +128,26 @@ pub enum Variant {
     /// A second org's synced repo, `acme-labs/web`, sharing its name with `acme/web`, holding
     /// `TWIN_REPO_OPEN_ISSUES` open issues. Installed through an installation of its own.
     TwinRepo,
+    /// `acme/web`'s first issue relates to `WIDE_RELATES` issues in the unsynced repo: past the
+    /// import's inline 50, and named by nothing else.
+    WideRelates,
+    /// `acme/web`'s first issue carries `WIDE_LABELS` labels and its first PR closes
+    /// `WIDE_CLOSES` issues: past the import's first page of each (100 and 50).
+    WideLinks,
+    /// A private repo, `acme/vault`, under the org's installation but synced by no one and seen
+    /// by no fixture account, with an issue that blocks `acme/web`'s first issue. The App's token
+    /// can read the relationship; no account may keep it.
+    PrivateRelationship,
 }
+
+/// How many labels the `WideLinks` variant's issue carries.
+pub const WIDE_LABELS: usize = 105;
+
+/// How many issues the `WideLinks` variant's PR closes.
+pub const WIDE_CLOSES: usize = 55;
+
+/// How many issues the `WideRelates` variant's hub issue relates to.
+pub const WIDE_RELATES: usize = 60;
 
 /// The open issues in `acme-labs/web`, the `TwinRepo` variant's extra repo.
 pub const TWIN_REPO_OPEN_ISSUES: usize = 3;
@@ -135,6 +156,9 @@ impl Variant {
     fn prefix(self) -> &'static str {
         match self {
             Variant::TwinRepo => "twin-repo-",
+            Variant::WideRelates => "wide-relates-",
+            Variant::WideLinks => "wide-links-",
+            Variant::PrivateRelationship => "private-relationship-",
         }
     }
 }
@@ -203,6 +227,7 @@ const REPOS: [(&str, f64); 10] = [
     ("ops", 0.03),
 ];
 const UNSYNCED_REPO: &str = "partner-sdk";
+const UNSYNCED_REPO_ID: i64 = 9_000_100;
 /// The users' ids, in `LOGINS` order from this one: tomsj's is the first.
 const FIRST_USER_ID: i64 = 1000;
 const TOMSJ: i64 = FIRST_USER_ID;
@@ -437,6 +462,9 @@ fn generate_as(
     match variant {
         None => {}
         Some(Variant::TwinRepo) => twin_repo(&tx)?,
+        Some(Variant::WideRelates) => wide_relates(&tx)?,
+        Some(Variant::WideLinks) => wide_links(&tx)?,
+        Some(Variant::PrivateRelationship) => private_relationship(&tx)?,
     }
     tx.commit()?;
     mirror_db::optimize(&conn)?;
@@ -500,6 +528,8 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                 &format!("v{}.{m}", i % 3),
                 if m < 3 { "closed" } else { "open" },
                 FIXTURE_NOW + (m - 2) * 60 * DAY,
+                // GitHub's `updated_at`: the import and webhooks guard on it.
+                FIXTURE_NOW - (90 - m) * DAY,
             )?;
             milestones.push(mid);
         }
@@ -512,13 +542,15 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
     }
     // Public, so every account and the App's installation can see its issues: edges to them are
     // kept, as stubs. A private repo the App isn't installed on would be invisible to both.
-    let unsynced_repo = 9_000_100;
+    let unsynced_repo = UNSYNCED_REPO_ID;
     q::insert_repo(
         tx,
         unsynced_repo,
         &format!("R_kw{unsynced_repo}"),
         OWNER,
         UNSYNCED_REPO,
+        // Public: the App isn't installed on it, so stubs can point into it only because anyone
+        // may see it (a private repo the account can't see is never stored).
         false,
         None,
         false,
@@ -916,6 +948,103 @@ fn twin_repo(tx: &Connection) -> rusqlite::Result<()> {
             seq,
         )?;
     }
+    Ok(())
+}
+
+/// `acme/web`'s first issue relates to `WIDE_RELATES` issues in the unsynced repo. Only that
+/// issue's own relates-to list names them (nothing in an unsynced repo is imported), so the
+/// import learns of every one only by paging past the first 50.
+fn wide_relates(tx: &Connection) -> rusqlite::Result<()> {
+    /// Clear of every generated item's id.
+    const FIRST_STUB_ID: i64 = 3_800_000_000;
+    let seq = q::bump_seq(tx)?;
+    let hub = q::dump_items(tx)?
+        .into_iter()
+        .find(|i| i.repo_id == FIRST_REPO_ID && i.kind == "issue" && i.is_stub == 0)
+        .expect("web has issues")
+        .id;
+    for n in 0..WIDE_RELATES as i64 {
+        let id = FIRST_STUB_ID + n;
+        q::insert_stub(
+            tx,
+            id,
+            &format!("I_kw{}", radix36(id)),
+            UNSYNCED_REPO_ID,
+            5_000 + n,
+            &format!("Related SDK issue {}", n + 1),
+            "open",
+            seq,
+        )?;
+        q::add_relationship(tx, "relates", hub.min(id), hub.max(id), None, seq)?;
+    }
+    Ok(())
+}
+
+/// `acme/web`'s first issue carries `WIDE_LABELS` labels (the repo's, and enough of its own to
+/// pass 100), and its first PR closes `WIDE_CLOSES` of its issues.
+fn wide_links(tx: &Connection) -> rusqlite::Result<()> {
+    /// Clear of every generated label's id.
+    const FIRST_LABEL_ID: i64 = 5_900_000;
+    let seq = q::bump_seq(tx)?;
+    let items = q::dump_items(tx)?;
+    let web = |kind: &'static str| {
+        items
+            .iter()
+            .filter(move |i| i.repo_id == FIRST_REPO_ID && i.kind == kind && i.is_stub == 0)
+    };
+    let issue = web("issue").next().expect("web has issues").id;
+    for n in 0..(WIDE_LABELS - LABELS.len()) as i64 {
+        let id = FIRST_LABEL_ID + n;
+        q::insert_label(tx, id, FIRST_REPO_ID, &format!("area-{n:03}"), "c5def5", "")?;
+    }
+    for l in q::dump_labels(tx)?
+        .iter()
+        .filter(|l| l.repo_id == FIRST_REPO_ID)
+    {
+        q::add_item_label(tx, issue, l.id)?;
+    }
+    let pr = web("pr").next().expect("web has PRs").id;
+    for i in web("issue").take(WIDE_CLOSES) {
+        q::add_relationship(tx, "closes", pr, i.id, None, seq)?;
+    }
+    Ok(())
+}
+
+/// `acme/vault`: private, under the org's installation, synced by no one; its one issue blocks
+/// `acme/web`'s first issue.
+fn private_relationship(tx: &Connection) -> rusqlite::Result<()> {
+    /// Past the org's repos (and the twin repo's id).
+    const REPO_ID: i64 = FIRST_REPO_ID + 60;
+    /// Clear of every generated item's id, and of Fake GitHub's own (the newcomer's repo).
+    const ITEM_ID: i64 = 3_970_000_000;
+    let seq = q::bump_seq(tx)?;
+    q::insert_repo(
+        tx,
+        REPO_ID,
+        &format!("R_kw{REPO_ID}"),
+        OWNER,
+        "vault",
+        true,
+        Some(ORG_INSTALLATION_ID),
+        false,
+        None,
+    )?;
+    q::insert_stub(
+        tx,
+        ITEM_ID,
+        &format!("I_kw{}", radix36(ITEM_ID)),
+        REPO_ID,
+        1,
+        "Rotate the signing keys",
+        "open",
+        seq,
+    )?;
+    let web_issue = q::dump_items(tx)?
+        .into_iter()
+        .find(|i| i.repo_id == FIRST_REPO_ID && i.kind == "issue" && i.is_stub == 0)
+        .expect("web has issues")
+        .id;
+    q::add_relationship(tx, "blocks", ITEM_ID, web_issue, None, seq)?;
     Ok(())
 }
 

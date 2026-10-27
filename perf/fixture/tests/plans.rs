@@ -424,7 +424,8 @@ fn no_kind_under_another_sort_sorts_every_row_as_accepted() {
 }
 
 /// `/api/facets`: each facet's values come from a small table or the facet's own index on
-/// items, never from a walk of every item.
+/// items, never from a walk of every item. A value read elsewhere looks its items up by primary
+/// key, to keep only synced repos'.
 #[test]
 fn facet_values_read_their_own_indexes() {
     let (_g, c) = fixture();
@@ -466,7 +467,8 @@ fn facet_values_read_their_own_indexes() {
             .collect();
         let own = match index {
             Some(ix) => !items.is_empty() && items.iter().all(|l| l.contains(ix)),
-            None => items.is_empty(),
+            // Only to check a row's repo is synced, by primary key.
+            None => items.iter().all(|l| l.contains("INTEGER PRIMARY KEY")),
         };
         if !own {
             bad.push(format!("{what}: {p:#?}"));

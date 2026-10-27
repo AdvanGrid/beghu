@@ -1,8 +1,9 @@
 //! The GitHub calls beghu makes: with a user's token, the OAuth web flow's code exchange and
 //! refresh, the user, the installations and repos the user can see with their `permissions`, and
-//! the REST writes (`write`); with the App's JWT, installation tokens; and GraphQL queries with
-//! either kind of token. `GITHUB_API_URL` and `GITHUB_WEB_URL` point these at GitHub or at Fake
-//! GitHub.
+//! the REST writes (`write`); with the App's JWT, `GET /app` and installation tokens; and GraphQL
+//! queries with either kind of token. The import's reads (`graphql_data`, `rest`) say how they
+//! failed in a [`CallError`] its retries act on. `GITHUB_API_URL` and `GITHUB_WEB_URL` point
+//! these at GitHub or at Fake GitHub.
 //!
 //! Every call, whichever token it carries, also feeds the process-wide GitHub health flag: 3
 //! network errors or 5xx answers in a row, on any call (a write's retries, an installation-token
@@ -11,11 +12,12 @@
 //! isn't a 5xx marks it up again.
 
 use crate::config::GitHubConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
+use ts_rs::TS;
 
 /// How many network errors or 5xx answers in a row mark GitHub down.
 const DOWN_AFTER: u32 = 3;
@@ -83,8 +85,11 @@ pub struct User {
     pub login: String,
 }
 
-/// A connected account's role on a repo: one of GitHub's five, lowest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A connected account's role on a repo: one of GitHub's five, lowest first. beghu's own rules
+/// group Write and up (CONTEXT.md).
+#[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Role {
     Read,
     Triage,
@@ -115,6 +120,19 @@ impl Role {
             Role::Admin => "Admin",
         }
     }
+
+    /// A stored name; `None` for one this build doesn't know.
+    pub fn parse(name: &str) -> Option<Role> {
+        [
+            Role::Read,
+            Role::Triage,
+            Role::Write,
+            Role::Maintain,
+            Role::Admin,
+        ]
+        .into_iter()
+        .find(|r| r.as_str() == name)
+    }
 }
 
 /// What the user may do on a repo, as GitHub answers for it now.
@@ -132,7 +150,81 @@ pub enum Access {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleRepo {
     pub id: i64,
+    pub node_id: String,
+    pub owner: String,
+    pub name: String,
+    pub private: bool,
+    pub archived: bool,
+    pub installation_id: i64,
     pub role: Option<Role>,
+}
+
+/// How a call the import makes failed: [`Error`] as the import's retries see it.
+#[derive(Debug, Clone)]
+pub enum CallError {
+    /// GitHub's rate limit (primary or secondary): try again after this long.
+    RateLimited(Duration),
+    /// GitHub's secondary rate limit without a wait named: GitHub's advice is at least a minute,
+    /// backing off exponentially while it lasts.
+    SecondaryLimit,
+    /// 401: the token is expired or revoked.
+    Unauthorized,
+    /// 404 (or 410): not there, or not visible to the token.
+    NotFound,
+    /// Any other status.
+    Status(u16),
+    /// No answer: refused, reset or timed out.
+    Network(String),
+    /// An answer that couldn't be read.
+    Malformed(String),
+    /// GraphQL answered errors and no data.
+    GraphQl(String),
+}
+
+impl CallError {
+    /// Whether the same call may well pass later: rate limits, 5xx and network failures. The
+    /// import waits out a rate limit however long it lasts, but gives the others a budget.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            CallError::RateLimited(_) | CallError::SecondaryLimit | CallError::Network(_) => true,
+            CallError::Status(s) => *s >= 500,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::RateLimited(d) => write!(f, "rate limited for {} s", d.as_secs()),
+            CallError::SecondaryLimit => f.write_str("GitHub's secondary rate limit"),
+            CallError::Unauthorized => f.write_str("GitHub answered 401"),
+            CallError::NotFound => f.write_str("GitHub answered 404"),
+            CallError::Status(s) => write!(f, "GitHub answered {s}"),
+            CallError::Network(e) => write!(f, "can't reach GitHub: {e}"),
+            CallError::Malformed(e) => write!(f, "unreadable GitHub answer: {e}"),
+            CallError::GraphQl(e) => write!(f, "GraphQL error: {e}"),
+        }
+    }
+}
+
+impl From<reqwest::Error> for CallError {
+    fn from(e: reqwest::Error) -> Self {
+        Error::from(e).into()
+    }
+}
+
+impl From<Error> for CallError {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::Unauthorized => CallError::Unauthorized,
+            Error::RateLimited(d) => CallError::RateLimited(d),
+            Error::Status(404 | 410) => CallError::NotFound,
+            Error::Status(s) => CallError::Status(s),
+            Error::Network(e) | Error::Unsent(e) => CallError::Network(e),
+            Error::Refused(e) | Error::Malformed(e) => CallError::Malformed(e),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -167,12 +259,16 @@ struct TokenAnswer {
 
 #[derive(Deserialize)]
 struct Installations {
+    total_count: i64,
     installations: Vec<Installation>,
 }
 
-#[derive(Deserialize)]
-struct Installation {
-    id: i64,
+/// An installation of the App the user can reach.
+#[derive(Deserialize, Debug)]
+pub struct Installation {
+    pub id: i64,
+    /// Set while the installation is suspended: it still lists, but reads nothing.
+    pub suspended_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -184,7 +280,22 @@ struct Repos {
 #[derive(Deserialize)]
 struct Repo {
     id: i64,
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    owner: Option<Owner>,
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    archived: bool,
     permissions: Option<Permissions>,
+}
+
+#[derive(Deserialize)]
+struct Owner {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -219,31 +330,69 @@ impl Permissions {
 /// How long to wait out a rate limit that doesn't say: GitHub's docs say at least a minute.
 const UNSAID_RATE_LIMIT: Duration = Duration::from_secs(60);
 
-/// The error for a non-2xx answer: 401, a rate limit, or the status. A rate limit, as GitHub
-/// documents it: `retry-after` if it's there; else, with no requests left, until
-/// `x-ratelimit-reset`; else a minute, for any 429 and a 403 whose body says it's the
-/// secondary rate limit. Any other 403 is a refusal.
-async fn refusal(res: reqwest::Response) -> Error {
-    let status = res.status().as_u16();
-    let h = res.headers();
+/// What a non-2xx answer says, read once for [`Error`] and [`CallError`] alike.
+enum Refusal {
+    Unauthorized,
+    /// A rate limit, lifted after the wait named; `None` when it names none.
+    Limited(Option<Duration>),
+    Status(u16),
+}
+
+/// The wait a rate-limited answer's headers name: `retry-after` if it's there; else, with no
+/// requests left, until `x-ratelimit-reset`.
+fn header_wait(h: &reqwest::header::HeaderMap) -> Option<Duration> {
     let num = |name: &str| -> Option<i64> { h.get(name)?.to_str().ok()?.trim().parse().ok() };
-    let wait = match status {
-        401 => return Error::Unauthorized,
-        403 | 429 => num("retry-after").or_else(|| {
-            (num("x-ratelimit-remaining") == Some(0))
-                .then(|| num("x-ratelimit-reset").map(|reset| reset - crate::now()))
-                .flatten()
-        }),
-        s => return Error::Status(s),
-    };
-    if let Some(secs) = wait {
-        return Error::RateLimited(Duration::from_secs(secs.max(0) as u64));
+    let secs = num("retry-after").or_else(|| {
+        (num("x-ratelimit-remaining") == Some(0))
+            .then(|| num("x-ratelimit-reset").map(|reset| reset - crate::now()))
+            .flatten()
+    })?;
+    Some(Duration::from_secs(secs.max(0) as u64))
+}
+
+/// A non-2xx answer: 401, a rate limit, or the status. A rate limit, as GitHub documents it: a
+/// 403 or 429 whose headers name a wait; else any 429, and a 403 whose body says it's the
+/// secondary rate limit, with no wait named. Any other 403 is a refusal.
+async fn read_refusal(res: reqwest::Response) -> Refusal {
+    let status = res.status().as_u16();
+    match status {
+        401 => return Refusal::Unauthorized,
+        403 | 429 => {}
+        s => return Refusal::Status(s),
+    }
+    if let Some(wait) = header_wait(res.headers()) {
+        return Refusal::Limited(Some(wait));
     }
     let secondary = status == 403 && res.text().await.is_ok_and(|t| says_secondary(&t));
     if status == 429 || secondary {
-        Error::RateLimited(UNSAID_RATE_LIMIT)
+        Refusal::Limited(None)
     } else {
-        Error::Status(status)
+        Refusal::Status(status)
+    }
+}
+
+/// The error for a non-2xx answer; a rate limit that names no wait lasts a minute, as GitHub's
+/// docs say.
+async fn refusal(res: reqwest::Response) -> Error {
+    match read_refusal(res).await {
+        Refusal::Unauthorized => Error::Unauthorized,
+        Refusal::Limited(wait) => Error::RateLimited(wait.unwrap_or(UNSAID_RATE_LIMIT)),
+        Refusal::Status(s) => Error::Status(s),
+    }
+}
+
+/// The import's error for a non-2xx answer: a rate limit that names no wait is its own kind
+/// (the import backs off from a minute up), and a named wait is at least a second and at most
+/// an hour.
+async fn call_error(res: reqwest::Response) -> CallError {
+    match read_refusal(res).await {
+        Refusal::Unauthorized => CallError::Unauthorized,
+        Refusal::Limited(Some(w)) => {
+            CallError::RateLimited(w.clamp(Duration::from_secs(1), Duration::from_secs(3600)))
+        }
+        Refusal::Limited(None) => CallError::SecondaryLimit,
+        Refusal::Status(404 | 410) => CallError::NotFound,
+        Refusal::Status(s) => CallError::Status(s),
     }
 }
 
@@ -503,9 +652,8 @@ impl GitHub {
         }
     }
 
-    /// Trades the App's JWT for a token for `installation`, and when it expires (Unix seconds).
-    /// An installation token narrowed to `permissions` (GitHub's shape: `{"issues": "read"}`),
-    /// and when it expires (Unix seconds).
+    /// Trades the App's JWT for a token for `installation` narrowed to `permissions` (GitHub's
+    /// shape: `{"issues": "read"}`), and when it expires (Unix seconds).
     pub async fn installation_token(
         &self,
         jwt: &str,
@@ -596,11 +744,30 @@ impl GitHub {
         self.get(token, "/user").await
     }
 
-    /// Every repo the user can see through an installation of the App, with their role on it.
-    pub async fn visible_repos(&self, token: &str) -> Result<Vec<VisibleRepo>, Error> {
-        let inst: Installations = self.get(token, "/user/installations?per_page=100").await?;
+    /// Every installation of the App the user can reach, suspended ones included, page by page.
+    pub async fn user_installations(&self, token: &str) -> Result<Vec<Installation>, Error> {
         let mut out = Vec::new();
-        for i in inst.installations {
+        for page in 1.. {
+            let path = format!("/user/installations?per_page=100&page={page}");
+            let got: Installations = self.get(token, &path).await?;
+            let seen = got.installations.len();
+            out.extend(got.installations);
+            if seen == 0 || out.len() as i64 >= got.total_count {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every repo the user can see through an installation of the App, with their role on it.
+    /// A suspended installation reads nothing, so its repos aren't among them.
+    pub async fn visible_repos(&self, token: &str) -> Result<Vec<VisibleRepo>, Error> {
+        let installations = self.user_installations(token).await?;
+        let mut out = Vec::new();
+        for i in installations
+            .into_iter()
+            .filter(|i| i.suspended_at.is_none())
+        {
             let mut page = 1;
             loop {
                 let path = format!(
@@ -611,6 +778,12 @@ impl GitHub {
                 let seen = r.repositories.len();
                 out.extend(r.repositories.into_iter().map(|repo| VisibleRepo {
                     id: repo.id,
+                    node_id: repo.node_id,
+                    owner: repo.owner.map(|o| o.login).unwrap_or_default(),
+                    name: repo.name,
+                    private: repo.private,
+                    archived: repo.archived,
+                    installation_id: i.id,
                     role: repo.permissions.as_ref().map(Permissions::role),
                 }));
                 if seen == 0 || (page * 100) >= r.total_count {
@@ -620,5 +793,89 @@ impl GitHub {
             }
         }
         Ok(out)
+    }
+
+    /// A request to the API with `auth` (a token or the App's JWT) and GitHub's headers.
+    fn api(&self, method: reqwest::Method, path: &str, auth: &str) -> reqwest::RequestBuilder {
+        self.http
+            .request(method, format!("{}{path}", self.api))
+            .bearer_auth(auth)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+    }
+
+    /// The App's install page by its slug, as GitHub serves it: where installing starts when
+    /// `GET /app` can't say.
+    pub fn install_page(&self, slug: &str) -> String {
+        format!("{}/apps/{slug}/installations/new", self.web)
+    }
+
+    /// The App's `html_url` (`GET /app` with its JWT): its public page, where installing starts.
+    pub async fn app_html_url(&self, jwt: &str) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct AppInfo {
+            html_url: String,
+        }
+        let res = self
+            .send(self.api(reqwest::Method::GET, "/app", jwt))
+            .await?;
+        if !res.status().is_success() {
+            return Err(refusal(res).await);
+        }
+        Ok(res.json::<AppInfo>().await?.html_url)
+    }
+
+    /// The import's GraphQL query: its `data`. Errors beside data (a node the token can't see)
+    /// are left to the caller to notice as nulls; errors without data are a failure, and so is
+    /// GraphQL's primary rate limit, which answers 200 with `RATE_LIMITED` and the quota's
+    /// headers.
+    pub async fn graphql_data(
+        &self,
+        token: &str,
+        operation: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<serde_json::Value, CallError> {
+        let res =
+            self.send(self.api(reqwest::Method::POST, "/graphql", token).json(
+                &serde_json::json!({
+                    "query": query,
+                    "variables": variables,
+                    "operationName": operation,
+                }),
+            ))
+            .await?;
+        if !res.status().is_success() {
+            return Err(call_error(res).await);
+        }
+        let wait = header_wait(res.headers());
+        let mut body: serde_json::Value = res.json().await?;
+        let errors = body["errors"].as_array().cloned().unwrap_or_default();
+        if errors.iter().any(|e| e["type"] == "RATE_LIMITED") {
+            return Err(wait.map_or(CallError::SecondaryLimit, |w| {
+                CallError::RateLimited(w.max(Duration::from_secs(1)))
+            }));
+        }
+        match body.get_mut("data").map(serde_json::Value::take) {
+            Some(data) if !data.is_null() => Ok(data),
+            _ => Err(CallError::GraphQl(
+                errors
+                    .first()
+                    .and_then(|e| e["message"].as_str())
+                    .unwrap_or("no data")
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// The import's REST read (`path` with its query string): the JSON it answers.
+    pub async fn rest(&self, token: &str, path: &str) -> Result<serde_json::Value, CallError> {
+        let res = self
+            .send(self.api(reqwest::Method::GET, path, token))
+            .await?;
+        if !res.status().is_success() {
+            return Err(call_error(res).await);
+        }
+        Ok(res.json().await?)
     }
 }

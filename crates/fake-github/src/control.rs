@@ -6,9 +6,10 @@
 //!   installation token minted with its permissions.
 //! - `POST /faults/latency {endpoint, ms, count?}`: delay calls to `endpoint` (only the next
 //!   `count`, with one); `ms: 0` removes the rule.
-//! - `POST /faults/fail {endpoint, count, status?, retry_after?, secondary_rate_limit?, reset?}`:
-//!   the next `count` calls fail with `status` (403 or 429 with `secondary_rate_limit`: GitHub's
-//!   secondary rate limit), or with `reset` get no answer at all.
+//! - `POST /faults/fail {endpoint, count, status?, retry_after?, limit?, reset?}`: the next
+//!   `count` calls fail with `status`, or with `reset` get no answer at all. `limit` (`primary`
+//!   or `secondary` with 403/429, `graphql` with 200) makes the failure that GitHub rate limit,
+//!   in its documented shape.
 //! - `POST /faults/rewrite {endpoint, count, body | raw}`: the next `count` answers from
 //!   `endpoint` carry `body` as their `body` field, or have `raw` as their whole body, sent
 //!   complete under the answer's own status (an answer beghu can't read, such as text that isn't
@@ -30,6 +31,13 @@
 //! - `PUT /permissions {login, repo, role}`: an admin gives the account `role` on the repo
 //!   (`read` … `admin`), or with `role: null` removes its access, as removing a collaborator or
 //!   a team does. The repo then drops out of what the account's token sees.
+//! - `PUT /setup-url {url}`: the App's setup URL, where the install page sends the browser
+//!   (`null`: nowhere).
+//! - `POST /uninstall {login}`: the user uninstalls the App from their own account, as in their
+//!   settings; GitHub sends `installation` `deleted`.
+//! - `POST /suspend {login}`, `POST /unsuspend {login}`: the App's installation on the user's
+//!   own account is suspended, or no longer; GitHub sends `installation` `suspend` or
+//!   `unsuspend`.
 //! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
 //!   real clock.
 
@@ -59,6 +67,10 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/clock", put(clock))
         .route("/revoke", post(revoke))
         .route("/permissions", put(permissions))
+        .route("/setup-url", put(setup_url))
+        .route("/uninstall", post(uninstall))
+        .route("/suspend", post(suspend))
+        .route("/unsuspend", post(unsuspend))
         .route("/reset", post(reset))
 }
 
@@ -106,6 +118,7 @@ async fn state(State(fake): State<Fake>) -> Response {
         "graphql": fake.state().graphql.snapshot(),
         "installation_tokens": fake.state().app_tokens.minted(),
         "clock": { "offset": fake.clock_offset() },
+        "setup_url": fake.setup_url(),
     }))
     .into_response()
 }
@@ -135,8 +148,7 @@ struct FailReq {
     count: u32,
     status: Option<u16>,
     retry_after: Option<u64>,
-    #[serde(default)]
-    secondary_rate_limit: bool,
+    limit: Option<faults::Limit>,
     #[serde(default)]
     reset: bool,
 }
@@ -156,20 +168,28 @@ async fn fail(State(fake): State<Fake>, axum::Json(r): axum::Json<FailReq>) -> R
     match (r.status, r.reset) {
         (None, false) => return bad_request("a fail rule needs a status, or reset: true"),
         (Some(_), true) => return bad_request("a reset sends no status"),
-        (Some(s), false) if !(400..=599).contains(&s) => {
+        _ => {}
+    }
+    match (r.limit, r.status) {
+        (Some(faults::Limit::Graphql), Some(s)) if s != 200 => {
+            return bad_request("GraphQL's rate limit answers 200: status must be 200");
+        }
+        (Some(faults::Limit::Primary | faults::Limit::Secondary), s)
+            if !matches!(s, Some(403 | 429)) =>
+        {
+            return bad_request("a rate limit answers 403 or 429");
+        }
+        (None, Some(s)) if !(400..=599).contains(&s) => {
             return bad_request("status must be an HTTP error status, 400 to 599");
         }
         _ => {}
-    }
-    if r.secondary_rate_limit && !matches!(r.status, Some(403 | 429)) {
-        return bad_request("a secondary rate limit is a 403 or a 429");
     }
     fake.state().faults.add_fail(Fail {
         endpoint,
         remaining: r.count,
         status: r.status,
         retry_after: r.retry_after,
-        secondary_rate_limit: r.secondary_rate_limit,
+        limit: r.limit,
         reset: r.reset,
     });
     ok()
@@ -247,6 +267,40 @@ async fn webhook_target(
     }
     fake.state().webhooks.set_target(r.url);
     ok()
+}
+
+async fn setup_url(State(fake): State<Fake>, axum::Json(r): axum::Json<TargetReq>) -> Response {
+    if let Some(u) = &r.url
+        && !(u.starts_with("http://") || u.starts_with("https://"))
+    {
+        return bad_request("url must be an http(s) URL");
+    }
+    fake.set_setup_url(r.url);
+    ok()
+}
+
+async fn uninstall(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) -> Response {
+    match crate::app::uninstall(&fake, r.login).await {
+        Ok(true) => ok(),
+        Ok(false) => bad_request("the App isn't installed on that account"),
+        Err(e) => api::internal(e),
+    }
+}
+
+async fn suspend(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) -> Response {
+    suspended(fake, r.login, true).await
+}
+
+async fn unsuspend(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) -> Response {
+    suspended(fake, r.login, false).await
+}
+
+async fn suspended(fake: Fake, login: String, on: bool) -> Response {
+    match crate::app::suspend(&fake, login, on).await {
+        Ok(true) => ok(),
+        Ok(false) => bad_request("the App isn't installed on that account"),
+        Err(e) => api::internal(e),
+    }
 }
 
 #[derive(Deserialize)]

@@ -31,7 +31,7 @@
 //! stored. An item deleted by a webhook never gets an edge again. A stub no edge references any
 //! more is deleted.
 
-use crate::installations::Installations;
+use crate::installations::{Installations, Scope};
 use crate::live::{Hub, Push};
 use crate::webhook;
 use control_db::Control;
@@ -456,7 +456,11 @@ struct Fetched {
 /// Reads `s`'s edges of `kind` with the App's installation token: what the installation sees.
 async fn fetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<Option<Fetched>, Failure> {
     let _turn = inner.installations.read_turn(s.installation).await;
-    let token = match inner.installations.token(s.installation).await {
+    let token = match inner
+        .installations
+        .token(s.installation, Scope::ReadBack)
+        .await
+    {
         Ok(t) => t,
         // The installation is gone (GitHub answers 404 for its token): no try will do better.
         Err(crate::github::Error::Status(404)) => {
@@ -479,7 +483,9 @@ async fn fetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<Option<Fetched>
                 Ok(d) => Ok(d),
                 Err(e) => {
                     if matches!(e, crate::github::Error::Unauthorized) {
-                        inner.installations.forget(s.installation);
+                        inner
+                            .installations
+                            .drop_token(s.installation, Scope::ReadBack, token);
                     }
                     Err(Failure::Retry(e.to_string()))
                 }
@@ -666,18 +672,25 @@ fn replace(
         .into_iter()
         .map(|e| (e.src_id, e.dst_id))
         .collect();
-    // Only what this account may see: its synced repos, and public ones.
-    // TODO(#91): #86 keeps an end "visible to that account or public", and visible is wider
-    // than synced: a repo the account can see but didn't pick. The mirror has no record of that
-    // set yet (its `repos` rows with `synced = 0` are stubs' repos too, so they can't tell).
-    // Once repo picking records it, keep an end whose repo is in it (as a stub, like a public
-    // one) here, and add a test: an account that sees a private repo it doesn't sync keeps a
-    // relationship into it as a stub, while an account that can't see that repo doesn't.
-    let new: Vec<&(i64, i64, End)> = f
-        .edges
-        .iter()
-        .filter(|(_, _, e)| synced.contains(&e.repository.database_id) || !e.repository.is_private)
-        .collect();
+    // Only what this account may see: its synced repos, the repos it can see but didn't pick
+    // (its visible repos: an installation reaches them and so does the account), and public
+    // ones. An end outside the synced repos is kept as a stub.
+    let mut visible = HashMap::new();
+    let mut may_see = |repo: i64| -> rusqlite::Result<bool> {
+        if let Some(v) = visible.get(&repo) {
+            return Ok(*v);
+        }
+        let v = q::repo_state(tx, repo)?.is_some_and(|r| r.installation_id.is_some());
+        visible.insert(repo, v);
+        Ok(v)
+    };
+    let mut new: Vec<&(i64, i64, End)> = Vec::new();
+    for e in &f.edges {
+        let r = &e.2.repository;
+        if synced.contains(&r.database_id) || !r.is_private || may_see(r.database_id)? {
+            new.push(e);
+        }
+    }
     let keep: HashSet<(i64, i64)> = new.iter().map(|(s, d, _)| (*s, *d)).collect();
     // Read with `installation`'s token, which sees only its own installation's repos and public
     // ones: an end in a private repo this account syncs through another installation (another
@@ -728,6 +741,7 @@ fn replace(
                 &end.id,
                 r.database_id,
                 end.number,
+                "issue",
                 &end.title,
                 state,
                 seq,

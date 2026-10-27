@@ -34,7 +34,9 @@ INSERT INTO labels (id, repo_id, name, color, description) VALUES (:id, :repo_id
 -- param: title &str
 -- param: state &str
 -- param: due_on i64
-INSERT INTO milestones (id, repo_id, number, title, state, due_on) VALUES (:id, :repo_id, :number, :title, :state, :due_on);
+-- param: updated_at i64
+INSERT INTO milestones (id, repo_id, number, title, state, due_on, updated_at)
+VALUES (:id, :repo_id, :number, :title, :state, :due_on, :updated_at);
 
 -- The fixture's item write. Every item writer sets `issue_type` (see
 -- 0004_issue_type.rebuild.sql): here from the generator, NULL for PRs and untyped issues; the
