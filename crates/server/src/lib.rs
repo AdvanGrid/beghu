@@ -1,5 +1,5 @@
-//! The beghu server: sign-in, the browser session, the shell, and the JSON API. Webhooks and
-//! jobs land here as later slices add them.
+//! The beghu server: sign-in, the browser session, the shell, the JSON API, webhooks and the live
+//! stream. Jobs land here as later slices add them.
 
 mod api;
 mod auth;
@@ -8,9 +8,11 @@ mod crypto;
 mod detail;
 mod error;
 mod github;
+mod live;
 mod repos;
 mod shell;
 mod tokens;
+mod webhook;
 
 pub use config::{Config, GitHubConfig, MirrorsConfig};
 
@@ -19,7 +21,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use control_db::Control;
 use mirror_db::Mirrors;
 use std::sync::Arc;
@@ -39,12 +41,16 @@ struct Inner {
     shell: Option<shell::Shell>,
     /// Each account's role re-reads from GitHub.
     roles: repos::Roles,
+    /// Each account's live streams.
+    hub: Arc<live::Hub>,
+    /// Webhook deliveries on their way to the mirrors.
+    webhooks: webhook::Queue,
 }
 
 impl App {
     /// Opens the control DB (migrating it after a `VACUUM INTO` backup) and the mirrors under
-    /// `BEGHU_DATA_DIR`, and reads the shell template and the build's Vite manifest. Any error
-    /// should stop startup.
+    /// `BEGHU_DATA_DIR`, reads the shell template and the build's Vite manifest, and resumes the
+    /// webhook deliveries acked but not processed before. Any error should stop startup.
     pub async fn open(cfg: Config) -> Result<App, String> {
         let (path, backups) = (cfg.control_db(), cfg.backups());
         let control = tokio::task::spawn_blocking(move || Control::open(&path, &backups))
@@ -58,6 +64,17 @@ impl App {
         let github = github::GitHub::new(&cfg.github);
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
         let tokens = tokens::Tokens::new(control.clone(), github.clone(), keys.clone());
+        let hub = Arc::new(live::Hub::default());
+        let webhooks = webhook::resume(
+            webhook::Sinks {
+                control: control.clone(),
+                mirrors: mirrors.clone(),
+                hub: hub.clone(),
+            },
+            cfg.deliveries_kept_for,
+        )
+        .await
+        .map_err(|e| format!("can't read the unprocessed webhook deliveries: {e}"))?;
         Ok(App(Arc::new(Inner {
             cfg,
             control,
@@ -67,6 +84,8 @@ impl App {
             tokens,
             shell,
             roles: repos::Roles::default(),
+            hub,
+            webhooks,
         })))
     }
 
@@ -101,6 +120,14 @@ impl App {
     fn roles(&self) -> &repos::Roles {
         &self.0.roles
     }
+
+    fn hub(&self) -> &Arc<live::Hub> {
+        &self.0.hub
+    }
+
+    fn webhooks(&self) -> &webhook::Queue {
+        &self.0.webhooks
+    }
 }
 
 /// Compressed bodies, br or gzip by the browser's `accept-encoding`, with `vary` set. The edge
@@ -123,6 +150,7 @@ pub fn router(app: App) -> Router {
         .route("/issues", get(api::issues))
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
+        .route("/stream", get(live::stream))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
@@ -140,6 +168,10 @@ pub fn router(app: App) -> Router {
         .route("/healthz", get(healthz))
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
+        .route(
+            "/webhook",
+            post(webhook::receive).layer(axum::extract::DefaultBodyLimit::max(webhook::MAX_BODY)),
+        )
         .merge(shell)
         .nest("/api", api);
     if let Some(dir) = &app.cfg().web_dir {

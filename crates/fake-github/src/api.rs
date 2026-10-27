@@ -72,7 +72,7 @@ async fn authenticate(fake: &Fake, headers: &HeaderMap) -> Result<i64, Response>
     let Some(token) = token else {
         return Err(error(StatusCode::UNAUTHORIZED, "Requires authentication"));
     };
-    let now = crate::now();
+    let now = fake.now();
     fake.state()
         .truth
         .read(move |c| q::access_token_user(c, &token, now))
@@ -129,7 +129,7 @@ const EVENTS: [&str; 10] = [
 ];
 
 /// `secs` since the Unix epoch as an RFC 3339 UTC timestamp, as GitHub writes times.
-fn rfc3339(secs: i64) -> String {
+pub(crate) fn rfc3339(secs: i64) -> String {
     // Days from the civil calendar (Howard Hinnant's algorithm).
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);

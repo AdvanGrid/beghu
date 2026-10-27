@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 const CLIENT_ID: &str = "Iv1.test";
 const CLIENT_SECRET: &str = "test-secret";
 const CALLBACK: &str = "http://beghu.test/auth/callback";
+const WEBHOOK_SECRET: &str = "test-webhook-secret";
 
 /// The 1k fixture, generated once per test run.
 fn fixture() -> PathBuf {
@@ -39,6 +40,8 @@ async fn start() -> Fake {
         client_secret: CLIENT_SECRET.into(),
         access_ttl: Duration::from_secs(8 * 3600),
         refresh_ttl: Duration::from_secs(15_897_600),
+        webhook_url: None,
+        webhook_secret: WEBHOOK_SECRET.into(),
     };
     let fake = tokio::task::spawn_blocking(move || fake_github::Fake::open(cfg))
         .await
@@ -298,27 +301,35 @@ async fn token_lifetimes_set_at_runtime_expire_tokens_within_seconds() {
     fake.control(
         reqwest::Method::PUT,
         "/tokens",
-        json!({ "access_ttl": 1, "refresh_ttl": 3 }),
+        json!({ "access_ttl": 1, "refresh_ttl": 10 }),
     )
     .await;
     let a = fake.sign_in("tomsj").await;
     let b = fake.sign_in("tomsj").await;
     assert_eq!(a["expires_in"], 1);
-    assert_eq!(a["refresh_token_expires_in"], 3);
+    assert_eq!(a["refresh_token_expires_in"], 10);
     assert_eq!(
         fake.login_of(&a["access_token"]).await.as_deref(),
         Some("tomsj")
     );
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The fake's clock moves on: past the access tokens, well inside the refresh tokens.
+    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 3 }))
+        .await;
+    assert_eq!(fake.state().await["clock"], json!({ "offset": 3 }));
     assert_eq!(fake.login_of(&a["access_token"]).await, None);
     assert!(fake.refresh(&b["refresh_token"]).await["access_token"].is_string());
 
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    // And past the refresh tokens too.
+    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 12 }))
+        .await;
     assert_eq!(
         fake.refresh(&a["refresh_token"]).await["error"],
         "bad_refresh_token"
     );
+    fake.control(reqwest::Method::POST, "/reset", json!({}))
+        .await;
+    assert_eq!(fake.state().await["clock"], json!({ "offset": 0 }));
 }
 
 #[tokio::test]
@@ -433,6 +444,31 @@ async fn installations_list_the_repos_each_account_sees_with_its_permissions() {
         ext.iter()
             .all(|(_, p)| *p == perms(false, false, false, false))
     );
+}
+
+#[tokio::test]
+async fn an_admin_can_change_or_remove_an_accounts_access_to_a_repo() {
+    let fake = start().await;
+    let put = |body: Value| fake.control(reqwest::Method::PUT, "/permissions", body);
+    put(json!({ "login": "octo-ext", "repo": "acme/web", "role": null })).await;
+    put(json!({ "login": "octo-ext", "repo": "docs", "role": "triage" })).await;
+    let ext = repos_seen_by(&fake, "octo-ext").await;
+    assert_eq!(ext, [("docs".to_owned(), perms(false, false, false, true))]);
+
+    for bad in [
+        json!({ "login": "nobody", "repo": "web", "role": null }),
+        json!({ "login": "octo-ext", "repo": "nope", "role": null }),
+        json!({ "login": "octo-ext", "repo": "web", "role": "owner" }),
+    ] {
+        let res = fake
+            .http
+            .put(format!("{}/permissions", fake.ctl))
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{bad}");
+    }
 }
 
 #[tokio::test]
@@ -644,4 +680,283 @@ async fn rules_are_stored_normalised_so_spellings_of_one_endpoint_replace_each_o
         "GET /user"
     );
     assert_eq!(fake.status_of("/user").await, 502);
+}
+
+// --- webhooks -------------------------------------------------------------------------------
+
+/// One delivery as the App's webhook URL received it.
+struct Received {
+    at: Instant,
+    event: String,
+    guid: String,
+    signature: String,
+    body: Vec<u8>,
+}
+
+impl Received {
+    fn payload(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap()
+    }
+}
+
+/// A webhook receiver standing in for beghu, with the fake pointed at it.
+async fn receiver(fake: &Fake) -> tokio::sync::mpsc::UnboundedReceiver<Received> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = axum::Router::new().route(
+        "/webhook",
+        axum::routing::post(
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let tx = tx.clone();
+                async move {
+                    let h = |n: &str| headers[n].to_str().unwrap().to_owned();
+                    let _ = tx.send(Received {
+                        at: Instant::now(),
+                        event: h("x-github-event"),
+                        guid: h("x-github-delivery"),
+                        signature: h("x-hub-signature-256"),
+                        body: body.to_vec(),
+                    });
+                    axum::http::StatusCode::ACCEPTED
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/webhook", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": url }))
+        .await;
+    rx
+}
+
+impl Fake {
+    async fn edit(&self, edit: Value) -> Value {
+        self.control(reqwest::Method::POST, "/edit", edit).await
+    }
+}
+
+/// Every delivery that arrives within `wait`.
+async fn received_for(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Received>,
+    wait: Duration,
+) -> Vec<Received> {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut out = Vec::new();
+    while let Ok(Some(r)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        out.push(r);
+    }
+    out
+}
+
+#[tokio::test]
+async fn an_outside_edit_sends_its_signed_webhooks_about_a_second_later() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // From a known start: open, without the label.
+    fake.edit(json!({ "repo": "web", "number": 1, "state": "open", "remove_labels": ["bug"] }))
+        .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let sent = Instant::now();
+    let edited = fake
+        .edit(json!({
+            "repo": "acme/web", "number": 1, "as": "ilze-k",
+            "title": "Renamed outside beghu", "state": "closed", "state_reason": "not_planned",
+            "add_labels": ["bug"], "comment": "Closing: not ours",
+        }))
+        .await;
+    assert_eq!(edited["deliveries"], 4);
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let actions: Vec<(String, String)> = got
+        .iter()
+        .map(|r| {
+            (
+                r.event.clone(),
+                r.payload()["action"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("issues".into(), "edited".into()),
+            ("issues".into(), "closed".into()),
+            ("issues".into(), "labeled".into()),
+            ("issue_comment".into(), "created".into()),
+        ]
+    );
+    let first = got[0].at.duration_since(sent);
+    assert!(
+        (Duration::from_millis(900)..Duration::from_millis(1800)).contains(&first),
+        "{first:?}"
+    );
+    for r in &got {
+        // GitHub's signature: HMAC-SHA256 of the body under the webhook secret.
+        assert_eq!(
+            r.signature,
+            fake_github::sign_webhook(WEBHOOK_SECRET, &r.body)
+        );
+        let p = r.payload();
+        assert_eq!(p["repository"]["full_name"], "acme/web");
+        assert_eq!(p["sender"]["login"], "ilze-k");
+        assert!(p["installation"]["id"].as_i64().is_some());
+        // Each carries the issue as the whole edit left it.
+        let issue = &p["issue"];
+        assert_eq!(issue["number"], 1);
+        assert_eq!(issue["title"], "Renamed outside beghu");
+        assert_eq!(issue["state"], "closed");
+        assert_eq!(issue["state_reason"], "not_planned");
+        assert!(
+            issue["labels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["name"] == "bug")
+        );
+        assert_eq!(issue["updated_at"], edited["issue"]["updated_at"]);
+    }
+    let edited = got[0].payload();
+    assert!(edited["changes"]["title"]["from"].is_string());
+    assert_eq!(got[2].payload()["label"]["name"], "bug");
+    let comment = &got[3].payload()["comment"];
+    assert_eq!(comment["body"], "Closing: not ours");
+    assert_eq!(comment["user"]["login"], "ilze-k");
+    let guids: std::collections::HashSet<_> = got.iter().map(|r| r.guid.clone()).collect();
+    assert_eq!(guids.len(), 4, "every delivery has its own GUID");
+}
+
+#[tokio::test]
+async fn a_deliverys_owner_type_installation_and_author_association_come_from_the_fixture() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // An org member and an outside collaborator comment on the same issue.
+    for login in ["ilze-k", "octo-ext"] {
+        fake.edit(json!({ "repo": "web", "number": 1, "as": login, "comment": "Seen." }))
+            .await;
+    }
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 2);
+    let association: Vec<Value> = got
+        .iter()
+        .map(|r| r.payload()["comment"]["author_association"].clone())
+        .collect();
+    assert_eq!(association, [json!("MEMBER"), json!("COLLABORATOR")]);
+    for r in &got {
+        let p = r.payload();
+        // acme is an organization: the App's installation on it says so.
+        assert_eq!(p["repository"]["owner"]["type"], "Organization");
+        // GitHub's legacy global ID for an installation: base64 of `023:IntegrationInstallation<id>`.
+        let id = p["installation"]["id"].as_i64().unwrap();
+        let node_id = base64::engine::general_purpose::STANDARD
+            .decode(p["installation"]["node_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(node_id).unwrap(),
+            format!("023:IntegrationInstallation{id}")
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_edit_naming_what_github_doesnt_have_is_refused_and_sends_nothing() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    for bad in [
+        json!({ "repo": "acme/nope", "number": 1, "title": "x" }),
+        json!({ "repo": "web", "number": 999_999, "title": "x" }),
+        json!({ "repo": "web", "number": 1, "add_labels": ["no-such-label"] }),
+        json!({ "repo": "web", "number": 1, "as": "nobody", "title": "x" }),
+    ] {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{bad}");
+    }
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn webhook_faults_drop_duplicate_delay_and_reorder_the_next_deliveries() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let title = |n: i64| json!({ "repo": "web", "number": 1, "title": format!("title {n}") });
+    let titles = |got: &[Received]| -> Vec<String> {
+        got.iter()
+            .map(|r| r.payload()["issue"]["title"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Drop: the next delivery never comes.
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/webhooks",
+        json!({ "drop": 1 }),
+    )
+    .await;
+    fake.edit(title(1)).await;
+    fake.edit(title(2)).await;
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(titles(&got), ["title 2"]);
+
+    // Duplicate: sent twice under one GUID, as a redelivery would be.
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/webhooks",
+        json!({ "duplicate": 1 }),
+    )
+    .await;
+    fake.edit(title(3)).await;
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(titles(&got), ["title 3", "title 3"]);
+    assert_eq!(got[0].guid, got[1].guid);
+
+    // Reorder: a batch of three goes out newest first.
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/webhooks",
+        json!({ "reorder": 3 }),
+    )
+    .await;
+    for n in 4..=6 {
+        fake.edit(title(n)).await;
+    }
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(titles(&got), ["title 6", "title 5", "title 4"]);
+
+    // Delay: every delivery waits that much longer.
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/webhooks",
+        json!({ "delay_ms": 1000 }),
+    )
+    .await;
+    let sent = Instant::now();
+    fake.edit(title(7)).await;
+    let got = received_for(&mut rx, Duration::from_millis(2800)).await;
+    assert_eq!(titles(&got), ["title 7"]);
+    assert!(got[0].at.duration_since(sent) >= Duration::from_millis(1900));
+
+    // The state shows the rules; clearing them restores plain deliveries.
+    let state = fake.state().await;
+    assert_eq!(state["webhooks"]["faults"]["delay_ms"], 1000);
+    assert!(
+        state["webhooks"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/webhook")
+    );
+    fake.control(reqwest::Method::DELETE, "/faults", json!({}))
+        .await;
+    let sent = Instant::now();
+    fake.edit(title(8)).await;
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(titles(&got), ["title 8"]);
+    assert!(got[0].at.duration_since(sent) < Duration::from_millis(1800));
 }

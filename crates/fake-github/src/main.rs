@@ -1,5 +1,6 @@
 //! `fake-github serve --fixture <mirror.db> --db <truth.db> [--port 3100] [--control-port 3101]
-//!   [--client-id ID] [--client-secret SECRET] [--access-ttl 8h] [--refresh-ttl 184d]`
+//!   [--client-id ID] [--client-secret SECRET] [--access-ttl 8h] [--refresh-ttl 184d]
+//!   [--webhook-url URL] [--webhook-secret SECRET]`
 //!
 //! `fake-github pristine-mirrors --fixture <mirror.db> --db <truth.db> --dir <mirrors dir>`
 //! writes a pristine mirror for each fixture account that sees every fixture repo, and prints
@@ -14,6 +15,7 @@ use std::time::Duration;
 const USAGE: &str = "usage:
   fake-github serve --fixture FILE --db FILE [--port 3100] [--control-port 3101]
                     [--client-id ID] [--client-secret SECRET] [--access-ttl 8h] [--refresh-ttl 184d]
+                    [--webhook-url URL] [--webhook-secret SECRET]
   fake-github pristine-mirrors --fixture FILE --db FILE --dir DIR";
 
 fn fail(msg: &str) -> ! {
@@ -55,6 +57,8 @@ async fn main() {
     let mut client_secret = "fake-github-secret".to_owned();
     let mut access_ttl = fake_github::ACCESS_TTL;
     let mut refresh_ttl = fake_github::REFRESH_TTL;
+    let mut webhook_url = None;
+    let mut webhook_secret = "fake-github-webhook-secret".to_owned();
     while let Some(flag) = args.next() {
         let value = args
             .next()
@@ -73,6 +77,8 @@ async fn main() {
             "--client-secret" => client_secret = value,
             "--access-ttl" => access_ttl = duration(&value),
             "--refresh-ttl" => refresh_ttl = duration(&value),
+            "--webhook-url" => webhook_url = Some(value),
+            "--webhook-secret" => webhook_secret = value,
             _ => fail(&format!("unknown flag {flag}")),
         }
     }
@@ -87,6 +93,8 @@ async fn main() {
                 client_secret,
                 access_ttl,
                 refresh_ttl,
+                webhook_url,
+                webhook_secret,
             };
             let fake = tokio::task::spawn_blocking(move || Fake::open(cfg))
                 .await

@@ -2,6 +2,10 @@
 //! `permissions` with the user's token at sign-in and then every `repo_refresh_every` (15
 //! minutes) while the account is in use.
 //!
+//! Until repo picking writes `synced_repos` itself, each re-read also records there the visible
+//! repos the account's mirror syncs, so webhooks for them fan out to it, and removes from there
+//! every repo the account can no longer see, so they stop.
+//!
 //! One re-read per account runs at a time: a request that finds one running waits on it rather
 //! than starting another. A sign-in always gets a re-read of its own, after any running one. A
 //! failed re-read is tried again no sooner than `roles_retry_after_failure` (a minute) later, so
@@ -148,10 +152,32 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
             tokens::Error::SignInAgain => ApiError::SignedOut,
             e => ApiError::Internal(format!("refreshing the repo set: {e}")),
         })?;
-    app.mirrors()
+    let visible: std::collections::HashSet<i64> = repos.iter().map(|r| r.id).collect();
+    let synced = app
+        .mirrors()
         .write(account, Caller::Request, move |tx, _seq| {
             for r in &repos {
                 q::set_repo_role(tx, r.id, r.role)?;
+            }
+            q::synced_repos(tx)
+        })
+        .await?;
+    let synced: Vec<i64> = synced
+        .into_iter()
+        .map(|r| r.id)
+        .filter(|id| visible.contains(id))
+        .collect();
+    let now = crate::now();
+    app.control()
+        .write(move |tx| {
+            // A repo the account can no longer see stops fanning out to it.
+            for id in control_db::q::synced_repo_ids(tx, account)? {
+                if !visible.contains(&id) {
+                    control_db::q::remove_synced_repo(tx, account, id)?;
+                }
+            }
+            for id in &synced {
+                control_db::q::add_synced_repo(tx, account, *id, now)?;
             }
             Ok(())
         })

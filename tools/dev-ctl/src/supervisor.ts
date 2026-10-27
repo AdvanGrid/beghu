@@ -1,6 +1,8 @@
 // The background process `start` leaves running. It builds, seeds the data, runs Fake GitHub, the
 // beghu server and Vite, writes their output to one log with a prefix per process, and rebuilds
-// and restarts the Rust processes when their sources change. SIGTERM stops everything.
+// and restarts the Rust processes when their sources change. A process that exits on its own is
+// restarted with backoff; one that keeps failing fast is given up on, and the stack's phase says
+// so. SIGTERM stops everything.
 import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync, existsSync, statSync, watch } from "node:fs";
 import { createServer } from "node:net";
@@ -9,6 +11,7 @@ import {
   CLIENT,
   DATA,
   DEV_TOKEN_KEY,
+  DEV_WEBHOOK_SECRET,
   FAKE_DB,
   FIXTURES,
   LOG,
@@ -107,7 +110,27 @@ export async function supervise(scale: Scale): Promise<void> {
   save();
   if (!(await seedMirrors(scale, fixture))) return fail("seeding the mirrors failed");
 
-  const stack = processes(fixture);
+  const stack = processes(fixture, {
+    started: (name, pid) => {
+      state.children = { ...state.children, [name]: pid };
+      save();
+    },
+    gaveUp: (name, why) => {
+      log("dev-ctl", why);
+      state.phase = "failed";
+      state.error = why;
+      state.failed = name;
+      save();
+    },
+    recovered: (name) => {
+      if (state.failed !== name) return;
+      log("dev-ctl", `${name} is up again`);
+      state.phase = "ready";
+      delete state.error;
+      delete state.failed;
+      save();
+    },
+  });
   const shutdown = async () => {
     if (!stack.beginStopping()) return;
     log("dev-ctl", "stopping");
@@ -195,6 +218,11 @@ function commands(fixture: string): Record<Proc, () => [string, string[], NodeJS
         CLIENT.id,
         "--client-secret",
         CLIENT.secret,
+        // Straight to the server: GitHub's deliveries never pass through the app's origin.
+        "--webhook-url",
+        `${URLS.server}/webhook`,
+        "--webhook-secret",
+        DEV_WEBHOOK_SECRET,
       ],
       {},
     ],
@@ -212,6 +240,7 @@ function commands(fixture: string): Record<Proc, () => [string, string[], NodeJS
         GITHUB_WEB_URL: URLS.fake,
         GITHUB_CLIENT_ID: CLIENT.id,
         GITHUB_CLIENT_SECRET: CLIENT.secret,
+        GITHUB_WEBHOOK_SECRET: DEV_WEBHOOK_SECRET,
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },
     ],
@@ -225,23 +254,78 @@ function commands(fixture: string): Record<Proc, () => [string, string[], NodeJS
 
 type Stack = ReturnType<typeof processes>;
 
-/** The three child processes: starting, stopping and restarting them, with their output logged. */
-function processes(fixture: string) {
+/** A process that exits within this long of starting failed fast; one up this long is healthy. */
+const STABLE_MS = 10_000;
+/** Fast failures in a row before a process is given up on. */
+const MAX_FAST_FAILURES = 5;
+/** The wait before the first restart, doubled for each fast failure in a row. */
+const RESTART_MS = 500;
+
+interface Events {
+  /** A process was spawned. */
+  started: (name: Proc, pid: number) => void;
+  /** A process kept failing fast and won't be restarted until a rebuild restarts it. */
+  gaveUp: (name: Proc, why: string) => void;
+  /** A process has stayed up for a while after failing. */
+  recovered: (name: Proc) => void;
+}
+
+/**
+ * The three child processes: starting, stopping and restarting them, with their output logged.
+ * One that exits (or can't be spawned) when nothing asked it to is started again with backoff.
+ */
+function processes(fixture: string, events: Events) {
   const command = commands(fixture);
   const children = new Map<Proc, ChildProcess>();
   const restarting = new Set<Proc>();
+  /** Fast failures in a row, per process. */
+  const failures = new Map<Proc, number>();
+  const pending = new Map<Proc, NodeJS.Timeout>();
   let stopping = false;
 
   const start = (name: Proc) => {
     const [cmd, args, env] = command[name]();
     const cwd = name === "vite" ? join(ROOT, "web") : ROOT;
     const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    const startedAt = Date.now();
     children.set(name, child);
     capture(child, name);
-    child.on("exit", (code, signal) => {
+    if (child.pid !== undefined) events.started(name, child.pid);
+    const stable = setTimeout(() => {
+      if (failures.delete(name)) events.recovered(name);
+    }, STABLE_MS);
+    let ended = false;
+    const end = (why: string) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(stable);
       if (children.get(name) === child) children.delete(name);
-      if (!stopping && !restarting.has(name)) log("dev-ctl", `${name} exited (${signal ?? `code ${code}`})`);
+      if (stopping || restarting.has(name)) return;
+      log("dev-ctl", `${name} ${why}`);
+      const fast = Date.now() - startedAt < STABLE_MS;
+      const n = fast ? (failures.get(name) ?? 0) + 1 : 1;
+      failures.set(name, n);
+      if (n > MAX_FAST_FAILURES) {
+        events.gaveUp(name, `${name} failed ${n} times in a row; not restarting it until a rebuild does (see its lines in the log)`);
+        return;
+      }
+      const wait = RESTART_MS * 2 ** (n - 1);
+      log("dev-ctl", `restarting ${name} in ${wait} ms`);
+      pending.set(
+        name,
+        setTimeout(() => {
+          pending.delete(name);
+          if (!stopping && !children.has(name)) start(name);
+        }, wait),
+      );
+    };
+    // A spawn failure (a missing binary, say) is an `error` with no `exit`. So is a signal that
+    // couldn't be sent, to a child still running: that one isn't gone, and its `exit` comes later.
+    child.on("error", (e) => {
+      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) end(`couldn't run: ${e.message}`);
+      else log("dev-ctl", `${name}: ${e.message}`);
     });
+    child.on("exit", (code, signal) => end(`exited (${signal ?? `code ${code}`})`));
   };
 
   const stop = (name: Proc): Promise<void> =>
@@ -262,6 +346,8 @@ function processes(fixture: string) {
       for (const name of ["fake", "server", "vite"] as Proc[]) start(name);
     },
     stopAll: async () => {
+      for (const t of pending.values()) clearTimeout(t);
+      pending.clear();
       await Promise.all((["vite", "server", "fake"] as Proc[]).map(stop));
     },
     /** False when a stop is already under way. */
@@ -271,6 +357,8 @@ function processes(fixture: string) {
       return true;
     },
     restart: async (name: Proc) => {
+      clearTimeout(pending.get(name));
+      pending.delete(name);
       restarting.add(name);
       await stop(name);
       restarting.delete(name);
@@ -327,6 +415,9 @@ function runtimeSettings(now: FakeState | null, startupTokens: Tokens): string[]
   if (now.faults.down) lost.push("down");
   if (now.faults.latency.length) lost.push(`${now.faults.latency.length} latency rule(s)`);
   if (now.faults.fail.length) lost.push(`${now.faults.fail.length} fail rule(s)`);
+  const w = now.webhooks.faults;
+  if (w.drop || w.duplicate || w.reorder || w.delay_ms) lost.push("webhook faults");
+  if (now.clock?.offset) lost.push(`the clock offset (${now.clock.offset}s)`);
   const { access_ttl, refresh_ttl } = now.tokens;
   if (access_ttl !== startupTokens.access_ttl || refresh_ttl !== startupTokens.refresh_ttl) {
     lost.push(`token lifetimes (access ${access_ttl}s, refresh ${refresh_ttl}s)`);

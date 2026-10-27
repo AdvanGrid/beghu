@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 /// An account's **Role** on a repo, in GitHub's five levels (beghu folds the top three into
 /// "Write and up"). Ordered from least to most access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     Read,
     Triage,
@@ -46,6 +47,8 @@ pub struct Account {
     pub name: &'static str,
     /// The account's role on a fixture repo, by repo name. `None`: it can't see the repo.
     pub role: fn(&str) -> Option<Role>,
+    /// A member of the org that owns the fixture repos, rather than an outside collaborator.
+    pub member: bool,
 }
 
 /// Who the authorize page offers, in order.
@@ -55,6 +58,7 @@ pub const ACCOUNTS: [Account; 3] = [
         login: "tomsj",
         name: "Toms J.",
         role: |_| Some(Role::Admin),
+        member: true,
     },
     // A member with a mix of roles: write, triage and read.
     Account {
@@ -65,12 +69,14 @@ pub const ACCOUNTS: [Account; 3] = [
             "cli" | "billing" | "ops" => Some(Role::Read),
             _ => Some(Role::Triage),
         },
+        member: true,
     },
     // An outside collaborator with read on two repos.
     Account {
         login: "octo-ext",
         name: "Octo External",
         role: |repo| matches!(repo, "web" | "docs").then_some(Role::Read),
+        member: false,
     },
 ];
 

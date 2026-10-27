@@ -28,6 +28,13 @@ pub struct Config {
     /// How long after a failed re-read of the roles the next is tried (a minute): long enough
     /// that a failing GitHub isn't asked on every request, short enough to recover soon.
     pub roles_retry_after_failure: Duration,
+    /// `GITHUB_WEBHOOK_SECRET`: the App's webhook secret, which signs every delivery.
+    pub webhook_secret: String,
+    /// How often `/api/stream` sends a heartbeat (15 s): under the edge's idle timeout.
+    pub stream_heartbeat: Duration,
+    /// How long a processed webhook delivery's GUID is kept to dedupe redeliveries (4 days:
+    /// GitHub's 3-day redelivery window with a day's margin); older ones are pruned.
+    pub deliveries_kept_for: Duration,
 }
 
 pub struct GitHubConfig {
@@ -70,6 +77,9 @@ impl Config {
             mirrors: MirrorsConfig::from_env()?,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
+            webhook_secret: secret("GITHUB_WEBHOOK_SECRET")?,
+            stream_heartbeat: Duration::from_secs(15),
+            deliveries_kept_for: Duration::from_secs(4 * 24 * 60 * 60),
         })
     }
 
@@ -107,12 +117,16 @@ fn optional(name: &str, default: &str) -> String {
         .to_owned()
 }
 
-/// `NAME`, or the contents of the file `NAME_FILE` names.
+/// `NAME`, or the contents of the file `NAME_FILE` names, trimmed. Empty either way is refused:
+/// an empty key signs nothing (an empty HMAC key makes every webhook forgeable).
 fn secret(name: &str) -> Result<String, String> {
-    if let Ok(path) = std::env::var(format!("{name}_FILE")) {
-        return std::fs::read_to_string(&path)
-            .map(|s| s.trim().to_owned())
-            .map_err(|e| format!("{name}_FILE: can't read {path}: {e}"));
+    let Ok(path) = std::env::var(format!("{name}_FILE")) else {
+        return required(name).map(|s| s.trim().to_owned());
+    };
+    let s = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{name}_FILE: can't read {path}: {e}"))?;
+    match s.trim() {
+        "" => Err(format!("{name}_FILE: {path} is empty")),
+        s => Ok(s.to_owned()),
     }
-    required(name)
 }

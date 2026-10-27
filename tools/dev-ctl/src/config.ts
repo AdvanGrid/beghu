@@ -1,5 +1,5 @@
 // Paths, ports and the processes of the dev stack.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,6 +41,9 @@ export const URLS = {
 /** The OAuth client the dev server uses with the fake. */
 export const CLIENT = { id: "Iv1.fakegithub", secret: "fake-github-secret" };
 
+/** The App's webhook secret in dev: the fake signs deliveries with it, the server checks them. */
+export const DEV_WEBHOOK_SECRET = "fake-github-webhook-secret";
+
 /** The dev server's BEGHU_TOKEN_KEY (base64, 38 bytes). Dev data only: never use it elsewhere. */
 export const DEV_TOKEN_KEY = "ZGV2LW9ubHkgYmVnaHUgdG9rZW4ga2V5LCBub3QgYSBzZWNyZXQ=";
 
@@ -60,6 +63,10 @@ export interface State {
   /** Where the stack listens: the ports it was started with. */
   urls: typeof URLS;
   error?: string;
+  /** The process given up on, when that's why the phase is `failed`. */
+  failed?: string;
+  /** The pid of each process as last started. */
+  children?: Partial<Record<"fake" | "server" | "vite", number>>;
   startedAt: string;
 }
 
@@ -71,9 +78,12 @@ export function readJson<T>(path: string): T | null {
   }
 }
 
+/** Writes `value` whole or not at all: a reader never sees half a file. */
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+  renameSync(tmp, path);
 }
 
 export function remove(path: string): void {
@@ -94,11 +104,31 @@ export function urls(): typeof URLS {
   return running()?.state?.urls ?? URLS;
 }
 
+/** The supervisor's own script: its command line names it, then `__supervise`. */
+export const SUPERVISOR = join(ROOT, "tools", "dev-ctl", "src", "main.ts");
+
+/**
+ * Whether `pid` is this checkout's supervisor: alive, and running `main.ts __supervise` from
+ * this ROOT, not a process that took over a stale pid. Without /proc (not Linux), alive is all
+ * there is to go on.
+ */
+function isSupervisor(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || !alive(pid)) return false;
+  if (!existsSync("/proc/self/cmdline")) return true;
+  try {
+    const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    const at = args.indexOf(SUPERVISOR);
+    return at >= 0 && args[at + 1] === "__supervise";
+  } catch {
+    return false;
+  }
+}
+
 /** The running stack's supervisor pid and state, or null when nothing runs. */
 export function running(): { pid: number; state: State | null } | null {
   if (!existsSync(PID)) return null;
   const pid = Number(readFileSync(PID, "utf8").trim());
-  if (!Number.isInteger(pid) || !alive(pid)) {
+  if (!isSupervisor(pid)) {
     remove(PID);
     remove(STATE);
     return null;
@@ -119,12 +149,23 @@ export interface FakeState {
   };
   /** Refresh tokens honoured, and refresh tokens that came back already spent. */
   refreshes: { ok: number; reused: number };
+  /** Where webhooks go, and the faults on the next deliveries. */
+  webhooks: { url: string | null; faults: WebhookFaults };
+  /** Seconds the fake's clock runs ahead of the real one. */
+  clock: { offset: number };
+}
+
+export interface WebhookFaults {
+  drop: number;
+  duplicate: number;
+  reorder: number;
+  delay_ms: number;
 }
 
 /** The fake's state from its control port at `control`, or null when it doesn't answer. */
 export async function fakeState(control: string): Promise<FakeState | null> {
   try {
-    const res = await fetch(`${control}/state`, { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`${control}/state`, { signal: AbortSignal.timeout(5000) });
     return res.ok ? ((await res.json()) as FakeState) : null;
   } catch {
     return null;

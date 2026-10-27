@@ -4,8 +4,11 @@
 //! - The API listener serves the OAuth web flow (`/login/oauth/…`), the REST endpoints beghu
 //!   calls, and the App's grant and token revocation. Later tickets add endpoints as they need
 //!   them.
-//! - The control listener takes runtime faults (latency, the next N calls failing, down), token
-//!   lifetimes, revocations and a reset, and reports the fake's state.
+//! - The control listener takes runtime faults (latency, the next N calls failing, down, and
+//!   webhook drops, delays, duplicates and reorders), outside edits, token lifetimes,
+//!   revocations and a reset, and reports the fake's state.
+//! - About a second after each change, the fake POSTs the matching webhook, signed, to the App's
+//!   webhook URL (`webhook_url`, or the one set on the control port).
 //!
 //! GitHub's truth is the fake's own copy of a fixture mirror (`fake_db::Truth`).
 
@@ -15,10 +18,13 @@
 mod accounts;
 mod api;
 mod control;
+mod edits;
 mod faults;
 mod oauth;
+mod webhooks;
 
 pub use accounts::{ACCOUNTS, Role, pristine_mirrors};
+pub use webhooks::{DELAY as WEBHOOK_DELAY, sign as sign_webhook};
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -35,6 +41,11 @@ pub struct Config {
     pub access_ttl: Duration,
     /// Refresh token lifetime (GitHub: 6 months).
     pub refresh_ttl: Duration,
+    /// Where webhooks go (the App's webhook URL); none sends nothing until the control port sets
+    /// one.
+    pub webhook_url: Option<String>,
+    /// The App's webhook secret, which signs every delivery.
+    pub webhook_secret: String,
 }
 
 /// GitHub's own lifetimes.
@@ -50,6 +61,10 @@ pub(crate) struct State {
     ttl: Mutex<Ttl>,
     faults: faults::Faults,
     refreshes: Refreshes,
+    webhooks: webhooks::Webhooks,
+    /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
+    /// expiry, and the times edits stamp, follow it.
+    clock: std::sync::atomic::AtomicI64,
 }
 
 /// What the token endpoint did with refresh tokens since the start (or the last reset): how
@@ -96,9 +111,11 @@ impl Fake {
         Ok(Fake(Arc::new(State {
             truth,
             ttl: Mutex::new(Ttl::of(&cfg)),
+            webhooks: webhooks::Webhooks::new(cfg.webhook_url.clone(), cfg.webhook_secret.clone()),
             cfg,
             faults: faults::Faults::default(),
             refreshes: Refreshes::default(),
+            clock: Default::default(),
         })))
     }
 
@@ -119,6 +136,9 @@ impl Fake {
             .with_state(self.clone());
         let api = faults::DownAware::new(api, self.clone());
         let ctl_app = control::router().with_state(self.clone());
+        if let Some(rx) = self.state().webhooks.take_receiver() {
+            tokio::spawn(webhooks::run(self.clone(), rx));
+        }
         tokio::try_join!(async { axum::serve(api, api_app).await }, async {
             axum::serve(ctl, ctl_app).await
         },)?;
@@ -127,6 +147,21 @@ impl Fake {
 
     fn state(&self) -> &State {
         &self.0
+    }
+
+    /// The fake's time in Unix seconds: the real time plus the clock's offset.
+    pub(crate) fn now(&self) -> i64 {
+        now() + self.clock_offset()
+    }
+
+    fn clock_offset(&self) -> i64 {
+        self.0.clock.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn set_clock_offset(&self, secs: i64) {
+        self.0
+            .clock
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn ttl(&self) -> Ttl {

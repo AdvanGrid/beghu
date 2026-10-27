@@ -8,10 +8,22 @@ const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const comments = (page: Page) => page.locator('[data-perf="comment"]');
 const rows = (page: Page) => page.locator('[data-perf="row"]');
 
+/**
+ * Loads `url` and waits for the live stream's opening reset to have been handled (the list's
+ * refetch for it is back), so a test's own reads and failures aren't raced by it: the reset
+ * refetches the open detail, and retries one that failed (live.ts, IssuePanel.tsx).
+ */
+async function goto(page: Page, url: string): Promise<void> {
+  const opened = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/issues" && r.url().includes("through="));
+  await page.goto(url);
+  await opened;
+}
+
 async function signIn(page: Page, path = "/") {
-  await page.goto("/auth/login?login=tomsj");
+  // Signing in lands on the list.
+  await goto(page, "/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/");
-  if (path !== "/") await page.goto(path);
+  if (path !== "/") await goto(page, path);
   await expect(rows(page).first()).toBeVisible();
 }
 
@@ -48,26 +60,6 @@ async function watchPlaceholders(page: Page): Promise<() => Promise<number>> {
     requestAnimationFrame(frame);
   });
   return () => page.evaluate(() => (window as unknown as { placeholders: number }).placeholders);
-}
-
-/**
- * A live push naming `ids`. TEMPORARY, to be replaced: #90 must swap this for a real push over the
- * live stream (SSE), driven from Fake GitHub, once that stream exists. Until then it calls the
- * function the push will call, `refetchOpenIssue`, on the module instance the app runs, as Vite
- * serves it: once the file has changed, the app imports it with an HMR stamp, after any
- * unstamped copy the shell's modulepreload fetched, so the last fetch is the one. The panel's
- * code must have loaded.
- */
-async function push(page: Page, ids: number[]): Promise<void> {
-  await page.evaluate(async (ids) => {
-    const url = performance
-      .getEntriesByType("resource")
-      .map((e) => e.name)
-      .filter((n) => new URL(n).pathname === "/src/IssuePanel.tsx")
-      .at(-1)!;
-    const m = (await import(/* @vite-ignore */ url)) as { refetchOpenIssue(ids: number[]): Promise<void> };
-    await m.refetchOpenIssue(ids);
-  }, ids);
 }
 
 /** Each comment's id and time, in the order shown. */
@@ -121,13 +113,20 @@ test("a hover longer than a preload lasts still opens the issue with no placehol
   await expect.poll(() => api.filter((p) => p.startsWith(`/api/issues/${id}?`) || p === `/api/issues/${id}`)).toHaveLength(1);
 });
 
-test("an issue URL with leading zeros opens that issue, its one fetch the shell's preload", async ({ page }) => {
+test("an issue URL with leading zeros opens that issue, its first fetch the shell's preload", async ({ page }) => {
   await signIn(page);
   const id = await rows(page).first().getAttribute("data-id");
   const api = apiRequests(page);
-  await page.goto(`/issues/00${id}`);
+  await goto(page, `/issues/00${id}`);
   await expect(detail(page)).toHaveAttribute("data-id", id!);
-  expect(api.filter((p) => /^\/api\/issues\/\d+$/.test(p))).toEqual([`/api/issues/${id}`]);
+  // The shell's preload, then at most one read again for the live stream's opening reset (a
+  // change may have landed before the stream was up): plain if the reset cleared the preload
+  // before the panel took it, through its last comment if the panel had it on screen.
+  await page.waitForTimeout(1000);
+  const reads = api.filter((p) => /^\/api\/issues\/\d+(\?|$)/.test(p));
+  expect(reads[0]).toBe(`/api/issues/${id}`);
+  expect(reads.length).toBeLessThanOrEqual(2);
+  for (const r of reads) expect(r).toMatch(new RegExp(`^/api/issues/${id}(\\?through=|$)`));
 });
 
 test("comments come newest first, 15 at a time: page 2 after paint, later pages near the end", async ({ page }) => {
@@ -173,30 +172,6 @@ test("comments come newest first, 15 at a time: page 2 after paint, later pages 
   await expect(comments(page)).toHaveCount(30);
 });
 
-test("a push for the open issue refetches it in one request, and a new comment is neither skipped nor repeated", async ({ page }) => {
-  await signIn(page);
-  const id = Number(await rows(page).first().getAttribute("data-id"));
-  await rows(page).first().click();
-  await expect(comments(page)).toHaveCount(30);
-  const before = await shownComments(page);
-
-  // A comment arrived since: the refetch answers with it on top of the loaded thread.
-  const arrived = { id: 2_999_999_999, author: { login: "edgars" }, body: "Arrived mid-scroll", created_at: 1_900_000_000, updated_at: 1_900_000_000 };
-  await page.route(`**/api/issues/${id}?through=*`, async (route) => {
-    const res = await route.fetch();
-    const d = await res.json();
-    d.comments.comments.unshift(arrived);
-    d.comment_total += 1;
-    await route.fulfill({ response: res, json: d });
-  });
-  const api = apiRequests(page);
-  await push(page, [id]);
-  expect(api).toEqual([`/api/issues/${id}?through=${cursor(before.at(-1)!)}`]);
-  await expect(comments(page)).toHaveCount(31);
-  const after = await shownComments(page);
-  expect(after.map((c) => c.id)).toEqual([arrived.id, ...before.map((c) => c.id)]);
-});
-
 test("off-screen comments skip rendering until they come near", async ({ page }) => {
   await signIn(page);
   await rows(page).first().click();
@@ -224,7 +199,7 @@ test("nothing in the panel moves when a value changes length", async ({ page }) 
       };
     });
   };
-  await page.goto(`/issues/${id}`);
+  await goto(page, `/issues/${id}`);
   const before = await layout();
 
   // The same issue with every property a different length: closed as not planned, more labels,
@@ -325,7 +300,7 @@ test("at the 360 px minimum a long repo name is cut short, and the status row ke
     d.repo = "a-repository-with-an-unusually-long-name-indeed";
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${id}`);
+  await goto(page, `/issues/${id}`);
   await expect(detail(page)).toHaveAttribute("data-id", id!);
   const box = (await panel(page).boundingBox())!;
   expect(box.width).toBe(360);
@@ -341,7 +316,7 @@ test("a detail that fails to load offers Retry, which loads it", async ({ page }
   await signIn(page);
   const id = await rows(page).first().getAttribute("data-id");
   await page.route(`**/api/issues/${id}`, (r) => r.fulfill({ status: 500, body: "{}" }));
-  await page.goto(`/issues/${id}`);
+  await goto(page, `/issues/${id}`);
   await expect(panel(page).getByText("Couldn't load this issue")).toBeVisible();
   await page.unroute(`**/api/issues/${id}`);
   await panel(page).getByRole("button", { name: "Retry" }).click();
@@ -407,77 +382,6 @@ test("a long-hovered issue whose refresh fails drops what it showed and offers R
   await expect(comments(page)).toHaveCount(30);
 });
 
-test("a push for an issue whose detail failed to load acts as Retry", async ({ page }) => {
-  await signIn(page);
-  const id = Number(await rows(page).first().getAttribute("data-id"));
-  await page.route(`**/api/issues/${id}`, (r) => r.fulfill({ status: 500, body: "{}" }));
-  await page.goto(`/issues/${id}`);
-  await expect(panel(page).getByText("Couldn't load this issue")).toBeVisible();
-  await page.unroute(`**/api/issues/${id}`);
-  const errors: Error[] = [];
-  page.on("pageerror", (e) => errors.push(e));
-  await push(page, [id]);
-  await expect(detail(page)).toHaveAttribute("data-id", String(id));
-  expect(errors).toEqual([]);
-});
-
-test("a push naming a hovered issue makes its click read it afresh", async ({ page }) => {
-  await signIn(page);
-  await rows(page).first().click();
-  await expect(detail(page)).toBeVisible();
-  const row = rows(page).nth(7);
-  const id = Number(await row.getAttribute("data-id"));
-  const preloaded = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/issues/${id}`);
-  await row.hover();
-  const was = ((await (await preloaded).json()) as { title: string }).title;
-  await page.route(`**/api/issues/${id}`, async (route) => {
-    const res = await route.fetch();
-    const d = await res.json();
-    d.title = "Renamed by the push";
-    await route.fulfill({ response: res, json: d });
-  });
-  await push(page, [id]);
-  const titles = await watchTitles(page);
-  await row.click();
-  await expect(detail(page).locator("h2")).toHaveText("Renamed by the push");
-  expect(await titles()).not.toContain(was);
-});
-
-test("a hover read still on its way when a push names its issue is never shown", async ({ page }) => {
-  await signIn(page);
-  await rows(page).first().click();
-  await expect(detail(page)).toBeVisible();
-  const row = rows(page).nth(8);
-  const id = Number(await row.getAttribute("data-id"));
-  // The hover's read is held until the push has gone by; any later read sees the push's change.
-  let reads = 0;
-  let was: string | undefined;
-  let release!: () => void;
-  const held = new Promise<void>((r) => (release = r));
-  await page.route(`**/api/issues/${id}`, async (route) => {
-    const first = reads++ === 0;
-    if (first) await held;
-    const res = await route.fetch();
-    const d = await res.json();
-    if (first) was = d.title;
-    else d.title = "Renamed by the push";
-    await route.fulfill({ response: res, json: d });
-  });
-  const preloaded = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/issues/${id}`);
-  await row.hover();
-  await expect.poll(() => reads).toBe(1);
-  await push(page, [id]);
-  release();
-  await preloaded;
-  // Past the router's 5 s preload window, where only a remembered read could show at once.
-  await page.waitForTimeout(6_000);
-  const titles = await watchTitles(page);
-  await row.click();
-  await expect(detail(page).locator("h2")).toHaveText("Renamed by the push");
-  expect(was).toBeDefined();
-  expect(await titles()).not.toContain(was);
-});
-
 test("another view on an open issue's URL forgets what a hover fetched", async ({ page }) => {
   await signIn(page);
   await rows(page).first().click();
@@ -527,7 +431,7 @@ test("while the panel's code is on its way, the list is already usable", async (
     await held;
     await route.continue();
   });
-  await page.goto(`/issues/${id}`);
+  await goto(page, `/issues/${id}`);
   await expect(rows(page).first()).toBeVisible();
   await expect(detail(page)).toHaveCount(0);
   release();

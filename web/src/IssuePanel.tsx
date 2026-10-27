@@ -18,6 +18,7 @@ import {
   getComments,
   getIssue,
   issueId,
+  readBefore,
   refetchIssue,
   signIn,
   takeRemembered,
@@ -27,6 +28,7 @@ import {
 } from "./api";
 import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
 import type { User } from "./bindings/User";
+import { coalesced, onPush, resetAt } from "./live";
 import { IssueNotice, resetOnChange } from "./Root";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
@@ -51,13 +53,18 @@ let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
  * detail is refetched through its last loaded comment, in one request; a failed refetch keeps
  * what's on screen, except that a deleted or inaccessible issue shows its in-place state. If the
  * open issue's detail is showing its failure, the push acts as Retry. Never rejects.
- *
- * Until #90 lands, only the e2e suite calls it (web/e2e/detail.spec.ts), in place of a push.
  */
 export function refetchOpenIssue(ids: readonly number[]): Promise<void> {
   forgetPushed(ids);
   return openDetail && ids.includes(openDetail.id) ? openDetail.onPush() : Promise.resolve();
 }
+
+// The live stream (live.ts), from when this code loads: `ids` go to `refetchOpenIssue`, and a
+// reset refetches the open issue (live.ts itself forgets the remembered detail and the cached
+// reads). Before this code loads no issue is open, and the router's cache is cleared on every push.
+const unsubscribe = onPush((p) => void refetchOpenIssue(p.kind === "ids" ? p.ids : openDetail ? [openDetail.id] : []));
+// A hot reload of this file in development subscribes its new copy instead.
+import.meta.hot?.dispose(unsubscribe);
 
 export function IssuePanel(props: RouteSectionProps) {
   const location = useLocation();
@@ -245,19 +252,23 @@ function Detail(props: { id: number; search: string }) {
     });
   };
 
-  /** What a live push calls: the default refetch, whose failure keeps what's on screen. */
-  const onPush = () => refetch().catch(() => {});
+  /**
+   * What a live push calls: the default refetch, whose failure keeps what's on screen. A burst of
+   * pushes costs one refetch now and one after it, so an older read never lands over a newer one.
+   */
+  const refetchForPush = coalesced(() => refetch());
 
   // Each issue opens at its top, and fetches comment page 2 once it has painted; so does a Retry.
   // (The effect also runs for every write to `d`, a page or a refetch: those keep their place.)
   createEffect(
-    () => d().id,
-    (id) => {
+    () => d(),
+    (detail) => {
+      const id = detail.id;
       if (id === shown) return;
       shown = id;
       scroller.scrollTop = 0;
       setLost(undefined);
-      openDetail = { id, onPush };
+      openDetail = { id, onPush: refetchForPush };
       // A remembered detail is on screen (its first page), maybe minutes old: replace it with the
       // read the click's own preload started (the router's cache keys on every argument: pass the
       // id alone). If that fails, the detail shows the failure, with Retry, which opens the issue
@@ -268,12 +279,16 @@ function Detail(props: { id: number; search: string }) {
           failure = { error: e };
           setRerun((n) => n + 1);
         });
+      } else if (readBefore(detail, resetAt())) {
+        // Its read began before a push named it or the stream reset, while nothing was open for
+        // that push to refetch (the read was on its way, or the panel's code was): refetch it now.
+        void untrack(refetchForPush);
       }
       requestAnimationFrame(() => setTimeout(() => void loadMore()));
     },
   );
   onSettled(() => () => {
-    if (openDetail?.onPush === onPush) openDetail = undefined;
+    if (openDetail?.onPush === refetchForPush) openDetail = undefined;
   });
 
   return (

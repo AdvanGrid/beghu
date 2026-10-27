@@ -76,3 +76,9 @@ FROM json_each(:ids) j
 JOIN item_assignees ia ON ia.item_id = j.value
 JOIN users u ON u.id = ia.user_id
 ORDER BY j.key, u.login COLLATE NOCASE;
+
+-- A live refetch: from the top of the default order through the last row the client shows.
+-- name: updated_through :fragment
+-- param: updated_at i64
+-- param: id i64
+(i.updated_at, i.id) >= (:updated_at, :id)

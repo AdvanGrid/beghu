@@ -1,0 +1,106 @@
+-- Outside edits (`POST /edit` on the control port) and the webhook payloads they send: GitHub's
+-- issues, their labels, assignees and milestones, read back as GitHub would serialise them.
+
+-- name: repo_by_full_name :opt
+-- param: owner &str
+-- param: name &str
+SELECT r.id
+FROM repos r WHERE r.owner = :owner COLLATE NOCASE AND r.name = :name COLLATE NOCASE AND r.synced = 1;
+
+-- name: repos_by_name :many
+-- param: name &str
+SELECT r.id
+FROM repos r WHERE r.name = :name COLLATE NOCASE AND r.synced = 1 ORDER BY r.id;
+
+-- The repo, with its owner's type from the App's installation on it (NULL without one).
+-- name: repo :one
+-- param: id i64
+SELECT r.id, r.node_id, r.owner, r.name, r.private AS "private: bool", r.archived AS "archived: bool",
+       r.installation_id, inst.account_type AS owner_type
+FROM repos r LEFT JOIN fake_installations inst ON inst.id = r.installation_id
+WHERE r.id = :id;
+
+-- The user's role on the repo, if they have access to it.
+-- name: permission :opt
+-- param: user_id i64
+-- param: repo_id i64
+SELECT p.role FROM fake_permissions p WHERE p.user_id = :user_id AND p.repo_id = :repo_id;
+
+-- name: issue_id :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT i.id FROM items i WHERE i.repo_id = :repo_id AND i.number = :number AND i.is_stub = 0;
+
+-- name: issue :one
+-- param: id i64
+SELECT i.id, i.node_id, i.repo_id, i.number, i.kind, i.title, i.body, i.state, i.state_reason,
+       i.locked AS "locked: bool", i.author_id, i.milestone_id, i.created_at, i.updated_at,
+       i.closed_at, i.comments_count, i.merged_at, i.draft AS "draft: bool"
+FROM items i WHERE i.id = :id;
+
+-- name: issue_labels :many
+-- param: item_id i64
+SELECT l.id, l.name, l.color, l.description
+FROM item_labels il JOIN labels l ON l.id = il.label_id
+WHERE il.item_id = :item_id ORDER BY l.name;
+
+-- name: issue_assignees :many
+-- param: item_id i64
+SELECT u.id, u.login, u.avatar_url
+FROM item_assignees ia JOIN users u ON u.id = ia.user_id
+WHERE ia.item_id = :item_id ORDER BY u.login;
+
+-- name: milestone :opt
+-- param: id i64
+SELECT m.id, m.number, m.title, m.state, m.due_on FROM milestones m WHERE m.id = :id;
+
+-- name: user_row :opt
+-- param: id i64
+SELECT u.id, u.login, u.avatar_url FROM users u WHERE u.id = :id;
+
+-- name: update_issue :exec
+-- param: id i64
+-- param: title &str
+-- param: body Option<&str>
+-- param: state &str
+-- param: state_reason Option<&str>
+-- param: closed_at Option<i64>
+-- param: updated_at i64
+UPDATE items SET title = :title, body = :body, state = :state, state_reason = :state_reason,
+  closed_at = :closed_at, updated_at = :updated_at
+WHERE id = :id;
+
+-- name: label_by_name :opt
+-- param: repo_id i64
+-- param: name &str
+SELECT l.id, l.name, l.color, l.description FROM labels l
+WHERE l.repo_id = :repo_id AND l.name = :name COLLATE NOCASE;
+
+-- name: add_issue_label :exec
+-- param: item_id i64
+-- param: label_id i64
+INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (:item_id, :label_id);
+
+-- name: remove_issue_label :exec
+-- param: item_id i64
+-- param: label_id i64
+DELETE FROM item_labels WHERE item_id = :item_id AND label_id = :label_id;
+
+-- name: next_comment_id :one
+SELECT coalesce(max(c.id), 0) + 1 AS "id!: i64" FROM comments c;
+
+-- name: add_comment :exec
+-- param: id i64
+-- param: node_id &str
+-- param: item_id i64
+-- param: author_id i64
+-- param: body &str
+-- param: at i64
+INSERT INTO comments (id, node_id, item_id, author_id, body, created_at, updated_at, seq)
+VALUES (:id, :node_id, :item_id, :author_id, :body, :at, :at, 0);
+
+-- name: count_comment :exec
+-- param: item_id i64
+-- param: at i64
+UPDATE items SET comments_count = comments_count + 1, last_commented_at = :at, updated_at = :at
+WHERE id = :item_id;

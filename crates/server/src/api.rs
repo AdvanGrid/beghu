@@ -15,6 +15,10 @@ use ts_rs::TS;
 
 /// One page of the list.
 pub const PAGE: i64 = 100;
+/// The most rows a live refetch (`through=`) returns: far more than a tab loads by scrolling.
+/// A tab that has scrolled past it gets the first 10,000 rows with `next` set, as any page that
+/// stops short would, so its list shrinks to them and the rows beyond load again as it scrolls.
+pub const THROUGH_MAX: i64 = 10_000;
 
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -169,7 +173,10 @@ pub struct User {
 
 #[derive(Deserialize)]
 pub struct ListQuery {
+    /// The next page: the rows after this cursor.
     after: Option<String>,
+    /// A live refetch: the rows from the top through this cursor (the last row the tab shows).
+    through: Option<String>,
 }
 
 /// `<updated_at>.<id>` of the last row shown.
@@ -179,27 +186,57 @@ fn parse_cursor(s: &str) -> Option<(i64, i64)> {
 }
 
 /// The default list: open issues, newest update first, ties on id. Filters and sorts come with
-/// the filter bar.
+/// the filter bar. `after` pages on; `through` is a live refetch, in one request, of everything
+/// from the top through the last row the tab has loaded.
 pub async fn issues(
     State(app): State<App>,
     Extension(s): Extension<Session>,
     Query(lq): Query<ListQuery>,
 ) -> Result<Json<IssuePage>, ApiError> {
+    let cursor =
+        |c: &str| parse_cursor(c).ok_or_else(|| ApiError::BadRequest(format!("bad cursor {c:?}")));
     let mut filter = vec![frag::state("open")];
-    if let Some(after) = lq.after.as_deref() {
-        let (u, id) = parse_cursor(after)
-            .ok_or_else(|| ApiError::BadRequest(format!("bad cursor {after:?}")))?;
-        filter.push(frag::updated_before(u, id));
-    }
+    let limit = match (lq.after.as_deref(), lq.through.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(ApiError::BadRequest(
+                "after and through don't go together".into(),
+            ));
+        }
+        (Some(after), None) => {
+            let (u, id) = cursor(after)?;
+            filter.push(frag::updated_before(u, id));
+            PAGE
+        }
+        (None, Some(through)) => {
+            let (u, id) = cursor(through)?;
+            filter.push(frag::updated_through(u, id));
+            THROUGH_MAX
+        }
+        (None, None) => PAGE,
+    };
+    let refetch = lq.through.is_some();
     let filter = Filter::And(filter);
     let (rows, labels, assignees, more) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
-            let mut ids = q::item_ids(c, &filter, "issue", PAGE + 1)?;
-            let more = ids.len() as i64 > PAGE;
-            ids.truncate(PAGE as usize);
+            let mut ids = q::item_ids(c, &filter, "issue", limit + 1)?;
+            let mut more = ids.len() as i64 > limit;
+            ids.truncate(limit as usize);
+            let rows = q::hydrate(c, &ids)?;
+            // A refetch stops at its cursor, not at a page's end: the list goes on if any row
+            // follows the last one it returns.
+            if refetch
+                && !more
+                && let Some(last) = rows.last()
+            {
+                let after = Filter::And(vec![
+                    frag::state("open"),
+                    frag::updated_before(last.updated_at.unwrap_or(0), last.id),
+                ]);
+                more = !q::item_ids(c, &after, "issue", 1)?.is_empty();
+            }
             Ok((
-                q::hydrate(c, &ids)?,
+                rows,
                 q::hydrate_labels(c, &ids)?,
                 q::hydrate_assignees(c, &ids)?,
                 more,

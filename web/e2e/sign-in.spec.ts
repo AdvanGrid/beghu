@@ -101,7 +101,7 @@ test.describe("signed in", () => {
     expect(await rows.count()).toBeLessThanOrEqual(most);
   });
 
-  test("a load fetches /api/me and its list page once each: the shell's preloads are used", async ({ page }) => {
+  test("a load fetches /api/me and its list page once each (the shell's preloads), then opens the stream", async ({ page }) => {
     const api: string[] = [];
     page.on("request", (r) => {
       const u = new URL(r.url());
@@ -113,7 +113,11 @@ test.describe("signed in", () => {
     await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
     // Chrome warns about an unused preload a few seconds after load.
     await page.waitForTimeout(3500);
-    expect(api.sort()).toEqual(["/api/issues?view=e2e", "/api/me"]);
+    // The stream's opening reset refetches the list (`through=`), as may pushes from edits
+    // elsewhere; those are the live path's, not the first load's.
+    const live = api.filter((u) => u.includes("through="));
+    expect(live.length).toBeGreaterThanOrEqual(1);
+    expect(api.filter((u) => !live.includes(u)).sort()).toEqual(["/api/issues?view=e2e", "/api/me", "/api/stream"]);
     expect(unused).toEqual([]);
   });
 

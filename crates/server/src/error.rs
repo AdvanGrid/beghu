@@ -12,6 +12,8 @@ pub enum ApiError {
     /// No session, an expired one, or an account that must sign in again.
     SignedOut,
     BadRequest(String),
+    /// Refused: from another site's page.
+    Forbidden(String),
     /// No such API path.
     NotFound,
     /// No such issue in the account's mirror: deleted, or never there.
@@ -60,6 +62,8 @@ pub enum ErrorKind {
     SignedOut,
     /// 400.
     BadRequest,
+    /// 403: refused, whoever asks.
+    Forbidden,
     /// 404: no such API path.
     NotFound,
     /// 404: the issue isn't there (any more).
@@ -104,6 +108,7 @@ impl IntoResponse for ApiError {
                 "Sign in to continue".to_owned(),
             ),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, ErrorKind::BadRequest, m),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, ErrorKind::Forbidden, m),
             ApiError::NotFound => (
                 StatusCode::NOT_FOUND,
                 ErrorKind::NotFound,

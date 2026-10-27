@@ -17,6 +17,7 @@ import {
   type Scale,
   SEEDED,
   STATE,
+  SUPERVISOR,
   type State,
   URLS,
   alive,
@@ -40,10 +41,12 @@ Commands:
                               background, in fixture mode (default scale ${DEFAULT_SCALE}). Waits
                               until all three answer; exits 1 with the log tail if not.
                               The server and the fake rebuild and restart when their
-                              sources change. No-op if already running.
+                              sources change; a process that exits on its own is
+                              restarted. No-op if already running.
   stop                        Stop everything.
-  status                      Mode, scale, URLs, each process up or down, the fake users
-                              signed in, and the active fault rules. Exit 1 if not running.
+  status                      Mode, scale, URLs, each process up or down (--json: and its
+                              pid), the fake users signed in, and the active fault rules.
+                              Exit 1 if not running.
   logs [-n N] [-f] [PROC]     The last N lines (default 100) of the one log, optionally
                               only one process: ${PROCS.join(", ")}.
                               -f follows until Ctrl-C.
@@ -57,7 +60,16 @@ Commands:
                               The next N calls (default 1) to ENDPOINT fail with STATUS
                               (409, 403/429 with --retry-after for a rate limit, 5xx).
   fake down | fake up         GitHub unreachable (new connections dropped), or back.
-  fake clear                  Remove every fault rule.
+  fake edit REPO#N [--title T] [--body B] [--close [--reason not_planned]] [--reopen]
+            [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
+                              An outside edit on "GitHub" (as an agent with gh would make
+                              it); its webhooks reach the server about a second later. REPO
+                              is a fixture repo name (web) or owner/name (acme/web).
+  fake webhooks drop|duplicate|reorder N
+                              The next N deliveries are lost, sent twice under one GUID,
+                              or (reorder, N >= 2) held and sent newest first.
+  fake webhooks delay MS      Every delivery waits MS longer (0 for none).
+  fake clear                  Remove every fault rule, webhook ones included.
   fake tokens [--access-ttl T] [--refresh-ttl T]
                               Lifetimes of new tokens: 30s, 5m, 8h, 184d.
   fake revoke USER            USER revokes beghu's authorization on "GitHub".
@@ -146,7 +158,7 @@ async function startStack(
   writeFileSync(LOG, "");
   const out = openSync(LOG, "a");
   // Its own process group, so `stop` ends it and everything it started together.
-  const child = spawn(process.execPath, [join(import.meta.dirname, "main.ts"), "__supervise", scale], {
+  const child = spawn(process.execPath, [SUPERVISOR, "__supervise", scale], {
     cwd: ROOT,
     env: { ...process.env, ...env },
     detached: true,
@@ -194,9 +206,13 @@ async function stop(): Promise<boolean> {
 // ---------------------------------------------------------------------------------------------
 // status
 
-function describeFaults(f: FakeState["faults"]): string[] {
+function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["faults"]): string[] {
   const lines: string[] = [];
   if (f.down) lines.push("down: GitHub unreachable");
+  if (w?.drop) lines.push(`webhooks: drop the next ${w.drop}`);
+  if (w?.duplicate) lines.push(`webhooks: send the next ${w.duplicate} twice`);
+  if (w?.reorder) lines.push(`webhooks: reorder the next ${w.reorder}`);
+  if (w?.delay_ms) lines.push(`webhooks: +${w.delay_ms} ms`);
   for (const l of f.latency) lines.push(`latency ${l.endpoint}: ${l.ms} ms`);
   for (const r of f.fail) {
     const ra = r.retry_after === null ? "" : `, retry-after ${r.retry_after}s`;
@@ -225,6 +241,8 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     running: true,
     pid: r.pid,
     phase: s?.phase,
+    error: s?.error ?? null,
+    children: s?.children ?? null,
     mode: s?.mode,
     scale: s?.scale,
     urls: urls(),
@@ -232,11 +250,13 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     signed_in: fake?.signed_in ?? null,
     tokens: fake?.tokens ?? null,
     faults: fake?.faults ?? null,
+    webhooks: fake?.webhooks ?? null,
   };
   const word = (b: boolean) => (b ? "up" : "DOWN");
-  const faults = fake ? describeFaults(fake.faults) : [];
+  const faults = fake ? describeFaults(fake.faults, fake.webhooks.faults) : [];
   const text = [
     `running (pid ${r.pid}, ${s?.phase ?? "unknown"}): ${s?.mode ?? "?"} mode, scale ${s?.scale ?? "?"}`,
+    ...(s?.error ? [`  ${s.error}`] : []),
     `  app     ${urls().app}  ${word(app)}`,
     `  server  ${urls().server}  ${word(server)}`,
     `  fake    ${urls().fake}  ${word(fakeUp)}  (control ${urls().control})`,
@@ -325,7 +345,7 @@ async function login(args: string[]): Promise<void> {
   print(json, { user, url }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)`);
 }
 
-async function control(method: string, path: string, body?: unknown): Promise<void> {
+async function control(method: string, path: string, body?: unknown): Promise<unknown> {
   await needFake();
   const res = await fetch(`${urls().control}${path}`, {
     method,
@@ -336,6 +356,30 @@ async function control(method: string, path: string, body?: unknown): Promise<vo
     const err = (await res.json().catch(() => null)) as { error?: string } | null;
     die(`fake: ${err?.error ?? res.statusText}`);
   }
+  return res.json();
+}
+
+/** `./dev-ctl fake edit REPO#N …`: the control port's `POST /edit` body. */
+function editBody(target: string | undefined, opts: Record<string, string>, set: Set<string>): Record<string, unknown> {
+  const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
+  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]");
+  if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
+  const list = (v: string | undefined) => (v === undefined ? [] : v.split(",").map((l) => l.trim()).filter(Boolean));
+  const body: Record<string, unknown> = { repo: m[1], number: Number(m[2]) };
+  if (opts["--as"]) body.as = opts["--as"];
+  if (opts["--title"] !== undefined) body.title = opts["--title"];
+  if (opts["--body"] !== undefined) body.body = opts["--body"];
+  if (set.has("--close")) body.state = "closed";
+  if (set.has("--reopen")) body.state = "open";
+  if (opts["--reason"]) {
+    if (!set.has("--close")) throw new Usage("--reason goes with --close");
+    body.state_reason = opts["--reason"];
+  }
+  if (opts["--label"]) body.add_labels = list(opts["--label"]);
+  if (opts["--unlabel"]) body.remove_labels = list(opts["--unlabel"]);
+  if (opts["--comment"] !== undefined) body.comment = opts["--comment"];
+  if (Object.keys(body).length === 2) throw new Usage("fake edit needs something to change; see ./dev-ctl help");
+  return body;
 }
 
 function seconds(v: string, flag: string): number {
@@ -346,12 +390,16 @@ function seconds(v: string, flag: string): number {
 
 async function fake(args: string[]): Promise<void> {
   const [sub = "state", ...rest] = args;
-  const { opts, pos, json } = parse(rest, ["--count", "--retry-after", "--access-ttl", "--refresh-ttl"]);
+  const { opts, set, pos, json } = parse(
+    rest,
+    ["--count", "--retry-after", "--access-ttl", "--refresh-ttl", "--title", "--body", "--reason", "--label", "--unlabel", "--comment", "--as"],
+    ["--close", "--reopen"],
+  );
   const done = (text: string) => print(json, { ok: true }, text);
   switch (sub) {
     case "state": {
       const s = await needFake();
-      const faults = describeFaults(s.faults);
+      const faults = describeFaults(s.faults, s.webhooks.faults);
       print(
         json,
         s,
@@ -360,6 +408,7 @@ async function fake(args: string[]): Promise<void> {
           `accounts: ${s.accounts.map((a) => a.login).join(", ")}`,
           `signed in: ${s.signed_in.join(", ") || "nobody"}`,
           `token lifetimes: access ${s.tokens.access_ttl}s, refresh ${s.tokens.refresh_ttl}s`,
+          `webhooks to: ${s.webhooks.url ?? "nowhere"}`,
           `fault rules:${faults.length ? "" : " none"}`,
           ...faults.map((l) => `  ${l}`),
         ].join("\n"),
@@ -391,6 +440,33 @@ async function fake(args: string[]): Promise<void> {
     case "clear":
       await control("DELETE", "/faults");
       return done("fault rules cleared");
+    case "edit": {
+      const out = (await control("POST", "/edit", editBody(pos[0], opts, set))) as {
+        issue: { id: number; title: string; updated_at: string };
+        deliveries: number;
+      };
+      return print(
+        json,
+        out,
+        `${pos[0]} edited (id ${out.issue.id}): ${out.deliveries} webhook(s) on the way`,
+      );
+    }
+    case "webhooks": {
+      const [what, n] = pos;
+      const num = Number(n);
+      if (!what || n === undefined || !Number.isInteger(num) || num < 0) {
+        throw new Usage("usage: ./dev-ctl fake webhooks drop|duplicate|reorder N, or fake webhooks delay MS");
+      }
+      if (what === "delay") {
+        await control("POST", "/faults/webhooks", { delay_ms: num });
+        return done(num ? `webhooks: +${num} ms` : "webhooks: no extra delay");
+      }
+      if (!["drop", "duplicate", "reorder"].includes(what)) throw new Usage(`unknown webhook fault ${what}`);
+      if (what === "reorder" && num < 2) throw new Usage("reorder takes a batch of at least 2 deliveries");
+      if (num < 1) throw new Usage(`${what} takes a number of deliveries, at least 1`);
+      await control("POST", "/faults/webhooks", { [what]: num });
+      return done(`webhooks: ${what} the next ${num}`);
+    }
     case "tokens": {
       const body: Record<string, number> = {};
       if (opts["--access-ttl"]) body.access_ttl = seconds(opts["--access-ttl"], "--access-ttl");

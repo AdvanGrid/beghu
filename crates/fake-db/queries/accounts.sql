@@ -75,3 +75,16 @@ LIMIT :limit OFFSET :offset;
 -- name: account_roles :many
 -- param: user_id i64
 SELECT p.repo_id, p.role FROM fake_permissions p WHERE p.user_id = :user_id ORDER BY p.repo_id;
+
+-- An admin changes a user's access to a repo: a new role, or (with `remove_permission`) none.
+-- name: set_permission :exec
+-- param: user_id i64
+-- param: repo_id i64
+-- param: role &str
+INSERT INTO fake_permissions (user_id, repo_id, role) VALUES (:user_id, :repo_id, :role)
+ON CONFLICT (user_id, repo_id) DO UPDATE SET role = excluded.role;
+
+-- name: remove_permission :exec
+-- param: user_id i64
+-- param: repo_id i64
+DELETE FROM fake_permissions WHERE user_id = :user_id AND repo_id = :repo_id;

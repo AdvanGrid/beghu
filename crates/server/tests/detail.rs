@@ -380,7 +380,10 @@ async fn through_a_position_before_every_comment_still_says_where_the_thread_goe
     );
 }
 
-// TODO(#90): an issue in a repo that leaves the synced set (removed from the installation) is
-// NoAccess with a link out. Nothing carries that into a mirror until live sync lands (the role
-// re-read in repos.rs only updates roles), so the test waits for #90 to drive it from Fake
-// GitHub. Stubs cover the same NoAccess answer meanwhile.
+// TODO: an issue in a repo that leaves the synced set (removed from the installation) is
+// NoAccess with a link out. Nothing carries that into a mirror yet: Fake GitHub's
+// `PUT /permissions` takes the repo out of what the token sees, and the role re-read in repos.rs
+// then drops it from the account's webhook fan-out (`synced_repos` in the control DB), but the
+// mirror's `repos.synced`, which the detail reads, stays set. Repo picking, or handling
+// `installation_repositories` webhooks, will clear it; the test comes with that. Stubs cover the
+// same NoAccess answer meanwhile.

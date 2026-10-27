@@ -13,6 +13,7 @@ use std::time::Duration;
 pub const CLIENT_ID: &str = "Iv1.test";
 pub const CLIENT_SECRET: &str = "test-secret";
 pub const BUILD: &str = "test-build";
+pub const WEBHOOK_SECRET: &str = "test-webhook-secret";
 /// The session cookie. `__Host-`: `Secure`, `Path=/` and no `Domain`, or browsers refuse it.
 pub const SID: &str = "__Host-beghu_sid";
 
@@ -93,6 +94,9 @@ pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
         client_secret: CLIENT_SECRET.into(),
         access_ttl: fake_github::ACCESS_TTL,
         refresh_ttl: fake_github::REFRESH_TTL,
+        // Set once the server is listening (see `restart_with`).
+        webhook_url: None,
+        webhook_secret: WEBHOOK_SECRET.into(),
     };
     let fake = tokio::task::spawn_blocking(move || fake_github::Fake::open(fake_cfg))
         .await
@@ -131,8 +135,8 @@ pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
 
 impl Stack {
     /// Starts a new server on the same data directory and Fake GitHub, as a deploy or a crash
-    /// and restart would, and points the stack at it. Nothing in memory carries over. The old
-    /// server is stopped first.
+    /// and restart would, and points the stack (and the fake's webhooks) at it. Nothing in
+    /// memory carries over. The old server is stopped first.
     pub async fn restart_with(&mut self, adjust: impl FnOnce(&mut beghu::Config)) {
         self.try_restart_with(adjust).await.unwrap();
     }
@@ -164,11 +168,20 @@ impl Stack {
             mirrors: mirror_db_config(),
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
+            webhook_secret: WEBHOOK_SECRET.into(),
+            stream_heartbeat: Duration::from_secs(15),
+            deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
         };
         adjust(&mut cfg);
         let app = beghu::App::open(cfg).await?;
         self.server_task = Some(tokio::spawn(beghu::serve(listener, app)));
         self.server = server;
+        self.fake(
+            "PUT",
+            "/webhooks",
+            serde_json::json!({ "url": format!("{}/webhook", self.server) }),
+        )
+        .await;
         Ok(())
     }
 }
@@ -329,4 +342,159 @@ pub fn db_bytes(path: &Path) -> Vec<u8> {
 
 pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+impl Stack {
+    /// An outside edit on Fake GitHub (`POST /edit`); its webhooks follow about a second later.
+    pub async fn edit(&self, edit: Value) -> Value {
+        self.fake("POST", "/edit", edit).await
+    }
+
+    /// POSTs a delivery to `/webhook`, signed with the webhook secret; the status.
+    pub async fn deliver(&self, event: &str, guid: &str, payload: &Value) -> u16 {
+        let body = serde_json::to_vec(payload).unwrap();
+        self.http
+            .post(format!("{}/webhook", self.server))
+            .header("x-github-event", event)
+            .header("x-github-delivery", guid)
+            .header(
+                "x-hub-signature-256",
+                fake_github::sign_webhook(WEBHOOK_SECRET, &body),
+            )
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
+    /// Opens `/api/stream` as `b`'s tab.
+    pub async fn stream(&self, b: &Browser) -> Stream {
+        let res = self
+            .http
+            .get(format!("{}/api/stream", self.server))
+            .header("cookie", b.header())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        Stream::new(res)
+    }
+
+    /// Polls `/api/issues` until `f` holds for the first page, or panics after `secs`.
+    pub async fn until_list(
+        &self,
+        b: &mut Browser,
+        secs: u64,
+        f: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        loop {
+            let (status, page) = self.api(b, "/api/issues").await;
+            if status == 200 && f(&page) {
+                return page;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the list didn't change within {secs} s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// One server-sent event: its name and data. A comment line (the heartbeat) comes as event `:`
+/// with the comment as its data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sse {
+    pub event: String,
+    pub data: String,
+}
+
+/// A tab's `/api/stream`, read event by event.
+pub struct Stream {
+    pub res_headers: reqwest::header::HeaderMap,
+    body: std::pin::Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
+    buf: String,
+}
+
+impl Stream {
+    pub fn new(res: reqwest::Response) -> Stream {
+        Stream {
+            res_headers: res.headers().clone(),
+            body: Box::pin(res.bytes_stream()),
+            buf: String::new(),
+        }
+    }
+
+    /// The next event or comment, or `None` if none comes within `wait`.
+    pub async fn next_within(&mut self, wait: Duration) -> Option<Sse> {
+        use futures_util::StreamExt as _;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            if let Some(at) = self.buf.find("\n\n") {
+                let block: String = self.buf.drain(..at + 2).collect();
+                let mut ev = Sse {
+                    event: "message".into(),
+                    data: String::new(),
+                };
+                for line in block.lines() {
+                    if let Some(c) = line.strip_prefix(':') {
+                        ev = Sse {
+                            event: ":".into(),
+                            data: c.trim().into(),
+                        };
+                    } else if let Some(e) = line.strip_prefix("event:") {
+                        ev.event = e.trim().into();
+                    } else if let Some(d) = line.strip_prefix("data:") {
+                        ev.data.push_str(d.trim());
+                    }
+                }
+                return Some(ev);
+            }
+            let chunk = tokio::time::timeout_at(deadline, self.body.next())
+                .await
+                .ok()??;
+            self.buf.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        }
+    }
+
+    /// The next event that isn't a heartbeat, or `None` within `wait`.
+    pub async fn event_within(&mut self, wait: Duration) -> Option<Sse> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let ev = self.next_within(left).await?;
+            if ev.event != ":" {
+                return Some(ev);
+            }
+        }
+    }
+
+    /// Every event (heartbeats aside) that arrives within `wait`.
+    pub async fn events_for(&mut self, wait: Duration) -> Vec<Sse> {
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut out = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match self.event_within(left).await {
+                Some(ev) => out.push(ev),
+                None => return out,
+            }
+        }
+    }
+}
+
+/// The ids an `ids` event names.
+pub fn ids_of(ev: &Sse) -> Vec<i64> {
+    assert_eq!(ev.event, "ids", "{ev:?}");
+    let v: Value = serde_json::from_str(&ev.data).unwrap();
+    v["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i.as_i64().unwrap())
+        .collect()
 }

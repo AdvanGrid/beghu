@@ -154,7 +154,7 @@ async fn authorize(
         return (StatusCode::NOT_FOUND, page("Unknown account", &msg)).into_response();
     };
     let code = crate::random(20);
-    let expires_at = crate::now() + CODE_TTL;
+    let expires_at = fake.now() + CODE_TTL;
     let stored = StoredCode {
         code: code.clone(),
         redirect_uri: redirect_uri.clone(),
@@ -264,7 +264,7 @@ async fn exchange(fake: &Fake, req: TokenRequest) -> Result<Value, Response> {
             "incorrect-client-credentials",
         ));
     }
-    let now = crate::now();
+    let now = fake.now();
     let ttl = fake.ttl();
     let truth = &fake.state().truth;
     if req.grant_type.as_deref() == Some("refresh_token") {
@@ -445,7 +445,7 @@ async fn revoke(
     let Ok(TokenBody { access_token }) = serde_json::from_slice(&body) else {
         return api::error(StatusCode::UNPROCESSABLE_ENTITY, "Validation Failed");
     };
-    let now = crate::now();
+    let now = fake.now();
     let done = fake
         .state()
         .truth

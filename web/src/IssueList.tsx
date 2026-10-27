@@ -1,7 +1,8 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, Loading, Show } from "solid-js";
-import { SessionEnded, getIssues, signIn, type IssuePage, type IssueRow } from "./api";
+import { createEffect, createMemo, createSignal, For, Loading, onSettled, Show } from "solid-js";
+import { SessionEnded, getIssues, refetchIssues, rowCursor, signIn, type IssuePage, type IssueRow } from "./api";
 import { Avatar, issueState, StateIcon } from "./bits";
+import { coalesced, onPush } from "./live";
 import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { colors, fonts } from "./tokens.stylex";
@@ -17,26 +18,88 @@ const NEAR_END = 40;
  * The issue list: strict columns (state, title, labels, blockers, progress, `repo#number`,
  * assignees, updated) on 34 px rows, with only the rows on screen in the DOM. Pages load as the
  * window nears the end. Rows are plain links; the router's one listener opens them.
+ *
+ * Every live push refetches the list from the top through the last loaded row, in one request:
+ * the first push at once, and any during that fetch in one more after it. A failed refetch
+ * leaves the rows on screen as they are. A page that loads while a refetch is in flight is
+ * asked for again from the refetched rows, so rows never vanish and come back.
  */
 export function IssueList(props: { search: string; openId?: number }) {
   // The first page follows the view (the URL's query string); later pages are appended.
   const [page, setPage] = createSignal<IssuePage>(() => getIssues(props.search));
+  // What's on screen and for which view, once it has loaded: where a refetch starts from. Set
+  // here as each page lands, and by the effect below for the first page of a view.
+  let shown: { view: string; page: IssuePage } | undefined;
+  // Refetches waiting for the view's first page to be shown.
+  let waitingForShown: (() => void)[] = [];
+  const recordShown = (view: string, p: IssuePage) => {
+    shown = { view, page: p };
+    for (const f of waitingForShown.splice(0)) f();
+  };
+  createEffect(
+    () => ({ view: props.search, page: page() }),
+    (now) => recordShown(now.view, now.page),
+  );
+  // A failed read never replaces what's on screen; a lapsed session goes to sign-in.
+  const signInIfEnded = (e: unknown) => {
+    if (e instanceof SessionEnded) signIn();
+  };
+
+  // Bumped as each refetch starts: a page that was loading meanwhile would be appended to rows
+  // the refetch is about to replace, so it's dropped and asked for again from the fresh rows.
+  let refetchesStarted = 0;
+  let refetching: Promise<void> | undefined;
   let loadingMore = false;
   const loadMore = async () => {
-    const have = page();
-    if (loadingMore || !have.next) return;
+    if (loadingMore) return;
     loadingMore = true;
     const view = props.search;
     try {
-      const more = await getIssues(view, have.next);
-      if (view === props.search) setPage({ rows: [...have.rows, ...more.rows], next: more.next });
+      for (;;) {
+        while (refetching) await refetching;
+        const have = page();
+        if (!have.next || view !== props.search) return;
+        const started = refetchesStarted;
+        const more = await getIssues(view, have.next);
+        if (view !== props.search) return;
+        if (started === refetchesStarted) {
+          const next = { rows: [...have.rows, ...more.rows], next: more.next };
+          setPage(next);
+          recordShown(view, next);
+          return;
+        }
+      }
     } catch (e) {
-      // A failed page never replaces what's on screen; the next scroll asks again.
-      if (e instanceof SessionEnded) signIn();
+      // The next scroll asks again.
+      signInIfEnded(e);
     } finally {
       loadingMore = false;
     }
   };
+
+  const refetch = coalesced(async () => {
+    // A push that beats the first page waits for it: that page may predate the change.
+    while (shown?.view !== props.search) await new Promise<void>((r) => waitingForShown.push(r));
+    const { view, page: have } = shown;
+    const last = have.rows.at(-1);
+    refetchesStarted++;
+    let done!: () => void;
+    refetching = new Promise<void>((r) => (done = r));
+    try {
+      const fresh = await refetchIssues(view, last && rowCursor(last));
+      if (view !== props.search) return;
+      setPage(fresh);
+      recordShown(view, fresh);
+    } catch (e) {
+      // The next push tries again.
+      signInIfEnded(e);
+      throw e;
+    } finally {
+      refetching = undefined;
+      done();
+    }
+  });
+  onSettled(() => onPush(refetch));
 
   return (
     <div {...stylex.attrs(s.column)}>

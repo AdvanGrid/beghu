@@ -6,13 +6,25 @@
 //! - `POST /faults/latency {endpoint, ms}`: delay calls to `endpoint`; `ms: 0` removes the rule.
 //! - `POST /faults/fail {endpoint, count, status, retry_after?}`: the next `count` calls fail.
 //! - `POST /faults/down {down}`: GitHub unreachable, or back.
-//! - `DELETE /faults`: clear every fault rule.
+//! - `POST /faults/webhooks {drop?, duplicate?, reorder?, delay_ms?}`: the next `drop`
+//!   deliveries are lost, the next `duplicate` are sent twice under one GUID, the next `reorder`
+//!   are held and sent newest first, and every delivery waits `delay_ms` longer.
+//! - `DELETE /faults`: clear every fault rule, webhook ones included.
+//! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
+//! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
+//!   remove_labels?, comment?}`: an outside edit (see `edits.rs`), with its webhooks.
 //! - `PUT /tokens {access_ttl?, refresh_ttl?}`: token lifetimes in seconds, for new tokens.
+//! - `PUT /clock {offset}`: run the fake's clock `offset` seconds ahead of the real one, so
+//!   tokens and codes expire without waiting.
 //! - `POST /revoke {login}`: the user revokes the App's authorization in GitHub's settings.
-//! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes.
+//! - `PUT /permissions {login, repo, role}`: an admin gives the account `role` on the repo
+//!   (`read` … `admin`), or with `role: null` removes its access, as removing a collaborator or
+//!   a team does. The repo then drops out of what the account's token sees.
+//! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
+//!   real clock.
 
 use crate::faults::{self, Fail};
-use crate::{Fake, Ttl, api};
+use crate::{Fake, Ttl, api, edits, webhooks};
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -28,13 +40,19 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/faults/latency", post(latency))
         .route("/faults/fail", post(fail))
         .route("/faults/down", post(down))
+        .route("/faults/webhooks", post(webhook_faults))
         .route("/faults", delete(clear))
+        .route("/webhooks", put(webhook_target))
+        .route("/edit", post(edits::edit))
         .route("/tokens", put(tokens))
+        .route("/clock", put(clock))
         .route("/revoke", post(revoke))
+        .route("/permissions", put(permissions))
         .route("/reset", post(reset))
 }
 
-fn bad_request(msg: impl Into<String>) -> Response {
+/// The control port's one 400: `{"error": msg}`.
+pub(crate) fn bad_request(msg: impl Into<String>) -> Response {
     (
         StatusCode::BAD_REQUEST,
         axum::Json(json!({ "error": msg.into() })),
@@ -49,7 +67,7 @@ fn ok() -> Response {
 const ENDPOINT_HELP: &str = "endpoint is `*`, or a path with an optional method in front, like `GET /user`; a `*` segment inside the path stands for exactly one segment, and a trailing `/*` covers the whole subtree under the path (`/user/*` matches `/user/installations/1/repositories` but not `/user`)";
 
 async fn state(State(fake): State<Fake>) -> Response {
-    let now = crate::now();
+    let now = fake.now();
     let read = fake
         .state()
         .truth
@@ -69,7 +87,12 @@ async fn state(State(fake): State<Fake>) -> Response {
         "signed_in": signed_in,
         "tokens": fake.ttl(),
         "faults": fake.state().faults.snapshot(),
+        "webhooks": {
+            "url": fake.state().webhooks.target(),
+            "faults": fake.state().webhooks.rules(),
+        },
         "refreshes": fake.state().refreshes.snapshot(),
+        "clock": { "offset": fake.clock_offset() },
     }))
     .into_response()
 }
@@ -133,6 +156,36 @@ async fn down(State(fake): State<Fake>, axum::Json(r): axum::Json<DownReq>) -> R
 
 async fn clear(State(fake): State<Fake>) -> Response {
     fake.state().faults.clear();
+    fake.state().webhooks.clear();
+    ok()
+}
+
+async fn webhook_faults(
+    State(fake): State<Fake>,
+    axum::Json(r): axum::Json<webhooks::MoreRules>,
+) -> Response {
+    if r.reorder == 1 {
+        return bad_request("reorder takes a batch of at least 2 deliveries");
+    }
+    fake.state().webhooks.add_rules(r);
+    ok()
+}
+
+#[derive(Deserialize)]
+struct TargetReq {
+    url: Option<String>,
+}
+
+async fn webhook_target(
+    State(fake): State<Fake>,
+    axum::Json(r): axum::Json<TargetReq>,
+) -> Response {
+    if let Some(u) = &r.url
+        && !(u.starts_with("http://") || u.starts_with("https://"))
+    {
+        return bad_request("url must be an http(s) URL");
+    }
+    fake.state().webhooks.set_target(r.url);
     ok()
 }
 
@@ -157,12 +210,22 @@ async fn tokens(State(fake): State<Fake>, axum::Json(r): axum::Json<TokensReq>) 
 }
 
 #[derive(Deserialize)]
+struct ClockReq {
+    offset: i64,
+}
+
+async fn clock(State(fake): State<Fake>, axum::Json(r): axum::Json<ClockReq>) -> Response {
+    fake.set_clock_offset(r.offset);
+    ok()
+}
+
+#[derive(Deserialize)]
 struct RevokeReq {
     login: String,
 }
 
 async fn revoke(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) -> Response {
-    let now = crate::now();
+    let now = fake.now();
     let done = fake
         .state()
         .truth
@@ -178,13 +241,61 @@ async fn revoke(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) 
     }
 }
 
+#[derive(Deserialize)]
+struct PermissionsReq {
+    login: String,
+    repo: String,
+    /// `None`: no access at all.
+    role: Option<crate::Role>,
+}
+
+async fn permissions(
+    State(fake): State<Fake>,
+    r: Result<axum::Json<PermissionsReq>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let r = match r {
+        Ok(axum::Json(r)) => r,
+        Err(e) => {
+            return bad_request(format!(
+                "{}; role is read, triage, write, maintain, admin or null",
+                e.body_text()
+            ));
+        }
+    };
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let Some(user) = q::account_by_login(tx, &r.login)? else {
+                return Ok(Err(format!("{} isn't a fixture account", r.login)));
+            };
+            let repo = match edits::find_repo(tx, &r.repo)? {
+                Ok(id) => id,
+                Err(why) => return Ok(Err(why)),
+            };
+            match r.role {
+                Some(role) => q::set_permission(tx, user.id, repo, role.as_str())?,
+                None => q::remove_permission(tx, user.id, repo)?,
+            };
+            Ok(Ok(()))
+        })
+        .await;
+    match done {
+        Ok(Ok(())) => ok(),
+        Ok(Err(why)) => bad_request(why),
+        Err(e) => api::internal(e),
+    }
+}
+
 async fn reset(State(fake): State<Fake>) -> Response {
     let f = fake.clone();
     let done = tokio::task::spawn_blocking(move || f.state().truth.reset()).await;
     match done {
         Ok(Ok(())) => {
             fake.state().faults.clear();
+            fake.state().webhooks.clear();
             fake.state().refreshes.clear();
+            fake.set_clock_offset(0);
             *fake.state().ttl.lock().unwrap_or_else(|e| e.into_inner()) =
                 Ttl::of(&fake.state().cfg);
             ok()

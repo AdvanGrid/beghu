@@ -172,13 +172,13 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         tokio::time::sleep(delay).await;
     }
     match fail {
-        Some(f) => failure(&f),
+        Some(f) => failure(&f, fake.now()),
         None => next.run(req).await,
     }
 }
 
-/// The response GitHub gives for `f.status`.
-fn failure(f: &Fail) -> Response {
+/// The response GitHub gives for `f.status`, at `now` on the fake's clock.
+fn failure(f: &Fail, now: i64) -> Response {
     let status = StatusCode::from_u16(f.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let rate_limited = matches!(f.status, 403 | 429) && f.retry_after.is_some();
     let message = match f.status {
@@ -194,7 +194,7 @@ fn failure(f: &Fail) -> Response {
         h.insert(header::RETRY_AFTER, HeaderValue::from(secs));
     }
     if rate_limited {
-        let reset = crate::now() + f.retry_after.unwrap_or(0) as i64;
+        let reset = now + f.retry_after.unwrap_or(0) as i64;
         h.insert("x-ratelimit-limit", HeaderValue::from(5000));
         h.insert("x-ratelimit-remaining", HeaderValue::from(0));
         h.insert("x-ratelimit-used", HeaderValue::from(5000));

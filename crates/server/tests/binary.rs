@@ -21,6 +21,7 @@ fn valid_env(dir: &std::path::Path, port: u16) -> Vec<(&'static str, String)> {
         ),
         ("GITHUB_CLIENT_ID", "Iv1.smoke".into()),
         ("GITHUB_CLIENT_SECRET", "smoke-secret".into()),
+        ("GITHUB_WEBHOOK_SECRET", "smoke-webhook-secret".into()),
     ]
 }
 
@@ -104,4 +105,28 @@ async fn with_a_valid_environment_it_serves_healthz() {
     assert_eq!(res.headers()["x-beghu-build"], "smoke");
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["build"], "smoke");
+}
+
+#[test]
+fn it_refuses_an_empty_webhook_secret_however_it_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let blank = dir.path().join("blank-secret");
+    std::fs::write(&blank, " \n\t\n").unwrap();
+    let without_secret = || {
+        valid_env(dir.path(), 1)
+            .into_iter()
+            .filter(|(k, _)| *k != "GITHUB_WEBHOOK_SECRET")
+            .collect::<Vec<_>>()
+    };
+    let mut from_file = without_secret();
+    from_file.push(("GITHUB_WEBHOOK_SECRET_FILE", blank.display().to_string()));
+    let mut from_env = without_secret();
+    from_env.push(("GITHUB_WEBHOOK_SECRET", "  ".into()));
+    // An empty key would make every HMAC forgeable: refuse to start, naming the variable.
+    for env in [from_file, from_env] {
+        let out = beghu(&env).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("GITHUB_WEBHOOK_SECRET"), "{stderr}");
+    }
 }

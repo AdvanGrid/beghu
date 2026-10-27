@@ -1,8 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, Errored, Loading, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, Errored, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
 import { IssueList } from "./IssueList";
+import { connectLive, reconnecting } from "./live";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { colors, fonts, media } from "./tokens.stylex";
@@ -10,9 +11,11 @@ import { colors, fonts, media } from "./tokens.stylex";
 /**
  * The app: a header over the list, with the open issue's panel (the route's content) beside the
  * list, or under it below 900 px. The root `Errored` sends a signed-out tab to sign in. The panel
- * has boundaries of its own, so while its code loads, or if that fails, the list carries on.
+ * has boundaries of its own, so while its code loads, or if that fails, the list carries on. The
+ * bottom bar holds the status slot. The tab's live stream opens with the app.
  */
 export function Root(props: { children?: Element }) {
+  onSettled(connectLive);
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
   // Another view (its query string, with an issue open or not) or leaving the issue for the
@@ -36,8 +39,20 @@ export function Root(props: { children?: Element }) {
             <Loading fallback={<div {...stylex.attrs(s.panelSlot)} aria-busy="true" />}>{props.children}</Loading>
           </Errored>
         </main>
+        <StatusBar />
       </Errored>
     </div>
+  );
+}
+
+/** The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. */
+function StatusBar() {
+  return (
+    <footer {...stylex.attrs(s.bar)}>
+      <span role="status" data-perf="status" {...stylex.attrs(s.status)}>
+        <Show when={reconnecting()}>reconnecting…</Show>
+      </span>
+    </footer>
   );
 }
 
@@ -275,6 +290,21 @@ const s = stylex.create({
     },
     minHeight: 0,
     minWidth: 0,
+  },
+  bar: {
+    paddingInline: 14,
+    alignItems: "center",
+    backgroundColor: colors.bgRaised,
+    display: "flex",
+    flexShrink: 0,
+    borderTopColor: colors.line,
+    borderTopStyle: "solid",
+    borderTopWidth: 1,
+    height: 24,
+  },
+  status: {
+    color: colors.muted,
+    fontSize: 12,
   },
   notice: {
     margin: 0,

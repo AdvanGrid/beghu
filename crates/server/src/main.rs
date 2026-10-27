@@ -3,7 +3,7 @@
 //! - `PORT` (default 3000): plain HTTP on every interface.
 //! - `BEGHU_BUILD_ID` (default `dev`): the git SHA in production.
 //! - `BEGHU_PUBLIC_URL`, `BEGHU_DATA_DIR`, `BEGHU_TOKEN_KEY`, `GITHUB_CLIENT_ID`,
-//!   `GITHUB_CLIENT_SECRET` (required); `GITHUB_API_URL`, `GITHUB_WEB_URL`, `BEGHU_WEB_DIR`,
+//!   `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` (required); `GITHUB_API_URL`, `GITHUB_WEB_URL`, `BEGHU_WEB_DIR`,
 //!   `BEGHU_MIRROR_CONNECTIONS` (optional).
 
 use std::net::{Ipv6Addr, SocketAddr};

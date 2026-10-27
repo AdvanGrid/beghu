@@ -76,6 +76,8 @@ async function request<T>(url: string): Promise<T> {
     case "not_found":
     case "gone":
       throw new Gone(why);
+    case "forbidden":
+      throw new NoAccess(why);
     case "no_access":
       throw new NoAccess(why, body.issue);
     case "bad_request":
@@ -115,6 +117,22 @@ export function issuesUrl(search: string, after?: string): string {
 export const getMe = query(() => request<Me>("/api/me"), "me");
 
 export const getIssues = query((search: string, after?: string) => request<IssuePage>(issuesUrl(search, after)), "issues");
+
+/** Where a row sits in the list's order: `after` and `through` take it. */
+export function rowCursor(row: { updated_at: number; id: number }): string {
+  return `${row.updated_at}.${row.id}`;
+}
+
+/**
+ * A live refetch of a view, bypassing the query cache: from the top through `through` (the last
+ * row the tab shows) in one request, or the first page when it shows none yet.
+ */
+export function refetchIssues(search: string, through?: string): Promise<IssuePage> {
+  if (!through) return request<IssuePage>(issuesUrl(search));
+  const p = new URLSearchParams(search);
+  p.set("through", through);
+  return request<IssuePage>(`/api/issues?${p}`);
+}
 
 /**
  * The issue an `/issues/:id` path names: its digits as a number, leading zeros dropped as the
@@ -209,6 +227,15 @@ export function forgetPushed(ids: readonly number[]): void {
   }
   if (remembered && ids.includes(remembered.id)) remembered = undefined;
   revalidate(ids.map((id) => getIssue.keyFor(id)));
+}
+
+/**
+ * Whether `detail`'s read began before `since` (the stream's last reset) or before a push last
+ * named its issue: it may predate a change no refetch has covered yet.
+ */
+export function readBefore(detail: IssueDetail, since: number): boolean {
+  const at = startedAt.get(detail);
+  return at !== undefined && at < Math.max(since, pushedAt.get(detail.id) ?? -Infinity);
 }
 
 // A page restored from the bfcache resets (spec #86): what it remembered may be long stale.
