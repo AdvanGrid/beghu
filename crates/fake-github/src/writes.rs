@@ -4,7 +4,8 @@
 //! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment.
 //! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?,
 //!   milestone?}`: 200 with the issue as stored afterwards. `milestone` is the milestone's number
-//!   in the repo, or `null` for none; a number the repo doesn't have is a 422.
+//!   in the repo, or `null` for none; a number the repo doesn't have is a 422. A number
+//!   transferred since is a 301 to the new issue, as GitHub documents (and as its `GET` answers).
 //! - `GET /rate_limit`: 200 with the caller's quotas (it needs no token, as on GitHub).
 //!
 //! A write goes through the same change as an outside edit (`edits.rs`), so it sends the same
@@ -22,12 +23,12 @@
 
 use crate::Fake;
 use crate::accounts::Role;
-use crate::api::{TokenUser, error, internal};
+use crate::api::{Token, TokenUser, error, internal};
 use crate::edits::Change;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use fake_db::q;
@@ -82,12 +83,22 @@ pub(crate) struct Target {
     pub own: bool,
 }
 
+/// What a write's route answers for an issue number transferred since: GitHub's REST docs list a
+/// 301 for updating an issue and for adding and removing its labels, and none for commenting or
+/// for assignees, whose answer is unmeasured (a 404 here, as for a number the repo never had).
+pub(crate) enum OnMoved {
+    /// 301 to the new issue, named for the request's `Host`.
+    Redirect(HeaderMap),
+    NotFound,
+}
+
 fn target(
     c: &rusqlite::Connection,
     user: i64,
     owner: &str,
     name: &str,
     number: i64,
+    on_moved: &OnMoved,
 ) -> rusqlite::Result<Result<Target, Response>> {
     let not_found = || error(StatusCode::NOT_FOUND, "Not Found");
     let Some(repo) = q::repo_by_full_name(c, owner, name)? else {
@@ -101,6 +112,11 @@ fn target(
         return Ok(Err(not_found()));
     }
     let Some(issue) = q::issue_id(c, repo.id, number)? else {
+        if let OnMoved::Redirect(headers) = on_moved
+            && let Some(path) = crate::repos::moved_to(c, Token::User(user), repo.id, number)?
+        {
+            return Ok(Err(crate::repos::moved(headers, &path)));
+        }
         return Ok(Err(not_found()));
     };
     if repo.archived {
@@ -124,6 +140,7 @@ pub(crate) async fn write(
     fake: &Fake,
     user: i64,
     path: (String, String, i64),
+    on_moved: OnMoved,
     change: impl FnOnce(&rusqlite::Transaction, &Target) -> rusqlite::Result<Result<Change, Response>>
     + Send
     + 'static,
@@ -135,7 +152,7 @@ pub(crate) async fn write(
         .truth
         .write(move |tx| {
             let (owner, name, number) = path;
-            let t = match target(tx, user, &owner, &name, number)? {
+            let t = match target(tx, user, &owner, &name, number, &on_moved)? {
                 Ok(t) => t,
                 Err(res) => return Ok(Err(res)),
             };
@@ -177,6 +194,7 @@ async fn create_comment(
         &fake,
         user,
         path,
+        OnMoved::NotFound,
         move |_, _| {
             Ok(Ok(Change {
                 comment: Some(text),
@@ -202,6 +220,7 @@ async fn update_issue(
     State(fake): State<Fake>,
     TokenUser(user): TokenUser,
     Path(path): Path<(String, String, i64)>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let body = match json_body(&body) {
@@ -254,6 +273,7 @@ async fn update_issue(
         &fake,
         user,
         path,
+        OnMoved::Redirect(headers),
         move |tx, t| {
             let triage = t.role >= Some(Role::Triage);
             let write = t.role >= Some(Role::Write);

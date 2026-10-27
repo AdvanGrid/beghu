@@ -2,7 +2,8 @@
 //! each change, signed with the webhook secret as GitHub signs them (`X-Hub-Signature-256`).
 //!
 //! Deliveries go out one at a time, in the order they're due. Faults set at runtime change what
-//! happens to the next deliveries: `drop` loses them, `duplicate` sends each twice under one GUID
+//! happens to the next deliveries: `drop` loses them (or only those of one `event.action`, with
+//! `drop_only`), `duplicate` sends each twice under one GUID
 //! (as a redelivery would), `reorder` holds a batch and sends it newest first, and `delay` adds
 //! to every delivery's wait. A reset clears the faults; the target stays.
 //!
@@ -117,6 +118,9 @@ fn guid() -> String {
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub(crate) struct Rules {
     pub drop: u32,
+    /// With it, `drop` counts only deliveries of this `event.action` (`issues.transferred`); the
+    /// others go out as usual.
+    pub drop_only: Option<String>,
     pub duplicate: u32,
     /// The size of the next batch to send in reverse; 0 for none.
     pub reorder: u32,
@@ -129,6 +133,8 @@ pub(crate) struct Rules {
 pub(crate) struct MoreRules {
     #[serde(default)]
     pub drop: u32,
+    /// `event.action`: `drop` loses only deliveries of it. Replaces the one in force.
+    pub drop_only: Option<String>,
     #[serde(default)]
     pub duplicate: u32,
     /// The size of a batch to send in reverse; 0 leaves any batch in force.
@@ -204,6 +210,9 @@ impl Webhooks {
     pub fn add_rules(&self, more: MoreRules) {
         let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         rules.drop += more.drop;
+        if more.drop_only.is_some() {
+            rules.drop_only = more.drop_only;
+        }
         rules.duplicate += more.duplicate;
         if more.reorder > 0 {
             rules.reorder = more.reorder;
@@ -234,8 +243,16 @@ impl Webhooks {
     fn send_one(&self, mut d: Delivery) {
         let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         let due = Instant::now() + DELAY + Duration::from_millis(rules.delay_ms);
-        if rules.drop > 0 {
+        let droppable = rules.drop_only.as_deref().is_none_or(|only| {
+            only.split_once('.').is_some_and(|(event, action)| {
+                d.event == event && d.payload["action"].as_str() == Some(action)
+            })
+        });
+        if rules.drop > 0 && droppable {
             rules.drop -= 1;
+            if rules.drop == 0 {
+                rules.drop_only = None;
+            }
             // GitHub tried, and got nothing back: the attempt is logged as failed.
             d.lost = true;
             let _ = self.queue.send((due, d));
@@ -576,6 +593,7 @@ pub(crate) fn milestone_json(
             "title": m.title,
             "state": m.state,
             "due_on": m.due_on.map(rfc3339),
+            "updated_at": m.updated_at.map(rfc3339),
             "url": format!("https://api.github.com/repos/{full}/milestones/{}", m.number),
             "html_url": format!("https://github.com/{full}/milestone/{}", m.number),
         }),

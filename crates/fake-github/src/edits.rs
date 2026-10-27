@@ -31,6 +31,11 @@
 //! A label the repo has is edited (`edited`, whose `changes` name what each changed field was;
 //! no issue changes, as a rename bumps no issue's `updated_at`), and one it hasn't is created
 //! (`created`, `ededed` unless `color` says otherwise).
+//!
+//! `POST /milestone` changes one of a repo's milestones the same way:
+//! `{repo, title, rename?, state?, as?}`. A rename sends `milestone` `edited` (with
+//! `changes.title.from`), and closing or reopening it `closed` or `opened`; the milestone's
+//! `updated_at` moves, no issue's does.
 
 use crate::Fake;
 use crate::api::{self, rfc3339};
@@ -224,8 +229,9 @@ fn delete(
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
     q::delete_issue(tx, id)?;
-    // GitHub answers 410 for its number from then on.
+    // GitHub answers 410 for its number from then on, and never reuses the id.
     q::record_deleted_issue(tx, repo.id, issue["number"].as_i64().unwrap_or_default())?;
+    q::retire_id(tx, id)?;
     let mut p = envelope(repo, sender);
     p["action"] = json!("deleted");
     p["issue"] = issue.clone();
@@ -572,6 +578,95 @@ pub(crate) async fn label(
         Ok(Ok((id, label, d))) => {
             fake.state().webhooks.send(vec![d]);
             axum::Json(json!({ "ok": true, "id": id, "label": label })).into_response()
+        }
+        Ok(Err(why)) => bad_request(why),
+        Err(e) => api::internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct MilestoneChange {
+    repo: String,
+    title: String,
+    rename: Option<String>,
+    state: Option<String>,
+    #[serde(rename = "as")]
+    login: Option<String>,
+}
+
+/// `POST /milestone`: renames, closes or reopens one of a repo's milestones, as GitHub's web UI
+/// would.
+pub(crate) async fn milestone(
+    State(fake): State<Fake>,
+    axum::Json(m): axum::Json<MilestoneChange>,
+) -> Response {
+    if m.rename.as_deref().is_some_and(|n| n.trim().is_empty()) {
+        return bad_request("rename can't be empty");
+    }
+    if let Some(s) = m.state.as_deref()
+        && !matches!(s, "open" | "closed")
+    {
+        return bad_request("state is open or closed");
+    }
+    let now = fake.now();
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let repo = match find_repo(tx, &m.repo)? {
+                Ok(id) => q::repo(tx, id)?,
+                Err(why) => return Ok(Err(why)),
+            };
+            let sender = match m.login.as_deref() {
+                Some(login) => q::account_by_login(tx, login)?.map(|a| a.id),
+                None => q::accounts(tx)?.first().map(|a| a.id),
+            };
+            let Some(u) = sender.map(|id| q::user_row(tx, id)).transpose()?.flatten() else {
+                return Ok(Err("the sender isn't a fixture account".to_owned()));
+            };
+            let sender = user_json(u.id, &u.login, u.avatar_url.as_deref());
+            let Some(before) = q::milestone_by_title(tx, repo.id, &m.title)? else {
+                return Ok(Err(format!("{} has no milestone {}", m.repo, m.title)));
+            };
+            let title = m.rename.clone().unwrap_or_else(|| before.title.clone());
+            let state = m.state.clone().unwrap_or_else(|| before.state.clone());
+            q::update_milestone(tx, before.id, &title, &state, now)?;
+            let milestone = milestone_json(tx, &repo, before.id)?;
+            let delivery = |action: &str, changes: Option<Value>| {
+                let mut p = envelope(&repo, &sender);
+                p["action"] = json!(action);
+                p["milestone"] = milestone.clone();
+                if let Some(c) = changes {
+                    p["changes"] = c;
+                }
+                Delivery::new("milestone", p)
+            };
+            let mut out = Vec::new();
+            if title != before.title {
+                out.push(delivery(
+                    "edited",
+                    Some(json!({ "title": { "from": before.title } })),
+                ));
+            }
+            if state != before.state {
+                out.push(delivery(
+                    if state == "closed" {
+                        "closed"
+                    } else {
+                        "opened"
+                    },
+                    None,
+                ));
+            }
+            Ok(Ok((milestone.clone(), out)))
+        })
+        .await;
+    match done {
+        Ok(Ok((milestone, deliveries))) => {
+            let n = deliveries.len();
+            fake.state().webhooks.send(deliveries);
+            axum::Json(json!({ "ok": true, "milestone": milestone, "deliveries": n }))
+                .into_response()
         }
         Ok(Err(why)) => bad_request(why),
         Err(e) => api::internal(e),

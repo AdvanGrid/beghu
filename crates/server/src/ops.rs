@@ -18,7 +18,8 @@
 //!   "try again in N s".
 //! - A label removal GitHub answers 404 "Label does not exist" is done: the label is off the
 //!   issue, which is what was asked (a retry after a 5xx that GitHub had acted on meets this).
-//!   Any other 404 (GitHub's "Not Found": the issue or repo is out of sight), or a 410, is Gone.
+//!   Any other 404 (GitHub's "Not Found": the issue or repo is out of sight), a 410, or a 301
+//!   (the issue transferred since, before its webhooks came) is Gone.
 //! - 5xx answers, timeouts and resets are tried again after 1 s and then 3 s, except for a
 //!   comment, which is never sent twice: GitHub may have posted it before failing, and the
 //!   failure says so ("maybe posted").
@@ -42,7 +43,7 @@ use crate::auth::Session;
 use crate::detail::Comment;
 use crate::edges::{ReadBack, Subject};
 use crate::error::ApiError;
-use crate::github::{Access, Role};
+use crate::github::{Access, Role, Shown};
 use crate::live::Push;
 use crate::markdown::{self, Digest, Place, Post, PostKind, Refs};
 use crate::{App, github, repos, tokens, webhook};
@@ -911,7 +912,9 @@ async fn call(
             github::Error::NoSuchLabel if matches!(op, Op::LabelRemove { .. }) => {
                 return Err(Failure::NoSuchLabel);
             }
-            github::Error::NoSuchLabel | github::Error::Status(404 | 410) => {
+            // 301: transferred since, and its webhooks not yet here (redirects aren't
+            // followed): the issue is somewhere else now, as for the 404 and 410.
+            github::Error::NoSuchLabel | github::Error::Status(301 | 404 | 410) => {
                 return Err(Failure::Gone);
             }
             github::Error::Status(409) => {
@@ -1049,12 +1052,13 @@ async fn read_back(app: &App, account: i64, t: &q::OpTargetRow) {
         .await;
     let (id, repo) = (t.id, t.repo_id);
     match read {
-        Ok(Some(issue)) if issue.id() == id => {
+        Ok(Shown::It(issue)) if issue.id() == id => {
             store(app, account, t, move |tx, seq| {
                 webhook::write_issue(tx, repo, &issue, seq)
             })
             .await;
         }
+        Ok(Shown::Moved) => eprintln!("ops: account {account}: issue {id} was transferred"),
         Ok(_) => eprintln!("ops: account {account}: issue {id} is gone from GitHub"),
         Err(e) => eprintln!("ops: account {account}: reading issue {id} back: {e}"),
     }

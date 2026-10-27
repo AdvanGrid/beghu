@@ -15,14 +15,17 @@
 //!
 //! The same read-backs, one per issue, also read an issue itself (`GET …/issues/{n}`, one call)
 //! after a delivery a mirror couldn't order against what it has (`webhook.rs`, `upsert_issue`):
-//! GitHub's answer is written to every account syncing the repo, as the issue is now.
+//! GitHub's answer is written to every account syncing the repo, as the issue is now. And after a
+//! transfer into a synced repo they read the new issue's comment thread (`GET …/comments`), which
+//! replaces the one the mirror moved over from the old issue.
 //!
 //! A read-back GitHub fails is tried again on [`Config::read_back_retries`](crate::Config);
 //! past the last of them, or when no try can do better (the installation is gone, or the issue
 //! has more relates-to than a read-back follows), every account syncing the repo is marked
 //! `needs_resync`, for a sweep to read what was missed. An issue GitHub can't show the
-//! installation (deleted or transferred since) marks only the accounts whose mirror still holds
-//! it.
+//! installation (deleted since, or out of sight) marks only the accounts whose mirror still holds
+//! it; one GitHub answers with a 301 (transferred since) marks none, since its transfer's own
+//! deliveries move it.
 //!
 //! The read-back is fetched once, with the App's installation token, and written to every account
 //! syncing the issue's repo; a read-back never spends an account's own token. The installation
@@ -35,6 +38,8 @@
 //! stored. An item deleted by a webhook never gets an edge again. A stub no edge references any
 //! more is deleted.
 
+use crate::github::Shown;
+use crate::import::writes::{CommentData, write_comments};
 use crate::installations::{Installations, Scope};
 use crate::jobs::Jobs;
 use crate::live::{Hub, Push};
@@ -102,6 +107,8 @@ pub enum ReadBack {
     Edges(Kind),
     /// The issue itself: its fields, labels and assignees.
     Issue,
+    /// Its comment thread, after a transfer brought it into a synced repo (`webhook.rs`).
+    Comments,
 }
 
 impl std::fmt::Display for ReadBack {
@@ -109,6 +116,7 @@ impl std::fmt::Display for ReadBack {
         match self {
             ReadBack::Edges(k) => write!(f, "{} edges", k.name()),
             ReadBack::Issue => f.write_str("fields"),
+            ReadBack::Comments => f.write_str("comments"),
         }
     }
 }
@@ -334,6 +342,7 @@ async fn worker(inner: Arc<Inner>, key: (i64, ReadBack)) {
             let tried = match key.1 {
                 ReadBack::Edges(kind) => refetch(&inner, &subject, kind).await,
                 ReadBack::Issue => reread(&inner, &subject).await,
+                ReadBack::Comments => rethread(&inner, &subject).await,
             };
             conclude(&inner, key, &subject, tried, answers).await;
             continue;
@@ -589,10 +598,23 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
             }
         }
     };
-    // Deleted, transferred (a number GitHub now answers with another issue), or out of sight.
-    let Some(issue) = issue.filter(|i| i.id() == s.id) else {
-        unseen_subject(inner, s, &targets).await;
-        return Ok(());
+    let issue = match issue {
+        Shown::It(i) if i.id() == s.id => i,
+        // Transferred since: its own deliveries (`issues.transferred` here, `issues.opened`
+        // where it went) move it, so there's nothing missed to sweep for. Were both lost, the
+        // count check finds the old one gone.
+        Shown::Moved => {
+            eprintln!(
+                "edges: issue {} was transferred; its transfer's deliveries move it",
+                s.id
+            );
+            return Ok(());
+        }
+        // Deleted, a number GitHub now answers with another issue, or out of sight.
+        _ => {
+            unseen_subject(inner, s, &targets).await;
+            return Ok(());
+        }
     };
     let issue = Arc::new(issue);
     let mut again = false;
@@ -645,6 +667,105 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
     }
     if again {
         drop(schedule(inner, s.clone(), ReadBack::Issue, false));
+    }
+    Ok(())
+}
+
+/// Reads issue `s`'s comment thread with the App's installation token (`GET …/comments`, paged)
+/// and makes it the thread every account syncing its repo holds: GitHub's comments written under
+/// the usual `updated_at` guard, and any comment of the issue the mirror holds that GitHub
+/// doesn't list forgotten, unless something wrote it after the read began (each account's last
+/// transaction before it). A transfer moves the old issue's comments onto the new one by their
+/// ids; whether GitHub keeps those ids is unmeasured (docs/research/issue-edge-cases.md), and
+/// this leaves the thread right either way. An issue GitHub no longer shows (transferred again,
+/// deleted) has nothing to read: its own deliveries say what happened.
+async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
+    let repo = s.repo;
+    let targets = targets(inner, repo).await?;
+    let mut starts = HashMap::new();
+    let mut place = None;
+    for &account in &targets {
+        let read = inner
+            .mirrors
+            .read(account, Caller::Webhook, move |c| {
+                Ok((q::current_seq(c)?, q::repo_state(c, repo)?))
+            })
+            .await;
+        match read {
+            Ok((start, r)) => {
+                starts.insert(account, start);
+                if let Some(r) = r.filter(|_| place.is_none()) {
+                    place = Some((r.owner, r.name));
+                }
+            }
+            Err(e) => {
+                return Err(Failure::Retry(format!(
+                    "reading account {account}'s mirror: {e}"
+                )));
+            }
+        }
+    }
+    let Some((owner, name)) = place else {
+        // No mirror syncs it any more: nothing to write.
+        return Ok(());
+    };
+    let read = {
+        let _turn = inner.installations.read_turn(s.installation).await;
+        let token = token(inner, s).await?;
+        let gh = inner.installations.github();
+        match gh.issue_comments(&token, &owner, &name, s.number).await {
+            Ok(r) => r,
+            Err(e) => {
+                if matches!(e, crate::github::Error::Unauthorized) {
+                    inner
+                        .installations
+                        .drop_token(s.installation, Scope::ReadBack, &token);
+                }
+                return Err(Failure::Retry(e.to_string()));
+            }
+        }
+    };
+    let Shown::It(listed) = read else {
+        return Ok(());
+    };
+    let item = s.id;
+    let thread: Arc<Vec<CommentData>> = Arc::new(
+        listed
+            .into_iter()
+            .map(|c| CommentData::from_rest(item, c))
+            .collect(),
+    );
+    for account in targets {
+        let Some(&start) = starts.get(&account) else {
+            continue;
+        };
+        let thread = thread.clone();
+        let written = inner
+            .mirrors
+            .write(account, Caller::Webhook, move |tx, seq| {
+                if !crate::import::synced(tx, repo)? || q::item_repos(tx, &[item])?.is_empty() {
+                    return Ok(false);
+                }
+                let mut changed = !write_comments(tx, seq, &thread)?.is_empty();
+                let listed: HashSet<i64> = thread.iter().map(|c| c.id).collect();
+                for c in q::item_comment_seqs(tx, item)? {
+                    if !listed.contains(&c.id) && c.seq <= start {
+                        changed |= webhook::forget_comment(tx, item, c.id, seq)?;
+                    }
+                }
+                Ok(changed)
+            })
+            .await;
+        match written {
+            Ok(false) => {}
+            Ok(true) => inner.hub.publish(account, Push::Ids(vec![item].into())),
+            Err(e) => {
+                eprintln!(
+                    "edges: writing issue {item}'s comments as read again failed for account {account}: {e}"
+                );
+                webhook::mark_for_resync(&inner.control, &inner.hub, account).await;
+            }
+        }
     }
     Ok(())
 }
@@ -768,6 +889,15 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
     let fetched = fetch(inner, s, kind).await?;
     let targets = targets(inner, s.repo).await?;
     let Some(fetched) = fetched else {
+        // GraphQL says only "not found". Transferred since (its old number a 301), its transfer's
+        // deliveries move it, and the read-back has nothing to miss.
+        if transferred(inner, s, &targets).await {
+            eprintln!(
+                "edges: issue {} was transferred; its transfer's deliveries move it",
+                s.id
+            );
+            return Ok(());
+        }
         unseen_subject(inner, s, &targets).await;
         return Ok(());
     };
@@ -813,6 +943,36 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
         }
     }
     Ok(())
+}
+
+/// Whether GitHub answers `s`'s number with a 301: transferred since. Asked of REST (one `GET`),
+/// since GraphQL answers a transferred issue's node as it does a deleted one's. False when it
+/// can't tell.
+async fn transferred(inner: &Inner, s: &Subject, targets: &[i64]) -> bool {
+    let repo = s.repo;
+    let mut place = None;
+    for &account in targets {
+        if let Ok(Some(r)) = inner
+            .mirrors
+            .read(account, Caller::Webhook, move |c| q::repo_state(c, repo))
+            .await
+        {
+            place = Some((r.owner, r.name));
+            break;
+        }
+    }
+    let Some((owner, name)) = place else {
+        return false;
+    };
+    let _turn = inner.installations.read_turn(s.installation).await;
+    let Ok(token) = token(inner, s).await else {
+        return false;
+    };
+    let gh = inner.installations.github();
+    matches!(
+        gh.issue(&token, &owner, &name, s.number).await,
+        Ok(Shown::Moved)
+    )
 }
 
 /// GitHub has no issue `s` for the installation. Deleted or transferred since the delivery, it

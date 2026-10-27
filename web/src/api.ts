@@ -49,6 +49,21 @@ export class NoAccess extends Error {
 }
 /** It's not there (any more). */
 export class Gone extends Error {}
+/** GitHub deleted it. */
+export class Deleted extends Gone {}
+/**
+ * GitHub transferred it: it's `issue` now, which opens in-app as `id` when it's in the synced
+ * repos (no `id` when it moved out of them).
+ */
+export class Moved extends Gone {
+  constructor(
+    message: string,
+    readonly issue: IssueRef,
+    readonly id?: number,
+  ) {
+    super(message);
+  }
+}
 /** beghu is busy (at its connection cap, or a mirror is still opening): try again later. */
 export class Unavailable extends Error {
   constructor(
@@ -154,6 +169,10 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
     case "not_found":
     case "gone":
       return new Gone(said);
+    case "deleted":
+      return new Deleted(said);
+    case "moved":
+      return body.issue ? new Moved(said, body.issue, body.moved_to ?? undefined) : new Gone(said);
     case "forbidden":
       return new NoAccess(why);
     case "no_access":

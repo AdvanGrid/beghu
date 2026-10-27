@@ -28,21 +28,31 @@
 //! marked `needs_resync`, and a fresh lane takes its next deliveries. Every minute, any delivery
 //! unprocessed for over 30 s and not in flight is queued again, so nothing waits for a restart.
 //!
-//! Handled here: `issues`, `issue_comment`, `label`, `milestone`, and the relationship events
-//! `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`). Comments and
-//! milestones are guarded by `updated_at` (newer or equal wins), so a replay or an older delivery
-//! that arrives late changes nothing. Items too, but `updated_at` is in whole seconds and picks
-//! made within one share it, so an equal one is applied only when it says what the mirror has (a
-//! replay: nothing to do); `labeled`, `unlabeled`, `assigned` and `unassigned` apply only the one
-//! label or assignee they name; and what can't be ordered is read again from GitHub (see
-//! [`upsert_issue`]). A webhook delete is recorded, and an older delivery that
-//! arrives after it never brings the row back. Labels carry no `updated_at`: a `label` delivery
-//! sets the label as it is now (the last one applied wins), and an issue's payload only adds the
-//! labels the mirror lacks, never renames one, since it may predate a rename. Two renames of one
-//! label delivered out of order leave the older name until a sweep. `installation` and
-//! `installation_repositories` go to the accounts' re-read of their visible repos (repos.rs),
-//! which unsyncs what the App no longer reaches. Other events are acked and dropped until their
-//! slices handle them.
+//! Handled here: `issues`, `issue_comment`, `label`, `milestone`, `repository`, and the
+//! relationship events `sub_issues`, `issue_dependencies` and `issue_relates_to` (see `edges.rs`).
+//! Comments and milestones are guarded by `updated_at` (newer or equal wins), so a replay or an
+//! older delivery that arrives late changes nothing. Items too, but `updated_at` is in whole
+//! seconds and picks made within one share it, so an equal one is applied only when it says what
+//! the mirror has (a replay: nothing to do); `labeled`, `unlabeled`, `assigned` and `unassigned`
+//! apply only the one label or assignee they name; and what can't be ordered is read again from
+//! GitHub (see [`upsert_issue`]). A webhook delete is recorded, and an older delivery that arrives
+//! after it never brings the row back. Labels carry no `updated_at`: a `label` delivery sets the
+//! label as it is now (the last one applied wins), and an issue's payload only adds the labels the
+//! mirror lacks, never renames one, since it may predate a rename. Two renames of one label
+//! delivered out of order leave the older name until a sweep. `installation` and
+//! `installation_repositories` go to the accounts' re-read of their visible repos (repos.rs), which
+//! unsyncs what the App no longer reaches. Other events are acked and dropped until their slices
+//! handle them.
+//!
+//! The rare ones (docs/research/issue-edge-cases.md): a transfer comes as `issues.opened` with
+//! `changes.old_issue` in the new repo and `issues.transferred` in the old one, in either order
+//! (GitHub sends `opened` first), and either one applies it whole ([`transfer`]): the new issue
+//! written, every relationship of the old id moved onto it (GitHub sends no `sub_issues`
+//! delivery for them), the old id deleted for good and recorded as moved, which the detail
+//! answers with; then the new issue's thread is read back from GitHub (`edges.rs`), since whether
+//! GitHub keeps the comments' ids is unmeasured. The other one then finds it done. A conversion to a discussion is just
+//! `issues.locked` and `issues.closed`. `repository` `archived` and `unarchived` set the repo's
+//! flag. Payloads are parsed leniently: GitHub keeps adding fields, and unknown ones are ignored.
 
 use crate::App;
 use crate::edges::{self, Edge, Kind, ReadBack, Refetcher, Subject};
@@ -471,6 +481,9 @@ struct Job {
     edges: Arc<Refetcher>,
     /// Some account's mirror couldn't order the delivery's issue: it's read again.
     reread: AtomicBool,
+    /// Some account's mirror took a transferred issue in with the thread it had: its comments
+    /// are read again.
+    rethread: AtomicBool,
     /// What its settle runs as.
     jobs: Jobs,
 }
@@ -521,6 +534,11 @@ impl Drop for Ticket {
                     && let Some(subject) = job.change.reread()
                 {
                     read_backs.push(job.edges.schedule(subject, ReadBack::Issue, false));
+                }
+                if job.rethread.load(Ordering::Acquire)
+                    && let Some(subject) = job.change.reread()
+                {
+                    read_backs.push(job.edges.schedule(subject, ReadBack::Comments, true));
                 }
                 let jobs = job.jobs.clone();
                 jobs.spawn(async move {
@@ -642,6 +660,7 @@ async fn dispatch(
             in_flight: in_flight.clone(),
             edges: sinks.edges.clone(),
             reread: AtomicBool::new(false),
+            rethread: AtomicBool::new(false),
             jobs: sinks.jobs.clone(),
         });
         for account in targets {
@@ -737,13 +756,18 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
                 ids,
                 defined,
                 reread,
+                repo,
+                rethread,
             },
             hidden,
         )) => {
             if reread {
                 job.reread.store(true, Ordering::Release);
             }
-            if ids.len() > MAX_IDS {
+            if rethread {
+                job.rethread.store(true, Ordering::Release);
+            }
+            if repo || ids.len() > MAX_IDS {
                 sinks.hub.publish(account, Push::Reset);
             } else if !ids.is_empty() {
                 sinks.hub.publish(account, Push::Ids(ids.into()));
@@ -846,9 +870,31 @@ struct Installation {
     id: i64,
 }
 
+/// A repo as deliveries carry it: the delivery's own, and a transfer's other end.
 #[derive(Deserialize)]
 struct Repository {
     id: i64,
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    name: String,
+    owner: Option<Owner>,
+    #[serde(default)]
+    private: bool,
+}
+
+#[derive(Deserialize)]
+struct Owner {
+    login: String,
+}
+
+/// A transfer's `changes`: `issues.opened` in the destination names the old issue and repo,
+/// `issues.transferred` in the source the new ones.
+#[derive(Deserialize)]
+struct Moves {
+    old_issue: Option<Issue>,
+    new_issue: Option<Issue>,
+    new_repository: Option<Repository>,
 }
 
 #[derive(Deserialize)]
@@ -946,6 +992,9 @@ struct Payload {
     assignee: Option<User>,
     milestone: Option<Milestone>,
     installation: Option<Installation>,
+    /// What an action changed. Read only for a transfer's ([`Moves`]): every other action's
+    /// `changes` is left as it came.
+    changes: Option<serde_json::Value>,
     // Relationship deliveries: `sub_issues`, `issue_dependencies` and `issue_relates_to`.
     parent_issue: Option<Issue>,
     parent_issue_id: Option<i64>,
@@ -988,6 +1037,21 @@ enum Change {
     Milestone(Milestone),
     MilestoneDeleted(i64),
     Relationship(Relationship),
+    Transfer(Transfer),
+    /// `repository` `archived` (true) or `unarchived` (false).
+    Archived(bool),
+}
+
+/// An issue transferred to another repo, from either of its deliveries (they come in either
+/// order): `issues.opened` in the destination, with `changes.old_issue`, or `issues.transferred`
+/// in the source, with `changes.new_issue`. The new issue has a new id, node id and number.
+struct Transfer {
+    /// The issue's id before the transfer.
+    old: i64,
+    /// The issue it became.
+    new: Issue,
+    /// The repo it's in now.
+    to: Repository,
 }
 
 /// A relationship delivery: the issue in the delivery's repo whose edges changed, and the edge
@@ -1088,6 +1152,12 @@ struct Written {
     /// The delivery's issue disagrees with the mirror in a way `updated_at` can't settle: it's
     /// to be read again from GitHub.
     reread: bool,
+    /// A repo itself changed (archived, or no longer): what `/api/me` says of it, and what every
+    /// view may offer.
+    repo: bool,
+    /// A transfer brought an issue into a synced repo with the thread it had (or none): its
+    /// comments are to be read again from GitHub ([`ReadBack::Comments`]).
+    rethread: bool,
 }
 
 impl From<Vec<i64>> for Written {
@@ -1096,6 +1166,8 @@ impl From<Vec<i64>> for Written {
             ids,
             defined: false,
             reread: false,
+            repo: false,
+            rethread: false,
         }
     }
 }
@@ -1112,12 +1184,22 @@ impl RepoChange {
                 | "sub_issues"
                 | "issue_dependencies"
                 | "issue_relates_to"
+                | "repository"
         ) {
             return Ok(None);
         }
         let mut p: Payload = serde_json::from_slice(payload)?;
-        let Some(repo) = p.repository.map(|r| r.id) else {
+        let Some(repository) = p.repository.take() else {
             return Ok(None);
+        };
+        let repo = repository.id;
+        let moves = if event == "issues" && matches!(p.action.as_str(), "opened" | "transferred") {
+            p.changes
+                .take()
+                .map(serde_json::from_value::<Moves>)
+                .transpose()?
+        } else {
+            None
         };
         let action = std::mem::take(&mut p.action);
         let installation = p.installation.as_ref().map(|i| i.id);
@@ -1172,8 +1254,32 @@ impl RepoChange {
                 .map(Change::Relationship)
             }
             ("sub_issues" | "issue_dependencies" | "issue_relates_to", _) => None,
-            // Transfers re-point relationships and come with their own slice.
-            ("issues", "transferred") => None,
+            ("issues", "transferred") => match (p.issue, moves) {
+                (
+                    Some(old),
+                    Some(Moves {
+                        new_issue: Some(new),
+                        new_repository: Some(to),
+                        ..
+                    }),
+                ) => Some(Change::Transfer(Transfer {
+                    old: old.id,
+                    new,
+                    to,
+                })),
+                _ => None,
+            },
+            // A transferred issue arriving in its new repo.
+            ("issues", "opened") if moves.as_ref().is_some_and(|m| m.old_issue.is_some()) => {
+                match (moves.and_then(|m| m.old_issue), p.issue) {
+                    (Some(old), Some(new)) => Some(Change::Transfer(Transfer {
+                        old: old.id,
+                        new,
+                        to: repository,
+                    })),
+                    _ => None,
+                }
+            }
             ("issues", "deleted") => p.issue.map(|i| Change::IssueDeleted(i.id)),
             // Every other action carries the whole issue as that action left it: `typed` and
             // `untyped` too, whose `issue.type` is the new type (null once untyped).
@@ -1193,6 +1299,8 @@ impl RepoChange {
             ("label", _) => p.label.map(Change::Label),
             ("milestone", "deleted") => p.milestone.map(|m| Change::MilestoneDeleted(m.id)),
             ("milestone", _) => p.milestone.map(Change::Milestone),
+            ("repository", "archived") => Some(Change::Archived(true)),
+            ("repository", "unarchived") => Some(Change::Archived(false)),
             _ => None,
         };
         Ok(change.map(|change| RepoChange {
@@ -1206,11 +1314,13 @@ impl RepoChange {
     /// `updated_at` can't settle (see [`upsert_issue`]): the delivery's issue, read with its
     /// installation's token.
     fn reread(&self) -> Option<Subject> {
-        let issue = match &self.change {
+        let (issue, repo) = match &self.change {
             Change::Issue { issue, .. }
             | Change::Comment { issue, .. }
-            | Change::CommentDeleted { issue, .. } => issue,
-            Change::Relationship(r) => &r.subject,
+            | Change::CommentDeleted { issue, .. } => (issue, self.repo),
+            Change::Relationship(r) => (&r.subject, self.repo),
+            // The new issue, in the repo it's in now.
+            Change::Transfer(t) => (&t.new, t.to.id),
             _ => return None,
         };
         let Some(installation) = self.installation else {
@@ -1224,7 +1334,7 @@ impl RepoChange {
             id: issue.id,
             node_id: issue.node_id.clone(),
             number: issue.number,
-            repo: self.repo,
+            repo,
             installation,
         })
     }
@@ -1277,12 +1387,12 @@ impl RepoChange {
         let definition = |ids: Vec<i64>, defined: bool| Written {
             ids,
             defined,
-            reread: false,
+            ..Vec::new().into()
         };
         let issue_ids = |w: Wrote, ids: Vec<i64>| Written {
             ids,
-            defined: false,
             reread: w.reread,
+            ..Vec::new().into()
         };
         Ok(match &self.change {
             Change::Issue { issue, delta } => {
@@ -1296,6 +1406,17 @@ impl RepoChange {
                 issue_ids(w, ids)
             }
             Change::IssueDeleted(id) => delete_item(tx, *id)?.into(),
+            Change::Transfer(t) => {
+                let (w, ids, rethread) = transfer(tx, t, seq)?;
+                Written {
+                    rethread,
+                    ..issue_ids(w, ids)
+                }
+            }
+            Change::Archived(archived) => Written {
+                repo: q::set_repo_archived(tx, repo, *archived)? > 0,
+                ..Vec::new().into()
+            },
             Change::Relationship(r) => {
                 let mut ids = BTreeSet::new();
                 let w = upsert_issue(tx, repo, &r.subject, seq, Source::Delivery)?;
@@ -1347,6 +1468,77 @@ impl RepoChange {
             }
         })
     }
+}
+
+/// Applies a transfer, from either of its deliveries, in either order, any number of times: the
+/// new issue is written (as a stub where the mirror doesn't sync its repo but holds links to the
+/// old one, and may see the repo), every relationship of the old id now names the new one, and
+/// the old id is deleted for good, recorded as moved to the new one. The second of the two
+/// deliveries finds it done, unless it brings a newer issue. What changed (none for a replay),
+/// the ids whose rows or detail read differently, and whether the new issue's thread is to be
+/// read again: it came into a synced repo with the comments the old id had, kept by their ids,
+/// which GitHub may not keep (unmeasured: docs/research/issue-edge-cases.md), or with none.
+fn transfer(tx: &Transaction, t: &Transfer, seq: i64) -> rusqlite::Result<(Wrote, Vec<i64>, bool)> {
+    let (old, new) = (t.old, &t.new);
+    let held_old = !q::item_repos(tx, &[old])?.is_empty();
+    let mut ids: BTreeSet<i64> = BTreeSet::new();
+    if held_old {
+        ids.extend(edges::with_neighbours(tx, BTreeSet::from([old]))?);
+    }
+    let full = crate::import::synced(tx, t.to.id)?;
+    let wrote = if full {
+        upsert_issue(tx, t.to.id, new, seq, Source::Delivery)?
+    } else {
+        if held_old && !edges::ends_of(tx, old)?.is_empty() && may_see(tx, &t.to)? {
+            let owner = t.to.owner.as_ref().map_or("", |o| o.login.as_str());
+            q::upsert_stub_repo(tx, t.to.id, &t.to.node_id, owner, &t.to.name, t.to.private)?;
+            let state = if new.state == "open" {
+                "open"
+            } else {
+                "closed"
+            };
+            q::upsert_stub(
+                tx,
+                new.id,
+                &new.node_id,
+                t.to.id,
+                new.number,
+                "issue",
+                &new.title,
+                state,
+                seq,
+            )?;
+            q::set_stub_place(tx, new.id, t.to.id, new.number, seq)?;
+        }
+        Wrote::default()
+    };
+    if held_old && !q::item_repos(tx, &[new.id])?.is_empty() {
+        q::repoint_children(tx, old, new.id, seq)?;
+        q::repoint_edges(tx, old, new.id, seq)?;
+        if full {
+            q::move_comments(tx, old, new.id, seq)?;
+            q::recount_last_commented(tx, new.id, seq)?;
+        }
+        // Newer than what a sweep under way read of either end.
+        q::touch_edges(tx, new.id, seq)?;
+        for end in edges::ends_of(tx, new.id)? {
+            q::touch_edges(tx, end, seq)?;
+        }
+    }
+    ids.extend(delete_item(tx, old)?);
+    let owner = t.to.owner.as_ref().map_or("", |o| o.login.as_str());
+    q::record_moved(tx, old, new.id, owner, &t.to.name, new.number, &new.title)?;
+    if !held_old && !wrote.changed {
+        return Ok((wrote, Vec::new(), false));
+    }
+    ids.extend(edges::with_neighbours(tx, BTreeSet::from([new.id]))?);
+    Ok((wrote, ids.into_iter().collect(), full))
+}
+
+/// Whether the account may hold a stub in `repo`: it can see it (an installation reaches it), or
+/// anyone can.
+fn may_see(tx: &Transaction, repo: &Repository) -> rusqlite::Result<bool> {
+    Ok(!repo.private || q::repo_state(tx, repo.id)?.is_some_and(|r| r.installation_id.is_some()))
 }
 
 /// Deletes an issue or PR and everything hanging off it, for good: the id stays deleted whatever
@@ -1922,11 +2114,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 change.write(&tx, 99).unwrap(),
-                Written {
-                    ids: Vec::new(),
-                    defined: false,
-                    reread: false,
-                },
+                Written::from(Vec::new()),
                 "{event}"
             );
         }

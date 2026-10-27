@@ -87,9 +87,26 @@ Commands:
                               Someone renames or recolours one of REPO's labels on
                               "GitHub", or creates it if REPO has none called NAME: its
                               label webhook (edited or created) follows.
-  fake webhooks drop|duplicate|reorder N
+  fake milestone REPO TITLE [--rename NEW] [--close|--reopen] [--as USER]
+                              Someone renames, closes or reopens one of REPO's milestones
+                              on "GitHub": its milestone webhook follows, and no issue's.
+  fake transfer REPO#N TO [--as USER]
+                              Someone transfers the issue to repo TO (same owner, installed
+                              or not): it becomes a new issue there, with its links, and
+                              its old number answers 301. Deliveries come as GitHub sends
+                              them: issues opened in TO, the links again, issues
+                              transferred in REPO.
+  fake convert REPO#N [--as USER]
+                              Someone converts the issue to a discussion: it stays,
+                              closed and locked (issues locked, then closed).
+  fake archive REPO | fake unarchive REPO
+                              An admin archives REPO, or unarchives it (repository
+                              archived/unarchived).
+  fake webhooks drop|duplicate|reorder N [--only EVENT.ACTION]
                               The next N deliveries are lost, sent twice under one GUID,
-                              or (reorder, N >= 2) held and sent newest first.
+                              or (reorder, N >= 2) held and sent newest first. With
+                              --only (drop alone), only the next N of that event and
+                              action are lost (--only issues.transferred).
   fake webhooks delay MS      Every delivery waits MS longer (0 for none).
   fake quota N | fake quota off
                               Every token's rate limit reads as at most N calls left, as
@@ -246,7 +263,7 @@ function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["fault
   const lines: string[] = [];
   if (f.down) lines.push("down: GitHub unreachable");
   if (q && q.cap !== null) lines.push(`quota: at most ${q.cap} calls left`);
-  if (w?.drop) lines.push(`webhooks: drop the next ${w.drop}`);
+  if (w?.drop) lines.push(`webhooks: drop the next ${w.drop}${w.drop_only ? ` ${w.drop_only}` : ""}`);
   if (w?.duplicate) lines.push(`webhooks: send the next ${w.duplicate} twice`);
   if (w?.reorder) lines.push(`webhooks: reorder the next ${w.reorder}`);
   if (w?.delay_ms) lines.push(`webhooks: +${w.delay_ms} ms`);
@@ -479,6 +496,7 @@ async function fake(args: string[]): Promise<void> {
       "--rename",
       "--color",
       "--prioritize-sub-issue",
+      "--only",
     ],
     ["--close", "--reopen", "--delete"],
   );
@@ -562,6 +580,35 @@ async function fake(args: string[]): Promise<void> {
       await control("POST", "/label", { repo, name, rename: opts["--rename"], color, as: opts["--as"] });
       return done(`${repo}'s label ${name} edited: its webhook is on the way`);
     }
+    case "milestone": {
+      const [repo, title] = pos;
+      if (!repo || !title || (opts["--rename"] === undefined && !set.has("--close") && !set.has("--reopen"))) {
+        throw new Usage("usage: ./dev-ctl fake milestone REPO TITLE [--rename NEW] [--close|--reopen] [--as USER]");
+      }
+      if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
+      const state = set.has("--close") ? "closed" : set.has("--reopen") ? "open" : undefined;
+      await control("POST", "/milestone", { repo, title, rename: opts["--rename"], state, as: opts["--as"] });
+      return done(`${repo}'s milestone ${title} edited: its webhook is on the way`);
+    }
+    case "transfer":
+    case "convert": {
+      const [target, to] = pos;
+      const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
+      if (!m || (sub === "transfer" && !to)) {
+        throw new Usage(sub === "transfer" ? "usage: ./dev-ctl fake transfer REPO#N TO [--as USER]" : "usage: ./dev-ctl fake convert REPO#N [--as USER]");
+      }
+      const body = { repo: m[1], number: Number(m[2]), to, as: opts["--as"] };
+      const out = (await control("POST", `/${sub}`, body)) as { issue: { id: number; number: number }; deliveries: number };
+      const what = sub === "transfer" ? `transferred to ${to}#${out.issue.number} (id ${out.issue.id})` : "converted to a discussion";
+      return print(json, out, `${target} ${what}: ${out.deliveries} webhook(s) on the way`);
+    }
+    case "archive":
+    case "unarchive": {
+      const [repo] = pos;
+      if (!repo) throw new Usage(`usage: ./dev-ctl fake ${sub} REPO`);
+      await control("POST", "/archive", { repo, archived: sub === "archive", as: opts["--as"] });
+      return done(`${repo} ${sub}d: its webhook is on the way`);
+    }
     case "webhooks": {
       const [what, n] = pos;
       const num = Number(n);
@@ -575,8 +622,12 @@ async function fake(args: string[]): Promise<void> {
       if (!["drop", "duplicate", "reorder"].includes(what)) throw new Usage(`unknown webhook fault ${what}`);
       if (what === "reorder" && num < 2) throw new Usage("reorder takes a batch of at least 2 deliveries");
       if (num < 1) throw new Usage(`${what} takes a number of deliveries, at least 1`);
-      await control("POST", "/faults/webhooks", { [what]: num });
-      return done(`webhooks: ${what} the next ${num}`);
+      const only = opts["--only"];
+      if (only !== undefined && (what !== "drop" || !/^[a-z_]+\.[a-z_]+$/.test(only))) {
+        throw new Usage("--only goes with drop, as EVENT.ACTION (issues.transferred)");
+      }
+      await control("POST", "/faults/webhooks", only === undefined ? { [what]: num } : { drop: num, drop_only: only });
+      return done(`webhooks: ${what} the next ${num}${only === undefined ? "" : ` ${only}`}`);
     }
     case "quota": {
       const [n] = pos;

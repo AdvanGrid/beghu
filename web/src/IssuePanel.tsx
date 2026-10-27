@@ -17,7 +17,9 @@ import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, on
 import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import {
+  Deleted,
   Gone,
+  Moved,
   NoAccess,
   SessionEnded,
   forgetPushed,
@@ -65,6 +67,8 @@ const WIDTH_KEY = "beghu.detail-width";
 
 /** The composer and the rest of the writes code: not needed for the detail's first paint. */
 const Composer = lazy(() => import("./writes"), { export: "Composer" });
+/** A lost issue's unsent text, from the same code. */
+const KeptText = lazy(() => import("./writes"), { export: "KeptText" });
 /**
  * The label, assignee and milestone pickers: loaded when one first opens. A failed load reloads
  * the URL once, as a route's does (a deploy replaced the build), then says so in place.
@@ -414,7 +418,7 @@ function Detail(props: { id: number; search: string }) {
             scroller = el;
             userScrolls(el);
           }} onScroll={() => nearEnd() && void loadMore()} />}>
-      {(e) => <LostIssue error={e()} search={props.search} />}
+      {(e) => <LostIssue error={e()} search={props.search} id={props.id} />}
     </Show>
   );
 }
@@ -496,6 +500,11 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           <span {...stylex.attrs(s.ref)} title={`${d().owner}/${d().repo}#${d().number}`}>
             {d().repo}#{d().number}
           </span>
+          <Show when={d().locked}>
+            <span {...stylex.attrs(s.locked)} data-perf="locked" title="Conversation locked on GitHub">
+              Locked
+            </span>
+          </Show>
           <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           <span {...stylex.attrs(s.spacer)} />
           <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
@@ -752,19 +761,44 @@ function DetailFailure(props: { error: unknown; reset: () => void; id: number; s
   });
   return (
     <Show when={props.error instanceof Gone || props.error instanceof NoAccess} fallback={<IssueNotice error={props.error} retry={retry} />}>
-      <LostIssue error={props.error as Gone | NoAccess} search={props.search} />
+      <LostIssue error={props.error as Gone | NoAccess} search={props.search} id={props.id} />
     </Show>
   );
 }
 
-/** A deleted issue, or one outside the synced repos (with a link out to it), in place of the detail. */
-function LostIssue(props: { error: Gone | NoAccess; search: string }) {
-  const elsewhere = () => (props.error instanceof NoAccess ? props.error.issue : undefined);
+/** What a lost issue says happened to it. */
+function lostWhy(e: Gone | NoAccess): string {
+  if (e instanceof NoAccess) return "This issue is in a repo that isn't synced.";
+  if (e instanceof Deleted) return "This issue was deleted.";
+  if (e instanceof Moved) return e.id === undefined ? "This issue moved out of your synced repos." : "This issue moved.";
+  return "This issue was deleted, or it moved out of your synced repos.";
+}
+
+/**
+ * A deleted issue, one moved (to where it is now: in-app when it's still in the synced repos, else
+ * a link out to GitHub), or one outside the synced repos, in place of the detail. Any text the tab
+ * hadn't sent on it stays, to copy.
+ */
+function LostIssue(props: { error: Gone | NoAccess; search: string; id: number }) {
+  const elsewhere = () => {
+    const e = props.error;
+    if (e instanceof NoAccess) return e.issue;
+    return e instanceof Moved && e.id === undefined ? e.issue : undefined;
+  };
+  const movedHere = () => (props.error instanceof Moved && props.error.id !== undefined ? props.error : undefined);
   return (
     <div {...stylex.attrs(s.notice)} role="status" data-perf="detail-lost">
-      <p {...stylex.attrs(s.lostTitle)}>
-        {props.error instanceof NoAccess ? "This issue is in a repo that isn't synced." : "This issue was deleted, or it moved out of your synced repos."}
-      </p>
+      <p {...stylex.attrs(s.lostTitle)}>{lostWhy(props.error)}</p>
+      <Show when={movedHere()}>
+        {(m) => (
+          <p {...stylex.attrs(s.elsewhere)}>
+            It's {m().issue.owner}/{m().issue.repo}#{m().issue.number} now · {m().issue.title} ·{" "}
+            <a href={`/issues/${m().id}${props.search}`} noscroll {...stylex.attrs(s.link)}>
+              Open it
+            </a>
+          </p>
+        )}
+      </Show>
       <Show when={elsewhere()}>
         {(i) => (
           <p {...stylex.attrs(s.elsewhere)}>
@@ -775,6 +809,13 @@ function LostIssue(props: { error: Gone | NoAccess; search: string }) {
           </p>
         )}
       </Show>
+      {/* The writes code is loaded by then if the tab wrote anything here; if it can't load,
+          there's nothing of the tab's to show. */}
+      <Errored fallback={() => null}>
+        <Loading>
+          <KeptText issue={props.id} />
+        </Loading>
+      </Errored>
       <a href={`/${props.search}`} noscroll {...stylex.attrs(s.link)}>
         Back to the list
       </a>
@@ -883,6 +924,17 @@ const s = stylex.create({
   },
   spacer: {
     flexGrow: 1,
+  },
+  locked: {
+    borderColor: colors.line,
+    borderRadius: 999,
+    borderStyle: "solid",
+    borderWidth: 1,
+    paddingInline: 8,
+    color: colors.muted,
+    flexShrink: 0,
+    fontSize: 12,
+    lineHeight: "20px",
   },
   action: {
     textDecoration: "none",

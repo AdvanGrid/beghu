@@ -3407,3 +3407,342 @@ async fn a_deleted_issue_answers_410_as_on_github_and_sends_issues_deleted() {
     assert_eq!(p["issue"]["id"], before["id"]);
     assert_eq!(p["sender"]["login"], "tomsj");
 }
+
+impl Fake {
+    /// `GET path` with an installation token of the org's installation.
+    async fn read_as_app(&self, path: &str) -> reqwest::Response {
+        let token: Value = self
+            .installation_token(&dev_jwt())
+            .await
+            .json()
+            .await
+            .unwrap();
+        self.http
+            .get(format!("{}{path}", self.api))
+            .bearer_auth(token["token"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_transfer_sends_opened_then_the_links_again_then_transferred_and_the_old_number_answers_301()
+ {
+    let fake = start().await;
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let issue = &web[0];
+    for link in [
+        json!({ "add_blocked_by": api[0].0 }),
+        json!({ "add_relates_to": web[2].0 }),
+    ] {
+        fake.edit(edit_of(&issue.0, link)).await;
+    }
+    fake.edit(edit_of(&api[1].0, json!({ "add_blocked_by": issue.0 })))
+        .await;
+    fake.edit(edit_of(&web[1].0, json!({ "add_sub_issue": issue.0 })))
+        .await;
+    fake.edit(edit_of(&issue.0, json!({ "add_sub_issue": web[3].0 })))
+        .await;
+    let mut rx = receiver(&fake).await;
+    // The links' own deliveries, sent before the transfer.
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+
+    let moved = fake
+        .control(
+            reqwest::Method::POST,
+            "/transfer",
+            json!({ "repo": "web", "number": web[0].0.split_once('#').unwrap().1.parse::<i64>().unwrap(), "to": "docs" }),
+        )
+        .await;
+    let new = &moved["issue"];
+    assert_ne!(new["id"], issue.1);
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let own = |k: &str| keys(&[k, &format!("{k}_id")]);
+    // As measured: the destination's `opened` first, each dependency and relates-to again with
+    // the new issue's side first, no sub-issue delivery, and the source's `transferred` last.
+    assert_eq!(
+        shapes(&got),
+        [
+            (
+                "issues".into(),
+                "opened".into(),
+                "docs".into(),
+                keys(&["changes", "issue"])
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocked_by_added".into(),
+                "docs".into(),
+                own("blocked_issue")
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocking_added".into(),
+                "api".into(),
+                own("blocking_issue")
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocking_added".into(),
+                "docs".into(),
+                own("blocking_issue")
+            ),
+            (
+                "issue_dependencies".into(),
+                "blocked_by_added".into(),
+                "api".into(),
+                own("blocked_issue")
+            ),
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "docs".into(),
+                own("issue")
+            ),
+            (
+                "issue_relates_to".into(),
+                "relates_to_added".into(),
+                "web".into(),
+                own("issue")
+            ),
+            (
+                "issues".into(),
+                "transferred".into(),
+                "web".into(),
+                keys(&["changes", "issue"])
+            ),
+        ]
+    );
+    let opened = got[0].payload();
+    assert_eq!(opened["issue"]["id"], new["id"]);
+    assert_eq!(opened["changes"]["old_issue"]["id"], issue.1);
+    assert_eq!(opened["changes"]["old_repository"]["name"], "web");
+    let transferred = got[7].payload();
+    assert_eq!(transferred["issue"]["id"], issue.1);
+    assert_eq!(transferred["changes"]["new_issue"]["id"], new["id"]);
+    assert_eq!(transferred["changes"]["new_repository"]["name"], "docs");
+    // A new issue, with the old one's creation date.
+    assert_eq!(
+        new["created_at"],
+        opened["changes"]["old_issue"]["created_at"]
+    );
+    assert_eq!(
+        new["html_url"].as_str().unwrap().rsplit('/').nth(2),
+        Some("docs")
+    );
+
+    let (_, old_number) = issue.0.split_once('#').unwrap();
+    let res = fake
+        .read_as_app(&format!("/repos/acme/web/issues/{old_number}"))
+        .await;
+    assert_eq!(res.status(), 301);
+    let to = format!("/repos/acme/docs/issues/{}", new["number"]);
+    assert!(res.headers()["location"].to_str().unwrap().ends_with(&to));
+    let res = fake.read_as_app(&to).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["id"], new["id"]);
+    // Its sub-issue went with it.
+    let token: Value = fake
+        .installation_token(&dev_jwt())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let got = fake
+        .edges(
+            token["token"].as_str().unwrap(),
+            new["node_id"].as_str().unwrap(),
+        )
+        .await;
+    assert_eq!(
+        got["data"]["node"]["subIssues"]["nodes"][0]["databaseId"], web[3].1,
+        "{got}"
+    );
+
+    // The writes GitHub documents a 301 for answer one too; commenting and assigning, whose docs
+    // list none, a 404.
+    let user = fake.sign_in("tomsj").await["access_token"].clone();
+    let old = format!("{}/repos/acme/web/issues/{old_number}", fake.api);
+    let user = user.as_str().unwrap();
+    let writes = [
+        (
+            fake.http.patch(&old).json(&json!({ "state": "closed" })),
+            301,
+        ),
+        (
+            fake.http
+                .post(format!("{old}/labels"))
+                .json(&json!({ "labels": ["bug"] })),
+            301,
+        ),
+        (fake.http.delete(format!("{old}/labels/bug")), 301),
+        (
+            fake.http
+                .post(format!("{old}/comments"))
+                .json(&json!({ "body": "hi" })),
+            404,
+        ),
+        (
+            fake.http
+                .post(format!("{old}/assignees"))
+                .json(&json!({ "assignees": ["tomsj"] })),
+            404,
+        ),
+    ];
+    for (req, status) in writes {
+        let res = req.bearer_auth(user).send().await.unwrap();
+        assert_eq!(res.status(), status);
+        if status == 301 {
+            assert!(res.headers()["location"].to_str().unwrap().ends_with(&to));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_transfer_github_would_refuse_is_refused() {
+    let fake = start().await;
+    let (_, number) = unlinked(0)
+        .0
+        .split_once('#')
+        .map(|(r, n)| (r.to_owned(), n.parse::<i64>().unwrap()))
+        .unwrap();
+    for (to, why) in [("web", "the same repo"), ("nowhere", "no such repo")] {
+        let res = fake
+            .http
+            .post(format!("{}/transfer", fake.ctl))
+            .json(&json!({ "repo": "web", "number": number, "to": to }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{why}");
+    }
+}
+
+#[tokio::test]
+async fn converting_to_a_discussion_locks_and_closes_the_issue_and_keeps_it() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let (_, n) = unlinked(0)
+        .0
+        .split_once('#')
+        .map(|(r, n)| (r.to_owned(), n.parse::<i64>().unwrap()))
+        .unwrap();
+    fake.edit(json!({ "repo": "web", "number": n, "state": "open", "add_labels": ["bug"] }))
+        .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+
+    let converted = fake
+        .control(
+            reqwest::Method::POST,
+            "/convert",
+            json!({ "repo": "web", "number": n }),
+        )
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let actions: Vec<_> = got
+        .iter()
+        .map(|r| {
+            (
+                r.event.clone(),
+                r.payload()["action"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    // As measured: no `discussion` delivery reaches an App not subscribed to discussions.
+    assert_eq!(
+        actions,
+        [
+            ("issues".into(), "locked".into()),
+            ("issues".into(), "closed".into())
+        ]
+    );
+    for r in &got {
+        let issue = &r.payload()["issue"];
+        assert_eq!(issue["state"], "closed");
+        assert_eq!(issue["state_reason"], "completed");
+        assert_eq!(issue["locked"], true);
+        assert_eq!(issue["active_lock_reason"], Value::Null);
+    }
+    // The issue stays, with its label; the discussion took a number of its own.
+    let res = fake
+        .read_as_app(&format!("/repos/acme/web/issues/{n}"))
+        .await;
+    assert_eq!(res.status(), 200);
+    let issue: Value = res.json().await.unwrap();
+    assert_eq!(issue["locked"], true);
+    assert!(
+        issue["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["name"] == "bug")
+    );
+    let discussion = converted["discussion"]["number"].as_i64().unwrap();
+    let res = fake
+        .read_as_app(&format!("/repos/acme/web/issues/{discussion}"))
+        .await;
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test]
+async fn archiving_a_repo_sends_repository_archived_and_unarchiving_unarchived() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    for archived in [true, false] {
+        fake.control(
+            reqwest::Method::POST,
+            "/archive",
+            json!({ "repo": "web", "archived": archived }),
+        )
+        .await;
+        let got = received_for(&mut rx, Duration::from_secs(2)).await;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].event, "repository");
+        let p = got[0].payload();
+        assert_eq!(
+            p["action"],
+            if archived { "archived" } else { "unarchived" }
+        );
+        assert_eq!(p["repository"]["archived"], archived);
+        let token = &fake.sign_in("tomsj").await["access_token"];
+        let repo: Value = fake
+            .get("/repos/acme/web", token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(repo["archived"], archived);
+    }
+}
+
+#[tokio::test]
+async fn renaming_a_milestone_sends_milestone_edited_and_bumps_no_issue() {
+    let fake = start().await;
+    let milestones: Value = fake
+        .read_as_app("/repos/acme/web/milestones?state=all")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let before = milestones[0].clone();
+    let mut rx = receiver(&fake).await;
+    fake.control(
+        reqwest::Method::POST,
+        "/milestone",
+        json!({ "repo": "web", "title": before["title"], "rename": "Renamed milestone" }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1, "one delivery, and no issues ones");
+    let p = got[0].payload();
+    assert_eq!(
+        (got[0].event.as_str(), p["action"].as_str()),
+        ("milestone", Some("edited"))
+    );
+    assert_eq!(p["milestone"]["id"], before["id"]);
+    assert_eq!(p["milestone"]["title"], "Renamed milestone");
+    assert_eq!(p["changes"]["title"]["from"], before["title"]);
+    assert!(p["milestone"]["updated_at"].is_string());
+}

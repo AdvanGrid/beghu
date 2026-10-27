@@ -673,11 +673,11 @@ async fn webhooks_mid_import_apply_and_an_older_page_never_overwrites_or_revives
     // Phase 4's page of closed issues was older than the webhook: the webhook's version stays.
     let (_, d) = s.api(&mut b, &format!("/api/issues/{}", edited.0)).await;
     assert_eq!(d["title"], "Retitled by a webhook", "{d}");
-    // And the deleted one never came back.
+    // And the deleted one never came back: it says it was deleted.
     let (status, body) = s.api(&mut b, &format!("/api/issues/{}", deleted.0)).await;
     assert_eq!(
         (status, body["error"].as_str()),
-        (404, Some("gone")),
+        (410, Some("deleted")),
         "{body}"
     );
 }

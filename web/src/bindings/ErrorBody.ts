@@ -7,9 +7,15 @@ import type { IssueRef } from "./IssueRef";
  */
 export type ErrorBody = { error: ErrorKind, message: string, 
 /**
- * With `no_access`: the issue, enough to link out to it on GitHub.
+ * With `no_access`: the issue, enough to link out to it on GitHub. With `moved`: the issue
+ * it became.
  */
 issue?: IssueRef, 
+/**
+ * With `moved`: the id of the issue it became, when it's in the synced repos; `null` when
+ * it's outside them.
+ */
+moved_to?: number | null, 
 /**
  * With `maybe_posted`: the newest comment id the mirror held on the issue as the comment
  * was sent. Only a comment with a greater id can be it.

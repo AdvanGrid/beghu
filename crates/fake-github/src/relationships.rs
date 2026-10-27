@@ -250,6 +250,43 @@ pub(crate) fn apply(
     Ok(out)
 }
 
+/// The deliveries GitHub sends for a transferred issue's links once they name the new issue
+/// (measured, docs/research/issue-edge-cases.md): each dependency and relates-to again, as if
+/// just added; no sub-issue link gets one. The new issue's own side first is the fake's choice:
+/// the order within a link wasn't measured.
+pub(crate) fn announce_transferred(
+    tx: &Connection,
+    id: i64,
+    sender: &Value,
+) -> rusqlite::Result<Vec<Delivery>> {
+    let mut out = Vec::new();
+    for e in q::announced_edges(tx, id)? {
+        let kind = match e.kind.as_str() {
+            "blocks" => Kind::Blocks,
+            "relates" => Kind::Relates,
+            _ => continue,
+        };
+        let ch = Change {
+            from: id,
+            kind,
+            add: true,
+            src: e.src_id,
+            dst: e.dst_id,
+        };
+        let mut sent = deliveries(tx, &ch, sender)?;
+        // `deliveries` sends the blocked side first, and across repos the smaller id's.
+        let own_first = match kind {
+            Kind::Blocks => e.dst_id == id,
+            _ => e.src_id == id,
+        };
+        if !own_first {
+            sent.reverse();
+        }
+        out.extend(sent);
+    }
+    Ok(out)
+}
+
 /// One side of a change: the issue, its repo and the delivery's action.
 struct Side {
     issue: i64,

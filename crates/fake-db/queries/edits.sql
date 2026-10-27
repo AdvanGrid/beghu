@@ -52,7 +52,7 @@ WHERE ia.item_id = :item_id ORDER BY u.login;
 
 -- name: milestone :opt
 -- param: id i64
-SELECT m.id, m.number, m.title, m.state, m.due_on FROM milestones m WHERE m.id = :id;
+SELECT m.id, m.number, m.title, m.state, m.due_on, m.updated_at FROM milestones m WHERE m.id = :id;
 
 -- name: user_row :opt
 -- param: id i64

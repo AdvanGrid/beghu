@@ -188,6 +188,8 @@ export interface FakeState {
 
 export interface WebhookFaults {
   drop: number;
+  /** With it, `drop` counts only deliveries of this `event.action`. */
+  drop_only: string | null;
   duplicate: number;
   reorder: number;
   delay_ms: number;

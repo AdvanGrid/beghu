@@ -18,8 +18,16 @@ pub enum ApiError {
     Forbidden(String),
     /// No such API path.
     NotFound,
-    /// No such issue in the account's mirror: deleted, or never there.
+    /// No such issue in the account's mirror: never there, or gone without a webhook saying how.
     Gone,
+    /// A webhook said GitHub deleted the issue.
+    Deleted,
+    /// GitHub transferred the issue: it's this one now, `to` its id when the account's synced
+    /// repos hold it (to open in-app).
+    Moved {
+        issue: IssueRef,
+        to: Option<i64>,
+    },
     /// The issue is in the mirror but outside the synced repos (a stub, or a repo no longer
     /// synced), so beghu doesn't hold it. Its body says where it is on GitHub.
     NoAccess(IssueRef),
@@ -69,10 +77,16 @@ pub enum ApiError {
 pub struct ErrorBody {
     pub error: ErrorKind,
     pub message: String,
-    /// With `no_access`: the issue, enough to link out to it on GitHub.
+    /// With `no_access`: the issue, enough to link out to it on GitHub. With `moved`: the issue
+    /// it became.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub issue: Option<IssueRef>,
+    /// With `moved`: the id of the issue it became, when it's in the synced repos; `null` when
+    /// it's outside them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub moved_to: Option<Option<i64>>,
     /// With `maybe_posted`: the newest comment id the mirror held on the issue as the comment
     /// was sent. Only a comment with a greater id can be it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +128,10 @@ pub enum ErrorKind {
     NotFound,
     /// 404: the issue isn't there (any more).
     Gone,
+    /// 410: GitHub deleted the issue.
+    Deleted,
+    /// 410: GitHub transferred the issue; the body's `issue` and `moved_to` say where.
+    Moved,
     /// 403: the issue is outside the account's synced repos.
     NoAccess,
     /// 503: try again after the `retry-after` header's seconds.
@@ -179,6 +197,7 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (mut retry_after, mut issue, mut after, mut digest) = (None, None, None, None);
+        let mut moved_to = None;
         let (status, kind, message) = match self {
             ApiError::SignedOut => (
                 StatusCode::UNAUTHORIZED,
@@ -195,8 +214,19 @@ impl IntoResponse for ApiError {
             ApiError::Gone => (
                 StatusCode::NOT_FOUND,
                 ErrorKind::Gone,
-                "This issue was deleted, or isn't in your synced repos".to_owned(),
+                "This issue isn't in your synced repos (any more)".to_owned(),
             ),
+            ApiError::Deleted => (
+                StatusCode::GONE,
+                ErrorKind::Deleted,
+                "This issue was deleted".to_owned(),
+            ),
+            ApiError::Moved { issue: i, to } => {
+                let message = format!("This issue moved to {}/{}#{}", i.owner, i.repo, i.number);
+                issue = Some(i);
+                moved_to = Some(to);
+                (StatusCode::GONE, ErrorKind::Moved, message)
+            }
             ApiError::NoAccess(i) => {
                 issue = Some(i);
                 (
@@ -266,6 +296,7 @@ impl IntoResponse for ApiError {
                 error: kind,
                 message,
                 issue,
+                moved_to,
                 after,
                 digest,
             }),

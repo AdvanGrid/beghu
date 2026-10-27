@@ -427,6 +427,25 @@ fn says_secondary(body: &str) -> bool {
     said("message", "secondary rate limit") || said("documentation_url", "secondary-rate-limits")
 }
 
+/// What GitHub shows the token of one issue (or of its thread).
+pub enum Shown<T> {
+    It(T),
+    /// 301: transferred since, to an issue with another id and number, whose own webhooks bring
+    /// it (redirects aren't followed).
+    Moved,
+    /// 404, or 410 for a deleted one: not there, or out of the token's sight.
+    Gone,
+}
+
+fn shown<T>(read: Result<T, Error>) -> Result<Shown<T>, Error> {
+    match read {
+        Ok(it) => Ok(Shown::It(it)),
+        Err(Error::Status(301)) => Ok(Shown::Moved),
+        Err(Error::Status(404 | 410)) => Ok(Shown::Gone),
+        Err(e) => Err(e),
+    }
+}
+
 /// Far enough out to mean "doesn't expire" (an App with token expiry turned off).
 const NEVER: i64 = i64::MAX / 2;
 
@@ -712,23 +731,49 @@ impl GitHub {
         }
     }
 
-    /// Issue `number` of `owner/repo` as GitHub has it now (`GET /repos/{o}/{r}/issues/{n}`);
-    /// `None` when GitHub shows no such issue to the token (404, or 410 for a deleted one).
+    /// Issue `number` of `owner/repo` as GitHub has it now (`GET /repos/{o}/{r}/issues/{n}`),
+    /// or why GitHub shows none to the token.
     pub async fn issue(
         &self,
         token: &str,
         owner: &str,
         repo: &str,
         number: i64,
-    ) -> Result<Option<crate::webhook::Issue>, Error> {
-        match self
-            .get(token, &format!("/repos/{owner}/{repo}/issues/{number}"))
-            .await
-        {
-            Ok(i) => Ok(Some(i)),
-            Err(Error::Status(404 | 410)) => Ok(None),
-            Err(e) => Err(e),
+    ) -> Result<Shown<crate::webhook::Issue>, Error> {
+        shown(
+            self.get(token, &format!("/repos/{owner}/{repo}/issues/{number}"))
+                .await,
+        )
+    }
+
+    /// Every comment on issue `number` of `owner/repo`, oldest first
+    /// (`GET /repos/{o}/{r}/issues/{n}/comments`, paged by 100), or why GitHub shows none.
+    pub async fn issue_comments(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Shown<Vec<crate::import::shapes::RestComment>>, Error> {
+        const PER_PAGE: usize = 100;
+        let mut all = Vec::new();
+        for page in 1.. {
+            let path = format!(
+                "/repos/{owner}/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}"
+            );
+            let got: Vec<crate::import::shapes::RestComment> =
+                match shown(self.get(token, &path).await)? {
+                    Shown::It(got) => got,
+                    Shown::Moved => return Ok(Shown::Moved),
+                    Shown::Gone => return Ok(Shown::Gone),
+                };
+            let n = got.len();
+            all.extend(got);
+            if n < PER_PAGE {
+                break;
+            }
         }
+        Ok(Shown::It(all))
     }
 
     /// The user's role on `owner/repo`, from its `permissions`.

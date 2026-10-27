@@ -79,6 +79,27 @@ couldn't test read-only.
   count check doesn't change. Showing "converted to discussion" would take a timeline read,
   which v1 has no need for.
 
+## Not measured, and what beghu and Fake GitHub assume
+
+Each of these needs checking on the dev App (`github-app/`) before relying on it:
+
+- **Whether a transferred issue's comments keep their ids.** The probe looked at the new issue's
+  links, not its comment ids. beghu doesn't depend on it: a transfer moves the old issue's
+  comments onto the new one by id, then reads the new issue's thread back from GitHub
+  (`GET …/issues/{n}/comments`) and makes it the mirror's, forgetting any comment GitHub doesn't
+  list there that nothing has written since the read began. Fake GitHub keeps the ids.
+- **What a write to a transferred issue's old number answers.** GitHub's REST docs list a 301
+  for updating an issue and for adding, setting and removing its labels, and none for creating
+  a comment or for the assignee endpoints. beghu doesn't follow redirects, and treats a 301 on a
+  write like a 404 or 410: the issue is gone from where the tab saw it. Fake GitHub answers 301
+  on the documented routes (with the measured `Location` of a `GET`, and GitHub's usual redirect
+  body, itself unmeasured) and 404 on the others.
+- **The order of the re-sent dependency and relates-to deliveries** within each link (the fake
+  sends the new issue's side first). Only their place between `opened` and `transferred` was
+  measured. beghu applies them in any order.
+- **A conversion of an already-closed issue.** Measured on an open one (`locked`, then
+  `closed`); the fake sends only `locked` for a closed one.
+
 ## Not tested
 
 - Relationship events when an issue with links is deleted.

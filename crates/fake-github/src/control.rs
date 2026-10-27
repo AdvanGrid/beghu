@@ -19,8 +19,9 @@
 //!   complete under the answer's own status (an answer beghu can't read, such as text that isn't
 //!   JSON), though the call did what it was asked.
 //! - `POST /faults/down {down}`: GitHub unreachable, or back.
-//! - `POST /faults/webhooks {drop?, duplicate?, reorder?, delay_ms?}`: the next `drop`
-//!   deliveries are lost, the next `duplicate` are sent twice under one GUID, the next `reorder`
+//! - `POST /faults/webhooks {drop?, drop_only?, duplicate?, reorder?, delay_ms?}`: the next `drop`
+//!   deliveries are lost (with `drop_only: "issues.transferred"`, say, only the next of that
+//!   event and action), the next `duplicate` are sent twice under one GUID, the next `reorder`
 //!   are held and sent newest first, and every delivery waits `delay_ms` longer.
 //! - `DELETE /faults`: clear every fault rule, webhook ones included. With `{endpoint}`, only
 //!   that endpoint's latency, fail and rewrite rules, so callers sharing the fake (tests running
@@ -34,6 +35,12 @@
 //! - `POST /label {repo, name, rename?, color?, description?, as?}`: edits one of the repo's
 //!   labels (a rename, a new colour), or creates it if the repo has none by that name, with
 //!   GitHub's `label` `edited` or `created` delivery (`edits.rs`).
+//! - `POST /milestone {repo, title, rename?, state?, as?}`: renames, closes or reopens one of the
+//!   repo's milestones, with GitHub's `milestone` delivery (`edits.rs`).
+//! - `POST /transfer {repo, number, to, as?}`: transfers the issue to another repo of the same
+//!   owner; `POST /convert {repo, number, as?}`: converts it to a discussion; `POST /archive
+//!   {repo, archived, as?}`: archives the repo, or unarchives it. Each with GitHub's measured
+//!   deliveries (`moves.rs`).
 //! - `PUT /tokens {access_ttl?, refresh_ttl?}`: token lifetimes in seconds, for new tokens.
 //! - `PUT /clock {offset}`: run the fake's clock `offset` seconds ahead of the real one, so
 //!   tokens and codes expire without waiting.
@@ -54,7 +61,7 @@
 //!   real clock, no deliveries logged.
 
 use crate::faults::{self, Fail};
-use crate::{Fake, Ttl, api, edits, webhooks};
+use crate::{Fake, Ttl, api, edits, moves, webhooks};
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -76,6 +83,10 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/webhooks", put(webhook_target))
         .route("/edit", post(edits::edit))
         .route("/label", post(edits::label))
+        .route("/milestone", post(edits::milestone))
+        .route("/transfer", post(moves::transfer))
+        .route("/convert", post(moves::convert))
+        .route("/archive", post(moves::archive))
         .route("/tokens", put(tokens))
         .route("/clock", put(clock))
         .route("/quota", put(quota))

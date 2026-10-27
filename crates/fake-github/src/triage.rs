@@ -6,6 +6,8 @@
 //! - `DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}`: 200 with the labels left; 404
 //!   "Label does not exist" (GitHub's observed body, not a documented one) if the issue doesn't
 //!   have it, where an issue or repo the user can't see is a plain "Not Found".
+//! - Both label routes answer a number transferred since with a 301 to the new issue, as GitHub
+//!   documents; the assignee routes, whose docs list no 301, with a 404.
 //! - `POST /repos/{owner}/{repo}/issues/{number}/assignees {assignees: [login…]}`: adds them;
 //!   201 with the issue. Users already assigned stay, and a login that can't be assigned in the
 //!   repo is silently ignored, as GitHub documents.
@@ -26,11 +28,11 @@ use crate::Fake;
 use crate::accounts::Role;
 use crate::api::{TokenUser, error, error_documented};
 use crate::edits::Change;
-use crate::writes::{Target, json_body, not_accessible, unprocessable, write};
+use crate::writes::{OnMoved, Target, json_body, not_accessible, unprocessable, write};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use fake_db::q;
@@ -117,6 +119,7 @@ async fn add_labels(
     State(fake): State<Fake>,
     TokenUser(user): TokenUser,
     Path(path): Path<(String, String, i64)>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let wanted = match names(&body, "labels", true) {
@@ -130,6 +133,7 @@ async fn add_labels(
         &fake,
         user,
         path,
+        OnMoved::Redirect(headers),
         move |tx, t| {
             if let Err(res) = triage(t) {
                 return Ok(Err(res));
@@ -169,11 +173,13 @@ async fn remove_label(
     State(fake): State<Fake>,
     TokenUser(user): TokenUser,
     Path((owner, repo, number, name)): Path<(String, String, i64, String)>,
+    headers: HeaderMap,
 ) -> Response {
     write(
         &fake,
         user,
         (owner, repo, number),
+        OnMoved::Redirect(headers),
         move |tx, t| {
             if let Err(res) = triage(t) {
                 return Ok(Err(res));
@@ -231,6 +237,7 @@ async fn assignees(
         &fake,
         user,
         path,
+        OnMoved::NotFound,
         move |tx, t| {
             if let Err(res) = triage(t) {
                 return Ok(Err(res));

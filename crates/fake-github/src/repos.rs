@@ -16,7 +16,8 @@
 //!   only `sort=updated` ascending, the order the import pages in. `since` is exclusive, as
 //!   GitHub's: only what was updated after it.
 //! - `GET /repos/{owner}/{repo}/issues/{number}`: one issue (or PR) as it is now; a deleted
-//!   one is a 410, as on GitHub, and a number the repo never had a 404. (Routed with the issue's
+//!   one is a 410, as on GitHub, a transferred one a 301 to the issue it became (a 404 when the
+//!   token can't see where it went), and a number the repo never had a 404. (Routed with the issue's
 //!   `PATCH` in `writes.rs`.)
 //! - `GET /repos/{owner}/{repo}/issues/{number}/comments`
 //! - `GET /repos/{owner}/{repo}/issues/comments?sort=updated&direction=asc&since=` (exclusive)
@@ -187,11 +188,24 @@ async fn labels(
     }
 }
 
+/// What `GET …/issues/{number}` finds.
+enum Found {
+    Issue(Value),
+    /// Deleted since: 410.
+    Deleted,
+    /// Transferred since, to where the token can see it: 301 to this path.
+    Moved(String),
+    /// Never there, or transferred out of the token's sight: 404.
+    None,
+}
+
 pub(crate) async fn issue(
     State(fake): State<Fake>,
+    headers: HeaderMap,
     token: AnyToken,
     Path((owner, name, number)): Path<(String, String, i64)>,
 ) -> Response {
+    let who = token.0;
     let repo = match visible_repo(&fake, token, owner, name).await {
         Ok(r) => r,
         Err(r) => return r,
@@ -199,18 +213,75 @@ pub(crate) async fn issue(
     let read = fake
         .state()
         .truth
-        .read(move |c| match q::issue_id(c, repo, number)? {
-            Some(id) => Ok(Ok(issue_json(c, id)?)),
-            None => Ok(Err(q::deleted_issue(c, repo, number)?.is_some())),
+        .read(move |c| {
+            if let Some(id) = q::issue_id(c, repo, number)? {
+                return Ok(Found::Issue(issue_json(c, id)?));
+            }
+            if q::deleted_issue(c, repo, number)?.is_some() {
+                return Ok(Found::Deleted);
+            }
+            Ok(match moved_to(c, who, repo, number)? {
+                Some(path) => Found::Moved(path),
+                None => Found::None,
+            })
         })
         .await;
     match read {
-        Ok(Ok(issue)) => axum::Json(issue).into_response(),
+        Ok(Found::Issue(issue)) => axum::Json(issue).into_response(),
         // GitHub's answer for an issue deleted since.
-        Ok(Err(true)) => api::error(StatusCode::GONE, "This issue was deleted"),
-        Ok(Err(false)) => api::not_found().await,
+        Ok(Found::Deleted) => api::error(StatusCode::GONE, "This issue was deleted"),
+        Ok(Found::Moved(path)) => moved(&headers, &path),
+        Ok(Found::None) => api::not_found().await,
         Err(e) => api::internal(e),
     }
+}
+
+/// Where issue `number` of `repo` went, as `who` may follow it: the API path of the issue it was
+/// transferred to, or `None` (never transferred, or to where `who` can't see). "301 Moved
+/// Permanently status if the issue was transferred… If the issue was transferred to … a
+/// repository where the authenticated user lacks read access, the API returns a 404" (GitHub's
+/// REST docs).
+pub(crate) fn moved_to(
+    c: &rusqlite::Connection,
+    who: api::Token,
+    repo: i64,
+    number: i64,
+) -> rusqlite::Result<Option<String>> {
+    let to = q::transferred_issue(c, repo, number)?;
+    let Some(p) = to.map(|id| q::issue_place(c, id)).transpose()?.flatten() else {
+        return Ok(None);
+    };
+    if !can_see(c, who, p.repo_id)? {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "/repos/{}/{}/issues/{}",
+        p.owner, p.name, p.number
+    )))
+}
+
+/// GitHub's 301 for a transferred issue: `Location` names the new issue (measured on a GET:
+/// `Location: https://api.github.com/repos/{owner}/{repo}/issues/{n}`). The body is unmeasured:
+/// GitHub's documented redirect body, its `url` the same as `Location`.
+pub(crate) fn moved(headers: &HeaderMap, path: &str) -> Response {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost");
+    let url = format!("http://{host}{path}");
+    let mut res = (
+        StatusCode::MOVED_PERMANENTLY,
+        axum::Json(json!({
+            "message": "Moved Permanently",
+            "url": url,
+            "documentation_url": "https://docs.github.com/rest/guides/best-practices-for-using-the-rest-api#follow-redirects",
+        })),
+    )
+        .into_response();
+    if let Ok(v) = HeaderValue::from_str(&url) {
+        res.headers_mut().insert(header::LOCATION, v);
+    }
+    res
 }
 
 async fn assignees(

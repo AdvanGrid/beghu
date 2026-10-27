@@ -503,7 +503,9 @@ function howFailed(p: Pending): { unsure: boolean; why: string; retry: boolean }
     e instanceof Conflict ||
     e instanceof GitHubDown ||
     e instanceof Unreachable;
-  const retry = e instanceof Refused ? e.retry : !(unsure && p.op.kind === "comment" && (!p.looked || p.unknowable));
+  // An issue that's gone (deleted, or transferred: it's another issue now) takes no write again.
+  const retry =
+    e instanceof Refused ? e.retry : !(e instanceof Gone) && !(unsure && p.op.kind === "comment" && (!p.looked || p.unknowable));
   return { unsure, why: known ? e.message : "Something went wrong", retry };
 }
 
@@ -887,6 +889,45 @@ const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },
 });
 
+/**
+ * In place of the composer of an issue that's gone (deleted, or moved away): the text the tab
+ * would otherwise lose there, its draft and any comment GitHub hasn't confirmed (on its way, or
+ * failed), kept to copy, since there's nowhere left to send it. A comment GitHub confirmed is in
+ * the thread, not here: once the issue is gone no read of it drops the confirmed write. Nothing
+ * when there's none.
+ */
+export function KeptText(props: { issue: number }) {
+  const text = () => {
+    const draft = drafts().get(props.issue)?.trim();
+    const unsent = ops().flatMap((p) => (p.op.kind === "comment" && p.op.issue === props.issue && p.phase !== "sent" ? [p.op.body] : []));
+    return [...(draft ? [draft] : []), ...unsent].join("\n\n");
+  };
+  const [copied, setCopied] = createSignal(false);
+  let box!: HTMLTextAreaElement;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text());
+      setCopied(true);
+    } catch {
+      // No clipboard (a page on plain http): select it, for the user to copy.
+      box.focus();
+      box.select();
+    }
+  };
+  return (
+    <Show when={text()}>
+      <div {...stylex.attrs(s.kept)} data-perf="kept-text">
+        <textarea ref={box} readonly value={text()} rows={3} aria-label="Your unsent text" {...stylex.attrs(s.box)} onFocus={(e) => e.currentTarget.select()} />
+        <div {...stylex.attrs(s.actions)}>
+          <button type="button" {...stylex.attrs(s.button)} onClick={() => void copy()}>
+            {copied() ? "Copied" : "Copy your text"}
+          </button>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
 const s = stylex.create({
   dot: {
     borderRadius: "50%",
@@ -979,6 +1020,13 @@ const s = stylex.create({
     borderTopColor: colors.line,
     borderTopStyle: "solid",
     borderTopWidth: 1,
+  },
+  // A lost issue's kept text.
+  kept: {
+    gap: 8,
+    display: "flex",
+    flexDirection: "column",
+    paddingBottom: 8,
   },
   // Every value here is one the app already uses: StyleX's one stylesheet is first-load CSS.
   box: {

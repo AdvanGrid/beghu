@@ -311,3 +311,71 @@ INSERT OR IGNORE INTO deleted (kind, id) VALUES (:kind, :id);
 -- param: kind &str
 -- param: id i64
 SELECT EXISTS (SELECT 1 FROM deleted d WHERE d.kind = :kind AND d.id = :id) AS "deleted!: bool";
+
+-- A transfer: the old issue's sub-issues are the new one's. Moved in place, ahead of
+-- `repoint_edges`, since a child has one parent: a copy would collide with the child's row for
+-- the old parent. One the mirror already has under the new issue stays where it is.
+-- name: repoint_children :exec
+-- param: old_id i64
+-- param: new_id i64
+-- param: seq i64
+UPDATE OR IGNORE relationships SET src_id = :new_id, seq = :seq
+WHERE kind = 'sub' AND src_id = :old_id AND dst_id <> :new_id
+  AND NOT EXISTS (SELECT 1 FROM deleted dl WHERE dl.kind = 'item' AND dl.id = :new_id);
+
+-- A transfer: every relationship of `old_id` now names `new_id` instead (GitHub keeps them all),
+-- relates-to keeping its smaller id first. One the mirror already has (a delivery for the new
+-- issue landed first), or that names a deleted item, isn't added again; the old ones go with the
+-- old item.
+-- name: repoint_edges :exec
+-- param: old_id i64
+-- param: new_id i64
+-- param: seq i64
+INSERT INTO relationships (kind, src_id, dst_id, position, seq)
+SELECT x.kind,
+       CASE WHEN x.kind = 'relates' THEN min(x.s, x.d) ELSE x.s END,
+       CASE WHEN x.kind = 'relates' THEN max(x.s, x.d) ELSE x.d END,
+       x.position, :seq
+FROM (SELECT e.kind,
+             CASE WHEN e.src_id = :old_id THEN :new_id ELSE e.src_id END AS s,
+             CASE WHEN e.dst_id = :old_id THEN :new_id ELSE e.dst_id END AS d,
+             e.position
+      FROM relationships e WHERE e.src_id = :old_id OR e.dst_id = :old_id) x
+WHERE x.s <> x.d
+  AND NOT EXISTS (SELECT 1 FROM deleted dl WHERE dl.kind = 'item' AND dl.id IN (x.s, x.d))
+ON CONFLICT DO NOTHING;
+
+-- A transfer: the old issue's comments are the new one's.
+-- name: move_comments :exec
+-- param: old_id i64
+-- param: new_id i64
+-- param: seq i64
+UPDATE comments SET item_id = :new_id, seq = :seq WHERE item_id = :old_id;
+
+-- A transferred issue's thread as the mirror holds it, with the transaction that last wrote each
+-- comment: a re-read of the thread forgets one GitHub no longer lists only if nothing wrote it
+-- after the re-read began.
+-- name: item_comment_seqs :many
+-- param: item_id i64
+SELECT c.id, c.seq FROM comments c WHERE c.item_id = :item_id ORDER BY c.id;
+
+-- name: record_moved :exec
+-- param: id i64
+-- param: to_id i64
+-- param: owner &str
+-- param: repo &str
+-- param: number i64
+-- param: title &str
+INSERT OR REPLACE INTO moved (id, to_id, owner, repo, number, title)
+VALUES (:id, :to_id, :owner, :repo, :number, :title);
+
+-- Where a transferred issue went.
+-- name: moved_to :opt
+-- param: id i64
+SELECT m.to_id, m.owner, m.repo, m.number, m.title FROM moved m WHERE m.id = :id;
+
+-- `repository.archived` and `unarchived`.
+-- name: set_repo_archived :exec
+-- param: id i64
+-- param: archived bool
+UPDATE repos SET archived = :archived WHERE id = :id AND archived IS NOT :archived;

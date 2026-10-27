@@ -26,6 +26,7 @@ mod faults;
 mod graphql;
 mod hook_deliveries;
 mod issue_edges;
+mod moves;
 mod oauth;
 mod quota;
 mod relationships;

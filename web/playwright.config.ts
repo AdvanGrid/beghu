@@ -20,9 +20,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|writes|markdown-style|pickers|repos|sync)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|relationships|writes|markdown-style|pickers|repos|sync|moves)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts with
-    // markdown-style.spec.ts, pickers.spec.ts, repos.spec.ts, sync.spec.ts):
+    // markdown-style.spec.ts, pickers.spec.ts, repos.spec.ts, sync.spec.ts, moves.spec.ts):
     // their edits reach every signed-in tab, push refetches and reorder the list; writes.spec.ts
     // sets faults for the whole stack, and repos.spec.ts slows GraphQL (the read-backs' too) and
     // installs the App, which has every account re-read its repos; sync.spec.ts marks accounts for
@@ -43,5 +43,8 @@ export default defineConfig({
     { name: "pickers", testMatch: /pickers\.spec\.ts$/, dependencies: ["writes"], timeout: 60_000 },
     { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["pickers"], workers: 1 },
     { name: "sync", testMatch: /sync\.spec\.ts$/, dependencies: ["repos"], timeout: 60_000 },
+    // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
+    // label every tab shows: last, alone.
+    { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["sync"], timeout: 60_000, workers: 1 },
   ],
 });

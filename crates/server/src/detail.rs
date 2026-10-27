@@ -171,11 +171,11 @@ fn issue_id(raw: &str) -> Result<i64, ApiError> {
     raw.parse().map_err(|_| ApiError::Gone)
 }
 
-/// The item, if the account may read it here: Gone if the mirror doesn't hold it, NoAccess if
-/// it lies outside the synced repos (a stub, or a repo no longer synced).
+/// The item, if the account may read it here: NoAccess if it lies outside the synced repos (a
+/// stub, or a repo no longer synced); if the mirror doesn't hold it, why not ([`gone`]).
 fn readable(c: &Reader, id: i64) -> QueryResult<Result<q::ItemDetailRow, ApiError>> {
     Ok(match q::item_detail(c, id)? {
-        None => Err(ApiError::Gone),
+        None => Err(gone(c, id)?),
         Some(item) if item.is_stub || !item.synced => Err(ApiError::NoAccess(IssueRef {
             kind: item.kind,
             owner: item.owner,
@@ -184,6 +184,52 @@ fn readable(c: &Reader, id: i64) -> QueryResult<Result<q::ItemDetailRow, ApiErro
             title: item.title,
         })),
         Some(item) => Ok(item),
+    })
+}
+
+/// How many transfers in a row [`gone`] follows to where an issue is now.
+const MOVES_FOLLOWED: usize = 8;
+
+/// Why the mirror doesn't hold `id`: moved (transferred, to the issue it became, following later
+/// transfers of that one), deleted (a webhook said so), or Gone (never there, or gone without a
+/// webhook saying how).
+fn gone(c: &Reader, id: i64) -> QueryResult<ApiError> {
+    let Some(mut m) = q::moved_to(c, id)? else {
+        return Ok(if q::is_deleted(c, "item", id)? {
+            ApiError::Deleted
+        } else {
+            ApiError::Gone
+        });
+    };
+    for _ in 0..MOVES_FOLLOWED {
+        match q::moved_to(c, m.to_id)? {
+            Some(next) => m = next,
+            None => break,
+        }
+    }
+    Ok(match q::item_detail(c, m.to_id)? {
+        // Where it is now, as the mirror has it.
+        Some(item) => ApiError::Moved {
+            to: (!item.is_stub && item.synced).then_some(item.id),
+            issue: IssueRef {
+                kind: item.kind,
+                owner: item.owner,
+                repo: item.repo,
+                number: item.number,
+                title: item.title,
+            },
+        },
+        // Where it went, as the transfer said.
+        None => ApiError::Moved {
+            to: None,
+            issue: IssueRef {
+                kind: "issue".into(),
+                owner: m.owner,
+                repo: m.repo,
+                number: m.number,
+                title: m.title,
+            },
+        },
     })
 }
 
