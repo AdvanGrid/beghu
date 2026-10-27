@@ -20,6 +20,8 @@ export function Markdown(props: { md: Md; links: Links; terms: Term[] }) {
 
 const s = stylex.create({
   md: {
+    lineHeight: 1.55,
     overflowWrap: "anywhere",
+    minWidth: 0,
   },
 });

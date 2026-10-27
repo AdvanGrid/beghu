@@ -9,13 +9,20 @@
 // (as the server does): an element past that is left out and what's inside it goes to the deepest
 // one kept. However deep an AST comes, it renders.
 //
-// This is the plain, readable look; Markdown style B (#99) restyles it.
+// The look is Markdown style B (spec #86; prototyped in #68): GitHub-sized headings in their
+// level's colour after a split-line level mark, alerts as tinted callouts with an icon and title,
+// coloured bullets and list numbers, code blocks with a header bar (./code.ts, which also
+// highlights them), a ↗ after links off GitHub, mention pills and zebra tables. Every colour is a
+// token (./tokens.stylex.ts), and icons come from one sprite (./icons.ts).
 import * as stylex from "@stylexjs/stylex";
-import { issueState, STATE_LABEL, type IssueState } from "../bits";
+import { issueState, STATE_LABEL } from "../bits";
 import { matchSpans, type Term } from "../highlight";
 import { colors, fonts } from "../tokens.stylex";
 import type { Md, MdAttrs, MdNode } from "./ast";
+import { codeBlock, highlight, inBlock } from "./code";
+import { icon, type IconName } from "./icons";
 import { issueLink, linkHref, safeUrl, teamUrl, userUrl, type Links } from "./links";
+import { md as tone } from "./tokens.stylex";
 
 /** How deep elements nest at most: crates/md-ast's MAX_DEPTH. */
 const MAX_DEPTH = 100;
@@ -93,6 +100,10 @@ const TAGS: Record<string, string[]> = {
 
 const ALERTS = new Set(["note", "tip", "important", "warning", "caution"]);
 
+type Alert = "note" | "tip" | "important" | "warning" | "caution";
+
+const ALERT_ICON: Record<Alert, IconName> = { note: "info", tip: "bulb", important: "report", warning: "alert", caution: "stop" };
+
 const str = (v: string | number | undefined) => (v === undefined ? undefined : String(v));
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, style: stylex.StyleXStyles | false, ...kids: (Node | string)[]): HTMLElementTagNameMap[K] {
@@ -102,37 +113,53 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, style: stylex.StyleXS
   return e;
 }
 
+/** Where a node goes: its parent, that parent's depth and list nesting, and the node after it. */
+type Place = { parent: Node; depth: number; lists: number; next: MdNode | undefined };
+
+/**
+ * An element as made: what goes in the parent, what its children go in (often the same), and
+ * anything that follows it.
+ */
+type Made = { outer: HTMLElement; into: HTMLElement; after?: Node };
+
 /** The nodes `md` renders to, for one post, its links resolved against `links`, `terms` marked. */
 export function renderMd(md: Md, links: Links, terms: Term[] = []): Node[] {
   const host = document.createDocumentFragment();
-  // Nodes still to place, each with the parent it goes in and that parent's depth; the top of the
-  // stack is next, so siblings go on in reverse.
-  const todo: { n: MdNode; parent: Node; depth: number }[] = [];
-  const push = (kids: MdNode[], parent: Node, depth: number) => {
-    for (let i = kids.length - 1; i >= 0; i--) todo.push({ n: kids[i]!, parent, depth });
+  // Nodes still to place, each with where it goes; the top of the stack is next, so siblings go
+  // on in reverse.
+  const todo: { n: MdNode; at: Place }[] = [];
+  const push = (kids: MdNode[], parent: Node, depth: number, lists: number) => {
+    for (let i = kids.length - 1; i >= 0; i--) todo.push({ n: kids[i]!, at: { parent, depth, lists, next: kids[i + 1] } });
   };
-  push(md, host, 0);
+  // Code blocks to colour once the walk is done, with their labels.
+  const blocks: [HTMLElement, string][] = [];
+  push(md, host, 0, 0);
   for (let next = todo.pop(); next; next = todo.pop()) {
-    const { n, parent, depth } = next;
+    const { n, at } = next;
     if (typeof n === "string") {
-      (parent as ParentNode).append(...marked(n, terms));
+      (at.parent as ParentNode).append(...marked(n, terms));
       continue;
     }
     if (!Array.isArray(n) || typeof n[0] !== "string") continue;
-    const [tag, at, ...kids] = n;
-    const a: MdAttrs = at || {};
+    const [tag, attrs, ...kids] = n;
+    const a: MdAttrs = attrs || {};
     if (tag === "ref") {
       const r = ref(a, links);
-      if (r) parent.appendChild(r);
+      if (r) at.parent.appendChild(r);
       continue;
     }
     // An element the walker doesn't make, or one past MAX_DEPTH, still shows what's inside it.
-    const e = depth < MAX_DEPTH ? element(tag, a, links) : undefined;
-    // A task-list item: its checkbox stands in for the bullet.
-    if (e && tag === "li" && Array.isArray(kids[0]) && kids[0][0] === "input") e.className = stylex.props(byTag.li, s.task).className ?? "";
-    if (e) parent.appendChild(e);
-    push(kids, e ?? parent, e ? depth + 1 : depth);
+    const made = at.depth < MAX_DEPTH ? element(tag, a, kids, at, links) : undefined;
+    if (made) {
+      at.parent.appendChild(made.outer);
+      if (made.after) at.parent.appendChild(made.after);
+      const label = made.into.dataset.lang;
+      if (tag === "code" && label && at.parent.nodeName === "PRE") blocks.push([made.into, label]);
+    }
+    const lists = tag === "ul" || tag === "ol" ? at.lists + 1 : at.lists;
+    push(kids, made?.into ?? at.parent, made ? at.depth + 1 : at.depth, lists);
   }
+  for (const [code, label] of blocks) highlight(code, label);
   return [...host.childNodes];
 }
 
@@ -157,25 +184,71 @@ export function marked(t: string, terms: Term[]): Node[] {
   return out;
 }
 
-function element(tag: string, a: MdAttrs, links: Links): HTMLElement | undefined {
+/** The language a `code` element's class names (`language-rust`), if any. */
+function langOf(a: MdAttrs): string | undefined {
+  return /(?:^|\s)language-(\S+)/.exec(str(a.class) ?? "")?.[1];
+}
+
+/** Whether a task-list item: its first child is the checkbox. */
+function isTask(kids: MdNode[]): boolean {
+  const first = kids[0];
+  return Array.isArray(first) && first[0] === "input";
+}
+
+function element(tag: string, a: MdAttrs, kids: MdNode[], at: Place, links: Links): Made | undefined {
   const keep = Object.hasOwn(TAGS, tag) ? TAGS[tag]! : undefined;
   if (keep === undefined) return undefined;
-  if (tag === "input") return checkbox(a);
-  const e = document.createElement(tag);
-  for (const k of [...GENERIC, ...keep]) {
-    const v = str(a[k]);
-    if (v !== undefined) e.setAttribute(k, v);
+  if (tag === "input") {
+    const box = checkbox(a, at.parent.nodeName === "LI");
+    return { outer: box, into: box };
   }
+  if (tag === "pre") {
+    // A fenced block's language is on the code inside it.
+    const code = kids[0];
+    const label = Array.isArray(code) && code[0] === "code" ? langOf(code[1] || {}) : undefined;
+    const { box, pre } = codeBlock(label);
+    copy(pre, a, keep);
+    return { outer: box, into: pre };
+  }
+  const e = document.createElement(tag);
+  copy(e, a, keep);
+  let into: HTMLElement = e;
+  let after: Node | undefined;
   const cls = str(a.class) ?? "";
   const styles: stylex.StyleXStyles[] = [byTag[tag]];
   switch (tag) {
+    case "h1":
+    case "h2":
+    case "h3":
+    case "h4":
+    case "h5":
+    case "h6": {
+      // The level mark: a fixed-width line cut into as many segments as the level, then the
+      // text, which so starts at the same place whatever the level.
+      const level = Number(tag[1]);
+      const mark = el("span", s.levelMark);
+      mark.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < level; i++) mark.append(el("span", s.segment));
+      into = el("span", s.headingText);
+      e.append(mark, into);
+      styles.push(s.heading);
+      break;
+    }
     case "a": {
       const raw = safeUrl(str(a.href) ?? "", { fragment: true, mail: true });
       if (raw !== undefined) {
         const { href, inApp, comment } = linkHref(links, raw);
         e.setAttribute("href", href);
         if (inApp) e.setAttribute("noscroll", "");
-        else if (!href.startsWith("#")) outward(e);
+        else if (!href.startsWith("#")) {
+          outward(e);
+          if (offGitHub(href) && !arrowed(kids, at.next) && !onlyImages(kids)) {
+            // A decoration: hidden from screen readers, which hear the link as one already.
+            after = el("span", s.away, "↗");
+            (after as HTMLElement).setAttribute("aria-hidden", "true");
+            (after as HTMLElement).dataset.perf = "away";
+          }
+        }
         if (comment !== undefined) toComment(e, comment);
       }
       break;
@@ -206,21 +279,39 @@ function element(tag: string, a: MdAttrs, links: Links): HTMLElement | undefined
       break;
     }
     case "code": {
-      // For highlighting (#99): the fence's language.
-      const lang = /(?:^|\s)language-(\S+)/.exec(cls)?.[1];
+      // A fenced block's text (./code.ts colours it by this language), or inline code.
+      const lang = langOf(a);
       if (lang) e.dataset.lang = lang;
+      if (at.parent.nodeName === "PRE") styles[0] = inBlock;
       break;
     }
     case "div": {
       const kind = /markdown-alert-(\w+)/.exec(cls)?.[1];
       if (kind && ALERTS.has(kind)) {
         e.dataset.alert = kind;
-        styles.push(s.alert, alertTone[kind as keyof typeof alertTone]);
+        styles.push(s.alert, alertTone[kind as Alert]);
       }
       break;
     }
-    case "p":
-      if (/\bmarkdown-alert-title\b/.test(cls)) styles.push(s.alertTitle);
+    case "p": {
+      // An alert's title: its icon, in the alert's colour.
+      const kind = (at.parent as HTMLElement).dataset?.alert as Alert | undefined;
+      if (/\bmarkdown-alert-title\b/.test(cls) && kind && ALERTS.has(kind)) {
+        styles.push(s.alertTitle, titleTone[kind]);
+        e.append(icon(ALERT_ICON[kind]));
+      }
+      break;
+    }
+    case "ul":
+      // Bullets alternate ● and ○ by how deep the list sits.
+      styles.push(at.lists % 2 === 0 ? s.disc : s.circle);
+      break;
+    case "li":
+      // A task-list item: its checkbox stands in for the bullet, and a done one is muted.
+      if (isTask(kids)) {
+        const box = (kids[0] as [string, MdAttrs | 0])[1] || {};
+        styles.push(s.task, "checked" in box && s.done);
+      }
       break;
     case "section":
       if ("data-footnotes" in a) {
@@ -236,16 +327,44 @@ function element(tag: string, a: MdAttrs, links: Links): HTMLElement | undefined
       break;
   }
   e.className = stylex.props(styles).className ?? "";
-  return e;
+  return { outer: e, into, after };
 }
 
-/** A task-list checkbox, or any checkbox in a post: read-only. */
-function checkbox(a: MdAttrs): HTMLInputElement {
-  const box = el("input", s.input);
+/** Copies the attributes `tag` keeps from `a` onto `e`. */
+function copy(e: HTMLElement, a: MdAttrs, keep: string[]): void {
+  for (const k of [...GENERIC, ...keep]) {
+    const v = str(a[k]);
+    if (v !== undefined) e.setAttribute(k, v);
+  }
+}
+
+/** A task-list checkbox (`inItem`, standing in for the bullet), or any checkbox in a post: read-only. */
+function checkbox(a: MdAttrs, inItem: boolean): HTMLInputElement {
+  const box = el("input", inItem ? s.taskBox : s.input);
   box.type = "checkbox";
   box.disabled = true;
   box.checked = "checked" in a;
   return box;
+}
+
+/** Whether `href` leaves GitHub (and beghu): a web page anywhere else. */
+function offGitHub(href: string): boolean {
+  return /^https?:\/\//i.test(href) && !/^https?:\/\/(?:[\w-]+\.)*github\.com(?:[/?#:]|$)/i.test(href);
+}
+
+/** An arrow ending a link's text, or one just after the link: the author's own. */
+const ARROW_END = /[↗↪➚]\s*$/;
+const ARROW_AFTER = /^\s?[↗↪➚]/;
+
+/** Whether the author already marked a link as going out: an arrow ending its text, or just after it. */
+function arrowed(kids: MdNode[], next: MdNode | undefined): boolean {
+  const last = kids.at(-1);
+  return (typeof last === "string" && ARROW_END.test(last)) || (typeof next === "string" && ARROW_AFTER.test(next));
+}
+
+/** Whether a link shows only images: a badge, which takes no arrow. */
+function onlyImages(kids: MdNode[]): boolean {
+  return kids.length > 0 && kids.every((k) => (typeof k === "string" ? k.trim() === "" : k[0] === "img" || k[0] === "picture"));
 }
 
 /** `srcset` with every candidate's URL re-checked, or undefined if any fails. */
@@ -268,20 +387,26 @@ function outward(a: HTMLElement): void {
 
 /** A `ref` node as a link. */
 function ref(a: MdAttrs, links: Links): HTMLElement | undefined {
-  if (typeof a.u === "string") return toGitHub(s.mention, `@${a.u}`, userUrl(a.u));
+  if (typeof a.u === "string") return mention(`@${a.u}`, userUrl(a.u));
   if (typeof a.t === "string") {
     const url = teamUrl(a.t);
-    return url === undefined ? undefined : toGitHub(s.mention, `@${a.t}`, url);
+    return url === undefined ? undefined : mention(`@${a.t}`, url);
   }
   if (typeof a.o !== "string" || typeof a.r !== "string" || typeof a.n !== "number") return undefined;
   const link = issueLink(links, a.o, a.r, a.n, typeof a.c === "number" ? a.c : undefined);
   if (!link.inApp) {
-    const e = toGitHub(s.ref, link.label, link.href);
+    // Outside the mirror: to GitHub, marked ↗ (a decoration, as after an off-GitHub link).
+    const arrow = el("span", false, " ↗");
+    arrow.setAttribute("aria-hidden", "true");
+    const e = el("a", [s.ref, s.refOut], link.label, arrow);
+    e.setAttribute("href", link.href);
+    e.title = "Opens on GitHub";
+    outward(e);
     e.dataset.ref = "out";
     return e;
   }
   const state = issueState(link.target);
-  const e = el("a", s.ref, stateIcon(state), link.label);
+  const e = el("a", [s.ref, stateTone[state]], icon(state, s.refIcon), link.label);
   e.setAttribute("href", link.href);
   e.setAttribute("noscroll", "");
   if (typeof a.c === "number") toComment(e, a.c);
@@ -290,11 +415,12 @@ function ref(a: MdAttrs, links: Links): HTMLElement | undefined {
   return e;
 }
 
-/** A reference that opens on GitHub, as every user, team and reference outside the mirror does. */
-function toGitHub(style: stylex.StyleXStyles, label: string, href: string): HTMLElement {
-  const e = el("a", style, `${label} ↗`);
+/** A user or team: a pill that opens on GitHub. */
+function mention(label: string, href: string): HTMLElement {
+  const e = el("a", s.mention, label);
   e.setAttribute("href", href);
   e.title = "Opens on GitHub";
+  e.dataset.ref = "mention";
   outward(e);
   return e;
 }
@@ -315,128 +441,234 @@ function toComment(a: HTMLElement, comment: number): void {
   });
 }
 
-const SVG = "http://www.w3.org/2000/svg";
-
-/** The state icon (bits.tsx's StateIcon, as plain DOM), in the state's colour. */
-function stateIcon(state: IssueState): SVGSVGElement {
-  const svg = document.createElementNS(SVG, "svg");
-  const shape = (name: string, attrs: Record<string, string>) => {
-    const e = document.createElementNS(SVG, name);
-    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-    svg.append(e);
-  };
-  for (const [k, v] of Object.entries({ viewBox: "0 0 16 16", width: "14", height: "14", "aria-hidden": "true" })) svg.setAttribute(k, v);
-  svg.setAttribute("class", stylex.props(s.icon, stateTone[state]).className ?? "");
-  const line = { fill: "none", stroke: "currentColor", "stroke-width": "1.5" };
-  shape("circle", { cx: "8", cy: "8", r: "6.25", ...line });
-  if (state === "open") shape("circle", { cx: "8", cy: "8", r: "1.5", fill: "currentColor" });
-  if (state === "done") shape("path", { d: "M5.2 8.2 7.1 10l3.7-4", ...line });
-  if (state === "notPlanned") shape("path", { d: "M3.8 12.2 12.2 3.8", ...line });
-  return svg;
-}
+/** Block elements end flush with their post (or list item, cell, alert…) when they come last. */
+const LAST = { default: "0.7em", ":last-child": 0 };
 
 const s = stylex.create({
-  a: { color: colors.accent },
+  a: {
+    textDecoration: { default: "none", ":hover": "underline" },
+    color: tone.link,
+  },
   blockquote: {
-    marginBlock: 0,
     marginInline: 0,
-    paddingInline: 12,
-    borderInlineStartColor: colors.line,
+    borderInlineStartColor: tone.line,
     borderInlineStartStyle: "solid",
     borderInlineStartWidth: 3,
-    color: colors.muted,
-    marginBottom: 12,
+    color: tone.quote,
+    paddingInlineStart: 12,
+    marginBottom: LAST,
+    marginTop: 0,
   },
   code: {
     borderRadius: 4,
-    paddingBlock: 1,
-    paddingInline: 4,
-    backgroundColor: colors.bgRaised,
+    paddingBlock: "0.15em",
+    paddingInline: "0.35em",
+    backgroundColor: tone.codeBg,
+    color: tone.codeFg,
     fontFamily: fonts.mono,
-    fontSize: "0.9em",
+    fontSize: "0.88em",
   },
   dd: { marginInlineStart: 16 },
+  del: { color: tone.muted },
   details: {
-    borderColor: colors.line,
+    borderColor: tone.line,
     borderRadius: 6,
     borderStyle: "solid",
     borderWidth: 1,
-    paddingBlock: 6,
+    paddingBlock: 4,
     paddingInline: 10,
-    marginBottom: 12,
+    marginBottom: LAST,
   },
-  dl: { marginBlock: 0, marginBottom: 12 },
+  dl: { marginBottom: LAST, marginTop: 0, },
   dt: { fontWeight: 600 },
-  figure: { marginBlock: 0, marginInline: 0, marginBottom: 12, },
-  h1: { marginBlock: 0, fontSize: "1.6em", borderBottomColor: colors.line, borderBottomStyle: "solid", borderBottomWidth: 1, marginBottom: 12, paddingBottom: 4, },
-  h2: { marginBlock: 0, fontSize: "1.35em", borderBottomColor: colors.line, borderBottomStyle: "solid", borderBottomWidth: 1, marginBottom: 12, paddingBottom: 4, },
-  h3: { marginBlock: 0, fontSize: "1.15em", marginBottom: 10, },
-  h4: { marginBlock: 0, fontSize: "1em", marginBottom: 8, },
-  h5: { marginBlock: 0, fontSize: "0.9em", marginBottom: 8, },
-  h6: { marginBlock: 0, color: colors.muted, fontSize: "0.85em", marginBottom: 8, },
-  hr: { borderWidth: 0, marginBlock: 16, backgroundColor: colors.line, height: 1, },
-  img: { verticalAlign: "middle", maxWidth: "100%", },
+  figure: { marginInline: 0, marginBottom: LAST, marginTop: 0, },
+  h1: {
+    color: tone.h1,
+    fontSize: "1.45em",
+    borderBottomColor: tone.h1Rule,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 2,
+    paddingBottom: "0.25em",
+  },
+  h2: {
+    color: tone.h2,
+    fontSize: "1.25em",
+    borderBottomColor: tone.line,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+    paddingBottom: "0.2em",
+  },
+  h3: { color: tone.h3, fontSize: "1.1em" },
+  h4: { color: tone.h4, fontSize: "1em" },
+  h5: { color: tone.h5, fontSize: "0.93em" },
+  h6: {
+    color: tone.h6,
+    fontSize: "0.87em",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+  },
+  hr: {
+    borderWidth: 0,
+    marginBlock: 16,
+    backgroundColor: tone.line,
+    height: 1,
+  },
+  img: { verticalAlign: "middle", maxWidth: "100%" },
   input: { marginBlock: 0, marginInlineEnd: 6, verticalAlign: "middle" },
   kbd: {
-    borderColor: colors.line,
+    borderColor: tone.line,
     borderRadius: 4,
     borderStyle: "solid",
     borderWidth: 1,
     paddingBlock: 1,
     paddingInline: 5,
-    backgroundColor: colors.bgRaised,
+    backgroundColor: tone.codeHead,
     fontFamily: fonts.mono,
     fontSize: "0.85em",
   },
-  li: { marginBlock: 2 },
-  ol: { marginBlock: 0, paddingInlineStart: 24, marginBottom: 12, },
-  p: { marginBlock: 0, marginBottom: 12 },
-  pre: {
-    padding: 10,
-    borderRadius: 6,
-    marginBlock: 0,
-    backgroundColor: colors.bgRaised,
-    fontFamily: fonts.mono,
-    fontSize: 13,
-    whiteSpace: "pre",
-    marginBottom: 12,
+  // Bullets and numbers in the list colour.
+  li: {
+    marginBlock: "0.1em",
+    "::marker": { color: tone.bullet },
+  },
+  ol: { paddingInlineStart: "1.5em", marginBottom: LAST, marginTop: 0, },
+  p: { marginBottom: LAST, marginTop: 0, },
+  strong: { fontWeight: 650 },
+  summary: {
+    paddingBlock: 2,
+    color: tone.muted,
+    cursor: "pointer",
+    fontWeight: 550,
+  },
+  table: {
+    borderCollapse: "collapse",
+    display: "block",
+    fontSize: "0.95em",
+    borderTopColor: tone.tableLine,
+    borderTopStyle: "solid",
+    borderTopWidth: 1,
+    marginBottom: LAST,
     overflowX: "auto",
   },
-  summary: { color: colors.muted, cursor: "pointer" },
-  table: { borderCollapse: "collapse", display: "block", marginBottom: 12, overflowX: "auto", },
-  td: { borderColor: colors.line, borderStyle: "solid", borderWidth: 1, paddingBlock: 4, paddingInline: 10, },
-  th: { borderColor: colors.line, borderStyle: "solid", borderWidth: 1, paddingBlock: 4, paddingInline: 10, fontWeight: 600, },
+  td: {
+    paddingBlock: 4,
+    paddingInline: 10,
+    verticalAlign: "top",
+    borderBottomColor: tone.line,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+  },
+  th: {
+    paddingBlock: 4,
+    paddingInline: 10,
+    fontWeight: 600,
+    textAlign: "start",
+    verticalAlign: "top",
+    borderBottomColor: tone.tableLine,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 2,
+  },
+  // Zebra rows: :nth-child counts within the row's own thead or tbody, so the header's row is
+  // never tinted and a body's tint starts at its second row.
+  tr: {
+    backgroundColor: { default: null, ":nth-child(even)": tone.zebra },
+  },
   tt: { fontFamily: fonts.mono },
-  ul: { marginBlock: 0, paddingInlineStart: 24, marginBottom: 12, },
+  ul: { paddingInlineStart: "1.5em", marginBottom: LAST, marginTop: 0, },
   // Beyond one class per tag.
   // A search's match in the text.
   match: { borderRadius: 2, backgroundColor: colors.mark, color: "inherit" },
-  task: { listStyleType: "none", marginInlineStart: -18 },
+  heading: {
+    gap: 8,
+    alignItems: "baseline",
+    display: "flex",
+    fontWeight: 650,
+    lineHeight: 1.3,
+    marginBottom: "0.5em",
+    marginTop: { default: "1.1em", ":first-child": 0 },
+  },
+  // A heading's level: 42.5 × 5 px, in as many segments as the level (h1 a line, h6 six dots).
+  levelMark: {
+    gap: 2.5,
+    alignSelf: "center",
+    display: "inline-flex",
+    flexShrink: 0,
+    width: 42.5,
+  },
+  segment: {
+    borderRadius: 2.5,
+    backgroundColor: "currentColor",
+    flexBasis: 0,
+    flexGrow: 1,
+    height: 5,
+  },
+  headingText: {
+    display: "flow-root",
+    flexGrow: 1,
+    minWidth: 0,
+  },
+  disc: { listStyleType: "disc" },
+  circle: { listStyleType: "circle" },
+  // A task item's checkbox sits where its bullet would, so its text lines up with other items'
+  // however the item is laid out (one line, or paragraphs).
+  task: { listStyleType: "none", position: "relative" },
+  taskBox: {
+    margin: 0,
+    insetInlineStart: "-1.4em",
+    position: "absolute",
+    top: "0.3em",
+  },
+  done: { color: tone.muted },
   floatLeft: { float: "left", marginInlineEnd: 8 },
   floatRight: { float: "right", marginInlineStart: 8 },
   center: { textAlign: "center" },
-  right: { textAlign: "right" },
+  right: { fontVariantNumeric: "tabular-nums", textAlign: "end" },
   alert: {
+    borderRadius: 6,
+    borderStyle: "solid",
+    borderWidth: 1,
     paddingBlock: 8,
     paddingInline: 12,
-    borderInlineStartStyle: "solid",
-    borderInlineStartWidth: 3,
-    marginBottom: 12,
+    marginBottom: LAST,
   },
-  alertTitle: { fontWeight: 600 },
+  alertTitle: {
+    gap: 6,
+    alignItems: "center",
+    display: "flex",
+    fontWeight: 600,
+    marginBottom: "0.25em",
+  },
   footnotes: {
-    color: colors.muted,
+    color: tone.muted,
     fontSize: "0.9em",
-    borderTopColor: colors.line,
+    borderTopColor: tone.line,
     borderTopStyle: "solid",
     borderTopWidth: 1,
     marginTop: 16,
-    paddingTop: 8,
+    paddingTop: 6,
   },
-  footnotesTitle: { marginBlock: 0, fontSize: "1em", marginBottom: 8, },
-  mention: { textDecoration: "none", color: colors.fg, fontWeight: 600, },
-  ref: { color: colors.accent, whiteSpace: "nowrap" },
-  icon: { marginInlineEnd: 2, verticalAlign: "-2px" },
+  footnotesTitle: { marginBlock: 0, fontSize: "1em", fontWeight: 600, marginBottom: 2 },
+  // The ↗ after an off-GitHub link, unless its author wrote one.
+  away: {
+    color: tone.muted,
+    fontSize: "0.8em",
+    marginInlineStart: 1,
+  },
+  mention: {
+    borderRadius: 4,
+    paddingInline: 3,
+    textDecoration: "none",
+    backgroundColor: tone.mentionBg,
+    color: colors.fg,
+    fontWeight: 600,
+  },
+  ref: {
+    textDecoration: { default: "none", ":hover": "underline" },
+    fontWeight: 550,
+    whiteSpace: "nowrap",
+  },
+  refOut: { color: tone.link, fontWeight: 400 },
+  refIcon: { marginInlineEnd: 3, height: "0.95em", width: "0.95em" },
 });
 
 /** Each tag's own style: every element the walker makes gets one, if it has one. */
@@ -445,6 +677,7 @@ const byTag: Record<string, stylex.StyleXStyles> = {
   blockquote: s.blockquote,
   code: s.code,
   dd: s.dd,
+  del: s.del,
   details: s.details,
   dl: s.dl,
   dt: s.dt,
@@ -461,25 +694,37 @@ const byTag: Record<string, stylex.StyleXStyles> = {
   li: s.li,
   ol: s.ol,
   p: s.p,
-  pre: s.pre,
+  s: s.del,
+  strike: s.del,
+  strong: s.strong,
+  b: s.strong,
   summary: s.summary,
   table: s.table,
   td: s.td,
   th: s.th,
+  tr: s.tr,
   tt: s.tt,
   ul: s.ul,
 };
 
 const alertTone = stylex.create({
-  note: { borderInlineStartColor: colors.accent },
-  tip: { borderInlineStartColor: colors.open },
-  important: { borderInlineStartColor: colors.done },
-  warning: { borderInlineStartColor: colors.unowned },
-  caution: { borderInlineStartColor: colors.danger },
+  note: { borderColor: tone.noteBorder, backgroundColor: tone.noteBg, },
+  tip: { borderColor: tone.tipBorder, backgroundColor: tone.tipBg, },
+  important: { borderColor: tone.importantBorder, backgroundColor: tone.importantBg, },
+  warning: { borderColor: tone.warningBorder, backgroundColor: tone.warningBg, },
+  caution: { borderColor: tone.cautionBorder, backgroundColor: tone.cautionBg, },
+});
+
+const titleTone = stylex.create({
+  note: { color: tone.note },
+  tip: { color: tone.tip },
+  important: { color: tone.important },
+  warning: { color: tone.warning },
+  caution: { color: tone.caution },
 });
 
 const stateTone = stylex.create({
-  open: { color: colors.open },
-  done: { color: colors.done },
-  notPlanned: { color: colors.notPlanned },
+  open: { color: tone.refOpen },
+  done: { color: tone.refDone },
+  notPlanned: { color: tone.refNotPlanned },
 });

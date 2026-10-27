@@ -45,6 +45,7 @@ import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overl
 import { queryOf } from "./query";
 import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
+import { md } from "./md/tokens.stylex";
 import { marked } from "./md/walker";
 import type { Links } from "./md/links";
 import { IssueNotice, reloadOnce, resetOnChange } from "./Root";
@@ -522,20 +523,25 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </dl>
         <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
         <RelatesTo rels={d().relationships} search={props.search} />
-        <Byline author={d().author} top>
-          opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
-        </Byline>
-        <div {...stylex.attrs(s.text, s.body)} data-perf="body">
-          <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
-            <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
-          </Show>
+        {/* The body is a post like each comment: on its tint, its byline inside. */}
+        <div {...stylex.attrs(s.bodySlot)}>
+          <div {...stylex.attrs(s.post)}>
+            <Byline author={d().author}>
+              opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
+            </Byline>
+            <div {...stylex.attrs(s.text)} data-perf="body">
+              <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.postMuted)}>No description provided.</span>}>
+                <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
+              </Show>
+            </div>
+          </div>
         </div>
         <SubIssues rels={d().relationships} search={props.search} />
         <h3 {...stylex.attrs(s.section)}>
           Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
           <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>
         </h3>
-        <div data-perf="comments" data-perf-loaded={d().comments.comments.length}>
+        <div {...stylex.attrs(s.comments)} data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>
             {(c) => <CommentView c={c()} at={at()} links={links(d(), d().comments.refs, props.search)} terms={terms("comments")} />}
           </For>
@@ -651,7 +657,7 @@ function CommentView(props: { c: ShownComment; at: number; links: Links; terms: 
   const body = () => ("body" in props.c ? props.c.body : undefined);
   const typed = () => ("typed" in props.c ? props.c.typed : undefined);
   return (
-    <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id} data-comment-id={props.c.id} data-op={props.c.op}>
+    <article {...stylex.attrs(s.post, s.comment)} data-perf="comment" data-id={props.c.id} data-comment-id={props.c.id} data-op={props.c.op}>
       <Byline author={props.c.author}>
         <Ago at={props.c.created_at} />
         <Show when={props.c.op}>{(op) => <Dynamic component={overlay()?.CommentNote} op={op()} at={props.at} />}</Show>
@@ -669,13 +675,13 @@ function CommentView(props: { c: ShownComment; at: number; links: Links; terms: 
 }
 
 /** Who wrote something (a deleted GitHub account shows as "ghost"), then `children`, muted. */
-function Byline(props: { author: User | null; top?: boolean; children: Element }) {
+function Byline(props: { author: User | null; children: Element }) {
   const login = () => props.author?.login ?? "ghost";
   return (
-    <div {...stylex.attrs(s.byline, props.top && s.bylineTop)}>
+    <div {...stylex.attrs(s.byline)}>
       <Avatar login={login()} size={20} />
       <span>
-        <b {...stylex.attrs(s.who)}>{login()}</b> <span {...stylex.attrs(s.muted)}>{props.children}</span>
+        <b {...stylex.attrs(s.who)}>{login()}</b> <span {...stylex.attrs(s.postMuted)}>{props.children}</span>
       </span>
     </div>
   );
@@ -949,18 +955,32 @@ const s = stylex.create({
     alignItems: "center",
     display: "flex",
   },
-  bylineTop: {
+  // The body's post, under the relationships.
+  bodySlot: {
     paddingBlock: 10,
     paddingInline: 16,
     borderTopColor: colors.line,
     borderTopStyle: "solid",
     borderTopWidth: 1,
   },
+  // A post (the body or a comment): its own faint surface, no border, its byline inside.
+  post: {
+    borderRadius: 8,
+    paddingInline: 14,
+    backgroundColor: md.tint,
+    paddingBottom: 14,
+    paddingTop: 10,
+  },
   who: {
     fontWeight: 600,
   },
   muted: {
     color: colors.muted,
+    fontWeight: 400,
+  },
+  // Muted text on a post's tint frame, where the app's muted (4.47:1) falls short of 4.5:1.
+  postMuted: {
+    color: md.muted,
     fontWeight: 400,
   },
   // As tall as a label's pill (18 px and its border), so the first label picked, or the last
@@ -970,15 +990,11 @@ const s = stylex.create({
   },
   text: {
     overflowWrap: "anywhere",
-    paddingTop: 6,
+    paddingTop: 8,
   },
   // A comment's text as typed, before GitHub confirms it.
   plain: {
     whiteSpace: "pre-wrap",
-  },
-  body: {
-    paddingInline: 16,
-    paddingBottom: 16,
   },
   section: {
     margin: 0,
@@ -1004,12 +1020,12 @@ const s = stylex.create({
   // Off-screen comments skip layout and paint, with a size estimate standing in for them.
   comment: {
     containIntrinsicSize: "auto 140px",
-    paddingBlock: 12,
-    paddingInline: 16,
+    marginInline: 16,
     contentVisibility: "auto",
-    borderTopColor: colors.line,
-    borderTopStyle: "solid",
-    borderTopWidth: 1,
+    marginBottom: 10,
+  },
+  comments: {
+    paddingTop: 10,
   },
   more: {
     margin: 0,

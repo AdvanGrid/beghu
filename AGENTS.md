@@ -20,7 +20,8 @@ CI runs all of these; run them before you commit:
 - `cargo test --workspace --locked`
 - `npm --prefix tools/dev-ctl ci && npm --prefix tools/dev-ctl run typecheck` after changing `./dev-ctl`
 - In `web/`: `npm ci`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
-  `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` and
+  `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules'
+  and the highlight.js output reader's Node tests) and
   `npx vite build`
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
@@ -34,7 +35,10 @@ CI runs all of these; run them before you commit:
   crate's `queries/` (or a migration to its `migrations/`) and call the function the build
   generates for it. Clippy fails on rusqlite `prepare`/`execute`/`query_*`/`pragma*` anywhere
   else.
-- **Colours come only from the token module** (`web/src/tokens.stylex.ts`). Every page supports
+- **Colours come only from the token modules** (`web/src/tokens.stylex.ts`, and
+  `web/src/md/tokens.stylex.ts` for posts' Markdown and code highlighting, kept apart so its JS
+  stays out of first-load JS; its CSS still goes in the one stylesheet, so nothing splits CSS).
+  Every page supports
   light and dark mode: each token is a `light-dark()` pair, and `web/theme.js` sets
   `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`, never a `class` or
   `style` attribute; the only CSS file is `web/src/escape.css`, one comment per rule. The lint
@@ -57,8 +61,10 @@ CI runs all of these; run them before you commit:
   fixture, never by writing to a mirror directly.
 - **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
   (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
-  (`crates/md-ast/src/scaling.rs`), and the server's render cache tests (the `tests`
-  module of `crates/server/src/markdown.rs`), which count renders no HTTP answer shows.
+  (`crates/md-ast/src/scaling.rs`), the server's render cache tests (the `tests`
+  module of `crates/server/src/markdown.rs`), which count renders no HTTP answer shows, and the
+  web's highlight.js output reader under hostile input (`web/src/md/hljs.test.ts`), which only
+  ever sees highlight.js's own escaped output through the app.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
 

@@ -225,6 +225,8 @@ test("the detail marks the search's words inside a rendered body's markup, and s
   await expect(marks).toHaveCount(5);
   for (const m of await marks.allTextContents()) expect(m.toLowerCase()).toBe("spinner");
   for (const inside of ["strong", "code", "a", "li", "em"]) await expect(body.locator(`${inside} [data-perf="match"]`)).toHaveCount(1);
-  await expect(body.getByRole("link", { name: "@spinner ↗" }).locator('[data-perf="match"]')).toHaveCount(0);
+  const mention = body.getByRole("link", { name: "@spinner", exact: true });
+  await expect(mention).toHaveCount(1);
+  await expect(mention.locator('[data-perf="match"]')).toHaveCount(0);
   await expect(marks.first()).toBeInViewport();
 });

@@ -1,6 +1,7 @@
 // beghu's own lint rules for the web app (see eslint.config.js):
 //
-// - no-colour-literals: colours come only from the token module (src/tokens.stylex.ts). Flags a
+// - no-colour-literals: colours come only from the token modules (src/tokens.stylex.ts, and
+//   src/md/tokens.stylex.ts for posts' Markdown and code highlighting). Flags a
 //   colour function (rgb(), oklch(), light-dark(), …) in any string, a string that is a hex
 //   colour, and inside StyleX calls any hex, named or system colour.
 // - no-class-or-style: no `class`, `className`, `classList` or `style` attribute in JSX; elements
@@ -67,8 +68,8 @@ function colourIn(text, strict) {
 const noColourLiterals = {
   meta: {
     type: "problem",
-    docs: { description: "Colours come only from the token module" },
-    messages: { colour: "{{what}} outside the token module: use a colour token from tokens.stylex.ts" },
+    docs: { description: "Colours come only from the token modules" },
+    messages: { colour: "{{what}} outside the token modules: use a colour token from src/tokens.stylex.ts or src/md/tokens.stylex.ts" },
     schema: [],
   },
   create(context) {
@@ -130,8 +131,8 @@ const oneEscapeStylesheet = {
 const noCssColours = {
   meta: {
     type: "problem",
-    docs: { description: "No colours in a stylesheet: they come only from the token module" },
-    messages: { colour: "{{what}} in a stylesheet: colours come only from the token module" },
+    docs: { description: "No colours in a stylesheet: they come only from the token modules" },
+    messages: { colour: "{{what}} in a stylesheet: colours come only from the token modules" },
     schema: [],
   },
   create(context) {

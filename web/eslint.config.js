@@ -1,5 +1,5 @@
 // Lint for the web app, local and in CI: StyleX's own rules, plus beghu's (eslint-rules.js):
-// colours only from the token module, no class or style attributes in JSX, and no CSS import
+// colours only from the token modules, no class or style attributes in JSX, and no CSS import
 // but the escape stylesheet.
 import css from "@eslint/css";
 import stylex from "@stylexjs/eslint-plugin";
@@ -22,8 +22,10 @@ export default [
     },
   },
   {
-    // The token module is where colours are written.
-    files: ["src/tokens.stylex.ts"],
+    // The token modules are where colours are written: the app's, and the Markdown one, kept
+    // apart so its JS rides in the issue panel's lazy chunk rather than first-load JS. Its CSS
+    // still goes in the one stylesheet: this splits JS, not CSS.
+    files: ["src/tokens.stylex.ts", "src/md/tokens.stylex.ts"],
     rules: { "beghu/no-colour-literals": "off" },
   },
   {
