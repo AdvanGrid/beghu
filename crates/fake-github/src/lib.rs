@@ -2,8 +2,9 @@
 //! `GITHUB_WEB_URL` both point at its API listener, so the real client code runs against it.
 //!
 //! - The API listener serves the OAuth web flow (`/login/oauth/…`), the REST endpoints beghu
-//!   calls, the App's grant and token revocation, the App's installation tokens and the GraphQL
-//!   queries beghu makes. Later tickets add endpoints as they need them.
+//!   calls (reads in `api.rs`, writes in `writes.rs`), the App's grant and token revocation, the
+//!   App's installation tokens and the GraphQL queries beghu makes. Later tickets add endpoints as
+//!   they need them.
 //! - The control listener takes runtime faults (latency, the next N calls failing, down, and
 //!   webhook drops, delays, duplicates and reorders), outside edits, token lifetimes,
 //!   revocations and a reset, and reports the fake's state.
@@ -24,6 +25,7 @@ mod faults;
 mod oauth;
 mod relationships;
 mod webhooks;
+mod writes;
 
 pub use accounts::{ACCOUNTS, Role, pristine_mirrors};
 pub use app::{DEV_APP_ID, DEV_APP_KEY};
@@ -160,6 +162,7 @@ impl Fake {
         let api_app = axum::Router::new()
             .merge(oauth::router())
             .merge(api::router())
+            .merge(writes::router())
             .merge(app::router())
             .fallback(api::not_found)
             .layer(axum::middleware::from_fn_with_state(

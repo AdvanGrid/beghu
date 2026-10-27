@@ -7,9 +7,12 @@
 // the first paint, later pages as the reader nears the end. A live push refetches the open detail
 // through its last loaded comment in one request, and drops what the tab read earlier of every
 // issue it names (`refetchOpenIssue`).
+// The composer (with Close and Reopen) is a chunk of its own, the writes code (writes.tsx), loaded
+// once the detail shows; the tab's pending writes show over the detail through overlay.ts.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createSignal, Errored, For, Loading, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
+import { Dynamic } from "@solidjs/web";
 import {
   Gone,
   NoAccess,
@@ -18,9 +21,11 @@ import {
   getComments,
   getIssue,
   issueId,
+  readAt,
   readBefore,
   refetchIssue,
   signIn,
+  stamp,
   takeRemembered,
   type Comment,
   type IssueDetail,
@@ -29,6 +34,7 @@ import {
 import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
 import type { User } from "./bindings/User";
 import { coalesced, onPush, resetAt } from "./live";
+import { overlay, type ShownComment } from "./overlay";
 import { Blocks, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { IssueNotice, resetOnChange } from "./Root";
 import { ago, fullDate } from "./time";
@@ -42,6 +48,9 @@ const MIN_SIDE = 360;
 const DIVIDER = 4;
 /** Where the panel's width is kept on this device. */
 const WIDTH_KEY = "beghu.detail-width";
+
+/** The composer and the rest of the writes code: not needed for the detail's first paint. */
+const Composer = lazy(() => import("./writes"), { export: "Composer" });
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
@@ -207,7 +216,7 @@ function Detail(props: { id: number; search: string }) {
       const now = d();
       // Only onto the end it was asked for: a refetch may have replaced the thread meanwhile.
       if (now.id !== have.id || now.comments.next !== after) return;
-      setD({ ...now, comments: { comments: merge(now.comments.comments, page.comments), next: page.next } });
+      setD(stamp({ ...now, comments: { comments: merge(now.comments.comments, page.comments), next: page.next } }, readAt(now)));
     } catch (e) {
       // A failed page never replaces what's on screen; the next scroll asks again.
       if (e instanceof SessionEnded) signIn();
@@ -247,10 +256,15 @@ function Detail(props: { id: number; search: string }) {
     const got = fresh.comments.comments;
     const at = last === undefined ? -1 : now.comments.comments.findIndex((c) => c.id === last.id);
     const tail = got.at(-1)?.id === last?.id && at >= 0 ? now.comments.comments.slice(at + 1) : [];
-    setD({
-      ...fresh,
-      comments: { comments: merge(got, tail), next: tail.length > 0 ? now.comments.next : fresh.comments.next },
-    });
+    setD(
+      stamp(
+        {
+          ...fresh,
+          comments: { comments: merge(got, tail), next: tail.length > 0 ? now.comments.next : fresh.comments.next },
+        },
+        readAt(fresh),
+      ),
+    );
   };
 
   /**
@@ -307,95 +321,125 @@ function merge(have: Comment[], more: Comment[]): Comment[] {
 }
 
 function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivElement) => void; onScroll: () => void }) {
-  const d = () => props.d;
+  /** When the detail's read began: the tab's writes show over anything older. */
+  const at = () => readAt(props.d);
+  const d = createMemo(() => overlay()?.detailWithWrites(props.d, at()) ?? props.d);
+  // The writes code learns which read the detail shows, so it can drop the writes it has caught
+  // up with.
+  createEffect(
+    () => ({ o: overlay(), issue: props.d.id, at: at() }),
+    ({ o, issue, at }) => o?.detailShown(issue, at),
+  );
   const state = () => issueState(d());
   return (
-    <div ref={props.scroller} {...stylex.attrs(s.scroller)} data-perf="detail" data-id={d().id} onScroll={props.onScroll}>
-      {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
-          first, and each property is one row of its own, so more labels only grow their row. */}
-      <div {...stylex.attrs(s.status)}>
-        <span {...stylex.attrs(s.badge, badgeBg[state()])} data-perf="badge">
-          <StateIcon state={state()} plain />
-          {BADGE_TEXT[state()]}
-        </span>
-        <span {...stylex.attrs(s.ref)} title={`${d().owner}/${d().repo}#${d().number}`}>
-          {d().repo}#{d().number}
-        </span>
-        <span {...stylex.attrs(s.spacer)} />
-        <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
-          GitHub ↗
-        </a>
-        <a href={`/${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label="Close the issue" title="Close">
-          ×
-        </a>
-      </div>
-      <ParentCrumb rels={d().relationships} search={props.search} />
-      <h2 {...stylex.attrs(s.title)}>{d().title}</h2>
-      <dl {...stylex.attrs(s.props)}>
-        <dt {...stylex.attrs(s.key)}>Assignees</dt>
-        <dd {...stylex.attrs(s.value)} data-perf="assignees">
-          <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
-            {(u) => (
-              <span {...stylex.attrs(s.person)}>
-                <Avatar login={u().login} />
-                {u().login}
-              </span>
-            )}
-          </For>
-        </dd>
-        <dt {...stylex.attrs(s.key)}>Labels</dt>
-        <dd {...stylex.attrs(s.value)} data-perf="labels">
-          <For each={d().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
-            {(l) => (
-              <span {...stylex.attrs(s.pill)}>
-                <span {...stylex.attrs(s.dot(`#${l().color}`))} />
-                {l().name}
-              </span>
-            )}
-          </For>
-        </dd>
-        <dt {...stylex.attrs(s.key)}>Milestone</dt>
-        <dd {...stylex.attrs(s.value)} data-perf="milestone">
-          <Show when={d().milestone} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
-            {(m) => m().title}
+    <>
+      <div ref={props.scroller} {...stylex.attrs(s.scroller)} data-perf="detail" data-id={d().id} onScroll={props.onScroll}>
+        {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
+            first, and each property is one row of its own, so more labels only grow their row. */}
+        <div {...stylex.attrs(s.status)}>
+          <span {...stylex.attrs(s.badge, badgeBg[state()])} data-perf="badge" aria-describedby={`state-note-${d().id}`}>
+            <StateIcon state={state()} plain />
+            {BADGE_TEXT[state()]}
+          </span>
+          <span {...stylex.attrs(s.ref)} title={`${d().owner}/${d().repo}#${d().number}`}>
+            {d().repo}#{d().number}
+          </span>
+          <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
+          <span {...stylex.attrs(s.spacer)} />
+          <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
+            GitHub ↗
+          </a>
+          <a href={`/${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label="Close the issue" title="Close">
+            ×
+          </a>
+        </div>
+        <ParentCrumb rels={d().relationships} search={props.search} />
+        <h2 {...stylex.attrs(s.title)}>{d().title}</h2>
+        <dl {...stylex.attrs(s.props)}>
+          <dt {...stylex.attrs(s.key)}>Assignees</dt>
+          <dd {...stylex.attrs(s.value)} data-perf="assignees">
+            <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
+              {(u) => (
+                <span {...stylex.attrs(s.person)}>
+                  <Avatar login={u().login} />
+                  {u().login}
+                </span>
+              )}
+            </For>
+          </dd>
+          <dt {...stylex.attrs(s.key)}>Labels</dt>
+          <dd {...stylex.attrs(s.value)} data-perf="labels">
+            <For each={d().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
+              {(l) => (
+                <span {...stylex.attrs(s.pill)}>
+                  <span {...stylex.attrs(s.dot(`#${l().color}`))} />
+                  {l().name}
+                </span>
+              )}
+            </For>
+          </dd>
+          <dt {...stylex.attrs(s.key)}>Milestone</dt>
+          <dd {...stylex.attrs(s.value)} data-perf="milestone">
+            <Show when={d().milestone} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
+              {(m) => m().title}
+            </Show>
+          </dd>
+        </dl>
+        <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
+        <RelatesTo rels={d().relationships} search={props.search} />
+        <Byline author={d().author} top>
+          opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
+        </Byline>
+        {/* Plain text until Markdown rendering lands (#98). */}
+        <div {...stylex.attrs(s.text, s.body)} data-perf="body">
+          <Show when={d().body.trim()} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
+            {d().body}
           </Show>
-        </dd>
-      </dl>
-      <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
-      <RelatesTo rels={d().relationships} search={props.search} />
-      <Byline author={d().author} top>
-        opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
-      </Byline>
-      {/* Plain text until Markdown rendering lands (#98). */}
-      <div {...stylex.attrs(s.text, s.body)} data-perf="body">
-        <Show when={d().body.trim()} fallback={<span {...stylex.attrs(s.muted)}>No description provided.</span>}>
-          {d().body}
+        </div>
+        <SubIssues rels={d().relationships} search={props.search} />
+        <h3 {...stylex.attrs(s.section)}>
+          Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
+          <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>
+        </h3>
+        <div data-perf="comments" data-perf-loaded={d().comments.comments.length}>
+          <For each={d().comments.comments} keyed={(c) => c.id}>
+            {(c) => <CommentView c={c()} at={at()} />}
+          </For>
+        </div>
+        <Show when={d().comments.next !== null}>
+          <p {...stylex.attrs(s.more)} aria-live="polite">
+            Loading more comments…
+          </p>
         </Show>
       </div>
-      <SubIssues rels={d().relationships} search={props.search} />
-      <h3 {...stylex.attrs(s.section)}>
-        Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
-        <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>
-      </h3>
-      <div data-perf="comments" data-perf-loaded={d().comments.comments.length}>
-        <For each={d().comments.comments} keyed={(c) => c.id}>
-          {(c) => <CommentView c={c()} />}
-        </For>
-      </div>
-      <Show when={d().comments.next !== null}>
-        <p {...stylex.attrs(s.more)} aria-live="polite">
-          Loading more comments…
-        </p>
+      {/* PRs take no writes in beghu. If the composer's code doesn't load, it says so in its
+          place, and the detail stays. */}
+      <Show when={d().kind === "issue"}>
+        <Errored
+          fallback={(_, reset) => (
+            <p {...stylex.attrs(s.more)} role="alert">
+              Couldn't load the comment box ·{" "}
+              <button type="button" {...stylex.attrs(s.link)} onClick={() => reset()}>
+                Retry
+              </button>
+            </p>
+          )}
+        >
+          <Loading>
+            <Composer d={d()} />
+          </Loading>
+        </Errored>
       </Show>
-    </div>
+    </>
   );
 }
 
-function CommentView(props: { c: Comment }) {
+function CommentView(props: { c: ShownComment; at: number }) {
   return (
-    <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id}>
+    <article {...stylex.attrs(s.comment)} data-perf="comment" data-id={props.c.id} data-op={props.c.op}>
       <Byline author={props.c.author}>
         <Ago at={props.c.created_at} />
+        <Show when={props.c.op}>{(op) => <Dynamic component={overlay()?.CommentNote} op={op()} at={props.at} />}</Show>
       </Byline>
       <div {...stylex.attrs(s.text)}>{props.c.body}</div>
     </article>

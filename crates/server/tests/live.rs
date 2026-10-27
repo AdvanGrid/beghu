@@ -402,6 +402,14 @@ async fn the_stream_is_origin_checked_unbuffered_and_keeps_a_heartbeat() {
                 data: "{}".into()
             })
         );
+        // Then GitHub's state as it is now.
+        assert_eq!(
+            st.next_within(SECS).await,
+            Some(Sse {
+                event: "github".into(),
+                data: r#"{"state":"up"}"#.into()
+            })
+        );
         assert_eq!(st.next_within(SECS).await.unwrap().event, ":");
     }
 }

@@ -1,0 +1,820 @@
+//! Writes: `POST /api/ops` with `{op_id, op}`. Each op is one GitHub call, made with the user's
+//! token in a task of its own, so a client that goes away mid-write doesn't cancel it. A close or
+//! reopen's answer is compared with the request field by field (a comment's 201 is enough: GitHub
+//! may keep its text its own way). GitHub's answer is written to the mirror on the account's
+//! writer lane (which pushes the issue's id to its tabs), and only then is the reply sent: a
+//! fetch the tab starts after the reply sees the change. The webhook GitHub sends back for the
+//! write meets the `updated_at` guard and changes nothing more.
+//!
+//! - `(account, op_id)` is remembered for [`REMEMBER`]: a resend joins the call in flight or gets
+//!   its stored outcome, and never makes a second GitHub call.
+//! - Ops on one issue take turns, in the order they arrive: each takes its place in its issue's
+//!   queue as it's started.
+//! - At most [`MAX_REMEMBERED`] ops per account are remembered; past that the oldest finished one
+//!   is forgotten.
+//! - A rate limit that lifts within [`QUIET_WAIT`] is waited out quietly; a longer one fails with
+//!   "try again in N s".
+//! - 5xx answers, timeouts and resets are tried again after 1 s and then 3 s, except for a
+//!   comment, which is never sent twice: GitHub may have posted it before failing, and the
+//!   failure says so ("maybe posted").
+//! - A refusal, or a close or reopen GitHub didn't apply, re-reads the account's role on that
+//!   repo at once and says why in its terms.
+//! - Only issues take writes: a PR, a stub or an issue outside the synced repos is refused.
+//! - While GitHub is down (see `github.rs`) a write fails at once, without a call.
+//!
+//! - A comment that may have been posted says which comments can be it: those newer than the
+//!   newest the mirror held as it was sent.
+//! - A drain (SIGTERM, see `serve_until`) turns new ops away with 503 and `retry-after`, and
+//!   waits for the ops under way; a resend of one it knows still joins it.
+//!
+//! There's no durable queue: a crash mid-write, or a write past the drain's limit, is lost. The
+//! tab's resend then meets a server with no record of it and is answered "lost" (it may or may
+//! not have reached GitHub), never sent again.
+
+use crate::api::User;
+use crate::auth::Session;
+use crate::detail::Comment;
+use crate::error::ApiError;
+use crate::github::{Access, Role};
+use crate::live::Push;
+use crate::{App, github, repos, tokens, webhook};
+use axum::Json;
+use axum::extract::{Extension, State};
+use mirror_db::{Caller, q};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{oneshot, watch};
+use ts_rs::TS;
+
+/// How long an `op_id` is remembered, so a resend never writes twice.
+const REMEMBER: Duration = Duration::from_secs(10 * 60);
+/// How many ops per account are remembered at most.
+const MAX_REMEMBERED: usize = 500;
+/// How long a refused write waits for the repo's role to be re-read, to say why in its terms.
+const REREAD_WAIT: Duration = Duration::from_secs(2);
+/// The longest rate limit waited out without failing the write.
+const QUIET_WAIT: Duration = Duration::from_secs(10);
+/// How many rate limits in a row one write waits out before failing.
+const QUIET_WAITS: usize = 3;
+/// The waits before each retry of a write that met a 5xx, a timeout or a reset.
+const RETRIES: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
+/// The longest comment GitHub takes, in characters.
+const MAX_COMMENT: usize = 65_536;
+
+/// One write, in the tab's words: a tagged union on `kind`.
+#[derive(Deserialize, Serialize, TS, Clone, PartialEq, Debug)]
+#[ts(export)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Op {
+    /// Add a comment to the issue.
+    Comment { issue: i64, body: String },
+    /// Close the issue as completed or not planned.
+    Close { issue: i64, reason: CloseReason },
+    /// Reopen the issue.
+    Reopen { issue: i64 },
+}
+
+#[derive(Deserialize, Serialize, TS, Clone, Copy, PartialEq, Debug)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    Completed,
+    NotPlanned,
+}
+
+impl CloseReason {
+    fn github(self) -> &'static str {
+        match self {
+            CloseReason::Completed => "completed",
+            CloseReason::NotPlanned => "not_planned",
+        }
+    }
+}
+
+/// What an item in the mirror is: only issues take writes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ItemKind {
+    Issue,
+    Pr,
+}
+
+impl ItemKind {
+    /// From the mirror's `kind`: `issue` or `pr`; anything else is a mirror beghu can't read.
+    fn of(kind: &str) -> Result<ItemKind, Failure> {
+        match kind {
+            "issue" => Ok(ItemKind::Issue),
+            "pr" => Ok(ItemKind::Pr),
+            _ => Err(Failure::Internal(format!(
+                "an item of unknown kind {kind:?}"
+            ))),
+        }
+    }
+}
+
+/// What an op is, without its fields.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum OpKind {
+    Comment,
+    Close,
+    Reopen,
+}
+
+impl OpKind {
+    /// What a lost write of this kind says. The tab's own lost write (its resends unanswered)
+    /// says the same, from `web/src/bindings/lostMessage.ts`, which `cargo test` writes from
+    /// this.
+    pub fn lost_message(self) -> &'static str {
+        match self {
+            OpKind::Comment => "May or may not have been sent; check the thread",
+            OpKind::Close | OpKind::Reopen => "May or may not have reached GitHub",
+        }
+    }
+}
+
+impl Op {
+    fn issue(&self) -> i64 {
+        match self {
+            Op::Comment { issue, .. } | Op::Close { issue, .. } | Op::Reopen { issue } => *issue,
+        }
+    }
+
+    fn kind(&self) -> OpKind {
+        match self {
+            Op::Comment { .. } => OpKind::Comment,
+            Op::Close { .. } => OpKind::Close,
+            Op::Reopen { .. } => OpKind::Reopen,
+        }
+    }
+
+    fn is_comment(&self) -> bool {
+        self.kind() == OpKind::Comment
+    }
+
+    /// Whether a 5xx, timeout or reset is tried again: not for a comment, which GitHub may have
+    /// posted before failing.
+    fn retries(&self) -> bool {
+        !self.is_comment()
+    }
+}
+
+/// `POST /api/ops`'s body.
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct OpRequest {
+    /// The tab's id for this write; a resend after a dropped connection sends the same one.
+    pub op_id: String,
+    pub op: Op,
+    /// The tab sent this op before and got no answer. A resend of an `op_id` the server has no
+    /// record of (it restarted, or forgot the op after [`REMEMBER`]) is [`ApiError::Lost`]: the
+    /// first send may have reached GitHub, so it's never sent again.
+    #[serde(default)]
+    #[ts(optional)]
+    pub resend: Option<bool>,
+}
+
+/// What a write did, once GitHub has it and the mirror too.
+#[derive(Serialize, TS, Clone)]
+#[ts(export)]
+pub struct OpReply {
+    pub issue: i64,
+    /// A comment op's comment, as the thread will show it.
+    pub comment: Option<Comment>,
+}
+
+/// How a write ended: kept for resends, so it's cloneable (unlike [`ApiError`]).
+#[derive(Clone, Debug)]
+enum Failure {
+    Gone,
+    SignedOut,
+    Refused(String),
+    RateLimited(Duration),
+    Conflict(String),
+    GitHubDown(String),
+    /// GitHub answered 403: [`run`] words it as a [`Failure::Refused`] from the role.
+    Forbidden,
+    /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or not at all: it may
+    /// have been posted. `after`: as in [`ApiError::MaybePosted`].
+    MaybePosted {
+        after: i64,
+    },
+    Internal(String),
+}
+
+impl From<Failure> for ApiError {
+    fn from(f: Failure) -> ApiError {
+        match f {
+            Failure::Gone => ApiError::Gone,
+            Failure::SignedOut => ApiError::SignedOut,
+            Failure::Refused(m) => ApiError::Refused(m),
+            Failure::Forbidden => ApiError::Refused("GitHub didn't apply this change".into()),
+            Failure::RateLimited(retry_after) => ApiError::RateLimited { retry_after },
+            Failure::Conflict(m) => ApiError::Conflict(m),
+            Failure::GitHubDown(m) => ApiError::GitHubDown(m),
+            Failure::MaybePosted { after } => ApiError::MaybePosted { after },
+            Failure::Internal(m) => ApiError::Internal(m),
+        }
+    }
+}
+
+type Outcome = Result<OpReply, Failure>;
+
+/// The writes in flight and lately done, and each issue's queue, under one lock: an op takes
+/// its turn on its issue as it arrives. And how many ops and requests for them are under way,
+/// for the drain to wait on.
+pub struct Ops {
+    book: Mutex<Book>,
+    busy: watch::Sender<usize>,
+}
+
+impl Default for Ops {
+    fn default() -> Ops {
+        Ops {
+            book: Mutex::default(),
+            busy: watch::channel(0).0,
+        }
+    }
+}
+
+/// One op task or `/api/ops` request under way, until dropped.
+struct Busy(watch::Sender<usize>);
+
+impl Busy {
+    fn new(busy: &watch::Sender<usize>) -> Busy {
+        busy.send_modify(|n| *n += 1);
+        Busy(busy.clone())
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n -= 1);
+    }
+}
+
+#[derive(Default)]
+struct Book {
+    seen: HashMap<(i64, String), Seen>,
+    /// Per issue, the last op to take a turn: its number, and what ends when it's done. An op
+    /// that finds one waits on it; the last one done removes its entry.
+    last: HashMap<i64, (u64, oneshot::Receiver<()>)>,
+    next: u64,
+}
+
+/// One `op_id`'s write: what it was, when it started, and its outcome once it has one.
+struct Seen {
+    op: Op,
+    at: Instant,
+    outcome: watch::Receiver<Option<Outcome>>,
+}
+
+impl Ops {
+    fn book(&self) -> std::sync::MutexGuard<'_, Book> {
+        self.book.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Resolves once no op and no request for one is under way.
+    pub async fn idle(&self) {
+        let _ = self.busy.subscribe().wait_for(|n| *n == 0).await;
+    }
+
+    /// The write `op_id` names: the one already started, or a new one, which takes its turn on
+    /// its issue now. A resend of an `op_id` with a different op is a client bug: 400. A resend
+    /// of one the server has no record of is lost. While the server drains, a new one is turned
+    /// away.
+    fn join_or_start(
+        &self,
+        app: &App,
+        account: i64,
+        op_id: String,
+        op: Op,
+        resend: bool,
+    ) -> Result<watch::Receiver<Option<Outcome>>, ApiError> {
+        let mut book = self.book();
+        book.seen
+            .retain(|_, s| s.at.elapsed() < REMEMBER || s.outcome.borrow().is_none());
+        let key = (account, op_id);
+        if let Some(s) = book.seen.get(&key) {
+            if s.op != op {
+                return Err(ApiError::BadRequest(format!(
+                    "op_id {:?} was used for another op",
+                    key.1
+                )));
+            }
+            return Ok(s.outcome.clone());
+        }
+        if resend {
+            return Err(ApiError::Lost { kind: op.kind() });
+        }
+        if app.draining() {
+            return Err(ApiError::Unavailable {
+                retry_after: Duration::from_secs(5),
+                why: "beghu is restarting; the change will be sent again in a moment".into(),
+            });
+        }
+        make_room(&mut book.seen, account)?;
+        let (tx, rx) = watch::channel(None);
+        book.seen.insert(
+            key,
+            Seen {
+                op: op.clone(),
+                at: Instant::now(),
+                outcome: rx.clone(),
+            },
+        );
+        // The turn: after the issue's last op, before any that arrives later.
+        let issue = op.issue();
+        let turn = book.next;
+        book.next += 1;
+        let (done, after) = oneshot::channel();
+        let before = book.last.insert(issue, (turn, after)).map(|(_, rx)| rx);
+        let end = End {
+            _busy: Busy::new(&self.busy),
+            app: app.clone(),
+            issue,
+            turn,
+            comment: op.is_comment(),
+            sending: Sending::default(),
+            tx,
+            _done: done,
+        };
+        drop(book);
+        // Its own task: the request that started it may go away; the write carries on.
+        tokio::spawn(async move {
+            if let Some(before) = before {
+                // Done, or its task ended some other way: either way it's this op's turn.
+                let _ = before.await;
+            }
+            let outcome = run(&end.app, account, &op, &end.sending).await;
+            if let Err(f) = &outcome {
+                eprintln!("ops: account {account}: {op:?} failed: {f:?}");
+            }
+            let _ = end.tx.send(Some(outcome));
+        });
+        Ok(rx)
+    }
+}
+
+/// Room for one more of `account`'s ops in `seen`: past [`MAX_REMEMBERED`], its oldest finished
+/// op is forgotten (a resend of it is then lost, never sent twice). With that many in flight,
+/// the new one waits.
+fn make_room(seen: &mut HashMap<(i64, String), Seen>, account: i64) -> Result<(), ApiError> {
+    let mine = seen.keys().filter(|(a, _)| *a == account).count();
+    if mine < MAX_REMEMBERED {
+        return Ok(());
+    }
+    let oldest = seen
+        .iter()
+        .filter(|((a, _), s)| *a == account && s.outcome.borrow().is_some())
+        .min_by_key(|(_, s)| s.at)
+        .map(|(k, _)| k.clone());
+    match oldest {
+        Some(k) => {
+            seen.remove(&k);
+            Ok(())
+        }
+        None => Err(ApiError::Unavailable {
+            retry_after: Duration::from_secs(5),
+            why: format!("{MAX_REMEMBERED} writes are already on their way"),
+        }),
+    }
+}
+
+/// The end of an op's task, however it ends: an outcome for whoever waits on it (a task that
+/// panicked fails rather than leaving them waiting: as `MaybePosted` for a comment whose call
+/// may have gone out, else as `Internal`), its issue's next op's turn, and the issue's queue
+/// entry gone if no op came after.
+struct End {
+    _busy: Busy,
+    app: App,
+    issue: i64,
+    turn: u64,
+    comment: bool,
+    sending: Sending,
+    tx: watch::Sender<Option<Outcome>>,
+    /// Dropped last: the next op on the issue waits on it.
+    _done: oneshot::Sender<()>,
+}
+
+impl Drop for End {
+    fn drop(&mut self) {
+        let maybe_posted = self.comment && self.sending.sent.load(Ordering::SeqCst);
+        let after = self.sending.after();
+        self.tx.send_if_modified(|o| {
+            o.is_none()
+                .then(|| {
+                    *o = Some(Err(if maybe_posted {
+                        Failure::MaybePosted { after }
+                    } else {
+                        Failure::Internal("the write's task ended without an outcome".into())
+                    }));
+                })
+                .is_some()
+        });
+        let mut book = self.app.ops().book();
+        if book
+            .last
+            .get(&self.issue)
+            .is_some_and(|(t, _)| *t == self.turn)
+        {
+            book.last.remove(&self.issue);
+        }
+    }
+}
+
+/// What an op's task knows of its GitHub call, for an end that comes without an outcome.
+#[derive(Default)]
+struct Sending {
+    /// Set as the call goes out.
+    sent: AtomicBool,
+    /// For a comment: the newest comment id the mirror held on the issue as the call went out.
+    after: AtomicI64,
+}
+
+impl Sending {
+    fn after(&self) -> i64 {
+        self.after.load(Ordering::SeqCst)
+    }
+}
+
+pub async fn post(
+    State(app): State<App>,
+    Extension(s): Extension<Session>,
+    Json(req): Json<OpRequest>,
+) -> Result<Json<OpReply>, ApiError> {
+    // Counted before the drain is checked, so the drain never misses it.
+    let _busy = Busy::new(&app.ops().busy);
+    if !is_uuid(&req.op_id) {
+        return Err(ApiError::BadRequest(
+            "op_id must be a UUID, like crypto.randomUUID() makes".into(),
+        ));
+    }
+    if let Op::Comment { body, .. } = &req.op
+        && body.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest("a comment needs some text".into()));
+    }
+    if let Op::Comment { body, .. } = &req.op
+        && body.chars().count() > MAX_COMMENT
+    {
+        return Err(ApiError::BadRequest(
+            "A comment can be at most 65,536 characters long, as on GitHub".into(),
+        ));
+    }
+    let mut outcome = app.ops().join_or_start(
+        &app,
+        s.account,
+        req.op_id,
+        req.op,
+        req.resend.unwrap_or(false),
+    )?;
+    let done = outcome
+        .wait_for(Option::is_some)
+        .await
+        .map_err(|_| ApiError::Internal("the write's task ended without an outcome".into()))?
+        .clone();
+    match done {
+        Some(Ok(reply)) => Ok(Json(reply)),
+        Some(Err(f)) => Err(f.into()),
+        None => Err(ApiError::Internal("no outcome".into())),
+    }
+}
+
+/// Whether `s` is a UUID in its usual spelling: 32 hex digits in groups of 8-4-4-4-12.
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// Makes the write: GitHub, then the mirror and the push.
+async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
+    let id = op.issue();
+    let target = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| q::op_target(c, id))
+        .await
+        .map_err(|e| Failure::Internal(e.to_string()))?
+        .ok_or(Failure::Gone)?;
+    if target.is_stub || !target.synced {
+        return Err(Failure::Refused(
+            "This issue is in a repo that isn't synced".into(),
+        ));
+    }
+    if ItemKind::of(&target.kind)? != ItemKind::Issue {
+        return Err(Failure::Refused(
+            "beghu doesn't write to pull requests; open it on GitHub".into(),
+        ));
+    }
+    if app.github().is_down() {
+        return Err(Failure::GitHubDown(
+            "GitHub is unreachable; try again once it's back".into(),
+        ));
+    }
+    let issue_path = format!(
+        "/repos/{}/{}/issues/{}",
+        target.owner, target.repo, target.number
+    );
+    let (method, path, body) = match op {
+        Op::Comment { body, .. } => (
+            reqwest::Method::POST,
+            format!("{issue_path}/comments"),
+            json!({ "body": body }),
+        ),
+        Op::Close { reason, .. } => (
+            reqwest::Method::PATCH,
+            issue_path,
+            json!({ "state": "closed", "state_reason": reason.github() }),
+        ),
+        Op::Reopen { .. } => (
+            reqwest::Method::PATCH,
+            issue_path,
+            json!({ "state": "open" }),
+        ),
+    };
+    let place = Place {
+        repo_id: target.repo_id,
+        owner: target.owner.clone(),
+        repo: target.repo.clone(),
+        own: target.author_id == Some(account),
+    };
+    if op.is_comment() {
+        let after = app
+            .mirrors()
+            .read(account, Caller::Request, move |c| {
+                q::newest_comment_id(c, id)
+            })
+            .await
+            .map_err(|e| Failure::Internal(e.to_string()))?;
+        sending.after.store(after, Ordering::SeqCst);
+    }
+    let answer = match call(app, account, op, method, &path, &body, sending).await {
+        Err(Failure::Forbidden) => {
+            return Err(Failure::Refused(
+                refused_why(app, account, &place, op).await,
+            ));
+        }
+        answer => answer?,
+    };
+    let repo = target.repo_id;
+    match op {
+        // A 201 is a posted comment, whatever its text came back as: GitHub may keep a body in
+        // a form of its own. The thread shows GitHub's.
+        Op::Comment { .. } => {
+            // GitHub posted it, but an answer beghu can't read doesn't say as what.
+            let c: webhook::Comment = serde_json::from_value(answer).map_err(|e| {
+                eprintln!("ops: account {account}: GitHub's 2xx for a comment: {e}");
+                Failure::MaybePosted {
+                    after: sending.after(),
+                }
+            })?;
+            let reply = OpReply {
+                issue: id,
+                comment: Some(Comment {
+                    id: c.id,
+                    author: c.user.as_ref().map(|u| User {
+                        login: u.login.clone(),
+                    }),
+                    body: c.body.clone(),
+                    created_at: c.created_at.as_deref().map_or(0, webhook::time),
+                    updated_at: webhook::time(&c.updated_at),
+                }),
+            };
+            store(app, account, id, move |tx, seq| {
+                webhook::write_comment(tx, id, &c, seq)
+            })
+            .await;
+            Ok(reply)
+        }
+        Op::Close { .. } | Op::Reopen { .. } => {
+            let issue: webhook::Issue = serde_json::from_value(answer)
+                .map_err(|e| Failure::Internal(format!("GitHub's issue: {e}")))?;
+            let applied = match op {
+                Op::Close { reason, .. } => {
+                    issue.state == "closed"
+                        && issue.state_reason.as_deref() == Some(reason.github())
+                }
+                _ => issue.state == "open",
+            };
+            store(app, account, id, move |tx, seq| {
+                webhook::write_issue(tx, repo, &issue, seq)
+            })
+            .await;
+            if !applied {
+                return Err(Failure::Refused(
+                    refused_why(app, account, &place, op).await,
+                ));
+            }
+            Ok(OpReply {
+                issue: id,
+                comment: None,
+            })
+        }
+    }
+}
+
+/// GitHub's answer to one write, through the retry matrix.
+async fn call(
+    app: &App,
+    account: i64,
+    op: &Op,
+    method: reqwest::Method,
+    path: &str,
+    body: &serde_json::Value,
+    sending: &Sending,
+) -> Result<serde_json::Value, Failure> {
+    let mut retries = if op.retries() { &RETRIES[..] } else { &[] }.iter();
+    let mut quiet_waits = 0;
+    let maybe_posted = || Failure::MaybePosted {
+        after: sending.after(),
+    };
+    loop {
+        let gh = app.github().clone();
+        let answer = app
+            .tokens()
+            .with_token(account, |token| {
+                let (gh, method) = (gh.clone(), method.clone());
+                // With a token in hand: the call goes out now.
+                sending.sent.store(true, Ordering::SeqCst);
+                async move { gh.write(&token, method, path, body).await }
+            })
+            .await;
+        let e = match answer {
+            Ok(v) => return Ok(v),
+            Err(tokens::Error::GitHub(e)) => e,
+            Err(tokens::Error::SignInAgain) => return Err(Failure::SignedOut),
+            // Only before a call, or after a 401 (GitHub took nothing): the write wasn't made.
+            Err(e) => return Err(Failure::Internal(e.to_string())),
+        };
+        match e {
+            github::Error::RateLimited(wait) if wait <= QUIET_WAIT && quiet_waits < QUIET_WAITS => {
+                quiet_waits += 1;
+                tokio::time::sleep(wait).await;
+            }
+            github::Error::RateLimited(wait) => return Err(Failure::RateLimited(wait)),
+            github::Error::Unsent(_)
+            | github::Error::Network(_)
+            | github::Error::Status(500..=599) => {
+                // A comment GitHub may have got is never sent again (see [`Op::retries`]).
+                let reached = !matches!(e, github::Error::Unsent(_));
+                if reached && op.is_comment() {
+                    return Err(maybe_posted());
+                }
+                match retries.next() {
+                    Some(wait) => tokio::time::sleep(*wait).await,
+                    None => {
+                        return Err(Failure::GitHubDown(
+                            "GitHub kept failing on this change; try again".into(),
+                        ));
+                    }
+                }
+            }
+            // A 401 with the token the refresh brought: the grant is gone.
+            github::Error::Unauthorized => return Err(Failure::SignedOut),
+            github::Error::Status(403) => return Err(Failure::Forbidden),
+            github::Error::Status(404 | 410) => return Err(Failure::Gone),
+            github::Error::Status(409) => {
+                return Err(Failure::Conflict(
+                    "GitHub reported a conflict; try again".into(),
+                ));
+            }
+            github::Error::Status(422) => {
+                return Err(Failure::Refused("GitHub couldn't apply this change".into()));
+            }
+            // A 2xx beghu couldn't read: GitHub made the write.
+            github::Error::Malformed(_) if op.is_comment() => return Err(maybe_posted()),
+            e => return Err(Failure::Internal(e.to_string())),
+        }
+    }
+}
+
+/// The repo an op's issue is in, and whether the account opened the issue.
+#[derive(Clone)]
+struct Place {
+    repo_id: i64,
+    owner: String,
+    repo: String,
+    own: bool,
+}
+
+/// Whether `role` allows `op` on an issue the account opened (`own`) or not: anyone can
+/// comment; Triage and up close and reopen any issue, Read only its own.
+fn allows(role: Role, op: &Op, own: bool) -> bool {
+    match op {
+        Op::Comment { .. } => true,
+        Op::Close { .. } | Op::Reopen { .. } => own || role >= Role::Triage,
+    }
+}
+
+/// Why GitHub refused `op`, or answered it without applying it, in terms of the account's role
+/// on the repo, re-read from GitHub at once and stored for the next write and the next
+/// `/api/me`. Only the wait for it is bounded (by [`REREAD_WAIT`]): a slower re-read is still
+/// stored when it comes. Just the reason: the tab says what couldn't be done.
+async fn refused_why(app: &App, account: i64, at: &Place, op: &Op) -> String {
+    // The repo by its bare name, as the user knows it.
+    let repo = &at.repo;
+    let reread = {
+        let (app, at) = (app.clone(), at.clone());
+        tokio::spawn(async move { reread_role(&app, account, &at).await })
+    };
+    let unknown = || format!("your role on {repo} may not allow it");
+    match tokio::time::timeout(REREAD_WAIT, reread).await {
+        Ok(Ok(Ok(Access::Role(role)))) if allows(role, op, at.own) => {
+            "GitHub didn't apply this change".into()
+        }
+        Ok(Ok(Ok(Access::Role(role)))) => format!(
+            "you have {} on {repo}, which closes or reopens only issues you opened",
+            role.name()
+        ),
+        Ok(Ok(Ok(Access::None))) => format!("you no longer have access to {repo}"),
+        Ok(Ok(Ok(Access::Unknown))) => unknown(),
+        Ok(Ok(Err(e))) => {
+            eprintln!("ops: account {account}: re-reading the role on {repo}: {e}");
+            unknown()
+        }
+        Ok(Err(e)) => {
+            eprintln!("ops: account {account}: re-reading the role on {repo} panicked: {e}");
+            unknown()
+        }
+        Err(_) => unknown(),
+    }
+}
+
+/// The account's access to `at`'s repo, from GitHub now; a known role is written to the
+/// mirror. With no access, a full re-read of its repos follows, to stop syncing the repo.
+async fn reread_role(app: &App, account: i64, at: &Place) -> Result<Access, String> {
+    let gh = app.github().clone();
+    let access = app
+        .tokens()
+        .with_token(account, |token| {
+            let gh = gh.clone();
+            async move { gh.repo_access(&token, &at.owner, &at.repo).await }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    match access {
+        Access::None => {
+            let app = app.clone();
+            tokio::spawn(async move { repos::refresh_roles_now(&app, account).await });
+        }
+        Access::Unknown => {}
+        Access::Role(role) => {
+            let id = at.repo_id;
+            app.mirrors()
+                .write(account, Caller::Request, move |tx, _| {
+                    q::set_repo_role(tx, id, role.as_str())
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(access)
+}
+
+/// Writes GitHub's answer to the mirror and pushes the issue's id if a row changed. A failed
+/// write is logged, not failed: GitHub has the change, and its webhook brings it to the mirror.
+async fn store<F>(app: &App, account: i64, id: i64, write: F)
+where
+    F: FnOnce(&rusqlite::Transaction, i64) -> rusqlite::Result<bool> + Send + 'static,
+{
+    match app.mirrors().write(account, Caller::Request, write).await {
+        Ok(true) => app.hub().publish(account, Push::Ids(Arc::from([id]))),
+        Ok(false) => {}
+        Err(e) => eprintln!("ops: account {account}: writing issue {id} to the mirror: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpKind;
+
+    /// Writes `lostMessage.ts` beside ts-rs's bindings (`TS_RS_EXPORT_DIR`): the words of a lost
+    /// write, for the tab's own.
+    #[test]
+    fn export_lost_message() {
+        let dir = std::env::var("TS_RS_EXPORT_DIR").expect("TS_RS_EXPORT_DIR (.cargo/config.toml)");
+        let entries = [
+            ("comment", OpKind::Comment),
+            ("close", OpKind::Close),
+            ("reopen", OpKind::Reopen),
+        ]
+        .map(|(name, kind)| {
+            let words = serde_json::to_string(kind.lost_message()).unwrap();
+            format!("  {name}: {words},\n")
+        });
+        let ts = format!(
+            "// Generated by `cargo test` from `OpKind::lost_message` (crates/server/src/ops.rs). Do not edit.\n\
+             import type {{ Op }} from \"./Op\";\n\n\
+             /** What a lost write says, by what it was. */\n\
+             export const LOST_MESSAGE: Record<Op[\"kind\"], string> = {{\n{}}};\n",
+            entries.concat()
+        );
+        std::fs::write(std::path::Path::new(&dir).join("lostMessage.ts"), ts).unwrap();
+    }
+}

@@ -57,6 +57,8 @@ pub struct Stack {
     pub web: PathBuf,
     /// The running server, stopped when a restart replaces it.
     server_task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    /// Signals the running server as SIGTERM does: the first drains, a second stops it at once.
+    signals: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     _dir: tempfile::TempDir,
 }
 
@@ -143,6 +145,7 @@ pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config))
         fake_api: api_url,
         web,
         server_task: None,
+        signals: None,
         _dir: dir,
     };
     s.restart_with(adjust).await;
@@ -189,11 +192,16 @@ impl Stack {
             webhook_secret: WEBHOOK_SECRET.into(),
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
+            github_probe_every: Duration::from_secs(10),
+            github_write_timeout: Duration::from_secs(30),
             read_back_retries: beghu::default_read_back_retries(),
         };
         adjust(&mut cfg);
         let app = beghu::App::open(cfg).await?;
-        self.server_task = Some(tokio::spawn(beghu::serve(listener, app)));
+        let (signals, received) = tokio::sync::mpsc::unbounded_channel();
+        // A stack that restarts or goes away drops `signals`: that server is aborted instead.
+        self.signals = Some(signals);
+        self.server_task = Some(tokio::spawn(beghu::serve_until(listener, app, received)));
         self.server = server;
         self.fake(
             "PUT",
@@ -202,6 +210,21 @@ impl Stack {
         )
         .await;
         Ok(())
+    }
+}
+
+impl Stack {
+    /// Stops the server as SIGTERM does: the task that ends when it has stopped.
+    pub fn sigterm(&mut self) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        self.signal_again();
+        self.server_task.take().expect("a running server")
+    }
+
+    /// Another SIGTERM, during the drain the first one started.
+    pub fn signal_again(&self) {
+        if let Some(signals) = &self.signals {
+            let _ = signals.send(());
+        }
     }
 }
 
@@ -432,11 +455,16 @@ pub struct Sse {
     pub data: String,
 }
 
-/// A tab's `/api/stream`, read event by event.
+/// A tab's `/api/stream`, read event by event. `github` events (GitHub up or down) are set
+/// aside for [`Stream::github_within`], so tests about pushes read only pushes.
 pub struct Stream {
     pub res_headers: reqwest::header::HeaderMap,
     body: std::pin::Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
     buf: String,
+    /// `github` events read past, oldest first.
+    github: std::collections::VecDeque<Sse>,
+    /// Other events read past while looking for a `github` one, oldest first.
+    others: std::collections::VecDeque<Sse>,
 }
 
 impl Stream {
@@ -445,6 +473,8 @@ impl Stream {
             res_headers: res.headers().clone(),
             body: Box::pin(res.bytes_stream()),
             buf: String::new(),
+            github: Default::default(),
+            others: Default::default(),
         }
     }
 
@@ -480,14 +510,40 @@ impl Stream {
         }
     }
 
-    /// The next event that isn't a heartbeat, or `None` within `wait`.
+    /// The next event that isn't a heartbeat or a `github` event, or `None` within `wait`.
     pub async fn event_within(&mut self, wait: Duration) -> Option<Sse> {
+        if let Some(ev) = self.others.pop_front() {
+            return Some(ev);
+        }
         let deadline = tokio::time::Instant::now() + wait;
         loop {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
             let ev = self.next_within(left).await?;
-            if ev.event != ":" {
-                return Some(ev);
+            match ev.event.as_str() {
+                ":" => {}
+                "github" => self.github.push_back(ev),
+                _ => return Some(ev),
+            }
+        }
+    }
+
+    /// The next `github` event's state (`up` or `down`), or `None` within `wait`.
+    pub async fn github_within(&mut self, wait: Duration) -> Option<String> {
+        let state = |ev: Sse| {
+            let v: Value = serde_json::from_str(&ev.data).unwrap();
+            v["state"].as_str().unwrap().to_owned()
+        };
+        if let Some(ev) = self.github.pop_front() {
+            return Some(state(ev));
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let ev = self.next_within(left).await?;
+            match ev.event.as_str() {
+                ":" => {}
+                "github" => return Some(state(ev)),
+                _ => self.others.push_back(ev),
             }
         }
     }

@@ -1,6 +1,7 @@
 //! How a failed API request answers: a status, a JSON body naming the failure kind (the client
 //! maps it to its named error classes), and `retry-after` when trying again later will work.
 
+use crate::ops::OpKind;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -27,6 +28,29 @@ pub enum ApiError {
         why: String,
     },
     Internal(String),
+    /// A write GitHub refused, or answered without applying: the message says why, in words
+    /// for the user.
+    Refused(String),
+    /// A write held back by GitHub's rate limit for longer than beghu waits quietly: try again
+    /// after `retry_after`.
+    RateLimited {
+        retry_after: Duration,
+    },
+    /// A write GitHub answered with a conflict.
+    Conflict(String),
+    /// A write that couldn't reach GitHub: it's down, or kept failing.
+    GitHubDown(String),
+    /// A resent write the server has no record of: it restarted, or forgot it. The first send
+    /// may or may not have reached GitHub. `kind`: what the write was.
+    Lost {
+        kind: OpKind,
+    },
+    /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or didn't answer: it
+    /// may have been posted. `after`: the newest comment id the mirror held on the issue as it
+    /// was sent; only a comment with a greater id can be it.
+    MaybePosted {
+        after: i64,
+    },
 }
 
 /// The body of every failed API response.
@@ -39,6 +63,11 @@ pub struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub issue: Option<IssueRef>,
+    /// With `maybe_posted`: the newest comment id the mirror held on the issue as the comment
+    /// was sent. Only a comment with a greater id can be it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub after: Option<i64>,
 }
 
 /// An issue beghu doesn't hold, named well enough to link out to it on GitHub.
@@ -74,6 +103,20 @@ pub enum ErrorKind {
     Unavailable,
     /// 500.
     Internal,
+    /// 422: a write GitHub refused or didn't apply.
+    Refused,
+    /// 429: a write held back by GitHub's rate limit; try again after `retry-after` seconds.
+    RateLimited,
+    /// 409: a write GitHub answered with a conflict.
+    Conflict,
+    /// 503 (beghu's own answer, with this body; never a proxy's 502): a write that couldn't reach
+    /// GitHub.
+    GithubDown,
+    /// 410: a resent write the server has no record of; it may or may not have reached GitHub.
+    Lost,
+    /// 424: a comment GitHub failed on, answered unreadably or didn't answer; it may have been
+    /// posted all the same. The body's `after` says which comments can be it.
+    MaybePosted,
 }
 
 impl From<dbrt::Error> for ApiError {
@@ -100,7 +143,7 @@ impl From<crate::tokens::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (mut retry_after, mut issue) = (None, None);
+        let (mut retry_after, mut issue, mut after) = (None, None, None);
         let (status, kind, message) = match self {
             ApiError::SignedOut => (
                 StatusCode::UNAUTHORIZED,
@@ -134,6 +177,31 @@ impl IntoResponse for ApiError {
                 retry_after = Some(r);
                 (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::Unavailable, why)
             }
+            ApiError::Refused(m) => (StatusCode::UNPROCESSABLE_ENTITY, ErrorKind::Refused, m),
+            ApiError::RateLimited { retry_after: r } => {
+                retry_after = Some(r);
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorKind::RateLimited,
+                    format!("GitHub's rate limit: try again in {} s", r.as_secs().max(1)),
+                )
+            }
+            ApiError::Conflict(m) => (StatusCode::CONFLICT, ErrorKind::Conflict, m),
+            ApiError::GitHubDown(m) => (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::GithubDown, m),
+            // These two are the words the tab shows: it says what the write was.
+            ApiError::Lost { kind } => (
+                StatusCode::GONE,
+                ErrorKind::Lost,
+                kind.lost_message().to_owned(),
+            ),
+            ApiError::MaybePosted { after: a } => {
+                after = Some(a);
+                (
+                    StatusCode::FAILED_DEPENDENCY,
+                    ErrorKind::MaybePosted,
+                    "May have been posted; check the thread".to_owned(),
+                )
+            }
             ApiError::Internal(m) => {
                 eprintln!("internal error: {m}");
                 (
@@ -149,6 +217,7 @@ impl IntoResponse for ApiError {
                 error: kind,
                 message,
                 issue,
+                after,
             }),
         )
             .into_response();

@@ -693,9 +693,9 @@ struct Repository {
 }
 
 #[derive(Deserialize)]
-struct User {
+pub(crate) struct User {
     id: i64,
-    login: String,
+    pub login: String,
     avatar_url: Option<String>,
 }
 
@@ -718,16 +718,17 @@ struct Milestone {
     updated_at: Option<String>,
 }
 
+/// An issue as GitHub's webhooks and REST answers carry it.
 #[derive(Deserialize)]
-struct Issue {
+pub(crate) struct Issue {
     id: i64,
     #[serde(default)]
     node_id: String,
     number: i64,
     title: String,
     body: Option<String>,
-    state: String,
-    state_reason: Option<String>,
+    pub state: String,
+    pub state_reason: Option<String>,
     #[serde(default)]
     locked: bool,
     user: Option<User>,
@@ -755,16 +756,17 @@ struct IssueType {
     name: String,
 }
 
+/// A comment as GitHub's webhooks and REST answers carry it.
 #[derive(Deserialize)]
-struct Comment {
-    id: i64,
+pub(crate) struct Comment {
+    pub id: i64,
     #[serde(default)]
     node_id: String,
-    user: Option<User>,
+    pub user: Option<User>,
     #[serde(default)]
-    body: String,
-    created_at: Option<String>,
-    updated_at: String,
+    pub body: String,
+    pub created_at: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -1053,28 +1055,9 @@ impl RepoChange {
                 ids.into_iter().collect()
             }
             Change::Comment { issue, comment } => {
-                let mut changed = upsert_issue(tx, repo, issue, seq)?;
-                if let Some(u) = &comment.user {
-                    q::upsert_user(tx, u.id, &u.login, u.avatar_url.as_deref())?;
-                }
-                let updated = time(&comment.updated_at);
-                let created = comment.created_at.as_deref().map_or(updated, time);
-                if q::upsert_comment(
-                    tx,
-                    comment.id,
-                    &comment.node_id,
-                    issue.id,
-                    comment.user.as_ref().map(|u| u.id),
-                    &comment.body,
-                    created,
-                    updated,
-                    seq,
-                )? > 0
-                {
-                    q::bump_last_commented(tx, issue.id, created, seq)?;
-                    changed = true;
-                }
-                ids_if(changed, issue.id)
+                let issue_changed = upsert_issue(tx, repo, issue, seq)?;
+                let comment_changed = write_comment(tx, issue.id, comment, seq)?;
+                ids_if(issue_changed || comment_changed, issue.id)
             }
             Change::CommentDeleted { issue, comment } => {
                 let mut changed = upsert_issue(tx, repo, issue, seq)?;
@@ -1112,6 +1095,48 @@ impl RepoChange {
             }
         })
     }
+}
+
+/// Writes an issue from GitHub's answer to one of beghu's own writes, as its webhook would (under
+/// the `updated_at` guard): false if the mirror already had it as new or newer.
+pub(crate) fn write_issue(
+    tx: &Transaction,
+    repo: i64,
+    issue: &Issue,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    upsert_issue(tx, repo, issue, seq)
+}
+
+/// Writes a comment on `issue` from GitHub's answer to one of beghu's own writes, as its
+/// `issue_comment` webhook would: false if the mirror already had it as new or newer. The issue's
+/// own row (its count and `updated_at`) waits for that webhook, which carries it.
+pub(crate) fn write_comment(
+    tx: &Transaction,
+    issue: i64,
+    comment: &Comment,
+    seq: i64,
+) -> rusqlite::Result<bool> {
+    if let Some(u) = &comment.user {
+        q::upsert_user(tx, u.id, &u.login, u.avatar_url.as_deref())?;
+    }
+    let updated = time(&comment.updated_at);
+    let created = comment.created_at.as_deref().map_or(updated, time);
+    let written = q::upsert_comment(
+        tx,
+        comment.id,
+        &comment.node_id,
+        issue,
+        comment.user.as_ref().map(|u| u.id),
+        &comment.body,
+        created,
+        updated,
+        seq,
+    )? > 0;
+    if written {
+        q::bump_last_commented(tx, issue, created, seq)?;
+    }
+    Ok(written)
 }
 
 /// `[id]` if its row changed, else nothing.
@@ -1198,7 +1223,7 @@ fn upsert_issue(tx: &Transaction, repo: i64, i: &Issue, seq: i64) -> rusqlite::R
 
 /// GitHub's RFC 3339 timestamps (`2026-10-13T08:22:19Z`, or with an offset or fractional
 /// seconds) as Unix seconds; 0 for one that doesn't parse.
-fn time(s: &str) -> i64 {
+pub(crate) fn time(s: &str) -> i64 {
     parse_time(s).unwrap_or(0)
 }
 

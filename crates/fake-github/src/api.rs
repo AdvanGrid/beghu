@@ -1,5 +1,5 @@
-//! The REST endpoints beghu calls with a user access token: the user, and the installations and
-//! repos it can see, with `permissions` (the role).
+//! The REST endpoints beghu calls with a user access token: the user, the installations and
+//! repos it can see, and one repo, each repo with the user's `permissions` (the role).
 
 use crate::Fake;
 use crate::accounts::Role;
@@ -23,15 +23,21 @@ pub(crate) fn router() -> Router<Fake> {
             "/user/installations/{installation_id}/repositories",
             get(installation_repos),
         )
+        .route("/repos/{owner}/{repo}", get(repo))
 }
 
 /// GitHub's error body.
 pub(crate) fn error(status: StatusCode, message: &str) -> Response {
+    error_documented(status, message, DOCS)
+}
+
+/// GitHub's error body, with the `documentation_url` GitHub sends for this error.
+pub(crate) fn error_documented(status: StatusCode, message: &str, docs: &str) -> Response {
     (
         status,
         axum::Json(json!({
             "message": message,
-            "documentation_url": DOCS,
+            "documentation_url": docs,
             "status": status.as_str(),
         })),
     )
@@ -49,7 +55,7 @@ pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
 
 /// The user id behind the request's `Authorization: Bearer|token <ghu_…>`. Extracting it answers
 /// GitHub's 401 when there's no live access token.
-pub(crate) struct TokenUser(i64);
+pub(crate) struct TokenUser(pub i64);
 
 impl FromRequestParts<Fake> for TokenUser {
     type Rejection = Response;
@@ -213,6 +219,68 @@ fn permissions(role: Role) -> Value {
     })
 }
 
+/// GitHub's repo object, as the repo endpoints answer it, with the user's `permissions`.
+fn repo_json(
+    id: i64,
+    node_id: &str,
+    owner: &str,
+    name: &str,
+    private: bool,
+    archived: bool,
+    role: Role,
+) -> Value {
+    let full = format!("{owner}/{name}");
+    json!({
+        "id": id,
+        "node_id": node_id,
+        "name": name,
+        "full_name": full,
+        "private": private,
+        "visibility": if private { "private" } else { "public" },
+        "owner": { "login": owner, "type": "Organization" },
+        "html_url": format!("https://github.com/{full}"),
+        "url": format!("https://api.github.com/repos/{full}"),
+        "archived": archived,
+        "disabled": false,
+        "has_issues": true,
+        "permissions": permissions(role),
+    })
+}
+
+/// `GET /repos/{owner}/{repo}`: the repo with the user's permissions on it. A private repo the
+/// user has no role on is a 404; on a public one they can read.
+async fn repo(
+    State(fake): State<Fake>,
+    TokenUser(user): TokenUser,
+    Path((owner, name)): Path<(String, String)>,
+) -> Response {
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let Some(id) = q::repo_by_full_name(c, &owner, &name)? else {
+                return Ok(None);
+            };
+            Ok(Some((q::repo(c, id)?, q::permission(c, user, id)?)))
+        })
+        .await;
+    let (r, role) = match read {
+        Ok(Some(found)) => found,
+        Ok(None) => return not_found().await,
+        Err(e) => return internal(e),
+    };
+    let role = match role.as_deref().map(Role::from_name) {
+        Some(Some(role)) => role,
+        Some(None) => return internal(format!("repo {} has an unknown role {role:?}", r.id)),
+        None if r.private => return not_found().await,
+        None => Role::Read,
+    };
+    axum::Json(repo_json(
+        r.id, &r.node_id, &r.owner, &r.name, r.private, r.archived, role,
+    ))
+    .into_response()
+}
+
 async fn installation_repos(
     State(fake): State<Fake>,
     TokenUser(user): TokenUser,
@@ -244,22 +312,9 @@ async fn installation_repos(
         .map(|r| {
             let role = Role::from_name(&r.role)
                 .ok_or_else(|| format!("repo {} has an unknown role {:?}", r.id, r.role))?;
-            let full = format!("{}/{}", r.owner, r.name);
-            Ok(json!({
-                "id": r.id,
-                "node_id": r.node_id,
-                "name": r.name,
-                "full_name": full,
-                "private": r.private,
-                "visibility": if r.private { "private" } else { "public" },
-                "owner": { "login": r.owner, "type": "Organization" },
-                "html_url": format!("https://github.com/{full}"),
-                "url": format!("https://api.github.com/repos/{full}"),
-                "archived": r.archived,
-                "disabled": false,
-                "has_issues": true,
-                "permissions": permissions(role),
-            }))
+            Ok(repo_json(
+                r.id, &r.node_id, &r.owner, &r.name, r.private, r.archived, role,
+            ))
         })
         .collect();
     let repos = match repos {

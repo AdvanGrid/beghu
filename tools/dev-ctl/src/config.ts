@@ -157,8 +157,18 @@ export interface FakeState {
   tokens: { access_ttl: number; refresh_ttl: number };
   faults: {
     down: boolean;
-    latency: { endpoint: string; ms: number }[];
-    fail: { endpoint: string; remaining: number; status: number; retry_after: number | null }[];
+    /** `remaining`: a rule for only the next calls. */
+    latency: { endpoint: string; ms: number; remaining?: number }[];
+    /** `status` is null for a `reset` (no answer at all). */
+    fail: {
+      endpoint: string;
+      remaining: number;
+      status: number | null;
+      retry_after: number | null;
+      secondary_rate_limit?: boolean;
+      reset?: boolean;
+    }[];
+    rewrite: { endpoint: string; remaining: number; body: string }[];
   };
   /** Refresh tokens honoured, and refresh tokens that came back already spent. */
   refreshes: { ok: number; reused: number };

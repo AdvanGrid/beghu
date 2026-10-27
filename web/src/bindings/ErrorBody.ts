@@ -9,4 +9,9 @@ export type ErrorBody = { error: ErrorKind, message: string,
 /**
  * With `no_access`: the issue, enough to link out to it on GitHub.
  */
-issue?: IssueRef, };
+issue?: IssueRef, 
+/**
+ * With `maybe_posted`: the newest comment id the mirror held on the issue as the comment
+ * was sent. Only a comment with a greater id can be it.
+ */
+after?: number, };

@@ -86,7 +86,7 @@ pub struct CommentPage {
     pub next: Option<String>,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Serialize, TS, Clone)]
 #[ts(export)]
 pub struct Comment {
     pub id: i64,

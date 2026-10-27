@@ -13,6 +13,7 @@ mod facets;
 mod github;
 mod installations;
 mod live;
+mod ops;
 mod query;
 mod relationships;
 mod repos;
@@ -30,8 +31,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use control_db::Control;
 use mirror_db::Mirrors;
+use std::future::IntoFuture as _;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The running server's shared state.
 #[derive(Clone)]
@@ -51,6 +53,10 @@ struct Inner {
     hub: Arc<live::Hub>,
     /// Webhook deliveries on their way to the mirrors.
     webhooks: webhook::Queue,
+    /// Writes in flight and lately done.
+    ops: ops::Ops,
+    /// True once SIGTERM has started the drain (see [`serve_until`]).
+    draining: tokio::sync::watch::Sender<bool>,
 }
 
 impl App {
@@ -67,7 +73,11 @@ impl App {
         let control = Arc::new(control);
         let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
         let shell = cfg.web_dir.as_deref().map(shell::Shell::load).transpose()?;
-        let github = github::GitHub::new(&cfg.github);
+        let github = github::GitHub::new(
+            &cfg.github,
+            cfg.github_probe_every,
+            cfg.github_write_timeout,
+        );
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
         let tokens = tokens::Tokens::new(control.clone(), github.clone(), keys.clone());
         let hub = Arc::new(live::Hub::default());
@@ -101,6 +111,8 @@ impl App {
             roles: repos::Roles::default(),
             hub,
             webhooks,
+            ops: ops::Ops::default(),
+            draining: tokio::sync::watch::channel(false).0,
         })))
     }
 
@@ -143,6 +155,20 @@ impl App {
     fn webhooks(&self) -> &webhook::Queue {
         &self.0.webhooks
     }
+
+    fn ops(&self) -> &ops::Ops {
+        &self.0.ops
+    }
+
+    /// True once the drain has started.
+    fn draining(&self) -> bool {
+        *self.0.draining.borrow()
+    }
+
+    /// The drain flag as it changes.
+    fn drain_watch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.0.draining.subscribe()
+    }
 }
 
 /// Compressed bodies, br or gzip by the browser's `accept-encoding`, with `vary` set. The edge
@@ -168,11 +194,18 @@ pub fn router(app: App) -> Router {
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/stream", get(live::stream))
+        .route("/ops", post(ops::post))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
         ))
         .fallback(|| async { error::ApiError::NotFound })
+        // Outermost of the API's own layers: a request from another site is refused before
+        // anything else looks at it.
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            auth::require_same_origin,
+        ))
         .layer(middleware::from_fn_with_state(app.clone(), api_headers))
         .layer(compression());
     // The shell answers only the SPA's own routes (web/src/router.tsx); any other path is a
@@ -183,6 +216,7 @@ pub fn router(app: App) -> Router {
         .layer(compression());
     let mut r = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
         .route(
@@ -236,6 +270,84 @@ pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Resu
     axum::serve(listener, router(app)).await
 }
 
+/// The longest a drain takes before the server stops anyway.
+const DRAIN: Duration = Duration::from_secs(25);
+
+/// Serves until the first of `signals` (SIGTERM, in `main`), then drains for up to [`DRAIN`]:
+/// `/readyz` answers 503, the live streams close and new writes are turned away (503 with
+/// `retry-after`) while the writes in flight finish; then the server stops taking connections,
+/// sends the answers still on their way and returns. A second signal during the drain returns at
+/// once.
+///
+/// The drain waits for writes only, not for webhook deliveries or the relationship read-backs
+/// that hold them (see [`edges`]). A write has no durable queue, so one cut off is lost; a
+/// delivery is marked processed only once its read-back has landed, so one cut off is replayed,
+/// and read back, at the next start, and replaying is idempotent. A read-back can also wait out
+/// retries for about 10 minutes, far past the drain's 25 s.
+pub async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: App,
+    mut signals: tokio::sync::mpsc::UnboundedReceiver<()>,
+) -> std::io::Result<()> {
+    let (count, received) = tokio::sync::watch::channel(0_u32);
+    tokio::spawn(async move {
+        while signals.recv().await.is_some() {
+            count.send_modify(|n| *n += 1);
+        }
+    });
+    // Resolves once `n` signals have come; never, if no more will.
+    let signalled = |n: u32| {
+        let mut received = received.clone();
+        async move {
+            if received.wait_for(|k| *k >= n).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    let (drained, deadline) = tokio::sync::oneshot::channel();
+    let drain = {
+        let app = app.clone();
+        let stop = signalled(1);
+        async move {
+            stop.await;
+            let until = tokio::time::Instant::now() + DRAIN;
+            eprintln!(
+                "draining: waiting up to {} s for writes in flight",
+                DRAIN.as_secs()
+            );
+            app.0.draining.send_replace(true);
+            if tokio::time::timeout_at(until, app.ops().idle())
+                .await
+                .is_err()
+            {
+                eprintln!(
+                    "draining: writes still in flight after {} s",
+                    DRAIN.as_secs()
+                );
+            }
+            let _ = drained.send(until);
+        }
+    };
+    let server = axum::serve(listener, router(app)).with_graceful_shutdown(drain);
+    let give_up = async {
+        match deadline.await {
+            Ok(until) => tokio::time::sleep_until(until).await,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        r = server.into_future() => r,
+        () = give_up => {
+            eprintln!("draining: stopping with requests still open");
+            Ok(())
+        }
+        () = signalled(2) => {
+            eprintln!("draining: signalled again; stopping now");
+            Ok(())
+        }
+    }
+}
+
 /// Liveness: the build id, and no database.
 async fn healthz(State(app): State<App>) -> impl IntoResponse {
     let build = &app.cfg().build_id;
@@ -244,6 +356,15 @@ async fn healthz(State(app): State<App>) -> impl IntoResponse {
         [("x-beghu-build", v)],
         axum::Json(serde_json::json!({ "build": build })),
     )
+}
+
+/// Readiness: 503 once the drain has started.
+async fn readyz(State(app): State<App>) -> Response {
+    if app.draining() {
+        (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response()
+    } else {
+        "ready".into_response()
+    }
 }
 
 /// Unix seconds.

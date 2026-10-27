@@ -1,5 +1,11 @@
-//! Runtime faults on the GitHub side: latency per endpoint, the next N calls failing with a
-//! chosen status, and down. Set through the control port; a reset clears them.
+//! Runtime faults on the GitHub side: latency per endpoint (for every call, or the next N), the
+//! next N calls failing with a chosen status or dropping the connection unanswered, the next N
+//! answers carrying a rewritten `body` (or cut short), and down. Set through the control port; a reset clears
+//! them.
+//!
+//! A failing call never reaches the endpoint: GitHub didn't act on it. A rewrite does: GitHub
+//! acted, and its answer differs from what was asked (payload drift, or GitHub keeping a text in
+//! a form of its own).
 //!
 //! An endpoint is `*` (everything), or a path with an optional method in front (`GET /user`).
 //! A path matches only itself, ignoring a trailing slash on either side; rules are stored
@@ -12,6 +18,7 @@
 //! the first one added wins and uses up one of its calls; the others wait their turn.
 
 use crate::Fake;
+use crate::writes::CoreLimit;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
@@ -28,21 +35,52 @@ pub(crate) struct Rules {
     pub down: bool,
     pub latency: Vec<Latency>,
     pub fail: Vec<Fail>,
+    pub rewrite: Vec<Rewrite>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Latency {
     pub endpoint: String,
     pub ms: u64,
+    /// How many more calls it delays; none: every call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Fail {
     pub endpoint: String,
     pub remaining: u32,
-    pub status: u16,
-    /// Seconds, sent as `retry-after` (and as the rate-limit reset for 403 and 429).
+    /// What the call gets: an answer with this status, or with `reset`, none at all.
+    pub status: Option<u16>,
+    /// Seconds, sent as `retry-after` (and, for a primary rate limit, as its reset).
     pub retry_after: Option<u64>,
+    /// A 403 or 429 is GitHub's secondary rate limit: its message, and requests left in the
+    /// primary limit.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub secondary_rate_limit: bool,
+    /// The connection is dropped before any answer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reset: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct Rewrite {
+    pub endpoint: String,
+    pub remaining: u32,
+    #[serde(flatten)]
+    pub to: RewriteTo,
+}
+
+/// What a rewritten answer carries.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RewriteTo {
+    /// What the answer's `body` field says instead.
+    Body(String),
+    /// The whole body instead, sent complete under the answer's own status: an answer beghu
+    /// can't read, such as text that isn't JSON.
+    Raw(String),
 }
 
 impl Faults {
@@ -66,31 +104,46 @@ impl Faults {
         self.with(|r| r.down = down);
     }
 
-    /// Sets the latency for `endpoint`, replacing any earlier rule for it; 0 removes it.
-    pub fn set_latency(&self, endpoint: String, ms: u64) {
+    /// Sets the latency for `endpoint`, for every call or the next `count`, replacing any
+    /// earlier rule for it; 0 removes it.
+    pub fn set_latency(&self, endpoint: String, ms: u64, count: Option<u32>) {
         self.with(|r| {
             r.latency.retain(|l| l.endpoint != endpoint);
             if ms > 0 {
-                r.latency.push(Latency { endpoint, ms });
+                r.latency.push(Latency {
+                    endpoint,
+                    ms,
+                    remaining: count,
+                });
             }
         });
+    }
+
+    pub fn add_rewrite(&self, rewrite: Rewrite) {
+        self.with(|r| r.rewrite.push(rewrite));
     }
 
     pub fn add_fail(&self, fail: Fail) {
         self.with(|r| r.fail.push(fail));
     }
 
-    /// What happens to one call: the delay before it, and the status it fails with, if any.
-    /// Uses up one call of the first matching fail rule.
-    fn on_call(&self, method: &Method, path: &str) -> (Duration, Option<Fail>) {
+    /// What happens to one call: the delay before it, how it fails, if it does, and otherwise
+    /// how its answer is rewritten, if it is. Uses up one call of every matching
+    /// counted latency rule, and of the first matching fail rule or else rewrite rule.
+    fn on_call(&self, method: &Method, path: &str) -> (Duration, Option<Fail>, Option<RewriteTo>) {
         self.with(|r| {
-            let delay = r
+            let mut delay = 0;
+            for l in r
                 .latency
-                .iter()
+                .iter_mut()
                 .filter(|l| matches(&l.endpoint, method, path))
-                .map(|l| l.ms)
-                .max()
-                .unwrap_or(0);
+            {
+                delay = delay.max(l.ms);
+                if let Some(n) = &mut l.remaining {
+                    *n -= 1;
+                }
+            }
+            r.latency.retain(|l| l.remaining != Some(0));
             let fail = r
                 .fail
                 .iter_mut()
@@ -100,7 +153,19 @@ impl Faults {
                     f.clone()
                 });
             r.fail.retain(|f| f.remaining > 0);
-            (Duration::from_millis(delay), fail)
+            let rewrite = match fail {
+                Some(_) => None,
+                None => r
+                    .rewrite
+                    .iter_mut()
+                    .find(|w| matches(&w.endpoint, method, path))
+                    .map(|w| {
+                        w.remaining -= 1;
+                        w.to.clone()
+                    }),
+            };
+            r.rewrite.retain(|w| w.remaining > 0);
+            (Duration::from_millis(delay), fail, rewrite)
         })
     }
 }
@@ -167,37 +232,99 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         )
             .into_response();
     }
-    let (delay, fail) = faults.on_call(req.method(), req.uri().path());
+    let (delay, fail, rewrite) = faults.on_call(req.method(), req.uri().path());
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
-    match fail {
-        Some(f) => failure(&f, fake.now()),
-        None => next.run(req).await,
+    match (fail, rewrite) {
+        (Some(f), _) if f.reset => dropped(),
+        (Some(f), _) => failure(&f, fake.now()),
+        (None, Some(RewriteTo::Body(body))) => rewritten(next.run(req).await, body).await,
+        (None, Some(RewriteTo::Raw(raw))) => {
+            let (parts, _) = next.run(req).await.into_parts();
+            let mut res = Response::from_parts(parts, raw.into());
+            res.headers_mut().remove(header::CONTENT_LENGTH);
+            res
+        }
+        (None, None) => next.run(req).await,
     }
 }
 
-/// The response GitHub gives for `f.status`, at `now` on the fake's clock.
+/// No answer: the connection is closed before a status line goes out. (A response body that
+/// fails at once makes hyper drop the connection with the head still unsent.)
+fn dropped() -> Response {
+    let body = futures_util::stream::once(async {
+        Err::<axum::body::Bytes, _>(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset (fake)",
+        ))
+    });
+    axum::body::Body::from_stream(body).into_response()
+}
+
+/// `res` with its JSON `body` field set to `body`.
+async fn rewritten(res: Response, body: String) -> Response {
+    let (mut parts, b) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(b, usize::MAX).await else {
+        return crate::api::internal("reading an answer to rewrite");
+    };
+    let mut v: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return Response::from_parts(parts, bytes.into()),
+    };
+    if let Some(o) = v.as_object_mut() {
+        o.insert("body".into(), body.into());
+    }
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::Json(v).into_response().into_body())
+}
+
+/// The `documentation_url` GitHub sends with a secondary rate limit.
+const SECONDARY_DOCS: &str = "https://docs.github.com/free-pro-team@latest/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits";
+
+/// The response GitHub gives for `f`'s status, at `now` on the fake's clock.
 fn failure(f: &Fail, now: i64) -> Response {
-    let status = StatusCode::from_u16(f.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let rate_limited = matches!(f.status, 403 | 429) && f.retry_after.is_some();
-    let message = match f.status {
+    let code = f.status.unwrap_or(500);
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let limit = matches!(code, 403 | 429);
+    let secondary = limit && f.secondary_rate_limit;
+    let rate_limited = limit && !secondary && f.retry_after.is_some();
+    let message = match code {
+        // GitHub's documented message for a secondary rate limit.
+        _ if secondary => {
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. If you reach out to GitHub Support for help, please include the request ID (fake)."
+        }
         _ if rate_limited => "API rate limit exceeded. (fake)",
+        401 => "Bad credentials",
         403 => "Resource not accessible by integration",
         409 => "Conflict",
         s if s >= 500 => "Server Error",
         _ => status.canonical_reason().unwrap_or("Error"),
     };
-    let mut res = crate::api::error(status, message);
+    let mut res = if secondary {
+        crate::api::error_documented(status, message, SECONDARY_DOCS)
+    } else {
+        crate::api::error(status, message)
+    };
     let h = res.headers_mut();
     if let Some(secs) = f.retry_after {
         h.insert(header::RETRY_AFTER, HeaderValue::from(secs));
     }
+    let core = CoreLimit::at(now);
+    if secondary {
+        // The primary limit isn't what ran out: it stands as `/rate_limit` says.
+        h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
+        h.insert("x-ratelimit-remaining", HeaderValue::from(core.remaining()));
+        h.insert("x-ratelimit-used", HeaderValue::from(core.used));
+        h.insert("x-ratelimit-reset", HeaderValue::from(core.reset));
+        h.insert("x-ratelimit-resource", HeaderValue::from_static("core"));
+    }
     if rate_limited {
+        // The primary limit ran out, and resets after `retry_after`.
         let reset = now + f.retry_after.unwrap_or(0) as i64;
-        h.insert("x-ratelimit-limit", HeaderValue::from(5000));
+        h.insert("x-ratelimit-limit", HeaderValue::from(core.limit));
         h.insert("x-ratelimit-remaining", HeaderValue::from(0));
-        h.insert("x-ratelimit-used", HeaderValue::from(5000));
+        h.insert("x-ratelimit-used", HeaderValue::from(core.limit));
         h.insert("x-ratelimit-reset", HeaderValue::from(reset));
         h.insert("x-ratelimit-resource", HeaderValue::from_static("core"));
     }

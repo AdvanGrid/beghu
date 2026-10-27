@@ -184,7 +184,7 @@ pub struct Label {
     pub color: String,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Serialize, TS, Clone)]
 #[ts(export)]
 pub struct User {
     pub login: String,

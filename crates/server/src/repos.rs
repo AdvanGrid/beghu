@@ -156,8 +156,11 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
     let synced = app
         .mirrors()
         .write(account, Caller::Request, move |tx, _seq| {
+            // A repo whose role GitHub didn't say keeps the one stored.
             for r in &repos {
-                q::set_repo_role(tx, r.id, r.role)?;
+                if let Some(role) = r.role {
+                    q::set_repo_role(tx, r.id, role.as_str())?;
+                }
             }
             q::synced_repos(tx)
         })

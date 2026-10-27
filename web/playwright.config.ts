@@ -18,11 +18,13 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships)\.spec\.ts$/ },
-    // The specs that edit (live.spec.ts, relationships.spec.ts): their edits reach every
-    // signed-in tab and push refetches, so they run once the rest are done, one after the
-    // other, never beside anything else.
+    { name: "browser", testIgnore: /(live|relationships|writes)\.spec\.ts$/ },
+    // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts): their edits reach
+    // every signed-in tab, push refetches and reorder the list, and writes.spec.ts sets faults for
+    // the whole stack, so they run once the rest are done, one after the other, never beside
+    // anything else.
     { name: "live", testMatch: /live\.spec\.ts$/, dependencies: ["browser"] },
     { name: "relationships", testMatch: /relationships\.spec\.ts$/, dependencies: ["live"] },
+    { name: "writes", testMatch: /writes\.spec\.ts$/, dependencies: ["relationships"] },
   ],
 });

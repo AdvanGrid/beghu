@@ -743,6 +743,83 @@ async fn a_read_back_pending_when_the_server_stops_runs_after_the_restart() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drain_doesnt_wait_for_a_read_back_and_the_next_server_reads_it_back() {
+    let mut s = start_with(|c| c.read_back_retries = vec![Duration::from_secs(60)]).await;
+    let b = s.sign_in("tomsj").await;
+    let (web, api) = (unlinked("web"), unlinked("api"));
+    let (blocked, blocker) = (&web[0], &api[0]);
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": "POST /graphql", "count": 1000, "status": 502 }),
+    )
+    .await;
+    edit(&s, blocked, json!({ "add_blocked_by": reference(blocker) })).await;
+    until(5.0, "both read-backs failing", || async {
+        (graphql_failures(&s).await >= 2).then_some(())
+    })
+    .await;
+    s.fake("DELETE", "/faults", json!({})).await;
+
+    // Its deliveries stay unprocessed while the read-backs wait, yet the drain has no writes to
+    // wait for: it stops well inside its 25 s.
+    let t = Instant::now();
+    let stopped = s.sigterm();
+    tokio::time::timeout(Duration::from_secs(5), stopped)
+        .await
+        .expect("the drain stops without the read-backs")
+        .unwrap()
+        .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(5));
+
+    s.restart_with(|_| {}).await;
+    until(3.0, "the dependency, after the restart", || async {
+        let d = detail(&s, &b, blocked.2).await;
+        (rel_ids(&d, "blocked_by") == [blocker.2]).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_backs_github_fails_count_toward_github_down() {
+    let s = start_with(|c| {
+        c.read_back_retries = vec![Duration::from_millis(100); 15];
+        c.github_probe_every = Duration::from_millis(300);
+    })
+    .await;
+    let b = s.sign_in("tomsj").await;
+    let mut st = s.stream(&b).await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(1)).await.as_deref(),
+        Some("up")
+    );
+    let (web, api) = (unlinked("web"), unlinked("api"));
+    // Only the installation token's GraphQL read-backs call GitHub here, and each meets a 502.
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": "POST /graphql", "count": 1000, "status": 502 }),
+    )
+    .await;
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": "/rate_limit", "count": 1000, "status": 503 }),
+    )
+    .await;
+    edit(&s, &web[0], json!({ "add_blocked_by": reference(&api[0]) })).await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(5)).await.as_deref(),
+        Some("down")
+    );
+    s.fake("DELETE", "/faults", json!({})).await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(5)).await.as_deref(),
+        Some("up")
+    );
+}
+
 /// How many calls the `POST /graphql` fail rule has failed so far (of its 1000).
 async fn graphql_failures(s: &Stack) -> u64 {
     let state = s.fake("GET", "/state", json!({})).await;

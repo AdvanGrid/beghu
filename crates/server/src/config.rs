@@ -10,7 +10,9 @@ pub use mirror_db::Config as MirrorsConfig;
 pub struct Config {
     /// `BEGHU_BUILD_ID`: the git SHA in production.
     pub build_id: String,
-    /// `BEGHU_PUBLIC_URL`: where browsers reach beghu. Sets the OAuth callback.
+    /// `BEGHU_PUBLIC_URL`: where browsers reach beghu, kept as its origin (scheme, host and a
+    /// port other than the scheme's own, in lower case), as browsers send it in `Origin`. Sets
+    /// the OAuth callback.
     pub public_url: String,
     /// `BEGHU_DATA_DIR`: the volume. Holds `control.db`, `backups/` and `mirrors/`.
     pub data_dir: PathBuf,
@@ -35,6 +37,11 @@ pub struct Config {
     /// How long a processed webhook delivery's GUID is kept to dedupe redeliveries (4 days:
     /// GitHub's 3-day redelivery window with a day's margin); older ones are pruned.
     pub deliveries_kept_for: Duration,
+    /// While GitHub is down, how often `GET /rate_limit` is tried to see whether it's back (10 s).
+    pub github_probe_every: Duration,
+    /// How long a write waits for GitHub's answer (30 s): longer than a read, so a slow GitHub
+    /// shows as "still sending…" in the tab rather than as a failure.
+    pub github_write_timeout: Duration,
     /// The waits between tries of a relationship read-back that GitHub fails (about 10 minutes
     /// in all). Past the last, the accounts syncing the issue's repo are marked `needs_resync`
     /// for a sweep to repair.
@@ -74,12 +81,7 @@ impl Config {
             .ok()
             .filter(|k| k.len() >= 32)
             .ok_or("BEGHU_TOKEN_KEY must be at least 32 bytes, base64-encoded")?;
-        let public_url = required("BEGHU_PUBLIC_URL")?;
-        if !(public_url.starts_with("https://") || public_url.starts_with("http://")) {
-            return Err(format!(
-                "BEGHU_PUBLIC_URL must be an http(s) URL, got {public_url:?}"
-            ));
-        }
+        let public_url = public_origin(&required("BEGHU_PUBLIC_URL")?)?;
         // A key in an env var often has its newlines escaped.
         let app_key = secret("GITHUB_APP_PRIVATE_KEY")?.replace("\\n", "\n");
         let api_url = optional("GITHUB_API_URL", "https://api.github.com");
@@ -92,7 +94,7 @@ impl Config {
         }
         Ok(Config {
             build_id: std::env::var("BEGHU_BUILD_ID").unwrap_or_else(|_| "dev".into()),
-            public_url: public_url.trim_end_matches('/').to_owned(),
+            public_url,
             data_dir: PathBuf::from(required("BEGHU_DATA_DIR")?),
             token_key,
             github: GitHubConfig {
@@ -110,6 +112,8 @@ impl Config {
             webhook_secret: secret("GITHUB_WEBHOOK_SECRET")?,
             stream_heartbeat: Duration::from_secs(15),
             deliveries_kept_for: Duration::from_secs(4 * 24 * 60 * 60),
+            github_probe_every: Duration::from_secs(10),
+            github_write_timeout: Duration::from_secs(30),
             read_back_retries: default_read_back_retries(),
         })
     }
@@ -130,6 +134,17 @@ impl Config {
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
     }
+}
+
+/// `url`'s origin as browsers serialise it: `https://beghu.example`, with no default port, path
+/// or trailing slash, in lower case.
+fn public_origin(url: &str) -> Result<String, String> {
+    let bad = || format!("BEGHU_PUBLIC_URL must be an http(s) URL, got {url:?}");
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| bad())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(bad());
+    }
+    Ok(parsed.origin().ascii_serialization())
 }
 
 /// Whether `api_url` is on this machine (`localhost` or a loopback address), where Fake GitHub
@@ -175,5 +190,29 @@ fn secret(name: &str) -> Result<String, String> {
     match s.trim() {
         "" => Err(format!("{name}_FILE: {path} is empty")),
         s => Ok(s.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_origin;
+
+    #[test]
+    fn the_public_url_is_kept_as_the_origin_browsers_send() {
+        for (given, origin) in [
+            ("https://beghu.example", "https://beghu.example"),
+            ("HTTPS://Beghu.Example:443/", "https://beghu.example"),
+            ("http://localhost:80/app/", "http://localhost"),
+            ("http://LOCALHOST:5173", "http://localhost:5173"),
+            (
+                "https://beghu.example:8443/x?y#z",
+                "https://beghu.example:8443",
+            ),
+        ] {
+            assert_eq!(public_origin(given).as_deref(), Ok(origin), "{given}");
+        }
+        for bad in ["beghu.example", "ftp://beghu.example", "https://"] {
+            assert!(public_origin(bad).is_err(), "{bad}");
+        }
     }
 }

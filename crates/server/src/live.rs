@@ -4,6 +4,8 @@
 //! - `reset`: refetch everything shown. Every stream opens with one, so a change that landed
 //!   between the tab's data response and the stream opening is never missed; a stream that falls
 //!   more than [`BUFFER`] events behind gets one in place of what it missed.
+//! - `github` (`{"state":"up"|"down"}`): whether GitHub is answering, process-wide. Sent right
+//!   after the opening `reset`, then on every change; while it's down the tab pauses writes.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //!
 //! Each account has one broadcast channel, created with its first stream and dropped with its
@@ -13,7 +15,7 @@ use crate::App;
 use crate::auth::Session;
 use crate::error::ApiError;
 use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -40,6 +42,32 @@ pub enum Push {
 #[ts(export)]
 pub struct StreamIds {
     pub ids: Vec<i64>,
+}
+
+/// The `github` event's data.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct StreamGitHub {
+    pub state: GitHubState,
+}
+
+#[derive(Serialize, TS, Clone, Copy)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum GitHubState {
+    Up,
+    Down,
+}
+
+fn github_event(down: bool) -> Event {
+    let state = if down {
+        GitHubState::Down
+    } else {
+        GitHubState::Up
+    };
+    Event::default()
+        .event("github")
+        .data(serde_json::to_string(&StreamGitHub { state }).expect("plain struct"))
 }
 
 /// Every account's broadcast channel, while it has streams.
@@ -117,30 +145,54 @@ fn event(push: &Push) -> Event {
     }
 }
 
-/// The stream must come from beghu's own pages: no `Origin` (a same-origin `EventSource` sends
-/// none) or beghu's public URL. Only `/api/stream` checks it so far.
-fn origin_allowed(app: &App, headers: &HeaderMap) -> bool {
-    match headers.get(header::ORIGIN) {
-        None => true,
-        Some(o) => o.as_bytes() == app.cfg().public_url.as_bytes(),
-    }
-}
-
 pub async fn stream(
     State(app): State<App>,
     Extension(s): Extension<Session>,
     headers: HeaderMap,
 ) -> Response {
-    if !origin_allowed(&app, &headers) {
+    // From beghu's own pages: no `Origin` (a same-origin `EventSource` sends none) or beghu's.
+    if !crate::auth::from_beghu(&app, &headers, true) {
         return ApiError::Forbidden("This stream is only for beghu's own pages".into())
             .into_response();
     }
+    if app.draining() {
+        return ApiError::Unavailable {
+            retry_after: std::time::Duration::from_secs(1),
+            why: "beghu is restarting".into(),
+        }
+        .into_response();
+    }
     // Subscribed before the first event, so nothing published after the `reset` is missed.
     let sub = app.hub().subscribe(s.account);
-    let events = futures_util::stream::unfold((sub, true), |(mut sub, first)| async move {
-        let push = if first { Push::Reset } else { sub.next().await };
-        Some((Ok::<_, Infallible>(event(&push)), (sub, false)))
-    });
+    let health = app.github().health();
+    let draining = app.drain_watch();
+    /// Where a stream is: its opening `reset`, then GitHub's state, then whatever comes.
+    enum Step {
+        Reset,
+        GitHub,
+        Live,
+    }
+    // The stream ends when the drain starts: the tab reconnects to the next server.
+    let events = futures_util::stream::unfold(
+        (sub, health, draining, Step::Reset),
+        |(mut sub, mut health, mut draining, step)| async move {
+            let ev = match step {
+                Step::Reset => event(&Push::Reset),
+                Step::GitHub => github_event(*health.borrow_and_update()),
+                Step::Live => tokio::select! {
+                    push = sub.next() => event(&push),
+                    // A closed channel (never, while the app lives) leaves only the pushes.
+                    Ok(()) = health.changed() => github_event(*health.borrow_and_update()),
+                    _ = draining.wait_for(|d| *d) => return None,
+                },
+            };
+            let next = match step {
+                Step::Reset => Step::GitHub,
+                _ => Step::Live,
+            };
+            Some((Ok::<_, Infallible>(ev), (sub, health, draining, next)))
+        },
+    );
     let mut res = Sse::new(events)
         .keep_alive(
             KeepAlive::new()

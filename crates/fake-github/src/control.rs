@@ -4,8 +4,15 @@
 //! - `GET /state`: the fixture, the accounts, who's signed in, token lifetimes, fault rules,
 //!   how many refresh tokens were honoured and how many arrived already spent, and each
 //!   installation token minted with its permissions.
-//! - `POST /faults/latency {endpoint, ms}`: delay calls to `endpoint`; `ms: 0` removes the rule.
-//! - `POST /faults/fail {endpoint, count, status, retry_after?}`: the next `count` calls fail.
+//! - `POST /faults/latency {endpoint, ms, count?}`: delay calls to `endpoint` (only the next
+//!   `count`, with one); `ms: 0` removes the rule.
+//! - `POST /faults/fail {endpoint, count, status?, retry_after?, secondary_rate_limit?, reset?}`:
+//!   the next `count` calls fail with `status` (403 or 429 with `secondary_rate_limit`: GitHub's
+//!   secondary rate limit), or with `reset` get no answer at all.
+//! - `POST /faults/rewrite {endpoint, count, body | raw}`: the next `count` answers from
+//!   `endpoint` carry `body` as their `body` field, or have `raw` as their whole body, sent
+//!   complete under the answer's own status (an answer beghu can't read, such as text that isn't
+//!   JSON), though the call did what it was asked.
 //! - `POST /faults/down {down}`: GitHub unreachable, or back.
 //! - `POST /faults/webhooks {drop?, duplicate?, reorder?, delay_ms?}`: the next `drop`
 //!   deliveries are lost, the next `duplicate` are sent twice under one GUID, the next `reorder`
@@ -42,6 +49,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/state", get(state))
         .route("/faults/latency", post(latency))
         .route("/faults/fail", post(fail))
+        .route("/faults/rewrite", post(rewrite))
         .route("/faults/down", post(down))
         .route("/faults/webhooks", post(webhook_faults))
         .route("/faults", delete(clear))
@@ -106,13 +114,17 @@ async fn state(State(fake): State<Fake>) -> Response {
 struct LatencyReq {
     endpoint: String,
     ms: u64,
+    count: Option<u32>,
 }
 
 async fn latency(State(fake): State<Fake>, axum::Json(r): axum::Json<LatencyReq>) -> Response {
     let Some(endpoint) = faults::normalise_endpoint(&r.endpoint) else {
         return bad_request(ENDPOINT_HELP);
     };
-    fake.state().faults.set_latency(endpoint, r.ms);
+    if r.count == Some(0) {
+        return bad_request("count must be at least 1");
+    }
+    fake.state().faults.set_latency(endpoint, r.ms, r.count);
     ok()
 }
 
@@ -121,8 +133,12 @@ struct FailReq {
     endpoint: String,
     #[serde(default = "one_call")]
     count: u32,
-    status: u16,
+    status: Option<u16>,
     retry_after: Option<u64>,
+    #[serde(default)]
+    secondary_rate_limit: bool,
+    #[serde(default)]
+    reset: bool,
 }
 
 /// A fail rule without a count fails just the next call.
@@ -137,14 +153,53 @@ async fn fail(State(fake): State<Fake>, axum::Json(r): axum::Json<FailReq>) -> R
     if r.count == 0 {
         return bad_request("count must be at least 1");
     }
-    if !(400..=599).contains(&r.status) {
-        return bad_request("status must be an HTTP error status, 400 to 599");
+    match (r.status, r.reset) {
+        (None, false) => return bad_request("a fail rule needs a status, or reset: true"),
+        (Some(_), true) => return bad_request("a reset sends no status"),
+        (Some(s), false) if !(400..=599).contains(&s) => {
+            return bad_request("status must be an HTTP error status, 400 to 599");
+        }
+        _ => {}
+    }
+    if r.secondary_rate_limit && !matches!(r.status, Some(403 | 429)) {
+        return bad_request("a secondary rate limit is a 403 or a 429");
     }
     fake.state().faults.add_fail(Fail {
         endpoint,
         remaining: r.count,
         status: r.status,
         retry_after: r.retry_after,
+        secondary_rate_limit: r.secondary_rate_limit,
+        reset: r.reset,
+    });
+    ok()
+}
+
+#[derive(Deserialize)]
+struct RewriteReq {
+    endpoint: String,
+    #[serde(default = "one_call")]
+    count: u32,
+    body: Option<String>,
+    raw: Option<String>,
+}
+
+async fn rewrite(State(fake): State<Fake>, axum::Json(r): axum::Json<RewriteReq>) -> Response {
+    let Some(endpoint) = faults::normalise_endpoint(&r.endpoint) else {
+        return bad_request(ENDPOINT_HELP);
+    };
+    if r.count == 0 {
+        return bad_request("count must be at least 1");
+    }
+    let to = match (r.body, r.raw) {
+        (Some(body), None) => faults::RewriteTo::Body(body),
+        (None, Some(raw)) => faults::RewriteTo::Raw(raw),
+        _ => return bad_request("a rewrite rule takes a body or a raw answer, not both"),
+    };
+    fake.state().faults.add_rewrite(faults::Rewrite {
+        endpoint,
+        remaining: r.count,
+        to,
     });
     ok()
 }

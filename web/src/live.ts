@@ -5,10 +5,13 @@
 // pushes down to one fetch now and one after it.
 //
 // Reconnecting is the tab's own: about a second after a drop, never EventSource's backoff.
-// `reconnecting()` turns true once the stream has been down for 3 s.
+// `reconnecting()` turns true once the stream has been down for 3 s. `githubDown()` follows the
+// server's `github` event, sent as each stream opens and whenever it changes: writes pause while
+// it's true.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { forgetRemembered } from "./api";
+import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
 
 export type Push = { kind: "ids"; ids: number[] } | { kind: "reset" };
@@ -18,9 +21,12 @@ const RECONNECTING_AFTER_MS = 3000;
 
 const listeners = new Set<(p: Push) => void>();
 const [reconnecting, setReconnecting] = createSignal(false);
+const [githubDown, setGithubDown] = createSignal(false);
 
 /** True while the stream has been down for 3 s or more. */
 export { reconnecting };
+/** True while the server finds GitHub unreachable. */
+export { githubDown };
 
 /** When the stream last reset (`performance.now()`): anything read before may be stale. */
 let lastReset = -Infinity;
@@ -37,6 +43,14 @@ export function resetAt(): number {
 export function onPush(fn: (p: Push) => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
+}
+
+/**
+ * Refetches what's shown of `ids` as a push naming them would. For a write GitHub just confirmed:
+ * its pending change goes once a read that began after the confirmation is on screen.
+ */
+export function refetchShown(ids: number[]): void {
+  emit({ kind: "ids", ids });
 }
 
 function emit(p: Push): void {
@@ -66,6 +80,7 @@ export function connectLive(): () => void {
       setReconnecting(false);
     });
     es.addEventListener("reset", () => emit({ kind: "reset" }));
+    es.addEventListener("github", (e) => setGithubDown((JSON.parse((e as MessageEvent<string>).data) as StreamGitHub).state === "down"));
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;
       emit({ kind: "ids", ids });

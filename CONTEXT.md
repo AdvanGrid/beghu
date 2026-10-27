@@ -41,8 +41,16 @@ A change the user made in beghu that GitHub hasn't confirmed yet. It shows at on
 _Avoid_: Outbox entry, queued write
 
 **Failed write**:
-A pending write that GitHub refused, or that never reached GitHub. Its change is reverted, but it stays visible with Retry until the user retries or dismisses it, or reloads the tab.
+A pending write that didn't go through: GitHub refused it, it never reached GitHub, or beghu can't tell whether it did (a lost write, a maybe-posted comment). Its change is reverted, but it stays visible until the user retries or dismisses it, or reloads the tab. It offers Retry, except where sending it again can't work, or a comment may already be in the thread and hasn't yet looked for itself there.
 _Avoid_: Error, rejected op
+
+**Lost write**:
+A failed write beghu lost track of: the server restarted while it was on its way, or had forgotten it (past 10 minutes, or past the 500 writes per account it remembers) when the tab sent it again, or the tab's resends went unanswered for 9 minutes. It may or may not have reached GitHub, so it's never sent again on its own; it says to check, and a lost comment looks for itself in the thread first.
+_Avoid_: Dropped write, orphaned op
+
+**Maybe-posted comment**:
+A comment GitHub may have posted though beghu can't confirm it: GitHub answered with a 5xx or an answer beghu couldn't read, or didn't answer at all. It's never sent again on its own. It looks for itself in the thread, among the comments newer than any it could be confused with: exactly one by the same account with its text, and it shows as posted; none, or more than one, and it offers Retry.
+_Avoid_: Unconfirmed comment, ghost comment
 
 **Fake GitHub**:
 A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fixture, answers the API calls beghu makes, signs in fixture users and sends webhooks back, with latency and failures set at runtime. Never used in production.

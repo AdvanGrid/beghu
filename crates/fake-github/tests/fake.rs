@@ -585,6 +585,7 @@ async fn state_shows_sign_ins_and_fault_rules_and_reset_clears_both() {
             "down": false,
             "latency": [{ "endpoint": "/user/installations", "ms": 50 }],
             "fail": [{ "endpoint": "*", "remaining": 3, "status": 502, "retry_after": null }],
+            "rewrite": [],
         })
     );
 
@@ -594,7 +595,7 @@ async fn state_shows_sign_ins_and_fault_rules_and_reset_clears_both() {
     assert_eq!(state["signed_in"], json!([]));
     assert_eq!(
         state["faults"],
-        json!({ "down": false, "latency": [], "fail": [] })
+        json!({ "down": false, "latency": [], "fail": [], "rewrite": [] })
     );
     assert_eq!(fake.login_of(&token).await, None);
 }
@@ -959,6 +960,430 @@ async fn webhook_faults_drop_duplicate_delay_and_reorder_the_next_deliveries() {
     let got = received_for(&mut rx, Duration::from_millis(1800)).await;
     assert_eq!(titles(&got), ["title 8"]);
     assert!(got[0].at.duration_since(sent) < Duration::from_millis(1800));
+}
+
+// --- REST writes ----------------------------------------------------------------------------
+
+impl Fake {
+    /// A REST call on the GitHub side with `token`; the status and the JSON body.
+    async fn rest(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: &Value,
+        body: Value,
+    ) -> (u16, Value) {
+        let res = self
+            .http
+            .request(method, format!("{}{path}", self.api))
+            .bearer_auth(token.as_str().unwrap())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        (
+            res.status().as_u16(),
+            res.json().await.unwrap_or(Value::Null),
+        )
+    }
+}
+
+#[tokio::test]
+async fn a_rest_comment_answers_201_with_the_comment_and_sends_the_same_webhook_as_an_edit() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    let (status, c) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            token,
+            json!({ "body": "Looked into it." }),
+        )
+        .await;
+    assert_eq!(status, 201, "{c}");
+    assert_eq!(c["body"], "Looked into it.");
+    assert_eq!(c["user"]["login"], "ilze-k");
+    assert!(c["id"].as_i64().is_some());
+    assert!(
+        c["issue_url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/repos/acme/web/issues/1")
+    );
+
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "issue_comment");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "created");
+    assert_eq!(p["comment"], c);
+    assert_eq!(p["issue"]["number"], 1);
+    assert_eq!(p["sender"]["login"], "ilze-k");
+    assert_eq!(
+        got[0].signature,
+        fake_github::sign_webhook(WEBHOOK_SECRET, &got[0].body)
+    );
+
+    // No body is GitHub's validation failure, and no repo the user can see is a 404.
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            token,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, 422);
+    let outsider = &fake.sign_in("octo-ext").await["access_token"];
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/api/issues/1/comments",
+            outsider,
+            json!({ "body": "hi" }),
+        )
+        .await;
+    assert_eq!(status, 404);
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn closing_and_reopening_answers_the_stored_issue_and_sends_issues_closed_then_reopened() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    fake.edit(json!({ "repo": "web", "number": 2, "state": "open" }))
+        .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    let patch = |body: Value| {
+        fake.rest(
+            reqwest::Method::PATCH,
+            "/repos/acme/web/issues/2",
+            token,
+            body,
+        )
+    };
+
+    let (status, issue) = patch(json!({ "state": "closed", "state_reason": "not_planned" })).await;
+    assert_eq!(status, 200, "{issue}");
+    assert_eq!(issue["state"], "closed");
+    assert_eq!(issue["state_reason"], "not_planned");
+    assert!(issue["closed_at"].is_string());
+    let (status, issue) = patch(json!({ "state": "open" })).await;
+    assert_eq!(status, 200, "{issue}");
+    assert_eq!(issue["state"], "open");
+    assert_eq!(issue["state_reason"], "reopened");
+    assert_eq!(issue["closed_at"], Value::Null);
+
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    let actions: Vec<_> = got
+        .iter()
+        .map(|r| {
+            (
+                r.event.as_str(),
+                r.payload()["action"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        [("issues", "closed".into()), ("issues", "reopened".into())]
+    );
+    assert_eq!(got[1].payload()["issue"], issue);
+    assert_eq!(got[0].payload()["sender"]["login"], "ilze-k");
+
+    // A bad state is GitHub's validation failure, and a field the fake doesn't model is refused
+    // loudly rather than ignored.
+    assert_eq!(patch(json!({ "state": "shut" })).await.0, 422);
+    assert_eq!(patch(json!({ "labels": ["bug"] })).await.0, 422);
+}
+
+#[tokio::test]
+async fn read_on_someone_elses_issue_may_comment_but_not_close_it() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // Read on `web`; the fixture's issues are by other users.
+    let token = &fake.sign_in("octo-ext").await["access_token"];
+    let (status, body) = fake
+        .rest(
+            reqwest::Method::PATCH,
+            "/repos/acme/web/issues/3",
+            token,
+            json!({ "state": "closed" }),
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(body["message"], "Resource not accessible by integration");
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/3/comments",
+            token,
+            json!({ "body": "Seeing this too." }),
+        )
+        .await;
+    assert_eq!(status, 201);
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1, "only the comment is sent");
+    assert_eq!(got[0].event, "issue_comment");
+    assert_eq!(got[0].payload()["issue"]["number"], 3);
+}
+
+#[tokio::test]
+async fn triage_on_someone_elses_issue_closes_it_but_its_title_edit_is_silently_dropped() {
+    let fake = start().await;
+    // Triage on `infra`.
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    fake.edit(json!({ "repo": "infra", "number": 1, "state": "open", "title": "Before" }))
+        .await;
+    let (status, issue) = fake
+        .rest(
+            reqwest::Method::PATCH,
+            "/repos/acme/infra/issues/1",
+            token,
+            json!({ "state": "closed", "title": "After" }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(issue["state"], "closed");
+    assert_eq!(issue["title"], "Before");
+}
+
+#[tokio::test]
+async fn rate_limit_answers_without_a_token_and_follows_the_faults() {
+    let fake = start().await;
+    let res = fake
+        .http
+        .get(format!("{}/rate_limit", fake.api))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["resources"]["core"]["limit"], 5000);
+    assert_eq!(body["rate"]["remaining"], 5000);
+    fake.fail_next("/rate_limit", 502).await;
+    assert_eq!(fake.status_of("/rate_limit").await, 502);
+}
+
+// --- faults for the write path ----------------------------------------------------------------
+
+#[tokio::test]
+async fn a_latency_rule_with_a_count_slows_only_the_next_calls() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/latency",
+        json!({ "endpoint": "GET /user", "ms": 600, "count": 1 }),
+    )
+    .await;
+    assert_eq!(
+        fake.state().await["faults"]["latency"],
+        json!([{ "endpoint": "GET /user", "ms": 600, "remaining": 1 }])
+    );
+    let t = Instant::now();
+    assert_eq!(fake.get("/user", token).await.status(), 200);
+    assert!(
+        t.elapsed() >= Duration::from_millis(600),
+        "{:?}",
+        t.elapsed()
+    );
+    let t = Instant::now();
+    assert_eq!(fake.get("/user", token).await.status(), 200);
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(fake.state().await["faults"]["latency"], json!([]));
+}
+
+#[tokio::test]
+async fn a_reset_rule_drops_the_connection_without_an_answer_and_without_acting() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/fail",
+        json!({ "endpoint": "PATCH /repos/*/*/issues/*", "reset": true }),
+    )
+    .await;
+    let res = fake
+        .http
+        .patch(format!("{}/repos/acme/web/issues/2", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .json(&json!({ "state": "closed" }))
+        .send()
+        .await;
+    let e = res.expect_err("no answer");
+    assert!(!e.is_connect() && !e.is_timeout(), "{e:?}");
+    // GitHub never acted on it: the next call finds the issue as it was, and changes it.
+    let (status, issue) = fake
+        .rest(
+            reqwest::Method::PATCH,
+            "/repos/acme/web/issues/2",
+            token,
+            json!({ "state": "closed" }),
+        )
+        .await;
+    assert_eq!(status, 200, "{issue}");
+    assert_eq!(fake.state().await["faults"]["fail"], json!([]));
+    // A rule needs a status or a reset.
+    let res = fake
+        .http
+        .post(format!("{}/faults/fail", fake.ctl))
+        .json(&json!({ "endpoint": "/user" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn a_secondary_rate_limit_answers_as_github_documents_it() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/fail",
+        json!({ "endpoint": "/user", "status": 403, "secondary_rate_limit": true, "count": 2 }),
+    )
+    .await;
+    // Without retry-after, and with requests left in the primary limit.
+    let res = fake.get("/user", token).await;
+    assert_eq!(res.status(), 403);
+    assert!(res.headers().get("retry-after").is_none());
+    assert_ne!(
+        res.headers()
+            .get("x-ratelimit-remaining")
+            .map(|v| v.to_str().unwrap()),
+        Some("0")
+    );
+    // As many left as `/rate_limit` says: the primary limit isn't what ran out.
+    let remaining = res.headers()["x-ratelimit-remaining"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("secondary rate limit"),
+        "{body}"
+    );
+    assert_eq!(
+        body["documentation_url"],
+        "https://docs.github.com/free-pro-team@latest/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits"
+    );
+    let limits: Value = fake.get("/rate_limit", token).await.json().await.unwrap();
+    assert_eq!(
+        limits["resources"]["core"]["remaining"].to_string(),
+        remaining
+    );
+    // A bare 429 is GitHub's "too many requests", with no headers to say for how long.
+    fake.fail_next("/user/installations", 429).await;
+    let res = fake.get("/user/installations", token).await;
+    assert_eq!(res.status(), 429);
+    assert!(res.headers().get("retry-after").is_none());
+    assert!(res.headers().get("x-ratelimit-remaining").is_none());
+}
+
+#[tokio::test]
+async fn a_rewrite_rule_with_raw_replaces_the_whole_answer_though_the_call_did_its_work() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/rewrite",
+        json!({ "endpoint": "POST /repos/*/*/issues/*/comments", "raw": "{\"id\": 1, \"bo" }),
+    )
+    .await;
+    let res = fake
+        .http
+        .post(format!("{}/repos/acme/web/issues/1/comments", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .json(&json!({ "body": "Cut short on the way back" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(res.text().await.unwrap(), "{\"id\": 1, \"bo");
+    // The comment was posted all the same: its webhook comes.
+    let got = received_for(&mut rx, Duration::from_millis(2500)).await;
+    assert!(
+        got.iter().any(|r| r.event == "issue_comment"
+            && String::from_utf8_lossy(&r.body).contains("Cut short on the way back")),
+        "no issue_comment webhook for the comment"
+    );
+    assert_eq!(fake.state().await["faults"]["rewrite"], json!([]));
+}
+
+#[tokio::test]
+async fn a_rewrite_rule_changes_the_body_the_next_answers_carry() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    fake.control(
+        reqwest::Method::POST,
+        "/faults/rewrite",
+        json!({ "endpoint": "POST /repos/*/*/issues/*/comments", "body": "As GitHub keeps it" }),
+    )
+    .await;
+    let post = |text: &'static str| {
+        fake.rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            token,
+            json!({ "body": text }),
+        )
+    };
+    let (status, c) = post("As sent").await;
+    assert_eq!(status, 201);
+    assert_eq!(c["body"], "As GitHub keeps it");
+    let (_, c) = post("As sent again").await;
+    assert_eq!(c["body"], "As sent again");
+    assert_eq!(fake.state().await["faults"]["rewrite"], json!([]));
+}
+
+#[tokio::test]
+async fn a_repo_answers_with_the_user_s_permissions_on_it() {
+    let fake = start().await;
+    let ilze = &fake.sign_in("ilze-k").await["access_token"];
+    let res = fake.get("/repos/acme/cli", ilze).await;
+    assert_eq!(res.status(), 200);
+    let repo: Value = res.json().await.unwrap();
+    assert_eq!(repo["full_name"], "acme/cli");
+    assert_eq!(
+        repo["permissions"],
+        json!({ "admin": false, "maintain": false, "push": false, "triage": false, "pull": true })
+    );
+    let res = fake.get("/repos/acme/web", ilze).await;
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["permissions"]["push"],
+        true
+    );
+    // A role an admin changes shows at once.
+    fake.control(
+        reqwest::Method::PUT,
+        "/permissions",
+        json!({ "login": "ilze-k", "repo": "cli", "role": "triage" }),
+    )
+    .await;
+    let res = fake.get("/repos/acme/cli", ilze).await;
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["permissions"]["triage"],
+        true
+    );
+    // A private repo the user can't see is a 404, as on GitHub.
+    let outsider = &fake.sign_in("octo-ext").await["access_token"];
+    assert_eq!(fake.get("/repos/acme/api", outsider).await.status(), 404);
 }
 
 /// A fixture issue with no relationships: `(repo#number, id, node id)`.

@@ -437,6 +437,7 @@ dependencies = [
  "dbrt",
  "fake-db",
  "fixture",
+ "futures-util",
  "hmac",
  "mirror-db",
  "rand 0.9.5",

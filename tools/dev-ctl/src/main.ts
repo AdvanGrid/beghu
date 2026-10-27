@@ -56,10 +56,14 @@ Commands:
   login USER                  Print the URL that signs the browser in as a fixture user
                               (skipping the fake's account picker).
   fake [state]                The fake's accounts, sign-ins, token lifetimes and faults.
-  fake latency ENDPOINT MS    Delay calls to ENDPOINT by MS (0 removes the rule).
-  fake fail ENDPOINT STATUS [--count N] [--retry-after S]
+  fake latency ENDPOINT MS [--count N]
+                              Delay calls to ENDPOINT by MS (0 removes the rule); with
+                              --count, only the next N.
+  fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--secondary]
                               The next N calls (default 1) to ENDPOINT fail with STATUS
-                              (409, 403/429 with --retry-after for a rate limit, 5xx).
+                              (409, 403/429 with --retry-after for a rate limit, 5xx;
+                              403/429 --secondary: a secondary rate limit), or with
+                              reset get no answer (the connection drops).
   fake down | fake up         GitHub unreachable (new connections dropped), or back.
   fake edit REPO#N [--title T] [--body B] [--close [--reason not_planned]] [--reopen]
             [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER]
@@ -217,11 +221,13 @@ function describeFaults(f: FakeState["faults"], w?: FakeState["webhooks"]["fault
   if (w?.duplicate) lines.push(`webhooks: send the next ${w.duplicate} twice`);
   if (w?.reorder) lines.push(`webhooks: reorder the next ${w.reorder}`);
   if (w?.delay_ms) lines.push(`webhooks: +${w.delay_ms} ms`);
-  for (const l of f.latency) lines.push(`latency ${l.endpoint}: ${l.ms} ms`);
+  for (const l of f.latency) lines.push(`latency ${l.endpoint}: ${l.ms} ms${l.remaining === undefined ? "" : `, next ${l.remaining}`}`);
   for (const r of f.fail) {
     const ra = r.retry_after === null ? "" : `, retry-after ${r.retry_after}s`;
-    lines.push(`fail ${r.endpoint}: next ${r.remaining} with ${r.status}${ra}`);
+    const what = r.reset ? "no answer (reset)" : `${r.status}${r.secondary_rate_limit ? " (secondary rate limit)" : ""}`;
+    lines.push(`fail ${r.endpoint}: next ${r.remaining} with ${what}${ra}`);
   }
+  for (const r of f.rewrite) lines.push(`rewrite ${r.endpoint}: next ${r.remaining} answer with body ${JSON.stringify(r.body)}`);
   return lines;
 }
 
@@ -424,7 +430,7 @@ async function fake(args: string[]): Promise<void> {
       "--relate",
       "--unrelate",
     ],
-    ["--close", "--reopen"],
+    ["--close", "--reopen", "--secondary"],
   );
   const done = (text: string) => print(json, { ok: true }, text);
   switch (sub) {
@@ -448,21 +454,31 @@ async function fake(args: string[]): Promise<void> {
     }
     case "latency": {
       const [endpoint, ms] = pos;
-      if (!endpoint || ms === undefined || !/^\d+$/.test(ms)) throw new Usage("usage: ./dev-ctl fake latency ENDPOINT MS");
-      await control("POST", "/faults/latency", { endpoint, ms: Number(ms) });
+      if (!endpoint || ms === undefined || !/^\d+$/.test(ms)) throw new Usage("usage: ./dev-ctl fake latency ENDPOINT MS [--count N]");
+      const count = opts["--count"] === undefined ? undefined : Number(opts["--count"]);
+      if (count !== undefined && !(Number.isInteger(count) && count >= 1)) throw new Usage("--count takes a number of calls, at least 1");
+      await control("POST", "/faults/latency", { endpoint, ms: Number(ms), count });
       return done(Number(ms) ? `${endpoint}: +${ms} ms` : `${endpoint}: latency removed`);
     }
     case "fail": {
       const [endpoint, status] = pos;
-      if (!endpoint || !status || !/^\d{3}$/.test(status)) {
-        throw new Usage("usage: ./dev-ctl fake fail ENDPOINT STATUS [--count N] [--retry-after S]");
+      if (!endpoint || !status || !/^(\d{3}|reset)$/.test(status)) {
+        throw new Usage("usage: ./dev-ctl fake fail ENDPOINT STATUS|reset [--count N] [--retry-after S] [--secondary]");
       }
       const count = Number(opts["--count"] ?? 1);
       const retryAfter = opts["--retry-after"] === undefined ? null : Number(opts["--retry-after"]);
       if (!Number.isInteger(count) || count < 1) throw new Usage("--count takes a number of calls, at least 1");
       if (retryAfter !== null && !(Number.isInteger(retryAfter) && retryAfter >= 0)) throw new Usage("--retry-after takes seconds");
-      await control("POST", "/faults/fail", { endpoint, status: Number(status), count, retry_after: retryAfter });
-      return done(`${endpoint}: the next ${count} call(s) fail with ${status}`);
+      const reset = status === "reset";
+      await control("POST", "/faults/fail", {
+        endpoint,
+        status: reset ? null : Number(status),
+        reset,
+        count,
+        retry_after: retryAfter,
+        secondary_rate_limit: set.has("--secondary"),
+      });
+      return done(`${endpoint}: the next ${count} call(s) ${reset ? "get no answer" : `fail with ${status}`}`);
     }
     case "down":
     case "up":

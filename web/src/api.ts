@@ -1,8 +1,9 @@
-// The API layer: every read goes through `request`, which turns a failure into one of the named
-// error classes below (the spec's closed list for reads, plus `Unavailable` for a 503 with
-// `retry-after`); every `ErrorKind` the server sends, and every answer from whatever is in front
-// of it, maps to one of them. Every read is a router `query`, so a preload and the read that uses
-// it share one fetch. The wire types come from the server through ts-rs (./bindings).
+// The API layer: every read goes through `request`, and every write through `sendOp`; both turn
+// a failure into one of the named error classes below (the spec's closed list for reads, plus
+// `Unavailable` for a 503 with `retry-after`, and one per way a write fails), through one
+// mapping: every `ErrorKind` the server sends, and every answer from whatever is in front of it,
+// maps to one of them. Every read is a router `query`, so a preload and the read that uses it
+// share one fetch. The wire types come from the server through ts-rs (./bindings).
 import { query, revalidate } from "@solidjs/router";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
@@ -16,8 +17,12 @@ import type { IssueDetail } from "./bindings/IssueDetail";
 import type { IssuePage } from "./bindings/IssuePage";
 import type { IssueRef } from "./bindings/IssueRef";
 import type { Me } from "./bindings/Me";
+import type { Op } from "./bindings/Op";
+import type { OpReply } from "./bindings/OpReply";
+import type { OpRequest } from "./bindings/OpRequest";
+import { LOST_MESSAGE } from "./bindings/lostMessage";
 
-export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me };
+export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply };
 export type { IssueRow } from "./bindings/IssueRow";
 
 /** beghu can't be reached: offline, or the server is down. */
@@ -51,12 +56,111 @@ export class Unavailable extends Error {
  */
 export class ServerError extends Error {}
 
+// Writes only: how a write GitHub didn't take failed. The message is the server's, for the user.
+
+/**
+ * GitHub refused the write, or accepted it without applying it; or beghu refused it as it stands
+ * (a comment too long), which sending it again can't fix (`retry` false).
+ */
+export class Refused extends Error {
+  constructor(
+    message: string,
+    readonly retry = true,
+  ) {
+    super(message);
+  }
+}
+/** GitHub's rate limit held the write back for longer than the server waits quietly. */
+export class RateLimited extends Error {
+  constructor(
+    message: string,
+    /** Seconds until GitHub takes writes again. */
+    readonly retryAfter: number,
+  ) {
+    super(message);
+  }
+}
+/** GitHub answered the write with a conflict. */
+export class Conflict extends Error {}
+/** GitHub couldn't be reached for the write: it's down, or kept failing. */
+export class GitHubDown extends Error {}
+/**
+ * The write may or may not have reached GitHub: beghu has no record of it (it restarted, or
+ * forgot it), or didn't answer its resends for 9 minutes, so it was never sent again.
+ */
+export class Lost extends Error {}
+/**
+ * GitHub failed on a comment, answered it with a 2xx beghu couldn't read, or didn't answer: it may
+ * have been posted all the same.
+ */
+export class MaybePosted extends Error {
+  constructor(
+    message: string,
+    /** Only a comment with a greater id can be it (see `ErrorBody`), if beghu said. */
+    readonly after?: number,
+  ) {
+    super(message);
+  }
+}
+
 /** The error body the server sent, if it sent one. */
 async function bodyOf(res: Response): Promise<Partial<ErrorBody>> {
   try {
     return (await res.json()) as ErrorBody;
   } catch {
     return {};
+  }
+}
+
+/** The named error for a failed answer from beghu: by its body's kind, else by its status. */
+function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
+  const kind: ErrorKind | undefined = body.error;
+  const said = body.message ?? why;
+  const retryAfter = Math.max(1, Number(res.headers.get("retry-after")) || 1);
+  switch (kind) {
+    case "signed_out":
+      return new SessionEnded(why);
+    case "unavailable":
+      return new Unavailable(why, retryAfter);
+    case "not_found":
+    case "gone":
+      return new Gone(said);
+    case "forbidden":
+      return new NoAccess(why);
+    case "no_access":
+      return new NoAccess(why, body.issue);
+    case "bad_request":
+    case "internal":
+      return new ServerError(why);
+    case "refused":
+      return new Refused(said);
+    case "rate_limited":
+      return new RateLimited(said, retryAfter);
+    case "conflict":
+      return new Conflict(said);
+    case "github_down":
+      return new GitHubDown(said);
+    case "lost":
+      return new Lost(said);
+    case "maybe_posted":
+      return new MaybePosted(said, body.after);
+    case undefined:
+      break;
+    default:
+      // A new kind on the server fails the typecheck here until it has its class.
+      kind satisfies never;
+  }
+  // No error body: a proxy or something else in front of beghu.
+  switch (res.status) {
+    case 401:
+      return new SessionEnded(why);
+    case 403:
+      return new NoAccess(why);
+    case 404:
+    case 410:
+      return new Gone(why);
+    default:
+      return new ServerError(why);
   }
 }
 
@@ -68,41 +172,81 @@ async function request<T>(url: string): Promise<T> {
     throw new Unreachable(`can't reach beghu: ${String(e)}`);
   }
   if (res.ok) return (await res.json()) as T;
-  const why = `${res.status} from ${url}`;
-  const body = await bodyOf(res);
-  const kind: ErrorKind | undefined = body.error;
-  switch (kind) {
-    case "signed_out":
-      throw new SessionEnded(why);
-    case "unavailable":
-      throw new Unavailable(why, Math.max(1, Number(res.headers.get("retry-after")) || 1));
-    case "not_found":
-    case "gone":
-      throw new Gone(why);
-    case "forbidden":
-      throw new NoAccess(why);
-    case "no_access":
-      throw new NoAccess(why, body.issue);
-    case "bad_request":
-    case "internal":
-      throw new ServerError(why);
-    case undefined:
-      break;
-    default:
-      // A new kind on the server fails the typecheck here until it has its class.
-      kind satisfies never;
+  throw failure(res, await bodyOf(res), `${res.status} from ${url}`);
+}
+
+/**
+ * Sends one write once; GitHub's confirmation, or the named error for how it failed. `resend`:
+ * an earlier send of this `op_id` may have reached beghu (see `OpRequest`).
+ */
+async function postOp(op_id: string, op: Op, resend: boolean): Promise<OpReply> {
+  let res: Response;
+  try {
+    res = await fetch("/api/ops", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op_id, op, ...(resend && { resend }) } satisfies OpRequest),
+    });
+    // A 2xx is GitHub's confirmation; one cut short on the way back is a lost answer, and the
+    // resend gets it again.
+    if (res.ok) return (await res.json()) as OpReply;
+  } catch (e) {
+    throw new Unreachable(`can't reach beghu: ${String(e)}`);
   }
-  // No error body: a proxy or something else in front of beghu.
-  switch (res.status) {
-    case 401:
-      throw new SessionEnded(why);
-    case 403:
-      throw new NoAccess(why);
-    case 404:
-    case 410:
-      throw new Gone(why);
-    default:
-      throw new ServerError(why);
+  const body = await bodyOf(res);
+  // No error body, and not the edge's sign-in answer: something in front of beghu failed on the
+  // way (a 502, a 408, a 499…), and the write may or may not have arrived.
+  if (body.error === undefined && res.status !== 401 && res.status !== 403) throw new Unreachable(`${res.status} from /api/ops`);
+  // beghu refused the write as it stands: a message for the user, and no use sending it again.
+  if (body.error === "bad_request") throw new Refused(body.message ?? "beghu refused this change", false);
+  throw failure(res, body, `${res.status} from /api/ops`);
+}
+
+/** The longest wait between resends while beghu can't be reached. */
+const RESEND_MAX_MS = 5_000;
+/**
+ * How long a write is sent again while beghu can't be reached or is busy: under the 10 minutes
+ * the server remembers an op for, so a resend it has no record of always means it lost the write.
+ */
+const RESEND_FOR_MS = 9 * 60_000;
+
+/**
+ * Sends one write until it has an answer: GitHub's confirmation, or the named error for how it
+ * failed. While beghu can't be reached, or is busy (503), it sends the same `op_id` again, for up
+ * to 9 minutes. A send that may have arrived (the tab was online, or something in front of beghu
+ * answered) marks the ones after it as resends, which the server joins to the write it has, or
+ * answers `Lost`; one sent while the browser was offline didn't arrive. After 9 minutes the write
+ * fails: `Lost` (in the server's words) if a send may have arrived, else `Unreachable`, saying
+ * whether beghu was busy or didn't answer.
+ */
+export async function sendOp(op_id: string, op: Op): Promise<OpReply> {
+  const since = performance.now();
+  let reached = false;
+  let busy = false;
+  for (let wait = 1000; ; wait = Math.min(wait * 2, RESEND_MAX_MS)) {
+    if (performance.now() - since >= RESEND_FOR_MS) {
+      if (reached) throw new Lost(LOST_MESSAGE[op.kind]);
+      throw new Unreachable(busy ? "beghu was busy, so this change wasn't sent" : "beghu didn't answer, so this change wasn't sent");
+    }
+    const offline = navigator.onLine === false;
+    try {
+      return await postOp(op_id, op, reached);
+    } catch (e) {
+      if (e instanceof Unreachable) {
+        // Unless the browser was offline, the send may have arrived, its answer lost on the way back.
+        reached ||= !offline;
+        busy = false;
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      if (e instanceof Unavailable) {
+        // beghu answered without starting it.
+        busy = true;
+        await new Promise((r) => setTimeout(r, e.retryAfter * 1000));
+        continue;
+      }
+      throw e;
+    }
   }
 }
 
@@ -119,7 +263,27 @@ export function issuesUrl(search: string, after?: string): string {
 
 export const getMe = query(() => request<Me>("/api/me"), "me");
 
-export const getIssues = query((search: string, after?: string) => request<IssuePage>(issuesUrl(search, after)), "issues");
+/** When each read's fetch began (`performance.now()`), for telling an older read from a newer one. */
+const startedAt = new WeakMap<object, number>();
+
+/** When `read`'s fetch began; -Infinity if unknown. */
+export function readAt(read: object): number {
+  return startedAt.get(read) ?? -Infinity;
+}
+
+/** Marks `read` as fetched from `at`: a page or detail built from older reads takes the oldest. */
+export function stamp<T extends object>(read: T, at: number): T {
+  startedAt.set(read, at);
+  return read;
+}
+
+/** A read, stamped with when its fetch began. */
+async function timed<T extends object>(url: string): Promise<T> {
+  const at = performance.now();
+  return stamp(await request<T>(url), at);
+}
+
+export const getIssues = query((search: string, after?: string) => timed<IssuePage>(issuesUrl(search, after)), "issues");
 
 /** The filter bar's values per facet. The URL matches the shell's preload. */
 export const getFacets = query(() => request<Facets>("/api/facets"), "facets");
@@ -153,10 +317,10 @@ export function forgetFailure(q: { key: string }): void {
  * shows none yet.
  */
 export function refetchIssues(search: string, through?: string): Promise<IssuePage> {
-  if (!through) return request<IssuePage>(issuesUrl(search));
+  if (!through) return timed<IssuePage>(issuesUrl(search));
   const p = new URLSearchParams(search);
   p.set("through", through);
-  return request<IssuePage>(`/api/issues?${p}`);
+  return timed<IssuePage>(`/api/issues?${p}`);
 }
 
 /**
@@ -168,20 +332,12 @@ export function issueId(raw: string | undefined): number {
   return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
 }
 
-/** When each detail's fetch began, for telling an older read from a newer one. */
-const startedAt = new WeakMap<IssueDetail, number>();
-
 /**
  * An issue's detail: its properties, body and first page of comments. A hover or tap on its row
  * preloads it, so the click that opens it finds it ready. The URL must match the shell's preload
  * for `/issues/:id` (crates/server/src/shell.rs).
  */
-export const getIssue = query(async (id: number) => {
-  const at = performance.now();
-  const detail = await request<IssueDetail>(`/api/issues/${id}`);
-  startedAt.set(detail, at);
-  return detail;
-}, "issue");
+export const getIssue = query((id: number) => timed<IssueDetail>(`/api/issues/${id}`), "issue");
 
 /**
  * The detail the last hover or tap preloaded, kept past the router's 5 s preload window so a click
@@ -206,7 +362,7 @@ const REMEMBER_FOR = 3 * 60_000;
 export function preloadIssue(id: number): void {
   getIssue(id).then(
     (detail) => {
-      const at = startedAt.get(detail) ?? -Infinity;
+      const at = readAt(detail);
       const fresh = at > forgottenAt && at > (pushedAt.get(id) ?? -Infinity);
       // Only a newer read replaces what's remembered: hovers can resolve out of order.
       if (fresh && (remembered === undefined || at > remembered.at)) remembered = { id, at, detail };
@@ -275,12 +431,12 @@ export function cursorOf(c: Comment): string {
 
 /** The detail again, with every comment from the top of the thread through `through`. */
 export function refetchIssue(id: number, through?: Comment): Promise<IssueDetail> {
-  return request<IssueDetail>(through === undefined ? `/api/issues/${id}` : `/api/issues/${id}?through=${cursorOf(through)}`);
+  return timed<IssueDetail>(through === undefined ? `/api/issues/${id}` : `/api/issues/${id}?through=${cursorOf(through)}`);
 }
 
-/** The page of an issue's comments after the cursor `after`, in `order`. */
-export function getComments(id: number, order: CommentOrder, after: string): Promise<CommentPage> {
-  return request<CommentPage>(`/api/issues/${id}/comments?order=${order}&after=${after}`);
+/** The page of an issue's comments after the cursor `after` (the first page without), in `order`. */
+export function getComments(id: number, order: CommentOrder, after?: string): Promise<CommentPage> {
+  return request<CommentPage>(`/api/issues/${id}/comments?order=${order}${after === undefined ? "" : `&after=${after}`}`);
 }
 
 let signingIn = false;

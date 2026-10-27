@@ -1,10 +1,11 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
-import { SessionEnded, getIssues, refetchIssues, signIn, type IssuePage, type IssueRow } from "./api";
+import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
 import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { coalesced, onPush } from "./live";
+import { overlay } from "./overlay";
 import { queryOf, sortOf, type SortKey } from "./query";
 import { ChunkFailed } from "./router";
 import { createVirtualizer } from "./virtual";
@@ -54,6 +55,8 @@ const ListCard = lazy(
  * the first push at once, and any during that fetch in one more after it. A failed refetch
  * leaves the rows on screen as they are. A page that loads while a refetch is in flight is
  * asked for again from the refetched rows, so rows never vanish and come back.
+ *
+ * The tab's pending writes show on their rows (overlay.ts) but never add, remove or move one.
  */
 export function IssueList(props: { search: string; openId?: number }) {
   // The first page follows the view (the URL's query string); later pages are appended. A new
@@ -93,6 +96,7 @@ export function IssueList(props: { search: string; openId?: number }) {
   let waitingForShown: (() => void)[] = [];
   const recordShown = (view: string, p: IssuePage) => {
     shown = { view, page: p };
+    untrack(overlay)?.listShown(readAt(p));
     for (const f of waitingForShown.splice(0)) f();
   };
   createEffect(
@@ -123,7 +127,8 @@ export function IssueList(props: { search: string; openId?: number }) {
         const more = await getIssues(view, have.next);
         if (view !== untrack(() => props.search)) return;
         if (started === refetchesStarted) {
-          const next = { rows: [...have.rows, ...more.rows], next: more.next, last: more.last };
+          // As old as its oldest part: the rows already shown.
+          const next = stamp({ rows: [...have.rows, ...more.rows], next: more.next, last: more.last }, readAt(have));
           setPage(next);
           recordShown(view, next);
           return;
@@ -205,6 +210,7 @@ export function IssueList(props: { search: string; openId?: number }) {
           <Loading fallback={<div {...stylex.attrs(s.scroller)} data-perf="list" aria-busy="true" />}>
             <Rows
               rows={page().rows}
+              readStart={readAt(page())}
               search={props.search}
               openId={props.openId}
               onNearEnd={loadMore}
@@ -270,6 +276,8 @@ type Card = ReturnType<typeof createCard>;
 
 function Rows(props: {
   rows: IssueRow[];
+  /** When the rows' read began: the tab's writes show over anything older. */
+  readStart: number;
   search: string;
   openId?: number;
   onNearEnd: () => void;
@@ -312,7 +320,7 @@ function Rows(props: {
           <div {...stylex.attrs(s.window(visible().first * ROW_HEIGHT))}>
             <For each={visible().rows}>
               {(r) => (
-                <Row r={r} search={props.search} current={props.openId === r.id} time={props.time} cols={props.cols} card={props.card} />
+                <Row r={r} readStart={props.readStart} search={props.search} current={props.openId === r.id} time={props.time} cols={props.cols} card={props.card} />
               )}
             </For>
           </div>
@@ -324,13 +332,14 @@ function Rows(props: {
 
 function Row(props: {
   r: IssueRow;
+  readStart: number;
   search: string;
   current: boolean;
   time: (r: IssueRow) => number | null;
   cols: Cols;
   card: Card;
 }) {
-  const r = () => props.r;
+  const r = () => overlay()?.rowWithWrites(props.r, props.readStart) ?? props.r;
   const at = () => props.time(r());
   const w = (c: Column) => props.cols.width(c);
   const blocked = () => r().state === "open" && r().blocked_by > 0;

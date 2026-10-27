@@ -1,10 +1,12 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, Errored, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
+import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { connectLive, reconnecting } from "./live";
+import { overlay } from "./overlay";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { colors, fonts, media } from "./tokens.stylex";
@@ -13,7 +15,8 @@ import { colors, fonts, media } from "./tokens.stylex";
  * The app: a header over the list, with the open issue's panel (the route's content) beside the
  * list, or under it below 900 px. The root `Errored` sends a signed-out tab to sign in. The panel
  * has boundaries of its own, so while its code loads, or if that fails, the list carries on. The
- * bottom bar holds the status slot. The tab's live stream opens with the app.
+ * bottom bar holds the status slot. The tab's live stream opens with the app. Once the tab can
+ * write, the writes code adds its banner under the header (overlay.ts).
  */
 export function Root(props: { children?: Element }) {
   onSettled(connectLive);
@@ -32,6 +35,7 @@ export function Root(props: { children?: Element }) {
     <div {...stylex.attrs(s.app)}>
       <Errored fallback={(err) => <RootFailure error={err()} />}>
         <Header />
+        <Dynamic component={overlay()?.Banner} />
         <main {...stylex.attrs(s.main)}>
           <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
             <List />
@@ -46,12 +50,17 @@ export function Root(props: { children?: Element }) {
   );
 }
 
-/** The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. */
+/**
+ * The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. Once
+ * the tab can write, the writes code fills it, failed writes first (overlay.ts).
+ */
 function StatusBar() {
   return (
     <footer {...stylex.attrs(s.bar)}>
       <span role="status" data-perf="status" {...stylex.attrs(s.status)}>
-        <Show when={reconnecting()}>reconnecting…</Show>
+        <Show when={overlay()?.Status} fallback={<Show when={reconnecting()}>reconnecting…</Show>}>
+          {(status) => <Dynamic component={status()} />}
+        </Show>
       </span>
     </footer>
   );

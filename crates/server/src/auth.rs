@@ -79,6 +79,31 @@ fn session_cookies(sid: &str, account: i64) -> [HeaderValue; 2] {
     ]
 }
 
+/// Whether a request comes from beghu's own pages: its `Origin` is beghu's public URL, or, when
+/// `none_is_ours`, it has no `Origin` at all (a same-origin `EventSource` sends none).
+pub fn from_beghu(app: &App, headers: &HeaderMap, none_is_ours: bool) -> bool {
+    match headers.get(header::ORIGIN) {
+        None => none_is_ours,
+        Some(o) => o.as_bytes() == app.cfg().public_url.as_bytes(),
+    }
+}
+
+/// Every API request that isn't a GET must come from beghu's own pages. Browsers send `Origin`
+/// on every such request, so one without it (or from another site) is refused with 403 before
+/// the session is looked at. The session cookie is `SameSite=Lax`, which already keeps it off
+/// cross-site POSTs; this check doesn't lean on that.
+pub async fn require_same_origin(State(app): State<App>, req: Request, next: Next) -> Response {
+    let safe = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    if !safe && !from_beghu(&app, req.headers(), false) {
+        return ApiError::Forbidden("Only beghu's own pages may make this request".into())
+            .into_response();
+    }
+    next.run(req).await
+}
+
 /// The API's gate: answers 401 without a live session whose active account can be used, and
 /// slides the session's expiry (re-sending the cookie) at most hourly.
 pub async fn require_session(State(app): State<App>, mut req: Request, next: Next) -> Response {

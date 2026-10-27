@@ -130,27 +130,19 @@ fn apply(
             None => return refuse("the fixture has no accounts".into()),
         },
     };
-    let Some(sender) = q::user_row(tx, sender)? else {
+    let Some(sender_row) = q::user_row(tx, sender)? else {
         return refuse("the sender isn't a user".into());
     };
-    let sender = user_json(sender.id, &sender.login, sender.avatar_url.as_deref());
+    let sender_json = user_json(
+        sender_row.id,
+        &sender_row.login,
+        sender_row.avatar_url.as_deref(),
+    );
     let links = match relationships::plan(tx, id, repo.id, &e.relationships)? {
         Ok(links) => links,
         Err(why) => return refuse(why),
     };
-    let mut add = Vec::new();
-    let mut remove = Vec::new();
-    for (names, into) in [(&e.add_labels, &mut add), (&e.remove_labels, &mut remove)] {
-        for name in names {
-            match q::label_by_name(tx, repo.id, name)? {
-                Some(l) => into.push(l),
-                None => return refuse(format!("{} has no label {name}", e.repo)),
-            }
-        }
-    }
-
-    let before = q::issue(tx, id)?;
-    if e.issue_type.is_some() && before.kind == "pr" {
+    if e.issue_type.is_some() && q::issue(tx, id)?.kind == "pr" {
         return refuse(format!(
             "{}#{} is a pull request: it has no type",
             e.repo, e.number
@@ -161,140 +153,221 @@ fn apply(
     {
         return refuse("type is a name or null".into());
     }
-    // GitHub's clock only moves forward, even past a fixture written "in the future".
-    let at = now.max(before.updated_at.unwrap_or(0));
-    let title = e.title.clone().unwrap_or_else(|| before.title.clone());
-    let body = e.body.clone().or_else(|| before.body.clone());
-    let state = e.state.clone().unwrap_or_else(|| before.state.clone());
-    let state_changed = state != before.state;
-    let (state_reason, closed_at) = match (state.as_str(), state_changed) {
-        ("closed", true) => (
-            Some(e.state_reason.clone().unwrap_or_else(|| "completed".into())),
-            Some(at),
-        ),
-        ("open", true) => (Some("reopened".to_owned()), None),
-        _ => (
-            e.state_reason
-                .clone()
-                .or_else(|| before.state_reason.clone()),
-            before.closed_at,
-        ),
+    let mut change = Change {
+        title: e.title.clone(),
+        body: e.body.clone(),
+        state: e.state.clone(),
+        state_reason: e.state_reason.clone(),
+        comment: e.comment.clone(),
+        issue_type: e.issue_type.clone(),
+        ..Change::default()
     };
-    // Relationship changes alone don't bump `updated_at` on GitHub.
-    let props = e.title.is_some()
-        || e.body.is_some()
-        || e.state.is_some()
-        || !e.add_labels.is_empty()
-        || !e.remove_labels.is_empty()
-        || e.comment.is_some();
-    if props {
-        q::update_issue(
-            tx,
-            id,
-            &title,
-            body.as_deref(),
-            &state,
-            state_reason.as_deref(),
-            closed_at,
-            at,
-        )?;
-    }
-    // Setting the type it already has changes nothing and sends nothing.
-    let typed = match &e.issue_type {
-        Some(t) if *t != before.issue_type => {
-            q::set_issue_type(tx, id, t.as_deref(), at)?;
-            Some(t.clone())
-        }
-        _ => None,
-    };
-    // As on GitHub, labelling with a label already there (or removing one that isn't) changes
-    // nothing and sends nothing.
-    let mut added = Vec::new();
-    for l in add {
-        if q::add_issue_label(tx, id, l.id)? > 0 {
-            added.push(l);
-        }
-    }
-    let mut removed = Vec::new();
-    for l in remove {
-        if q::remove_issue_label(tx, id, l.id)? > 0 {
-            removed.push(l);
-        }
-    }
-    let comment = match &e.comment {
-        Some(text) => {
-            let cid = q::next_comment_id(tx)?;
-            let author = sender["id"].as_i64().unwrap_or(0);
-            q::add_comment(tx, cid, &format!("IC_kw{cid}"), id, author, text, at)?;
-            q::count_comment(tx, id, at)?;
-            Some(json!({
-                "id": cid,
-                "node_id": format!("IC_kw{cid}"),
-                "url": format!("https://api.github.com/repos/{}/{}/issues/comments/{cid}", repo.owner, repo.name),
-                "html_url": format!("https://github.com/{}/{}/issues/{}#issuecomment-{cid}", repo.owner, repo.name, e.number),
-                "user": sender,
-                "created_at": rfc3339(at),
-                "updated_at": rfc3339(at),
-                "author_association": author_association(tx, &repo, Some(author))?,
-                "body": text,
-            }))
-        }
-        None => None,
-    };
-
-    let issue = issue_json(tx, id)?;
-    let delivery = |event: &'static str, action: &str, extra: Value| {
-        let mut p = envelope(&repo, &sender);
-        p["action"] = json!(action);
-        p["issue"] = issue.clone();
-        if let Value::Object(extra) = extra {
-            for (k, v) in extra {
-                p[k] = v;
+    for (names, into) in [
+        (&e.add_labels, &mut change.add_labels),
+        (&e.remove_labels, &mut change.remove_labels),
+    ] {
+        for name in names {
+            match q::label_by_name(tx, repo.id, name)? {
+                Some(l) => into.push(l),
+                None => return refuse(format!("{} has no label {name}", e.repo)),
             }
         }
-        Delivery::new(event, p)
+    }
+    let Some(done) = change.apply(tx, &repo, id, sender, now)? else {
+        return refuse("the sender isn't a user".into());
     };
-    let mut out = Vec::new();
-    let mut changes = serde_json::Map::new();
-    if title != before.title {
-        changes.insert("title".into(), json!({ "from": before.title }));
-    }
-    if body != before.body {
-        changes.insert("body".into(), json!({ "from": before.body }));
-    }
-    if !changes.is_empty() {
-        out.push(delivery("issues", "edited", json!({ "changes": changes })));
-    }
-    if state_changed {
-        let action = if state == "closed" {
-            "closed"
-        } else {
-            "reopened"
+    let mut deliveries = done.deliveries;
+    deliveries.extend(relationships::apply(tx, &links, &sender_json)?);
+    // A relationship change doesn't touch the issue's own fields, so the issue `done` read back
+    // is still the issue afterwards.
+    Ok(Ok((done.issue, deliveries)))
+}
+
+/// One change to an issue, made by `sender`: an outside edit, or a REST write beghu makes. Each
+/// field left out stays as it is.
+#[derive(Default)]
+pub(crate) struct Change {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub state: Option<String>,
+    pub state_reason: Option<String>,
+    pub add_labels: Vec<q::LabelByNameRow>,
+    pub remove_labels: Vec<q::LabelByNameRow>,
+    pub comment: Option<String>,
+    /// Absent: unchanged. `Some(None)`: untyped. A name: that type.
+    pub issue_type: Option<Option<String>>,
+}
+
+/// What a change did: the issue afterwards, the comment it added, and the webhooks GitHub sends
+/// for it, one per action.
+pub(crate) struct Changed {
+    pub issue: Value,
+    pub comment: Option<Value>,
+    pub deliveries: Vec<Delivery>,
+}
+
+impl Change {
+    /// Writes the change to issue `id` of `repo` inside the truth's transaction. `None` if the
+    /// sender isn't a user the truth knows.
+    pub(crate) fn apply(
+        &self,
+        tx: &rusqlite::Transaction,
+        repo: &q::RepoRow,
+        id: i64,
+        sender: i64,
+        now: i64,
+    ) -> rusqlite::Result<Option<Changed>> {
+        let Some(sender) = q::user_row(tx, sender)? else {
+            return Ok(None);
         };
-        out.push(delivery("issues", action, json!({})));
-    }
-    if let Some(t) = typed {
-        // `type` names the issue's type now, or, once untyped, the one it had.
-        let (action, name) = match &t {
-            Some(name) => ("typed", Some(name.as_str())),
-            None => ("untyped", before.issue_type.as_deref()),
+        let sender = user_json(sender.id, &sender.login, sender.avatar_url.as_deref());
+        let before = q::issue(tx, id)?;
+        // GitHub's clock only moves forward, even past a fixture written "in the future".
+        let at = now.max(before.updated_at.unwrap_or(0));
+        let title = self.title.clone().unwrap_or_else(|| before.title.clone());
+        let body = self.body.clone().or_else(|| before.body.clone());
+        let state = self.state.clone().unwrap_or_else(|| before.state.clone());
+        let state_changed = state != before.state;
+        let (state_reason, closed_at) = match (state.as_str(), state_changed) {
+            ("closed", true) => (
+                Some(
+                    self.state_reason
+                        .clone()
+                        .unwrap_or_else(|| "completed".into()),
+                ),
+                Some(at),
+            ),
+            ("open", true) => (Some("reopened".to_owned()), None),
+            _ => (
+                self.state_reason
+                    .clone()
+                    .or_else(|| before.state_reason.clone()),
+                before.closed_at,
+            ),
         };
-        let ty = name.map_or(Value::Null, issue_type_json);
-        out.push(delivery("issues", action, json!({ "type": ty })));
-    }
-    for (action, labels) in [("labeled", &added), ("unlabeled", &removed)] {
-        for l in labels {
-            let label = label_json(&repo, l.id, &l.name, &l.color, l.description.as_deref());
-            out.push(delivery("issues", action, json!({ "label": label })));
+        // Relationship changes alone (made by the caller after this) don't bump `updated_at` on
+        // GitHub, so a change with nothing of the issue's own leaves it alone.
+        let props = self.title.is_some()
+            || self.body.is_some()
+            || self.state.is_some()
+            || !self.add_labels.is_empty()
+            || !self.remove_labels.is_empty()
+            || self.comment.is_some();
+        if props {
+            q::update_issue(
+                tx,
+                id,
+                &title,
+                body.as_deref(),
+                &state,
+                state_reason.as_deref(),
+                closed_at,
+                at,
+            )?;
         }
+        // Setting the type it already has changes nothing and sends nothing.
+        let typed = match &self.issue_type {
+            Some(t) if *t != before.issue_type => {
+                q::set_issue_type(tx, id, t.as_deref(), at)?;
+                Some(t.clone())
+            }
+            _ => None,
+        };
+        // As on GitHub, labelling with a label already there (or removing one that isn't)
+        // changes nothing and sends nothing.
+        let mut added = Vec::new();
+        for l in &self.add_labels {
+            if q::add_issue_label(tx, id, l.id)? > 0 {
+                added.push(l);
+            }
+        }
+        let mut removed = Vec::new();
+        for l in &self.remove_labels {
+            if q::remove_issue_label(tx, id, l.id)? > 0 {
+                removed.push(l);
+            }
+        }
+        let comment = match &self.comment {
+            Some(text) => {
+                let cid = q::next_comment_id(tx)?;
+                let author = sender["id"].as_i64().unwrap_or(0);
+                q::add_comment(tx, cid, &format!("IC_kw{cid}"), id, author, text, at)?;
+                q::count_comment(tx, id, at)?;
+                let full = format!("{}/{}", repo.owner, repo.name);
+                Some(json!({
+                    "id": cid,
+                    "node_id": format!("IC_kw{cid}"),
+                    "url": format!("https://api.github.com/repos/{full}/issues/comments/{cid}"),
+                    "html_url": format!("https://github.com/{full}/issues/{}#issuecomment-{cid}", before.number),
+                    "issue_url": format!("https://api.github.com/repos/{full}/issues/{}", before.number),
+                    "user": sender,
+                    "created_at": rfc3339(at),
+                    "updated_at": rfc3339(at),
+                    "author_association": author_association(tx, repo, Some(author))?,
+                    "body": text,
+                    "performed_via_github_app": null,
+                }))
+            }
+            None => None,
+        };
+
+        let issue = issue_json(tx, id)?;
+        let delivery = |event: &'static str, action: &str, extra: Value| {
+            let mut p = envelope(repo, &sender);
+            p["action"] = json!(action);
+            p["issue"] = issue.clone();
+            if let Value::Object(extra) = extra {
+                for (k, v) in extra {
+                    p[k] = v;
+                }
+            }
+            Delivery::new(event, p)
+        };
+        let mut out = Vec::new();
+        let mut changes = serde_json::Map::new();
+        if title != before.title {
+            changes.insert("title".into(), json!({ "from": before.title }));
+        }
+        if body != before.body {
+            changes.insert("body".into(), json!({ "from": before.body }));
+        }
+        if !changes.is_empty() {
+            out.push(delivery("issues", "edited", json!({ "changes": changes })));
+        }
+        if state_changed {
+            let action = if state == "closed" {
+                "closed"
+            } else {
+                "reopened"
+            };
+            out.push(delivery("issues", action, json!({})));
+        }
+        if let Some(t) = typed {
+            // `type` names the issue's type now, or, once untyped, the one it had.
+            let (action, name) = match &t {
+                Some(name) => ("typed", Some(name.as_str())),
+                None => ("untyped", before.issue_type.as_deref()),
+            };
+            let ty = name.map_or(Value::Null, issue_type_json);
+            out.push(delivery("issues", action, json!({ "type": ty })));
+        }
+        for (action, labels) in [("labeled", &added), ("unlabeled", &removed)] {
+            for l in labels {
+                let label = label_json(repo, l.id, &l.name, &l.color, l.description.as_deref());
+                out.push(delivery("issues", action, json!({ "label": label })));
+            }
+        }
+        if let Some(c) = &comment {
+            out.push(delivery(
+                "issue_comment",
+                "created",
+                json!({ "comment": c }),
+            ));
+        }
+        Ok(Some(Changed {
+            issue,
+            comment,
+            deliveries: out,
+        }))
     }
-    if let Some(c) = comment {
-        out.push(delivery(
-            "issue_comment",
-            "created",
-            json!({ "comment": c }),
-        ));
-    }
-    out.extend(relationships::apply(tx, &links, &sender)?);
-    Ok(Ok((issue, out)))
 }

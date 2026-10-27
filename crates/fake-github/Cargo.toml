@@ -9,6 +9,7 @@ description = "Fake GitHub: GitHub's API, OAuth and webhooks for local dev and t
 axum = { workspace = true }
 base64 = "0.22"
 dbrt = { workspace = true }
+futures-util = { version = "0.3", default-features = false }
 fake-db = { workspace = true }
 hmac = "0.12"
 mirror-db = { workspace = true }
