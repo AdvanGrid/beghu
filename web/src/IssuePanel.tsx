@@ -40,6 +40,7 @@ import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
 import { searchOf, type Term } from "./highlight";
+import { touch } from "./keys";
 import { coalesced, onPush, resetAt } from "./live";
 import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
@@ -177,6 +178,7 @@ export function IssuePanel(props: RouteSectionProps) {
         ref={panel}
         aria-label="Issue"
         data-perf="panel"
+        data-keys="panel"
         {...stylex.attrs(s.panel, stacked() ? s.stacked : s.side(width()))}
       >
         <Errored fallback={(err, reset) => <DetailFailure error={err()} reset={reset} id={id()} search={location.search} />}>
@@ -454,6 +456,9 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   const search = createMemo(() => searchOf(queryOf(props.search)));
   const terms = (field: SearchField): Term[] => (search().fields[field] ? search().terms : []);
   const state = () => issueState(d());
+  let scroller!: HTMLDivElement;
+  // Into the issue from the list: the arrows and Page keys then scroll it.
+  touch("openIssue", () => scroller.focus());
   /** The property row whose picker is open. */
   const [picking, setPicking] = createSignal<Prop>();
   // Another issue opens with every picker closed. (The effect runs for every new read of the
@@ -470,7 +475,17 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   const setOpen = (prop: Prop) => (open: boolean) => setPicking(open ? prop : undefined);
   return (
     <>
-      <div ref={props.scroller} {...stylex.attrs(s.scroller)} data-perf="detail" data-id={d().id} onScroll={props.onScroll}>
+      <div
+        ref={(el) => {
+          scroller = el;
+          props.scroller(el);
+        }}
+        tabindex={-1}
+        {...stylex.attrs(s.scroller)}
+        data-perf="detail"
+        data-id={d().id}
+        onScroll={props.onScroll}
+      >
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
         <div {...stylex.attrs(s.status)}>
@@ -576,22 +591,32 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
 }
 
 /**
- * One property row: its name, which opens its picker on an issue (a PR takes no writes), and its
+ * One property row: its name, which opens its picker on an issue (a PR takes no writes), as does
+ * its key (`l`, `a`, `m`) with the focus in the panel; and its
  * values, then what the tab's picks on it show (a pending dot, a failed pick with Retry). The
  * picker opens over what follows, so nothing moves.
  */
 function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number; open: boolean; setOpen: (open: boolean) => void; children: Element }) {
   let button: HTMLButtonElement | undefined;
+  let value: HTMLElement | undefined;
   // The marker slot describes the row's opener: a failed pick is read out with it.
   const noteId = () => `prop-note-${props.prop}-${props.d.id}`;
   const close = (refocus: boolean) => {
     props.setOpen(false);
     if (refocus) button?.focus();
   };
+  // The row's key: opens the picker, or puts the focus back in it (its filter box) if it's open.
+  // While the picker's code is still loading, or failed to, there's no filter box yet and the key
+  // does nothing: the picker focuses its filter itself once it's there, and a failure has Retry.
+  const open = () => {
+    if (props.open) value?.querySelector<HTMLElement>('[data-keys="picker"] input')?.focus();
+    else props.setOpen(true);
+  };
   return (
     <>
       <dt {...stylex.attrs(s.key)}>
         <Show when={props.d.kind === "issue"} fallback={props.title}>
+          <Offer action={props.prop} run={open} />
           <button
             ref={button}
             type="button"
@@ -606,7 +631,7 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
           </button>
         </Show>
       </dt>
-      <dd {...stylex.attrs(s.value, s.anchor)} data-perf={props.prop}>
+      <dd ref={value} {...stylex.attrs(s.value, s.anchor)} data-perf={props.prop}>
         {props.children}
         {/* The row's marker slot: one line it always keeps, so a pick's dot or failure moves
             nothing. Only an issue takes picks. */}
@@ -625,6 +650,12 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
       </dd>
     </>
   );
+}
+
+/** Offers `action` (keys.ts) while it's shown: a PR's rows don't show it, so offer no write keys. */
+function Offer(props: { action: Prop; run: () => void }) {
+  touch(props.action, () => props.run());
+  return null;
 }
 
 /**

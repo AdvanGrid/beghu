@@ -62,9 +62,13 @@ CI runs all of these; run them before you commit:
 - **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
   (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
   (`crates/md-ast/src/scaling.rs`), the server's render cache tests (the `tests`
-  module of `crates/server/src/markdown.rs`), which count renders no HTTP answer shows, and the
+  module of `crates/server/src/markdown.rs`), which count renders no HTTP answer shows, the
   web's highlight.js output reader under hostile input (`web/src/md/hljs.test.ts`), which only
-  ever sees highlight.js's own escaped output through the app.
+  ever sees highlight.js's own escaped output through the app, and the keys module's unit test
+  (`web/src/keys.test.ts`), which covers what the browser suite can't drive: a Mac's Cmd and Alt,
+  AltGr, non-Latin layouts and input-method composition (the suite runs one platform and layout),
+  the areas of touchpoints no view offers yet, and swapped bindings (no keymap preference seam
+  exists until #113). Both web tests run under `npm run test:lint`.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
 

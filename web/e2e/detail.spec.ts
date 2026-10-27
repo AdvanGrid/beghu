@@ -122,9 +122,10 @@ test("an issue URL with leading zeros opens that issue, its first fetch the shel
   await expect(detail(page)).toHaveAttribute("data-id", id!);
   // The shell's preload, then at most one read again for the live stream's opening reset (a
   // change may have landed before the stream was up): plain if the reset cleared the preload
-  // before the panel took it, through its last comment if the panel had it on screen.
+  // before the panel took it, through its last comment if the panel had it on screen. (Its
+  // neighbours in the list preload too, for the keys.)
   await page.waitForTimeout(1000);
-  const reads = api.filter((p) => /^\/api\/issues\/\d+(\?|$)/.test(p));
+  const reads = api.filter((p) => /^\/api\/issues\/0*(\d+)(\?|$)/.exec(p)?.[1] === id);
   expect(reads[0]).toBe(`/api/issues/${id}`);
   expect(reads.length).toBeLessThanOrEqual(2);
   for (const r of reads) expect(r).toMatch(new RegExp(`^/api/issues/${id}(\\?through=|$)`));
@@ -345,7 +346,8 @@ async function watchTitles(page: Page): Promise<() => Promise<string[]>> {
 
 test("a revisit shows the issue as it is now, never what an earlier visit fetched", async ({ page }) => {
   await signIn(page);
-  const [x, y] = [rows(page).nth(4), rows(page).nth(5)];
+  // Not neighbours: the open issue's neighbours preload afresh for the keys, as a hover would.
+  const [x, y] = [rows(page).nth(4), rows(page).nth(7)];
   const id = await x.getAttribute("data-id");
   await x.click();
   await expect(detail(page)).toHaveAttribute("data-id", id!);

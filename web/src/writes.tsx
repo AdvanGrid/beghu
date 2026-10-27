@@ -54,6 +54,7 @@ import {
   type Op,
   type OpReply,
 } from "./api";
+import { touch } from "./keys";
 import type { Label } from "./bindings/Label";
 import type { Milestone } from "./bindings/Milestone";
 import { githubDown, reconnecting, refetchShown } from "./live";
@@ -791,6 +792,15 @@ export function Composer(props: { d: ShownDetail }) {
     write(op, ref(), author());
   };
   let box!: HTMLTextAreaElement;
+  // The composer's touchpoints (keys.ts): only an issue's panel has a composer, so a PR's offers
+  // none. Close or reopen goes as its button would, and not while its button is disabled; send
+  // (Ctrl or Cmd+Enter, from the comment box) as Comment would.
+  touch("comment", () => box.focus());
+  touch("send", comment);
+  touch("closeReopen", () => {
+    if (githubDown() || changingState()) return;
+    setState(props.d.state === "open" ? { kind: "close", issue: issue(), reason: "completed" } : { kind: "reopen", issue: issue() });
+  });
   onCleanup(() => {
     if (composerBox === box) composerBox = undefined;
   });
@@ -807,13 +817,8 @@ export function Composer(props: { d: ShownDetail }) {
         aria-label="Comment"
         placeholder="Leave a comment"
         rows={3}
+        data-keys="composer"
         onInput={(e) => setDraft(issue(), e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            comment();
-          }
-        }}
       />
       <div {...stylex.attrs(s.actions)}>
         <Show

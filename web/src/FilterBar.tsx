@@ -2,6 +2,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, onSettled, Show, untrack } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { SessionEnded, forgetFailure, getFacets, readThen, signIn, type Facets } from "./api";
+import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
 import type { MatchMode } from "./bindings/MatchMode";
@@ -25,16 +26,17 @@ const PRESETS: { name: string; query: string }[] = [
  * them. Until they arrive the box filters as usual, only without a list. Their popover floats
  * over the list, so its arrival moves nothing.
  */
-export function FilterBar(props: { onFocusChange: (focused: boolean) => void }) {
+export function FilterBar() {
   const location = useLocation();
-  /** Whether the box has focus; Root's hint bar hears of it through `onFocusChange`. */
+  /** Whether the box has focus. (The hint bar learns it from the keys module.) */
   const [focused, setFocused] = createSignal(false);
-  const focus = (on: boolean) => {
-    setFocused(on);
-    props.onFocusChange(on);
-  };
   const navigate = useNavigate();
   let box!: HTMLInputElement;
+  // The keys' way in (keys.ts): the caret goes to the end, to add a token.
+  touch("focusFilter", () => {
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  });
   // Filled from the URL once; after that only typing, picks and Back/Forward change it.
   const initial = untrack(() => queryOf(location.search));
   const [text, setText] = createSignal(initial);
@@ -178,13 +180,14 @@ export function FilterBar(props: { onFocusChange: (focused: boolean) => void }) 
             autocomplete="off"
             placeholder="Filter: label:, assignee:me, repo:, is:pr… or search text"
             data-perf="filter"
+            data-keys="filter"
             {...stylex.attrs(s.input)}
             onFocus={() => {
-              focus(true);
+              setFocused(true);
               loadSuggestions();
             }}
             onBlur={() => {
-              focus(false);
+              setFocused(false);
               // Leaving the box finishes the token being typed.
               editing = undefined;
               go(applied(box.value), false);

@@ -87,6 +87,31 @@ test("an outside edit through ./dev-ctl fake edit shows in the open list within 
   expect(loads).toBe(0);
 });
 
+test("a push that refetches the list keeps the focus on its row, moved or not, and the arrows still step from it", async ({ page }) => {
+  const rows = page.locator('[data-perf="row"]');
+  await rows.nth(0).focus();
+  await page.keyboard.press("ArrowDown");
+  const [second, third] = [(await rowRef(page, 1)).id, (await rowRef(page, 2)).id];
+  const focused = page.locator(`[data-perf="row"][data-id="${second}"]`);
+  await expect(focused).toBeFocused();
+  // Another issue changes: it moves to the top, and every row's data is read afresh.
+  const { repo, number, id } = await rowRef(page, 5);
+  devCtl(["fake", "edit", `${repo}#${number}`, "--title", unique("Edited beside the focus")]);
+  await expect(rows.first()).toHaveAttribute("data-id", id, { timeout: SHOWS_WITHIN_MS });
+  await expect(focused).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(`[data-perf="row"][data-id="${third}"]`)).toBeFocused();
+  await expect(page.locator('[data-perf="detail"]')).toHaveAttribute("data-id", third);
+  // The focused row's own issue changes: it moves to the top, the focus with it.
+  const own = page.locator(`[data-perf="row"][data-id="${third}"]`);
+  const ref = /^([\w.-]+)#(\d+)$/.exec((await own.locator('[data-perf="ref"]').textContent())!.trim())!;
+  devCtl(["fake", "edit", `${ref[1]}#${ref[2]}`, "--title", unique("Edited under the focus")]);
+  await expect(rows.first()).toHaveAttribute("data-id", third, { timeout: SHOWS_WITHIN_MS });
+  await expect(own).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(rows.nth(1)).toBeFocused();
+});
+
 test("a burst of pushes costs one immediate refetch and one trailing one, and the last push shows", async ({ page }) => {
   // When each push reaches the tab.
   await page.addInitScript(() => {

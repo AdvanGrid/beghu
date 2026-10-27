@@ -1,11 +1,13 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
+import { useNavigate, usePreloadRoute } from "@solidjs/router";
 import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
 import type { SearchField } from "./bindings/SearchField";
 import { Avatar, issueState, ProgressRing, StateIcon } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { StillImporting } from "./WhileImporting";
+import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import { overlay } from "./overlay";
 import { queryOf, sortOf, type SortKey } from "./query";
@@ -23,6 +25,11 @@ const OVERSCAN = 6;
 const NEAR_END = 40;
 /** A view change that takes longer than this pulses the list's outline, over the old rows. */
 export const PULSE_AFTER_MS = 200;
+/**
+ * How long the selection rests before its neighbours preload: a held key's repeats never do. The
+ * preload's read is remembered too (api.ts), so a step after the router's 5 s shows it at once.
+ */
+const PRELOAD_REST_MS = 150;
 
 /** The time the last column shows: the sort's, or the last update. */
 const TIME: Record<SortKey, { head: string; of: (r: IssueRow) => number | null }> = {
@@ -220,6 +227,7 @@ export function IssueList(props: { search: string; openId?: number }) {
               readStart={readAt(page())}
               search={props.search}
               openId={props.openId}
+              more={page().next !== null}
               onNearEnd={loadMore}
               time={time().of}
               cols={cols}
@@ -287,6 +295,8 @@ function Rows(props: {
   readStart: number;
   search: string;
   openId?: number;
+  /** More pages follow the loaded rows. */
+  more: boolean;
   onNearEnd: () => void;
   time: (r: IssueRow) => number | null;
   cols: Cols;
@@ -304,6 +314,121 @@ function Rows(props: {
     const first = items[0]?.index ?? 0;
     return { first, rows: props.rows.slice(first, first + items.length) };
   });
+
+  // The selection is the open issue, and the keys move it (keys.ts): the next or previous row,
+  // or the first or last. The row is scrolled into view and opened; if the list had the focus,
+  // the focus moves to the row (roving focus: the selected row is the one in the tab order).
+  // Selection follows the issue, not the row's index.
+  const navigate = useNavigate();
+  // The keys' choice, as a signal for the rows to show, and as it is this moment for the next
+  // key: a write to a signal can wait for the navigation's transition, and a key can't. One
+  // navigation goes at a time: keys pressed meanwhile (a held key) move the choice, and once the
+  // route has caught up it goes on to the latest. Any other change of route (a click, Back) drops
+  // the choice.
+  const [chosen, setChosen] = createSignal<number>();
+  let chosenNow: number | undefined;
+  /** The issue the keys' navigation is on its way to. */
+  let going: number | undefined;
+  // A step replaces the history entry, so Back leaves the issue for where it was opened from
+  // rather than walking back through every issue the keys stepped past; the first open pushes.
+  const go = (id: number) => {
+    going = id;
+    navigate(`/issues/${id}${untrack(() => props.search)}`, { scroll: false, replace: untrack(() => props.openId) !== undefined });
+  };
+  createEffect(
+    () => props.openId,
+    (open) => {
+      // Navigating builds the route's computations: not in an effect's callback.
+      const next = chosenNow;
+      if (going !== undefined && open === going && next !== undefined && next !== open) return queueMicrotask(() => go(next));
+      going = chosenNow = undefined;
+      setChosen(undefined);
+    },
+  );
+  const selected = () => chosen() ?? props.openId;
+  const index = (id = selected()) => (id === undefined ? -1 : props.rows.findIndex((r) => r.id === id));
+  /** Whether the selected row is in the DOM: then it's the row in the tab order, else the first row there is. */
+  const selectedShown = createMemo(() => {
+    const at = index();
+    const { first, rows } = visible();
+    return at >= first && at < first + rows.length;
+  });
+  /** Where a step starts: the selection, or with none, a row that has the focus. */
+  const from = () => {
+    const at = index(chosenNow ?? props.openId);
+    if (at >= 0) return at;
+    const focused = document.activeElement instanceof HTMLElement && scroller.contains(document.activeElement) ? document.activeElement.dataset.id : undefined;
+    return focused === undefined ? -1 : props.rows.findIndex((r) => String(r.id) === focused);
+  };
+  /** The row to give the focus to once it's in the DOM. */
+  const [focusing, setFocusing] = createSignal<number>();
+  const select = (i: number) => {
+    const at = Math.max(0, Math.min(i, props.rows.length - 1));
+    const r = props.rows[at];
+    if (!r) return;
+    chosenNow = r.id;
+    setChosen(r.id);
+    v.scrollToIndex(at);
+    if (scroller.contains(document.activeElement)) setFocusing(r.id);
+    if (going === undefined && r.id !== props.openId) go(r.id);
+  };
+  // A row that moves (its own issue edited elsewhere) or leaves the window loses the DOM's focus,
+  // which falls to the page. If the list had it, it goes back to the selected row, or the row in
+  // the tab order if that one isn't shown. The list had the focus if it was the last to take it
+  // and no press elsewhere came since (a press on the page's plain parts puts it there too).
+  let hadFocus = false;
+  const onFocusIn = () => (hadFocus = true);
+  const away = (e: Event) => {
+    if (!scroller.contains(e.target as Node)) hadFocus = false;
+  };
+  document.addEventListener("focusin", away);
+  document.addEventListener("pointerdown", away, true);
+  onCleanup(() => {
+    document.removeEventListener("focusin", away);
+    document.removeEventListener("pointerdown", away, true);
+  });
+  createEffect(
+    // A fresh object on every change of the window's rows, with the row the focus would go to.
+    () => {
+      const { rows } = visible();
+      return { back: selectedShown() ? selected() : rows[0]?.id };
+    },
+    ({ back }) => {
+      if (!hadFocus || back === undefined || (document.activeElement !== document.body && document.activeElement !== null)) return;
+      scroller.querySelector<HTMLElement>(`[data-perf="row"][data-id="${back}"]`)?.focus({ preventScroll: true });
+    },
+  );
+  touch("next", () => select(from() < 0 ? 0 : from() + 1));
+  touch("previous", () => select(from() < 0 ? 0 : from() - 1));
+  touch("first", () => select(0));
+  touch("last", () => select(props.rows.length - 1));
+  touch("toList", () => {
+    const at = Math.max(from(), 0);
+    const r = props.rows[at];
+    if (!r) return;
+    v.scrollToIndex(at);
+    setFocusing(r.id);
+  });
+
+  // Once the selection has rested, its neighbours' details preload (code and data, as a hover
+  // does), so the next step shows them with no placeholder.
+  const preload = usePreloadRoute();
+  let rest: ReturnType<typeof setTimeout> | undefined;
+  createEffect(
+    () => {
+      const i = index();
+      return i < 0 ? "" : [props.rows[i - 1]?.id, props.rows[i + 1]?.id].filter((id) => id !== undefined).join(",");
+    },
+    (ids) => {
+      clearTimeout(rest);
+      if (!ids) return;
+      const search = untrack(() => props.search);
+      rest = setTimeout(() => {
+        for (const id of ids.split(",")) preload(`/issues/${id}${search}`, { preloadData: true });
+      }, PRELOAD_REST_MS);
+    },
+  );
+  onCleanup(() => clearTimeout(rest));
   // Near the end of what's loaded, ask for the next page. Driven by the window, which the
   // virtualizer moves after its own scroll handling.
   createEffect(
@@ -317,17 +442,36 @@ function Rows(props: {
     <div
       ref={scroller}
       {...stylex.attrs(s.scroller)}
+      role="listbox"
+      aria-label="Issues"
+      data-keys="list"
       data-perf="list"
       data-perf-rows={props.rows.length}
+      onFocusIn={onFocusIn}
     >
       <Show when={props.rows.length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
           {/* One translated wrapper around rows in normal flow: a row that stays in the window
-              keeps its DOM node. */}
+              keeps its DOM node, and so the focus, through a refetch that replaces its data
+              (rows are keyed by issue, not by object). */}
           <div {...stylex.attrs(s.window(visible().first * ROW_HEIGHT))}>
-            <For each={visible().rows}>
-              {(r) => (
-                <Row r={r} readStart={props.readStart} search={props.search} current={props.openId === r.id} time={props.time} cols={props.cols} card={props.card} />
+            <For each={visible().rows} keyed={(r) => r.id}>
+              {(r, i) => (
+                <Row
+                  r={r()}
+                  readStart={props.readStart}
+                  search={props.search}
+                  current={props.openId === r().id}
+                  selected={selected() === r().id}
+                  tabbable={selectedShown() ? selected() === r().id : i() === 0}
+                  pos={visible().first + i() + 1}
+                  of={props.more ? -1 : props.rows.length}
+                  takeFocus={focusing() === r().id}
+                  onFocusTaken={() => setFocusing(undefined)}
+                  time={props.time}
+                  cols={props.cols}
+                  card={props.card}
+                />
               )}
             </For>
           </div>
@@ -342,7 +486,18 @@ function Row(props: {
   r: IssueRow;
   readStart: number;
   search: string;
+  /** The open issue. */
   current: boolean;
+  /** The selection: the open issue, or the one the keys just chose. */
+  selected: boolean;
+  /** The row in the tab order. */
+  tabbable: boolean;
+  /** Its place in the list, from 1, and how many rows there are (-1 while more may load). */
+  pos: number;
+  of: number;
+  /** Take the focus, then call `onFocusTaken`. */
+  takeFocus: boolean;
+  onFocusTaken: () => void;
   time: (r: IssueRow) => number | null;
   cols: Cols;
   card: Card;
@@ -351,15 +506,32 @@ function Row(props: {
   const at = () => props.time(r());
   const w = (c: Column) => props.cols.width(c);
   const blocked = () => r().state === "open" && r().blocked_by > 0;
+  let el!: HTMLAnchorElement;
+  createEffect(
+    () => props.takeFocus,
+    (take) => {
+      if (!take) return;
+      el.focus({ preventScroll: true });
+      props.onFocusTaken();
+    },
+  );
+  // An option in the list's listbox (the ARIA list pattern), and still a plain link the router
+  // opens on click.
   return (
     <a
+      ref={el}
       href={`/issues/${r().id}${props.search}`}
       noscroll
+      role="option"
+      aria-selected={props.selected ? "true" : "false"}
+      aria-posinset={props.pos}
+      aria-setsize={props.of}
+      tabindex={props.tabbable ? 0 : -1}
       data-perf="row"
       data-id={r().id}
       data-blocked={blocked() ? "" : undefined}
       aria-current={props.current ? "page" : undefined}
-      {...stylex.attrs(s.row, s.link, props.current && s.current, blocked() && s.blocked)}
+      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked)}
     >
       <span {...stylex.attrs(s.state)}>
         <StateIcon state={issueState(r())} />

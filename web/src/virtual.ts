@@ -1,7 +1,7 @@
 // The list's windowing: a Solid 2 adapter for @tanstack/virtual-core. @tanstack/solid-virtual
 // is Solid 1 only, so this wires the framework-free core directly, exposing only what the list
-// uses: the items in the window and the total height. (virtual-fixed.ts, unused, is a smaller
-// fallback for fixed-height rows.)
+// uses: the items in the window, the total height, and scrolling a row into view.
+// (virtual-fixed.ts, unused, is a smaller fallback for fixed-height rows.)
 import { createEffect, createSignal, onSettled } from "solid-js";
 import { elementScroll, observeElementOffset, observeElementRect, Virtualizer, type VirtualItem } from "@tanstack/virtual-core";
 
@@ -44,7 +44,10 @@ export function createVirtualizer(opts: {
     return cleanup;
   });
 
-  return { items, totalSize };
+  /** Scrolls the least that brings row `index` into view. */
+  const scrollToIndex = (index: number) => virtualizer.scrollToIndex(index, { align: "auto" });
+
+  return { items, totalSize, scrollToIndex };
 }
 
 /** Whether two windows hold the same rows: the same first row and as many of them. */

@@ -555,7 +555,35 @@ test("a picker is used from the keyboard alone, and closes when focus leaves it"
   }
 });
 
-test("the filter keeps focus when the list's gap is pressed, and aria-controls names only a list that's there", async ({ page }) => {
+test("a row's key opens its picker from the issue, and Enter picks what the typing filtered to", async ({ page }) => {
+  await signIn(page);
+  const issue = await claim(page, undefined, (r) => !r.labels.some((l) => l.name === "frontend"));
+  try {
+    await open(page, issue.id);
+    const sent = opsSent(page);
+    // The keys work with the focus in the issue.
+    await page.locator('[data-perf="detail"]').focus();
+    await page.keyboard.press("l");
+    const filter = picker(page).getByRole("combobox", { name: "Filter labels" });
+    await expect(filter).toBeFocused();
+    await page.keyboard.type("frontend");
+    await expect(picker(page).locator('[data-perf="pick"]')).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(option(page, "frontend")).toHaveAttribute("aria-selected", "true");
+    await expect.poll(() => sent.length).toBe(1);
+    expect(sent[0]).toMatchObject({ kind: "label_add", label: "frontend" });
+    // Labels stay open for more; Escape closes it, back on its row's button.
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    await expect(opener(page, "labels")).toBeFocused();
+    await expect(labelsShown(page).filter({ hasText: "frontend" })).toHaveCount(1);
+    await expect.poll(() => labelsOf(page, issue.id), { timeout: SHOWS_WITHIN_MS }).toContain("frontend");
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
+test("the filter keeps focus when the picker's gaps are pressed, and aria-controls names only a list that's there", async ({ page }) => {
   await signIn(page);
   const issue = await claim(page);
   await open(page, issue.id);
@@ -571,6 +599,15 @@ test("the filter keeps focus when the list's gap is pressed, and aria-controls n
   await expect(filter).toBeFocused();
   await expect(picker(page)).toContainText("Loading");
   await expect(filter).not.toHaveAttribute("aria-controls");
+  // Presses on the picker's own non-controls (the filter's margin, the Loading note) leave it
+  // open with the focus in its filter: the issue's scroller, which takes focus, never gets it.
+  const f = (await filter.boundingBox())!;
+  await page.mouse.click(f.x + f.width / 2, f.y - 4);
+  await expect(picker(page)).toBeVisible();
+  await expect(filter).toBeFocused();
+  await picker(page).getByText("Loading").click();
+  await expect(picker(page)).toBeVisible();
+  await expect(filter).toBeFocused();
   release();
   const list = picker(page).getByRole("listbox");
   await expect(list).toBeVisible();

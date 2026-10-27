@@ -88,6 +88,14 @@ _Avoid_: Idle
 A still mark at the exact spot of a held change, shown for a moment before it applies: a line where something will open (a comment, a paragraph, a row, a first blocker) and an outline on what will go. It marks only the part that changes, such as one property line, never a whole section around it.
 _Avoid_: Warning, toast, transition indicator
 
+**Touchpoint**:
+Something a view lets the keyboard do, by name (next issue, comment, close/reopen), while the view can do it. Keys reach a touchpoint only through the keymap in effect, and only where the focus is in an area it works in: an issue's write keys need the focus in the issue.
+_Avoid_: Shortcut handler, hotkey, command
+
+**Selection**:
+The issue the list's keys are on: the open issue, or the one the keys just stepped to while it opens. Its row is the one in the tab order when it's on screen, and it follows the issue, not the row's position.
+_Avoid_: Cursor, highlighted row, current row
+
 **Match mode**:
 How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters).
 _Avoid_: Relevance, search ranking

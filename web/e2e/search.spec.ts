@@ -37,16 +37,17 @@ test.beforeEach(async ({ page }) => {
 
 test("the hint bar shows the search syntax while the filter box has focus", async ({ page }) => {
   const hints = page.locator('[data-perf="hints"]');
-  await expect(hints).toHaveCount(0);
+  await expect(hints).toBeVisible();
+  await expect(hints).not.toContainText("in:title,body,comments");
   const box = page.getByRole("combobox", { name: "Filter issues" });
   await box.click();
   await expect(hints).toBeVisible();
   for (const syntax of ['"a phrase"', "-word", "in:title,body,comments", "match:blend|best|off"]) {
     await expect(hints).toContainText(syntax);
   }
-  // Leaving the box hides them.
+  // Leaving the box puts the list's keys back.
   await box.evaluate((el) => el.blur());
-  await expect(hints).toHaveCount(0);
+  await expect(hints).not.toContainText("in:title,body,comments");
 });
 
 test("rows show an icon for each field the search matched in", async ({ page }) => {

@@ -233,7 +233,8 @@ test("a comment's Markdown shows as typed while it's sending, and rendered once 
     await fake("/faults/latency", { endpoint: COMMENTS(issue), ms: 1500 });
     const text = unique("Rendered");
     await box(page).fill(`${text} **bold**, after #${other.number}`);
-    await button(page, "Comment").click();
+    // Sent by its key, as the Comment button sends it.
+    await box(page).press("ControlOrMeta+Enter");
 
     // Sending: the text as typed, with nothing parsed in the browser.
     const mine = commentSaying(page, text);
@@ -642,6 +643,23 @@ test("a close GitHub refuses reverts with Retry and Dismiss on its row, and Retr
     await expect(badge(page)).toHaveText("Closed");
     await expect(stateNote(page)).not.toContainText("Couldn't");
     await expect(button(page, "Reopen issue")).toBeEnabled({ timeout: 5000 });
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
+test("the close/reopen key closes the open issue as completed, and then reopens it, as the buttons do", async ({ page }) => {
+  const issue = await claimBelowTheTop(page);
+  try {
+    await open(page, issue.id);
+    // The issue's write keys need the focus in it.
+    await page.keyboard.press("o");
+    await page.keyboard.press("Shift+X");
+    await expect(badge(page)).toHaveText("Closed");
+    await expect(button(page, "Reopen issue")).toBeEnabled({ timeout: 5000 });
+    await page.keyboard.press("Shift+X");
+    await expect(badge(page)).toHaveText("Open");
+    await expect(button(page, "Close issue")).toBeEnabled({ timeout: 5000 });
   } finally {
     await closeForGood(page, issue);
   }

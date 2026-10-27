@@ -8,6 +8,8 @@
 // server makes in order. Labels and assignees stay open for more; picking a milestone closes it.
 // Labels and milestones come from the mirror and are read again on every live push, so a rename on
 // GitHub reaches an open picker; who can be assigned is read from GitHub as the picker opens.
+// Its row's key (`l`, `a`, `m`: keys.ts) opens it too; inside it, single keys type into the filter
+// box (`data-keys="picker"`), and the `?` overlay (Ctrl+?) leaves it open behind.
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, Errored, For, Loading, onSettled, Show } from "solid-js";
 import { query } from "@solidjs/router";
@@ -171,7 +173,8 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
     // A press anywhere else closes it, leaving focus where the press put it; one on the button
     // that opened it is that button's to close.
     const away = (e: PointerEvent) => {
-      const at = e.target as Node;
+      const at = e.target as Element;
+      if (at.closest('[data-keys="help"]')) return;
       if (!root.contains(at) && !props.opener?.contains(at)) props.onClose(false);
     };
     document.addEventListener("pointerdown", away, true);
@@ -195,7 +198,9 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
   // Focus moving on (Tab, or into the page elsewhere) closes it. Focus going nowhere (the window
   // losing it, or the focused element going away) doesn't: a press elsewhere closes it anyway.
   const onFocusOut = (e: FocusEvent) => {
-    const to = e.relatedTarget as Node | null;
+    const to = e.relatedTarget as Element | null;
+    // The `?` overlay (keys.ts) gives the focus back to the filter box when it closes.
+    if (to?.closest('[data-keys="help"]')) return;
     if (to && !root.contains(to) && !props.opener?.contains(to)) props.onClose(false);
   };
 
@@ -209,9 +214,16 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
       aria-label={`Pick ${kind().noun}`}
       data-perf="picker"
       data-prop={props.prop}
+      data-keys="picker"
       {...stylex.attrs(s.pop)}
       onKeyDown={onKeyDown}
       onFocusOut={onFocusOut}
+      // A press on what isn't a control here (the filter's margin, the Loading or error note, the
+      // options and the list's gaps) would focus the issue's scroller, which takes focus, and so
+      // close it: the focus stays where it is. The filter box and the buttons take theirs.
+      onPointerDown={(e) => {
+        if (!(e.target as Element).closest("input, button")) e.preventDefault();
+      }}
     >
       <input
         ref={input}
@@ -296,14 +308,14 @@ function Options(props: {
 
   return (
     // Not a stop of its own on Tab (a scrolling box would be): the filter box drives it. A press
-    // anywhere on it, a gap between options included, leaves focus in the filter box for the keys.
+    // anywhere on it, a gap between options included, leaves focus in the filter box for the keys
+    // (the picker's `onPointerDown`).
     <ul
       id={props.id}
       role="listbox"
       tabindex={-1}
       aria-multiselectable={kind().multi ? "true" : undefined}
       {...stylex.attrs(s.list)}
-      onPointerDown={(e) => e.preventDefault()}
     >
       <For each={shown()} keyed={(i) => i.key} fallback={<li {...stylex.attrs(s.note)}>No {kind().noun} match</li>}>
         {(item, i) => {

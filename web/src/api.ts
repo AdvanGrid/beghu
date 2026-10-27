@@ -380,13 +380,16 @@ export function issueId(raw: string | undefined): number {
 export const getIssue = query((id: number) => timed<IssueDetail>(`/api/issues/${id}`), "issue");
 
 /**
- * The detail the last hover or tap preloaded, kept past the router's 5 s preload window so a click
- * after a long hover can show it at once. The tab keeps no data store: this is one issue, the
- * next to open, and it lasts until it's opened (once), another issue opens, the list's view
- * changes, a push names it or the tab resets.
+ * The details the last hovers, taps and keyboard neighbours preloaded, kept past the router's 5 s
+ * preload window so a click after a long hover, or a `j` after a long read, can show one at once.
+ * The tab keeps no data store: these are the next issues to open (the newest REMEMBERED reads),
+ * and they last until one is opened (once), another issue opens, the list's view changes, a push
+ * names one or the tab resets.
  */
-let remembered: { id: number; at: number; detail: IssueDetail } | undefined;
-/** When the remembered detail was last forgotten: a read that began before is too old to remember. */
+let remembered: { id: number; at: number; detail: IssueDetail }[] = [];
+/** How many details are remembered: the selection's two neighbours. */
+const REMEMBERED = 2;
+/** When the remembered details were last forgotten: a read that began before is too old to remember. */
 let forgottenAt = -Infinity;
 /**
  * When a push last named each issue: a read of it that began before is too old to remember.
@@ -398,14 +401,15 @@ const PRELOAD_FRESH = 4_000;
 /** The longest a remembered detail may show before its refetch replaces it. */
 const REMEMBER_FOR = 3 * 60_000;
 
-/** For a hover or tap on an issue's row: preloads its detail and remembers it. */
+/** For a hover or tap on an issue's row, or a keyboard neighbour: preloads its detail and remembers it. */
 export function preloadIssue(id: number): void {
   getIssue(id).then(
     (detail) => {
       const at = readAt(detail);
       const fresh = at > forgottenAt && at > (pushedAt.get(id) ?? -Infinity);
-      // Only a newer read replaces what's remembered: hovers can resolve out of order.
-      if (fresh && (remembered === undefined || at > remembered.at)) remembered = { id, at, detail };
+      // Only newer reads are kept: hovers can resolve out of order.
+      if (!fresh || remembered.some((r) => r.id === id && r.at >= at)) return;
+      remembered = [...remembered.filter((r) => r.id !== id), { id, at, detail }].sort((a, b) => a.at - b.at).slice(-REMEMBERED);
     },
     // A failed preload stays silent: the click reads again.
     () => {},
@@ -413,27 +417,29 @@ export function preloadIssue(id: number): void {
 }
 
 /**
- * For the issue being opened: the remembered detail, if it's this issue's and the router no
- * longer serves it as a preload (a hover that rested longer than that before its click). It shows
- * at once while a refetch replaces it. Whatever was remembered is used up either way.
+ * For the issue being opened: its remembered detail, if the router no longer serves it as a
+ * preload (a hover that rested longer than that before its click). It shows at once while a
+ * refetch replaces it. Whatever was remembered is used up either way, but reads on their way, or
+ * cached by the router, stay rememberable: the new selection's neighbours preload from those
+ * (the issue just left among them, read before this open).
  */
 export function takeRemembered(id: number): IssueDetail | undefined {
-  const r = remembered;
-  forgetRemembered();
-  const age = r && r.id === id ? performance.now() - r.at : Infinity;
+  const r = remembered.find((r) => r.id === id);
+  remembered = [];
+  const age = r ? performance.now() - r.at : Infinity;
   return age >= PRELOAD_FRESH && age < REMEMBER_FOR ? r!.detail : undefined;
 }
 
-/** Forgets the remembered detail. Reads already on their way are too old to remember once they land. */
+/** Forgets the remembered details. Reads already on their way are too old to remember once they land. */
 export function forgetRemembered(): void {
-  remembered = undefined;
+  remembered = [];
   forgottenAt = performance.now();
 }
 
 /**
- * For a live push naming `ids`: nothing read of them before now shows again. The remembered
- * detail goes if it's among them, reads of them on their way won't be remembered, and the
- * router's cached reads of them are dropped, so the next open fetches afresh.
+ * For a live push naming `ids`: nothing read of them before now shows again. Their remembered
+ * details go, reads of them on their way won't be remembered, and the router's cached reads of
+ * them are dropped, so the next open fetches afresh.
  */
 export function forgetPushed(ids: readonly number[]): void {
   if (ids.length === 0) return;
@@ -446,7 +452,7 @@ export function forgetPushed(ids: readonly number[]): void {
     pushedAt.delete(id);
     pushedAt.set(id, now);
   }
-  if (remembered && ids.includes(remembered.id)) remembered = undefined;
+  remembered = remembered.filter((r) => !ids.includes(r.id));
   revalidate(ids.map((id) => getIssue.keyFor(id)));
 }
 
