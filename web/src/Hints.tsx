@@ -22,6 +22,9 @@ export const LABEL: Record<Action, string> = {
   labels: "Labels",
   assignees: "Assignees",
   milestone: "Milestone",
+  blockedBy: "Blocked by…",
+  blocking: "Blocking…",
+  relatesTo: "Relates to…",
   comment: "Comment",
   editTitle: "Edit title",
   closeReopen: "Close / reopen",
@@ -80,7 +83,7 @@ const PICKER: Syntax[] = [
  */
 const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[] }[] = [
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "first", "last", "openIssue", "create", "toggleMode"] },
-  { name: "Issue", areas: ["panel"], actions: ["labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
+  { name: "Issue", areas: ["panel"], actions: ["labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },

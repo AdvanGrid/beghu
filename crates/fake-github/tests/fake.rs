@@ -4428,3 +4428,277 @@ async fn renaming_a_milestone_sends_milestone_edited_and_bumps_no_issue() {
     assert_eq!(p["changes"]["title"]["from"], before["title"]);
     assert!(p["milestone"]["updated_at"].is_string());
 }
+
+/// The ids of `node_id`'s sub-issues, in GitHub's order, as `token` sees them.
+async fn sub_order(fake: &Fake, token: &str, node_id: &str) -> Vec<i64> {
+    fake.edges(token, node_id).await["data"]["node"]["subIssues"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["databaseId"].as_i64().unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relationship_writes_answer_as_github_documents_and_send_an_edits_deliveries() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    // Write on web and api.
+    let token = &fake.sign_in("ilze-k").await["access_token"];
+    let user = token.as_str().unwrap().to_owned();
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let path = |target: &str, rest: &str| {
+        let (repo, number) = target.split_once('#').unwrap();
+        format!("/repos/acme/{repo}/issues/{number}{rest}")
+    };
+    let (parent, other_parent) = (&web[0], &web[3]);
+    let (a, b, c) = (&web[1], &web[2], &api[0]);
+    let f = &fake;
+    let post = |p: String, body: Value| async move {
+        f.rest(reqwest::Method::POST, &p, token, body).await
+    };
+
+    // Three sub-issues, each going last; the answer is the parent.
+    for child in [a, b, c] {
+        let (status, issue) = post(
+            path(&parent.0, "/sub_issues"),
+            json!({ "sub_issue_id": child.1 }),
+        )
+        .await;
+        assert_eq!(status, 201, "{issue}");
+        assert_eq!(issue["id"], parent.1);
+    }
+    assert_eq!(sub_order(&fake, &user, &parent.2).await, [a.1, b.1, c.1]);
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    let actions: Vec<_> = got
+        .iter()
+        .map(|r| r.payload()["action"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "sub_issue_added",
+            "parent_issue_added",
+            "sub_issue_added",
+            "parent_issue_added",
+            "sub_issue_added",
+            "parent_issue_added"
+        ]
+    );
+    assert_eq!(got[0].payload()["sender"]["login"], "ilze-k");
+
+    // A reorder moves one after or before a sibling, and sends nothing.
+    let priority_path = path(&parent.0, "/sub_issues/priority");
+    let priority = |body: Value| fake.rest(reqwest::Method::PATCH, &priority_path, token, body);
+    let (status, issue) = priority(json!({ "sub_issue_id": c.1, "after_id": a.1 })).await;
+    assert_eq!((status, &issue["id"]), (200, &json!(parent.1)));
+    assert_eq!(sub_order(&fake, &user, &parent.2).await, [a.1, c.1, b.1]);
+    priority(json!({ "sub_issue_id": b.1, "before_id": a.1 })).await;
+    assert_eq!(sub_order(&fake, &user, &parent.2).await, [b.1, a.1, c.1]);
+    let (status, body) =
+        priority(json!({ "sub_issue_id": b.1, "before_id": a.1, "after_id": c.1 })).await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body["message"],
+        "Only the before_id or the after_id argument may be provided, but not both"
+    );
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+
+    // A second parent is refused unless it replaces the first, which moves it (last).
+    let (status, _) = post(
+        path(&other_parent.0, "/sub_issues"),
+        json!({ "sub_issue_id": a.1 }),
+    )
+    .await;
+    assert_eq!(status, 422);
+    let (status, _) = post(
+        path(&other_parent.0, "/sub_issues"),
+        json!({ "sub_issue_id": a.1, "replace_parent": true }),
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(sub_order(&fake, &user, &parent.2).await, [b.1, c.1]);
+    assert_eq!(sub_order(&fake, &user, &other_parent.2).await, [a.1]);
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    let moved: Vec<_> = got
+        .iter()
+        .map(|r| {
+            let p = r.payload();
+            (
+                p["action"].as_str().unwrap().to_owned(),
+                p["parent_issue_id"].as_i64(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        moved,
+        [
+            ("sub_issue_removed".into(), Some(parent.1)),
+            ("parent_issue_removed".into(), Some(parent.1)),
+            ("sub_issue_added".into(), Some(other_parent.1)),
+            ("parent_issue_added".into(), Some(other_parent.1)),
+        ]
+    );
+
+    // A loop is GitHub's 422.
+    let (status, body) = post(
+        path(&a.0, "/sub_issues"),
+        json!({ "sub_issue_id": other_parent.1 }),
+    )
+    .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body["message"],
+        "Sub issue may not create a circular dependency"
+    );
+
+    // Removing a sub-issue answers the parent; one that isn't attached is a 404.
+    let remove_path = path(&parent.0, "/sub_issue");
+    let remove = |body: Value| fake.rest(reqwest::Method::DELETE, &remove_path, token, body);
+    let (status, issue) = remove(json!({ "sub_issue_id": b.1 })).await;
+    assert_eq!((status, &issue["id"]), (200, &json!(parent.1)));
+    assert_eq!(remove(json!({ "sub_issue_id": b.1 })).await.0, 404);
+
+    // Blocked by, across repos: the answer is the blocked issue. A duplicate is a 422, and
+    // removing one that isn't there is a 200, sending nothing.
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let (status, issue) = post(
+        path(&b.0, "/dependencies/blocked_by"),
+        json!({ "issue_id": c.1 }),
+    )
+    .await;
+    assert_eq!((status, &issue["id"]), (201, &json!(b.1)));
+    let (status, body) = post(
+        path(&b.0, "/dependencies/blocked_by"),
+        json!({ "issue_id": c.1 }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (422, Some("Target issue has already been taken"))
+    );
+    let unblock_path = path(&b.0, &format!("/dependencies/blocked_by/{}", c.1));
+    let unblock = || fake.rest(reqwest::Method::DELETE, &unblock_path, token, Value::Null);
+    assert_eq!(unblock().await.0, 200);
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(
+        got.iter()
+            .map(|r| r.payload()["action"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        [
+            "blocked_by_added",
+            "blocking_added",
+            "blocked_by_removed",
+            "blocking_removed"
+        ]
+    );
+    assert_eq!(unblock().await.0, 200);
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+
+    // Relates to: either side removes it, idempotently; a duplicate either way is a 422.
+    let (status, _) = post(path(&a.0, "/relates_to"), json!({ "issue_id": b.1 })).await;
+    assert_eq!(status, 201);
+    let (status, body) = post(path(&b.0, "/relates_to"), json!({ "issue_id": a.1 })).await;
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (422, Some("The relationship already exists"))
+    );
+    for _ in 0..2 {
+        let (status, issue) = fake
+            .rest(
+                reqwest::Method::DELETE,
+                &path(&b.0, &format!("/relates_to/{}", a.1)),
+                token,
+                Value::Null,
+            )
+            .await;
+        assert_eq!((status, &issue["id"]), (200, &json!(b.1)));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relationship_writes_need_triage_and_an_other_end_the_user_can_see() {
+    let fake = start().await;
+    let web = unlinked_in("web");
+    let api = unlinked_in("api");
+    let (a, b) = (&web[0], &web[1]);
+    let path = |target: &str| {
+        let (repo, number) = target.split_once('#').unwrap();
+        format!("/repos/acme/{repo}/issues/{number}/relates_to")
+    };
+    // Read on web: 403, whoever's issues they are.
+    let reader = &fake.sign_in("octo-ext").await["access_token"];
+    let (status, body) = fake
+        .rest(
+            reqwest::Method::POST,
+            &path(&a.0),
+            reader,
+            json!({ "issue_id": b.1 }),
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(body["message"], "Resource not accessible by integration");
+    // Admin: an id that isn't an issue, or itself, is refused.
+    let admin = &fake.sign_in("tomsj").await["access_token"];
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            &path(&a.0),
+            admin,
+            json!({ "issue_id": 1 }),
+        )
+        .await;
+    assert_eq!(status, 404);
+    let (status, body) = fake
+        .rest(
+            reqwest::Method::POST,
+            &path(&a.0),
+            admin,
+            json!({ "issue_id": a.1 }),
+        )
+        .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body["message"],
+        "Target issue cannot be the same as the source issue"
+    );
+    // Across repos: the other end only has to be in sight.
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            &path(&a.0),
+            admin,
+            json!({ "issue_id": api[0].1 }),
+        )
+        .await;
+    assert_eq!(status, 201);
+    // A repo the App isn't installed on takes no write with a user token, though the user sees
+    // it (partner-sdk is public): 403, as GitHub answers.
+    let summary: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fixture().with_file_name(format!("fixture-1k-{}.json", fixture::GENERATOR_HASH)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stub = format!("partner-sdk#{}", summary["stub_numbers"][0]);
+    let (status, body) = fake
+        .rest(
+            reqwest::Method::POST,
+            &path(&stub),
+            admin,
+            json!({ "issue_id": a.1 }),
+        )
+        .await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["message"], "Resource not accessible by integration");
+}

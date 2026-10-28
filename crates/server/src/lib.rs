@@ -29,6 +29,7 @@ mod prefs;
 mod pulls;
 mod query;
 mod reconcile;
+mod relationship_writes;
 mod relationships;
 mod repos;
 mod shell;
@@ -477,6 +478,10 @@ pub fn router(app: App) -> Router {
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/issues/{id}/source", get(detail::source))
+        .route(
+            "/issues/{id}/relatable",
+            get(relationship_writes::candidates),
+        )
         .route("/repos", get(repos::list).put(repos::pick))
         .route("/repos/{id}/labels", get(pickers::labels))
         .route("/repos/{id}/milestones", get(pickers::milestones))

@@ -27,6 +27,9 @@
 // and its arrows, Enter and Escape are the listbox's own (Escape closes it, focus back on its
 // row's button).
 //
+// `blockedBy`, `blocking` and `relatesTo` are offered by an issue's Links row (Relationships.tsx)
+// and open that kind's relationship picker, as the property rows' keys do theirs.
+//
 // `editTitle` (`e`) is offered by an issue's panel (not a PR's) and opens its title editor. A
 // title or body editor is marked `data-keys="editor"`, a typing area: while the focus is in it, it
 // offers `saveEdit` (Ctrl or Cmd+Enter) and `cancelEdit` (Escape, fixed there). Enter in the title
@@ -69,6 +72,9 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   labels: ["l"],
   assignees: ["a"],
   milestone: ["m"],
+  blockedBy: ["b"],
+  blocking: ["Shift+b"],
+  relatesTo: ["Shift+r"],
   comment: ["r"],
   editTitle: ["e"],
   closeReopen: ["Shift+x"],
@@ -110,6 +116,9 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   labels: ["panel"],
   assignees: ["panel"],
   milestone: ["panel"],
+  blockedBy: ["panel"],
+  blocking: ["panel"],
+  relatesTo: ["panel"],
   comment: ["panel"],
   editTitle: ["panel"],
   closeReopen: ["panel"],

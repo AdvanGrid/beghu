@@ -203,7 +203,8 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
     it("runs an issue's write keys only with the focus in its panel", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      for (const a of ["closeReopen", "comment", "labels", "assignees", "milestone", "editTitle"] as const) keys.touch(a, () => ran.push(a));
+      const writes = ["closeReopen", "comment", "labels", "assignees", "milestone", "editTitle", "blockedBy", "blocking", "relatesTo"] as const;
+      for (const a of writes) keys.touch(a, () => ran.push(a));
       const keysOf = [
         { key: "X", code: "KeyX", shift: true },
         { key: "r", code: "KeyR" },
@@ -211,11 +212,14 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
         { key: "a", code: "KeyA" },
         { key: "m", code: "KeyM" },
         { key: "e", code: "KeyE" },
+        { key: "b", code: "KeyB" },
+        { key: "B", code: "KeyB", shift: true },
+        { key: "R", code: "KeyR", shift: true },
       ];
       for (const at of [els.list, els.body]) for (const k of keysOf) assert.equal(press(at, k), false);
       assert.equal(ran.length, 0);
       for (const k of keysOf) assert.ok(press(els.panel, k));
-      assert.deepEqual(ran, ["closeReopen", "comment", "labels", "assignees", "milestone", "editTitle"]);
+      assert.deepEqual(ran, [...writes]);
     });
 
     it("keeps every touchpoint silent outside the areas it works in", async () => {

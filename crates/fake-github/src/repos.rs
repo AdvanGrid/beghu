@@ -221,7 +221,9 @@ pub(crate) async fn issue(
         .state()
         .truth
         .read(move |c| {
-            if let Some(id) = q::issue_id(c, repo, number)? {
+            // An issue in a repo the App isn't installed on (a fixture stub) is a real issue here,
+            // and a PR's number answers with the PR, as GitHub's issues API does.
+            if let Some(id) = q::issue_id(c, repo, number)?.or(q::any_item_id(c, repo, number)?) {
                 let mut issue = issue_json(c, id)?;
                 if let Some(origin) = &html {
                     let md = issue["body"].as_str().unwrap_or_default().to_owned();

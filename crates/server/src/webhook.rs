@@ -1078,6 +1078,11 @@ impl Issue {
     pub(crate) fn body(&self) -> &str {
         self.body.as_deref().unwrap_or("")
     }
+
+    /// Whether it's a pull request: GitHub's issue endpoints answer for PRs too.
+    pub(crate) fn is_pr(&self) -> bool {
+        self.pull_request.is_some()
+    }
 }
 
 /// An issue's `type` (GitHub's issue-type object); only its name is kept.

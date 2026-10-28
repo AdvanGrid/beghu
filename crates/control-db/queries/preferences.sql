@@ -32,6 +32,9 @@ UPDATE preferences SET
   key_labels = CASE :action WHEN 'labels' THEN :binding ELSE key_labels END,
   key_assignees = CASE :action WHEN 'assignees' THEN :binding ELSE key_assignees END,
   key_milestone = CASE :action WHEN 'milestone' THEN :binding ELSE key_milestone END,
+  key_blocked_by = CASE :action WHEN 'blockedBy' THEN :binding ELSE key_blocked_by END,
+  key_blocking = CASE :action WHEN 'blocking' THEN :binding ELSE key_blocking END,
+  key_relates_to = CASE :action WHEN 'relatesTo' THEN :binding ELSE key_relates_to END,
   key_comment = CASE :action WHEN 'comment' THEN :binding ELSE key_comment END,
   key_edit_title = CASE :action WHEN 'editTitle' THEN :binding ELSE key_edit_title END,
   key_close_reopen = CASE :action WHEN 'closeReopen' THEN :binding ELSE key_close_reopen END,
@@ -43,7 +46,7 @@ UPDATE preferences SET
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
   'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'labels', 'assignees',
-  'milestone', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
+  'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
   'imageOpen', 'imageClose', 'help');
 
 -- The account's own bindings, by action (as the web app names it): only those it set, '' for
@@ -62,6 +65,9 @@ UNION ALL SELECT 'toggleMode' AS "action!: String", key_toggle_mode AS "binding!
 UNION ALL SELECT 'labels' AS "action!: String", key_labels AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_labels IS NOT NULL
 UNION ALL SELECT 'assignees' AS "action!: String", key_assignees AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_assignees IS NOT NULL
 UNION ALL SELECT 'milestone' AS "action!: String", key_milestone AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_milestone IS NOT NULL
+UNION ALL SELECT 'blockedBy' AS "action!: String", key_blocked_by AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_blocked_by IS NOT NULL
+UNION ALL SELECT 'blocking' AS "action!: String", key_blocking AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_blocking IS NOT NULL
+UNION ALL SELECT 'relatesTo' AS "action!: String", key_relates_to AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_relates_to IS NOT NULL
 UNION ALL SELECT 'comment' AS "action!: String", key_comment AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_comment IS NOT NULL
 UNION ALL SELECT 'editTitle' AS "action!: String", key_edit_title AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_edit_title IS NOT NULL
 UNION ALL SELECT 'closeReopen' AS "action!: String", key_close_reopen AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_close_reopen IS NOT NULL

@@ -6,11 +6,16 @@
 import { createSignal, flush, type Element } from "solid-js";
 import { cookieAccount, tabAccount } from "./account";
 import type { Comment, IssueDetail, IssueRow } from "./api";
+import type { Related } from "./bindings/Related";
 import type { User } from "./bindings/User";
 import type { Field } from "./editing";
+import type { ShownRelationships } from "./related";
 
-/** A property row of the detail that a pick changes. */
-export type Prop = "labels" | "assignees" | "milestone";
+/** A property row of the detail whose picker picks one value at a time. */
+export type PickProp = "labels" | "assignees" | "milestone";
+
+/** A property row of the detail that a write changes; `links` holds the relationship writes' marker. */
+export type Prop = PickProp | "links";
 
 /**
  * A comment as the thread shows it: as the server rendered it (a write's comment GitHub has
@@ -22,8 +27,10 @@ export type ShownComment =
   | { op: string; id: number; author: User; typed: string; created_at: number; updated_at: number };
 
 /** The detail as it shows, the tab's pending comments among its own. */
-export type ShownDetail = Omit<IssueDetail, "comments"> & {
+export type ShownDetail = Omit<IssueDetail, "comments" | "relationships"> & {
   comments: Omit<IssueDetail["comments"], "comments"> & { comments: ShownComment[] };
+  /** Its relationships, with the tab's pending relationship writes. */
+  relationships: ShownRelationships;
   /** A pending body edit's text, as typed, until GitHub's reply renders it. */
   typedBody?: string;
 };
@@ -60,6 +67,13 @@ export { overlay, setOverlay };
 export type CreateNote = { failed: boolean; Note: () => Element };
 const [createNote, setCreateNote] = createSignal<CreateNote>();
 export { createNote, setCreateNote };
+
+/**
+ * The issue `+ Create a new sub-issue` opened the create form from (Relationships.tsx): the form
+ * takes it once as the new issue's parent (CreateIssue.tsx).
+ */
+const [newSubIssueOf, setNewSubIssueOf] = createSignal<Related>();
+export { newSubIssueOf, setNewSubIssueOf };
 
 /**
  * The tab is leaving on purpose (a sign-out or a switch, confirmed if it held unsaved text): the

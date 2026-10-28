@@ -22,7 +22,7 @@ import type { RepoMilestone } from "./bindings/RepoMilestone";
 import type { User } from "./bindings/User";
 import { Avatar } from "./bits";
 import { onPush, writesPaused } from "./live";
-import type { Prop, ShownDetail } from "./overlay";
+import type { PickProp as Prop, ShownDetail } from "./overlay";
 import { colors } from "./tokens.stylex";
 import { pick, picking, type Look } from "./writes";
 

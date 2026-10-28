@@ -80,4 +80,6 @@ CI runs all of these; run them before you commit:
 
 Fake GitHub can't tell you these. Check them against your own dev App (see `github-app/`) before
 relying on them: GraphQL validity and point cost, real webhook timing, the install and permission
-screens, SAML, hidden issues, real rate limits, and payload drift.
+screens, SAML, hidden issues, real rate limits, payload drift, and the relationship limits beghu
+assumes (how deep sub-issues nest, and whether a dependency loop through other issues is refused:
+`docs/research/github-relationship-apis.md`, "Open questions").

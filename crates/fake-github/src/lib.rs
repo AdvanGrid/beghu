@@ -33,6 +33,7 @@ mod moves;
 mod oauth;
 mod pulls;
 mod quota;
+mod relationship_writes;
 mod relationships;
 mod repos;
 mod triage;
@@ -236,6 +237,7 @@ impl Fake {
             .merge(api::router())
             .merge(writes::router())
             .merge(triage::router())
+            .merge(relationship_writes::router())
             .merge(app::router())
             .merge(hook_deliveries::router())
             .merge(graphql::router())

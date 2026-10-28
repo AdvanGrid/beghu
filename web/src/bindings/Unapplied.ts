@@ -2,7 +2,8 @@
 import type { Op } from "./Op";
 
 /**
- * What GitHub left out of a new issue it made: each as the write that would apply it on the new
- * issue, and why, in terms of the account's role.
+ * What GitHub left out of a write it made: each as the write that would apply it, and why, in
+ * words for the user (for a create's labels, assignees or milestone, in terms of the account's
+ * role).
  */
 export type Unapplied = { ops: Array<Op>, why: string, };

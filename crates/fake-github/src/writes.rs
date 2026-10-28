@@ -101,7 +101,7 @@ pub(crate) enum OnMoved {
     NotFound,
 }
 
-fn target(
+pub(crate) fn target(
     c: &rusqlite::Connection,
     user: i64,
     owner: &str,
@@ -111,6 +111,14 @@ fn target(
 ) -> rusqlite::Result<Result<Target, Response>> {
     let not_found = || error(StatusCode::NOT_FOUND, "Not Found");
     let Some(repo) = q::repo_by_full_name(c, owner, name)? else {
+        // A repo the App isn't installed on: a user access token acts only where its App is
+        // installed, so GitHub refuses the write (403) on a repo the user can see, and hides one
+        // they can't (404).
+        if let Some(other) = q::any_repo_by_full_name(c, owner, name)?
+            && q::repo_visible(c, other, None, Some(user))?
+        {
+            return Ok(Err(not_accessible()));
+        }
         return Ok(Err(not_found()));
     };
     let repo = q::repo(c, repo)?;

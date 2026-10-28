@@ -380,10 +380,10 @@ async fn what_github_silently_leaves_out_of_a_new_issue_comes_back_as_failed_wri
     let id = reply["issue"].as_i64().unwrap();
     assert_eq!(s.listed(&mut b, &word).await, [id]);
     assert_eq!(
-        reply["unapplied"]["ops"],
+        reply["unapplied"][0]["ops"],
         json!([{ "kind": "label_add", "issue": id, "label": label }])
     );
-    assert_eq!(reply["unapplied"]["why"], "you have Read on web");
+    assert_eq!(reply["unapplied"][0]["why"], "you have Read on web");
     // The role was read again, for the next write and the next /api/me.
     let (_, me) = s.api(&mut b, "/api/me").await;
     let role = me["repos"]

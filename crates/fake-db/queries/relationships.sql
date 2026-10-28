@@ -19,6 +19,12 @@ SELECT r.id FROM repos r WHERE r.name = :name COLLATE NOCASE ORDER BY r.id;
 -- param: number i64
 SELECT i.id FROM items i WHERE i.repo_id = :repo_id AND i.number = :number AND i.kind = 'issue';
 
+-- Any issue or PR, in any repo, by number: GitHub's issues API answers a PR's number too.
+-- name: any_item_id :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT i.id FROM items i WHERE i.repo_id = :repo_id AND i.number = :number;
+
 -- name: issue_by_node_id :opt
 -- param: node_id &str
 SELECT i.id FROM items i WHERE i.node_id = :node_id AND i.kind = 'issue';
@@ -158,4 +164,17 @@ SELECT x.id AS "id!: i64" FROM (
 UPDATE relationships SET position = (
   SELECT min(s.position) FROM relationships s WHERE s.kind = 'sub' AND s.src_id = :parent_id
 ) - 1
+WHERE kind = 'sub' AND src_id = :parent_id AND dst_id = :child_id;
+
+-- Any issue or PR by its id, with its repo: what a relationship write's body names.
+-- name: item_place :opt
+-- param: id i64
+SELECT i.id, i.repo_id, i.number, i.kind FROM items i WHERE i.id = :id;
+
+-- A sub-issue's place among its parent's, as GitHub's "reprioritize a sub-issue" leaves it.
+-- name: set_sub_position :exec
+-- param: parent_id i64
+-- param: child_id i64
+-- param: position f64
+UPDATE relationships SET position = :position
 WHERE kind = 'sub' AND src_id = :parent_id AND dst_id = :child_id;

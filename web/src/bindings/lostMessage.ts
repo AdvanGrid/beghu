@@ -14,4 +14,11 @@ export const LOST_MESSAGE: Record<Op["kind"], string> = {
   title_edit: "May or may not have reached GitHub",
   body_edit: "May or may not have reached GitHub",
   create: "May or may not have been created; check the list before trying again",
+  sub_add: "May or may not have reached GitHub",
+  sub_remove: "May or may not have reached GitHub",
+  sub_reorder: "May or may not have reached GitHub",
+  block_add: "May or may not have reached GitHub",
+  block_remove: "May or may not have reached GitHub",
+  relate_add: "May or may not have reached GitHub",
+  relate_remove: "May or may not have reached GitHub",
 };

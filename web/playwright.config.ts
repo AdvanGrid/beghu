@@ -20,8 +20,8 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs)\.spec\.ts$/ },
-    // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts with
+    { name: "browser", testIgnore: /(live|relationships|relationship-writes|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs)\.spec\.ts$/ },
+    // The specs that edit (live.spec.ts, relationships.spec.ts with relationship-writes.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
     // sync.spec.ts, prs.spec.ts, lost-access.spec.ts, moves.spec.ts and create.spec.ts): their
     // edits reach every signed-in tab, push refetches and reorder the list; writes.spec.ts sets
@@ -41,8 +41,8 @@ export default defineConfig({
     // side, and so are markdown-style.spec.ts, edits.spec.ts, media.spec.ts and pickers.spec.ts:
     // their tests claim their own issues and take a lock for stack-wide state (claims.ts).
     { name: "live", testMatch: /live\.spec\.ts$/, dependencies: ["browser"], timeout: 60_000, workers: 1 },
-    { name: "relationships", testMatch: /relationships\.spec\.ts$/, dependencies: ["live"], timeout: 60_000, workers: 1 },
-    { name: "writes", testMatch: /(writes|markdown-style|edits|media)\.spec\.ts$/, dependencies: ["relationships"], timeout: 60_000 },
+    { name: "relationships", testMatch: /\/(relationships|relationship-writes)\.spec\.ts$/, dependencies: ["live"], timeout: 60_000, workers: 1 },
+    { name: "writes", testMatch: /\/(writes|markdown-style|edits|media)\.spec\.ts$/, dependencies: ["relationships"], timeout: 60_000 },
     { name: "pickers", testMatch: /pickers\.spec\.ts$/, dependencies: ["writes"], timeout: 60_000 },
     { name: "repos", testMatch: /repos\.spec\.ts$/, dependencies: ["pickers"], workers: 1 },
     { name: "sync", testMatch: /sync\.spec\.ts$/, dependencies: ["repos"], timeout: 60_000 },

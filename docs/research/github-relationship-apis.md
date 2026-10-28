@@ -541,6 +541,14 @@ section:
 - Whether reprioritize with neither `after_id` nor `before_id` errors or is a no-op.
 - What happens at the limits (101st sub-issue, 9th level, 51st dependency): presumably a 422,
   not tested.
+- What "eight levels of nested sub-issues" counts. beghu assumes it counts the top issue: a chain
+  of 8 issues (the top one and 7 levels under it) is the deepest it lets a write make, and it
+  refuses a 9th issue before calling. If GitHub allows the top one plus 8 levels (9 issues),
+  beghu refuses one level GitHub would take.
+- Whether GitHub refuses a dependency loop through other issues (A blocks B, B blocks C, then C
+  blocks A) or only a direct one (the verified 422 above). beghu refuses only the direct loop
+  before calling, the conservative choice: a longer loop is sent, and GitHub's 422, if it gives
+  one, is shown as its refusal. (Fake GitHub refuses both.)
 - Whether deleting or transferring an issue emits `*_removed` events or webhooks for its
   relationships, and what happens to the edges.
 - GraphQL sub-issue and dependency mutations were not exercised; only their schema was read.

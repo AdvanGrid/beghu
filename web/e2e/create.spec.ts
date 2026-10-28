@@ -586,3 +586,67 @@ test("a failed write outranks the word on an issue created while away, which sho
   await slot.getByRole("button", { name: "Dismiss" }).click();
   await expect(createStatus(page)).toContainText("Created the issue in docs");
 });
+
+test("+ Create a new sub-issue opens the form with the issue as parent, and the new issue is made its sub-issue", async ({ page }) => {
+  await signIn(page);
+  const web = await repoNamed(page, "web");
+  await view(page, "is:open repo:web");
+  const row = rows(page).nth(3);
+  const parent = Number(await row.getAttribute("data-id"));
+  const parentRef = (await row.locator('[data-perf="ref"]').textContent())!.trim();
+  let child: string | undefined;
+  try {
+    await page.goto(`/issues/${parent}`);
+    await page.locator('[data-perf="create-sub"]').click();
+    await expect(form(page)).toBeVisible();
+    // The parent's repo, and the parent, preset.
+    await expect(repoSelect(page)).toHaveValue(String(web.id));
+    await expect(propRow(page, "parent")).toContainText(parentRef);
+    const word = unique();
+    await title(page).fill(`A sub-issue ${word}`);
+    await submit(page).click();
+    const id = await opened(page);
+    const made = (await (await page.request.get(`/api/issues/${id}`)).json()) as { repo: string; number: number };
+    child = `${made.repo}#${made.number}`;
+    // Made, then made its sub-issue: the crumb names the parent once GitHub has both.
+    await expect(page.locator('[data-perf="detail"] [data-perf="parent"]')).toContainText(parentRef);
+    await expect(page.locator('[data-perf="links"] [data-perf="pending"]')).toHaveCount(0, { timeout: 15_000 });
+    await page.goto(`/issues/${parent}`);
+    await expect(page.locator(`[data-perf="sub-row"][data-id="${id}"]`)).toBeVisible();
+  } finally {
+    if (child) devCtl(["fake", "edit", parentRef, "--remove-sub-issue", child]);
+  }
+});
+
+test("a new sub-issue GitHub won't attach is made all the same, its parent a failed write on it with Retry", async ({ page }) => {
+  await signIn(page);
+  await view(page, "is:open repo:web");
+  const row = rows(page).nth(4);
+  const parent = Number(await row.getAttribute("data-id"));
+  const parentRef = (await row.locator('[data-perf="ref"]').textContent())!.trim();
+  let child: string | undefined;
+  try {
+    await page.goto(`/issues/${parent}`);
+    await page.locator('[data-perf="create-sub"]').click();
+    await expect(propRow(page, "parent")).toContainText(parentRef);
+    devCtl(["fake", "fail", "POST /repos/*/*/issues/*/sub_issues", "422"]);
+    const word = unique();
+    await title(page).fill(`A sub-issue ${word}`);
+    await submit(page).click();
+    // Made once, and open: the add failed on it, with Retry.
+    const id = await opened(page);
+    const made = (await (await page.request.get(`/api/issues/${id}`)).json()) as { repo: string; number: number };
+    child = `${made.repo}#${made.number}`;
+    const failed = page.locator('[data-perf="links"] [data-perf="pick-failed"]');
+    await expect(failed).toContainText(`Couldn't add ${child} under ${parentRef}`);
+    await expect(page.locator('[data-perf="detail"] [data-perf="parent"]')).toHaveCount(0);
+    devCtl(["fake", "clear"]);
+    await failed.getByRole("button", { name: "Retry" }).click();
+    await expect(page.locator('[data-perf="detail"] [data-perf="parent"]')).toContainText(parentRef);
+    await expect(failed).toBeHidden();
+    await expect(page.locator('[data-perf="links"] [data-perf="pending"]')).toHaveCount(0, { timeout: 15_000 });
+  } finally {
+    devCtl(["fake", "clear"]);
+    if (child) devCtl(["fake", "edit", parentRef, "--remove-sub-issue", child]);
+  }
+});

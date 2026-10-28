@@ -380,7 +380,8 @@ async fn repo(
         .state()
         .truth
         .read(move |c| {
-            let Some(id) = q::repo_by_full_name(c, &owner, &name)? else {
+            // Any repo GitHub has, a public one the App isn't installed on included.
+            let Some(id) = q::any_repo_by_full_name(c, &owner, &name)? else {
                 return Ok(None);
             };
             Ok(Some((q::repo(c, id)?, q::permission(c, user, id)?)))

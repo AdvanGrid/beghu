@@ -138,7 +138,12 @@ pub enum Variant {
     /// by no fixture account, with an issue that blocks `acme/web`'s first issue. The App's token
     /// can read the relationship; no account may keep it.
     PrivateRelationship,
+    /// `acme/web`'s first issue without a parent has `FULL_PARENT` sub-issues: GitHub's most.
+    FullParent,
 }
+
+/// How many sub-issues the `FullParent` variant's parent has: GitHub's cap.
+pub const FULL_PARENT: i64 = 100;
 
 /// How many labels the `WideLinks` variant's issue carries.
 pub const WIDE_LABELS: usize = 105;
@@ -159,6 +164,7 @@ impl Variant {
             Variant::WideRelates => "wide-relates-",
             Variant::WideLinks => "wide-links-",
             Variant::PrivateRelationship => "private-relationship-",
+            Variant::FullParent => "full-parent-",
         }
     }
 }
@@ -465,6 +471,7 @@ fn generate_as(
         Some(Variant::WideRelates) => wide_relates(&tx)?,
         Some(Variant::WideLinks) => wide_links(&tx)?,
         Some(Variant::PrivateRelationship) => private_relationship(&tx)?,
+        Some(Variant::FullParent) => full_parent(&tx, &summary)?,
     }
     tx.commit()?;
     mirror_db::optimize(&conn)?;
@@ -1045,6 +1052,46 @@ fn private_relationship(tx: &Connection) -> rusqlite::Result<()> {
         .expect("web has issues")
         .id;
     q::add_relationship(tx, "blocks", ITEM_ID, web_issue, None, seq)?;
+    Ok(())
+}
+
+/// `acme/web`'s first issue without a parent gets more sub-issues from web's issues without one,
+/// in order, until it has `FULL_PARENT`. The summary's unlinked issues stay unlinked.
+fn full_parent(tx: &Connection, summary: &Summary) -> rusqlite::Result<()> {
+    let seq = q::bump_seq(tx)?;
+    let unlinked: Vec<i64> = summary
+        .unlinked
+        .iter()
+        .chain(&summary.unlinked_closed)
+        .map(|u| u.id)
+        .collect();
+    let web: Vec<i64> = q::dump_items(tx)?
+        .into_iter()
+        .filter(|i| i.repo_id == FIRST_REPO_ID && i.kind == "issue" && i.is_stub == 0)
+        .map(|i| i.id)
+        .filter(|id| !unlinked.contains(id))
+        .collect();
+    let mut hub = None;
+    for &id in &web {
+        if q::parent_of(tx, id)?.is_none() {
+            hub = Some(id);
+            break;
+        }
+    }
+    let hub = hub.expect("web has an issue without a parent");
+    let mut position = 1_000.0;
+    for &child in &web {
+        if q::relationship_counts(tx, 0, 0, hub)?.children >= FULL_PARENT {
+            break;
+        }
+        // Not itself, and not one with a parent (`OR IGNORE` skips those) or children of its own.
+        if child == hub || q::subtree_height(tx, child)? > 1 {
+            continue;
+        }
+        position += 1.0;
+        q::add_relationship(tx, "sub", hub, child, Some(position), seq)?;
+    }
+    assert_eq!(q::relationship_counts(tx, 0, 0, hub)?.children, FULL_PARENT);
     Ok(())
 }
 

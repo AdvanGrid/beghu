@@ -51,6 +51,10 @@ pub enum Error {
     /// other 404 is `Status(404)`: the issue or repo is out of sight). Observed, not documented
     /// (docs/research/contract-check-shapes.md).
     NoSuchLabel,
+    /// A write GitHub answered 422, with its message: it validated the request and refused it
+    /// ("The relationship already exists"). Only writes read the message; elsewhere a 422 is
+    /// `Status(422)`.
+    Unprocessable(String),
     /// No answer: the connection was reset or timed out, so GitHub may have acted on the request.
     Network(String),
     /// No connection: GitHub never saw the request.
@@ -67,6 +71,7 @@ impl std::fmt::Display for Error {
             Error::Refused(e) => write!(f, "GitHub refused the token request: {e}"),
             Error::Status(s) => write!(f, "GitHub answered {s}"),
             Error::NoSuchLabel => f.write_str("GitHub answered 404: Label does not exist"),
+            Error::Unprocessable(m) => write!(f, "GitHub answered 422: {m}"),
             Error::Network(e) => write!(f, "no answer from GitHub: {e}"),
             Error::Unsent(e) => write!(f, "can't reach GitHub: {e}"),
             Error::Malformed(e) => write!(f, "unreadable GitHub answer: {e}"),
@@ -238,6 +243,7 @@ impl From<Error> for CallError {
             Error::RateLimited(d) => CallError::RateLimited(d),
             Error::Status(404 | 410) | Error::NoSuchLabel => CallError::NotFound,
             Error::Status(s) => CallError::Status(s),
+            Error::Unprocessable(_) => CallError::Status(422),
             Error::Network(e) | Error::Unsent(e) => CallError::Network(e),
             Error::Refused(e) | Error::Malformed(e) => CallError::Malformed(e),
         }
@@ -312,6 +318,16 @@ struct Repo {
     #[serde(default)]
     archived: bool,
     permissions: Option<Permissions>,
+}
+
+/// A repo as `GET /repos/{owner}/{repo}` names it: enough to hold a stub of one of its issues.
+#[derive(Debug, Clone)]
+pub struct RepoInfo {
+    pub id: i64,
+    pub node_id: String,
+    pub owner: String,
+    pub name: String,
+    pub private: bool,
 }
 
 #[derive(Deserialize)]
@@ -789,6 +805,13 @@ impl GitHub {
                 Some("Label does not exist") => Error::NoSuchLabel,
                 _ => Error::Status(404),
             })
+        } else if res.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            #[derive(Deserialize)]
+            struct Body {
+                message: Option<String>,
+            }
+            let message = res.json::<Body>().await.ok().and_then(|b| b.message);
+            Err(Error::Unprocessable(message.unwrap_or_default()))
         } else {
             Err(refusal(res).await)
         }
@@ -921,6 +944,34 @@ impl GitHub {
                 })
             }
             _ => Err(refusal(res).await),
+        }
+    }
+
+    /// `owner/repo` as the token sees it: its ids and whether it's private. `None` when GitHub
+    /// shows the token no such repo.
+    pub async fn repo_info(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<RepoInfo>, Error> {
+        match self
+            .get::<Repo>(token, &format!("/repos/{owner}/{repo}"))
+            .await
+        {
+            Ok(r) => Ok(Some(RepoInfo {
+                id: r.id,
+                node_id: r.node_id,
+                owner: r.owner.map_or_else(|| owner.to_owned(), |o| o.login),
+                name: if r.name.is_empty() {
+                    repo.to_owned()
+                } else {
+                    r.name
+                },
+                private: r.private,
+            })),
+            Err(Error::Status(404)) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 

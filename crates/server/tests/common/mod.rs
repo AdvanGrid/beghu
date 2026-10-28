@@ -173,6 +173,19 @@ pub fn private_relationship_fixture() -> PathBuf {
     .unwrap()
 }
 
+/// The 1k fixture's `FullParent` variant (a web issue with 100 sub-issues, GitHub's most),
+/// generated once per test run.
+pub fn full_parent_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::FullParent,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
 async fn start_seeded(
     fixture: PathBuf,
     pristine: bool,

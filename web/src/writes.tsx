@@ -60,8 +60,11 @@ import {
 } from "./api";
 import { touch } from "./keys";
 import type { Label } from "./bindings/Label";
+import type { RelatedEnd } from "./bindings/RelatedEnd";
 import type { Unapplied } from "./bindings/Unapplied";
 import type { Milestone } from "./bindings/Milestone";
+import type { Related } from "./bindings/Related";
+import { isEnd, keyOf, refOf, standIn, type ShownRelated, type ShownRelationships } from "./related";
 import { reconnecting, refetchShown, writesPaused } from "./live";
 import { createNote, setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { link } from "./bits";
@@ -106,8 +109,17 @@ interface Pending {
   watch?: EditWatch;
 }
 
-/** What a pick looks like, from the picker's list: the op names only a label's name, a milestone's number. */
-export type Look = { label?: Label; milestone?: Milestone | null };
+/**
+ * What a pick looks like, from the picker's list: the op names only a label's name, a milestone's
+ * number, a relationship's ends.
+ */
+export type Look = { label?: Label; milestone?: Milestone | null; relationship?: RelatedLook };
+
+/**
+ * How a relationship write shows until GitHub's data does: its issue and its other end as the
+ * detail lists them, and for a sub-issue moved from its parent, that parent (whose list it leaves).
+ */
+export type RelatedLook = { issue: Related; other: ShownRelated; from?: number };
 
 /** How long a write waits for an answer before it shows "still sending…". */
 const SLOW_MS = 15_000;
@@ -205,7 +217,11 @@ function confirm(id: string, reply: OpReply): void {
   if (!p) return;
   if (reply.comment) claimed.add(reply.comment.id);
   patch(id, { phase: "sent", sentAt: performance.now(), reply, error: undefined });
-  refetchShown([p.op.issue]);
+  refetchShown(involved(p));
+  // What GitHub left undone of it (a move's place among its new siblings): failed writes of their
+  // own, shown as this one was, with Retry.
+  const r = p.look?.relationship;
+  for (const u of reply.unapplied ?? []) leftOut(u, p.ref, () => (r ? { relationship: { issue: r.issue, other: r.other } } : undefined));
 }
 
 /**
@@ -277,7 +293,7 @@ function waiting(p: Pending, at: number): boolean {
   return p.phase === "sending" || (p.phase === "sent" && at < p.sentAt!);
 }
 
-/** What a pending write can change on a list row or a detail (a row has no milestone). */
+/** What a pending write can change on a list row or a detail (a row has no milestone or relationships). */
 type Shown = {
   id: number;
   title: string;
@@ -286,7 +302,128 @@ type Shown = {
   labels: Label[];
   assignees: { login: string }[];
   milestone?: Milestone | null;
+  relationships?: ShownRelationships;
 };
+
+// --- relationships -------------------------------------------------------------------------------
+
+type RelationshipOp = OpOf<"sub_add" | "sub_remove" | "sub_reorder" | "block_add" | "block_remove" | "relate_add" | "relate_remove">;
+
+/** The other end of a relationship write, as its op names it. */
+function otherEnd(op: RelationshipOp): RelatedEnd | number {
+  switch (op.kind) {
+    case "sub_add":
+    case "sub_remove":
+      return op.child;
+    case "sub_reorder":
+      return op.child;
+    default:
+      return op.other;
+  }
+}
+
+/** A relationship's end as a key: its id, or its place while it has none. */
+function endKey(e: RelatedEnd | number): string {
+  if (typeof e === "number") return String(e);
+  return e.id !== null ? String(e.id) : `${e.owner}/${e.repo}#${e.number}`.toLowerCase();
+}
+
+function isRelationshipOp(op: Op): op is RelationshipOp {
+  return ["sub_add", "sub_remove", "sub_reorder", "block_add", "block_remove", "relate_add", "relate_remove"].includes(op.kind);
+}
+
+/** The issues a write changes: its own, and a relationship's other end (and the parent a move leaves). */
+function involved(p: Pending): number[] {
+  const ids = [p.op.issue];
+  if (isRelationshipOp(p.op)) {
+    const o = otherEnd(p.op);
+    const id = typeof o === "number" ? o : o.id;
+    if (id !== null) ids.push(id);
+    if (p.look?.relationship?.from !== undefined) ids.push(p.look.relationship.from);
+  }
+  return ids;
+}
+
+/** Whether write `p` changes issue `id`. */
+function involves(p: Pending, id: number | undefined): boolean {
+  return id !== undefined && involved(p).includes(id);
+}
+
+const without = (xs: ShownRelated[], e: RelatedEnd | number) => xs.filter((r) => !isEnd(r, e));
+const withOne = (xs: ShownRelated[], r: ShownRelated, e: RelatedEnd | number) => (xs.some((x) => isEnd(x, e)) ? xs : [...xs, r]);
+
+/** `xs` with `r` after `after` (a sibling's id), or first for `null`, or last for `undefined`. */
+function placed(xs: ShownRelated[], r: ShownRelated, after: number | null | undefined): ShownRelated[] {
+  const rest = xs.filter((x) => keyOf(x) !== keyOf(r));
+  if (after === undefined) return [...rest, r];
+  const at = after === null ? 0 : rest.findIndex((x) => x.id === after) + 1;
+  return at <= 0 && after !== null ? [...rest, r] : [...rest.slice(0, at), r, ...rest.slice(at)];
+}
+
+/** `x` with `f` over its relationships, if it shows any (a list row doesn't). */
+function rels<T extends Shown>(x: T, f: (r: ShownRelationships) => ShownRelationships): T {
+  return x.relationships ? { ...x, relationships: f(x.relationships) } : x;
+}
+
+/**
+ * A relationship write over `x`, whichever end `x` is: its issue's own list and the other end's
+ * mirror list both change (a parent's sub-issues and the child's parent; a blocker's "blocking"
+ * and the blocked issue's "blocked by"; both sides of "relates to").
+ */
+function applyRelationship<T extends Shown>(x: T, op: RelationshipOp, look?: Look): T {
+  const me = op.issue === x.id;
+  const issue = look?.relationship?.issue;
+  const shownOther = (e: RelatedEnd) => look?.relationship?.other ?? standIn(e);
+  switch (op.kind) {
+    case "sub_add": {
+      const child = shownOther(op.child);
+      return rels(x, (r) => {
+        if (me) return { ...r, sub_issues: placed(without(r.sub_issues, op.child), child, op.after ?? undefined) };
+        if (op.child.id === x.id) return issue ? { ...r, parent: issue } : r;
+        // The parent a move takes it from.
+        return op.replace_parent ? { ...r, sub_issues: without(r.sub_issues, op.child) } : r;
+      });
+    }
+    case "sub_remove":
+      return rels(x, (r) => {
+        if (me) return { ...r, sub_issues: without(r.sub_issues, op.child) };
+        return r.parent?.id === op.issue ? { ...r, parent: null } : r;
+      });
+    case "sub_reorder":
+      return rels(x, (r) => {
+        const child = r.sub_issues.find((c) => c.id === op.child);
+        return me && child ? { ...r, sub_issues: placed(r.sub_issues, child, op.after) } : r;
+      });
+    case "block_add":
+    case "block_remove": {
+      const add = op.kind === "block_add";
+      return rels(x, (r) => {
+        // From `x`'s side: the list the other end is in.
+        const list = me === op.blocking ? "blocking" : "blocked_by";
+        const other: RelatedEnd | number = me ? op.other : op.issue;
+        const shown = me ? shownOther(op.other) : issue;
+        if (!add) return { ...r, [list]: without(r[list], other) };
+        return shown ? { ...r, [list]: withOne(r[list], shown, other) } : r;
+      });
+    }
+    case "relate_add":
+    case "relate_remove": {
+      const add = op.kind === "relate_add";
+      return rels(x, (r) => {
+        const other: RelatedEnd | number = me ? op.other : op.issue;
+        const shown = me ? shownOther(op.other) : issue;
+        if (!add) return { ...r, relates_to: without(r.relates_to, other) };
+        return shown ? { ...r, relates_to: withOne(r.relates_to, shown, other) } : r;
+      });
+    }
+  }
+}
+
+/** Where a sub-issue write is, as the line that says it failed names it: under `web#1`. */
+function under(ref?: string, look?: Look): string {
+  const i = look?.relationship?.issue;
+  return i ? refOf(i) : (ref ?? "this issue");
+}
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
@@ -415,6 +552,55 @@ const KINDS: { [K in Op["kind"]]: Kind<OpOf<K>> } = {
     doing: (_, ref) => ({ verb: "edit the description", rest: onWord("of", ref) }),
     noun: () => "Description edit",
   },
+  sub_add: {
+    target: (op) => `sub:${endKey(op.child)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref, look) => ({ verb: "add", em: refOf(op.child), rest: ` under ${under(ref, look)}` }),
+    noun: (op) => `Sub-issue ${refOf(op.child)}`,
+  },
+  sub_remove: {
+    target: (op) => `sub:${endKey(op.child)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref, look) => ({ verb: "remove", em: refOf(op.child), rest: ` from ${under(ref, look)}` }),
+    noun: (op) => `Sub-issue ${refOf(op.child)}`,
+  },
+  sub_reorder: {
+    target: (op) => `order:${op.issue}:${op.child}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (_, ref, look) => ({ verb: "move", em: look?.relationship ? refOf(look.relationship.other) : "a sub-issue", rest: ` under ${under(ref, look)}` }),
+    noun: () => "Sub-issue order",
+  },
+  block_add: {
+    target: (op) => `blocks:${op.issue}:${endKey(op.other)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref) => ({ verb: `mark${ref === undefined ? "" : ` ${ref}`} as ${op.blocking ? "blocking" : "blocked by"}`, em: refOf(op.other), rest: "" }),
+    noun: (op) => `${op.blocking ? "Blocking" : "Blocked by"} ${refOf(op.other)}`,
+  },
+  block_remove: {
+    target: (op) => `blocks:${op.issue}:${endKey(op.other)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref) => ({ verb: "remove", em: refOf(op.other), rest: onWord("from", ref) }),
+    noun: (op) => `${op.blocking ? "Blocking" : "Blocked by"} ${refOf(op.other)}`,
+  },
+  relate_add: {
+    target: (op) => `relates:${op.issue}:${endKey(op.other)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref) => ({ verb: `relate${ref === undefined ? "" : ` ${ref}`} to`, em: refOf(op.other), rest: "" }),
+    noun: (op) => `Relates to ${refOf(op.other)}`,
+  },
+  relate_remove: {
+    target: (op) => `relates:${op.issue}:${endKey(op.other)}`,
+    prop: "links",
+    apply: (x, op, look) => applyRelationship(x, op, look),
+    doing: (op, ref) => ({ verb: "remove", em: refOf(op.other), rest: onWord("from", ref) }),
+    noun: (op) => `Relates to ${refOf(op.other)}`,
+  },
 };
 
 /** What `op`'s kind of write is. */
@@ -430,7 +616,7 @@ function apply<T extends Shown>(x: T, p: Pending): T {
 /** The writes on `x` showing over a read from `at`, applied in the order they were made. */
 function withWrites<T extends Shown>(x: T, at: number): T {
   let out = x;
-  for (const p of ops()) if (p.op.issue === x.id && shows(p, at)) out = apply(out, p);
+  for (const p of ops()) if (involves(p, x.id) && shows(p, at)) out = apply(out, p);
   return out;
 }
 
@@ -445,7 +631,7 @@ function sweep(): void {
   sweeping = true;
   queueMicrotask(() => {
     sweeping = false;
-    const behind = (p: Pending) => listAt < p.sentAt! || (detailAt?.issue === p.op.issue && detailAt.at < p.sentAt!);
+    const behind = (p: Pending) => listAt < p.sentAt! || (involves(p, detailAt?.issue) && detailAt!.at < p.sentAt!);
     if (pendingNow.some((p) => p.phase === "sent" && !behind(p))) commit(pendingNow.filter((p) => p.phase !== "sent" || behind(p)));
   });
 }
@@ -466,7 +652,8 @@ function detailShown(issue: number, at: number): void {
 
 function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
   for (const c of d.comments.comments) if (c.id > (newestSeen.get(d.id) ?? 0)) newestSeen.set(d.id, c.id);
-  const out: ShownDetail = withBody(withWrites(d, at), at);
+  const base: DetailBase = d;
+  const out: ShownDetail = withBody(withWrites(base, at), at);
   const real = new Set(d.comments.comments.map((c) => c.id));
   const mine: ShownComment[] = [];
   let refs = d.comments.refs;
@@ -489,7 +676,10 @@ function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
  * `d` with its latest body edit showing over a read from `at`: as GitHub's reply rendered it once
  * there is one, and as typed until then (the browser has no Markdown parser).
  */
-function withBody(d: IssueDetail, at: number): ShownDetail {
+/** A detail whose relationships may show pending writes' ends. */
+type DetailBase = Omit<IssueDetail, "relationships"> & { relationships: ShownRelationships };
+
+function withBody(d: DetailBase, at: number): ShownDetail {
   const p = ops().findLast((p) => p.op.kind === "body_edit" && p.op.issue === d.id && shows(p, at));
   if (!p || p.op.kind !== "body_edit") return d;
   if (p.reply?.body) return { ...d, body: p.reply.body, refs: mergeRefs(d.refs, p.reply.refs) };
@@ -640,7 +830,7 @@ function StateNote(props: { issue: number; at: number }) {
  * failed (dismissing it shows the one before). Clipped to its line, so nothing around it moves.
  */
 function PropNote(props: { issue: number; prop: Prop; at: number }) {
-  const mine = createMemo(() => ops().filter((p) => p.op.issue === props.issue && kindOf(p.op).prop === props.prop));
+  const mine = createMemo(() => ops().filter((p) => involves(p, props.issue) && kindOf(p.op).prop === props.prop));
   const pending = () => mine().some((p) => waiting(p, props.at));
   const failed = () => mine().filter((p) => p.phase === "failed");
   const more = () => failed().length - 1;
@@ -662,7 +852,9 @@ function PropNote(props: { issue: number; prop: Prop; at: number }) {
                       <b>{em()}</b>
                     </>
                   )}
-                </Show>{" "}
+                </Show>
+                {/* A relationship write's other end says where: under `web#1`. */}
+                {isRelationshipOp(p().op) ? doing(p()).rest : ""}{" "}
                 — {howFailed(p()).why}
               </Show>
             </span>
@@ -731,9 +923,19 @@ export function pick(op: Op, d: ShownDetail, look?: Look): void {
 }
 
 /**
- * For the create form (CreateIssue.tsx): what GitHub left out of the new issue `ref` it made, each
- * as a failed write on that issue, refused for the reason the server gave, with Retry and Dismiss
- * on its property row as a refused pick has. `look` is how each would have shown.
+ * For the relationship pickers and menus (RelationshipPicker.tsx, Relationships.tsx): sends relationship
+ * write `op`, made from the open issue. `look.relationship` shows its ends until GitHub's data does;
+ * its `issue` is the op's own issue, which the line about it names.
+ */
+export function sendRelationship(op: Op, look: Look & { relationship: RelatedLook }): void {
+  write(op, refOf(look.relationship.issue), "you", look);
+}
+
+/**
+ * What GitHub left out of a write it made, each as a failed write, refused for the reason the server
+ * gave, with Retry and Dismiss on its property row as a refused pick has: for the create form
+ * (CreateIssue.tsx), the new issue `ref`'s labels, assignees, milestone or parent; for a move, its
+ * place among its new siblings. `look` is how each would have shown.
  */
 export function leftOut(u: Unapplied, ref: string, look: (op: Op) => Look | undefined): void {
   const at = Math.floor(Date.now() / 1000);
@@ -796,7 +998,7 @@ function CommentNote(props: { op: string; at: number }) {
 function Status() {
   const location = useLocation();
   const open = () => issueId(/^\/issues\/([^/]+)$/.exec(location.pathname)?.[1]);
-  const failed = createMemo(() => ops().filter((p) => p.phase === "failed" && p.op.issue !== open()));
+  const failed = createMemo(() => ops().filter((p) => p.phase === "failed" && !involves(p, open())));
   const sending = createMemo(() => ops().filter((p) => p.phase === "sending"));
   const quiet = () => {
     const n = sending().length;

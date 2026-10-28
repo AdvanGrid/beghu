@@ -556,8 +556,10 @@ pub(crate) fn issue_json(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<
         "assignees": assignees,
         "milestone": milestone,
         "comments": i.comments_count,
-        "created_at": i.created_at.map(rfc3339),
-        "updated_at": i.updated_at.map(rfc3339),
+        // A fixture stub (an issue in a repo the App isn't installed on) has no times; GitHub's
+        // issues always do, so the epoch stands in.
+        "created_at": rfc3339(i.created_at.unwrap_or(0)),
+        "updated_at": rfc3339(i.updated_at.or(i.created_at).unwrap_or(0)),
         "closed_at": i.closed_at.map(rfc3339),
         "author_association": author_association(c, &r, i.author_id)?,
         "active_lock_reason": null,

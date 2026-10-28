@@ -64,6 +64,7 @@ use crate::error::ApiError;
 use crate::github::{Access, Role, Shown};
 use crate::live::Push;
 use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
+use crate::relationship_writes::RelatedEnd;
 use crate::{App, github, repos, tokens, webhook};
 use axum::Json;
 use axum::extract::{Extension, State};
@@ -132,7 +133,8 @@ pub enum Op {
         base: String,
     },
     /// Open a new issue in a synced repo: labels by name, assignees by login, a milestone by its
-    /// number. The reply's `issue` is the new issue's id.
+    /// number. With `parent` (an issue's id), the new issue then becomes its last sub-issue, in
+    /// the same write (a `sub_add`). The reply's `issue` is the new issue's id.
     Create {
         repo: i64,
         title: String,
@@ -143,7 +145,41 @@ pub enum Op {
         assignees: Vec<String>,
         #[serde(default)]
         milestone: Option<i64>,
+        #[serde(default)]
+        parent: Option<i64>,
     },
+    /// Make `child` a sub-issue of the issue: last among its sub-issues, or after `after`, one of
+    /// them. With `replace_parent`, a sub-issue of another parent moves here.
+    SubAdd {
+        issue: i64,
+        child: RelatedEnd,
+        replace_parent: bool,
+        after: Option<i64>,
+    },
+    /// Take `child` out of the issue's sub-issues.
+    SubRemove { issue: i64, child: RelatedEnd },
+    /// Move the issue's sub-issue `child` after `after`, another of them, or to the top (`null`).
+    SubReorder {
+        issue: i64,
+        child: i64,
+        after: Option<i64>,
+    },
+    /// The issue is blocked by `other`, or with `blocking`, blocks it.
+    BlockAdd {
+        issue: i64,
+        other: RelatedEnd,
+        blocking: bool,
+    },
+    /// The issue is no longer blocked by `other`, or with `blocking`, no longer blocks it.
+    BlockRemove {
+        issue: i64,
+        other: RelatedEnd,
+        blocking: bool,
+    },
+    /// The issue relates to `other`.
+    RelateAdd { issue: i64, other: RelatedEnd },
+    /// The issue no longer relates to `other`.
+    RelateRemove { issue: i64, other: RelatedEnd },
 }
 
 #[derive(Deserialize, Serialize, TS, Clone, Copy, PartialEq, Debug)]
@@ -197,6 +233,13 @@ pub enum OpKind {
     TitleEdit,
     BodyEdit,
     Create,
+    SubAdd,
+    SubRemove,
+    SubReorder,
+    BlockAdd,
+    BlockRemove,
+    RelateAdd,
+    RelateRemove,
 }
 
 impl OpKind {
@@ -214,7 +257,14 @@ impl OpKind {
             | OpKind::AssigneeRemove
             | OpKind::MilestoneSet
             | OpKind::TitleEdit
-            | OpKind::BodyEdit => "May or may not have reached GitHub",
+            | OpKind::BodyEdit
+            | OpKind::SubAdd
+            | OpKind::SubRemove
+            | OpKind::SubReorder
+            | OpKind::BlockAdd
+            | OpKind::BlockRemove
+            | OpKind::RelateAdd
+            | OpKind::RelateRemove => "May or may not have reached GitHub",
             OpKind::Create => {
                 "May or may not have been created; check the list before trying again"
             }
@@ -232,7 +282,7 @@ enum Queue {
 
 impl Op {
     /// The issue the op changes; none for a new issue.
-    fn issue(&self) -> Option<i64> {
+    pub(crate) fn issue(&self) -> Option<i64> {
         match self {
             Op::Comment { issue, .. }
             | Op::Close { issue, .. }
@@ -243,7 +293,14 @@ impl Op {
             | Op::AssigneeRemove { issue, .. }
             | Op::MilestoneSet { issue, .. }
             | Op::TitleEdit { issue, .. }
-            | Op::BodyEdit { issue, .. } => Some(*issue),
+            | Op::BodyEdit { issue, .. }
+            | Op::SubAdd { issue, .. }
+            | Op::SubRemove { issue, .. }
+            | Op::SubReorder { issue, .. }
+            | Op::BlockAdd { issue, .. }
+            | Op::BlockRemove { issue, .. }
+            | Op::RelateAdd { issue, .. }
+            | Op::RelateRemove { issue, .. } => Some(*issue),
             Op::Create { .. } => None,
         }
     }
@@ -256,7 +313,48 @@ impl Op {
         }
     }
 
-    fn kind(&self) -> OpKind {
+    /// The queues the op takes its turn in, each once, in order: its own, and for a relationship
+    /// write the other end's too when the tab knows its id (in ascending id order).
+    fn queues(&self) -> Vec<Queue> {
+        // A new issue with a parent takes its turn on the parent too, for the `sub_add` after it.
+        if let Op::Create {
+            repo,
+            parent: Some(parent),
+            ..
+        } = self
+        {
+            return vec![Queue::Repo(*repo), Queue::Issue(*parent)];
+        }
+        let other = match self {
+            Op::SubAdd { child, .. } | Op::SubRemove { child, .. } => child.id,
+            Op::SubReorder { child, .. } => Some(*child),
+            Op::BlockAdd { other, .. }
+            | Op::BlockRemove { other, .. }
+            | Op::RelateAdd { other, .. }
+            | Op::RelateRemove { other, .. } => other.id,
+            _ => return vec![self.queue()],
+        };
+        let mut items: Vec<i64> = [self.issue(), other].into_iter().flatten().collect();
+        items.sort_unstable();
+        items.dedup();
+        items.into_iter().map(Queue::Issue).collect()
+    }
+
+    /// Whether it's a relationship write (`relationship_writes.rs` makes those).
+    pub(crate) fn is_relationship(&self) -> bool {
+        matches!(
+            self.kind(),
+            OpKind::SubAdd
+                | OpKind::SubRemove
+                | OpKind::SubReorder
+                | OpKind::BlockAdd
+                | OpKind::BlockRemove
+                | OpKind::RelateAdd
+                | OpKind::RelateRemove
+        )
+    }
+
+    pub(crate) fn kind(&self) -> OpKind {
         match self {
             Op::Comment { .. } => OpKind::Comment,
             Op::Close { .. } => OpKind::Close,
@@ -269,6 +367,13 @@ impl Op {
             Op::TitleEdit { .. } => OpKind::TitleEdit,
             Op::BodyEdit { .. } => OpKind::BodyEdit,
             Op::Create { .. } => OpKind::Create,
+            Op::SubAdd { .. } => OpKind::SubAdd,
+            Op::SubRemove { .. } => OpKind::SubRemove,
+            Op::SubReorder { .. } => OpKind::SubReorder,
+            Op::BlockAdd { .. } => OpKind::BlockAdd,
+            Op::BlockRemove { .. } => OpKind::BlockRemove,
+            Op::RelateAdd { .. } => OpKind::RelateAdd,
+            Op::RelateRemove { .. } => OpKind::RelateRemove,
         }
     }
 
@@ -290,7 +395,14 @@ impl Op {
             | Op::MilestoneSet { .. }
             | Op::TitleEdit { .. }
             | Op::BodyEdit { .. }
-            | Op::Create { .. } => None,
+            | Op::Create { .. }
+            | Op::SubAdd { .. }
+            | Op::SubRemove { .. }
+            | Op::SubReorder { .. }
+            | Op::BlockAdd { .. }
+            | Op::BlockRemove { .. }
+            | Op::RelateAdd { .. }
+            | Op::RelateRemove { .. } => None,
         }
     }
 
@@ -327,6 +439,17 @@ impl Op {
             Op::TitleEdit { new, .. } if new.trim().is_empty() => Some("A title can't be empty"),
             Op::Create { title, .. } if title.trim().is_empty() => {
                 Some("A new issue needs a title")
+            }
+            Op::SubAdd { child: e, .. }
+            | Op::SubRemove { child: e, .. }
+            | Op::BlockAdd { other: e, .. }
+            | Op::BlockRemove { other: e, .. }
+            | Op::RelateAdd { other: e, .. }
+            | Op::RelateRemove { other: e, .. }
+                if e.id.is_none()
+                    && (e.owner.trim().is_empty() || e.repo.trim().is_empty() || e.number < 1) =>
+            {
+                Some("a related issue needs its owner, repo and number")
             }
             _ => None,
         }
@@ -408,14 +531,16 @@ pub struct OpReply {
     pub body: Option<Md>,
     /// The items in the mirror that the comment or the body refers to.
     pub refs: Refs,
-    /// A create's labels, assignees or milestone that GitHub didn't apply.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub unapplied: Option<Unapplied>,
+    /// What GitHub didn't apply of what the write asked, though the write itself was made: a
+    /// create's labels, assignees, milestone or parent, or a move's place among its new siblings.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<Unapplied>>", optional)]
+    pub unapplied: Vec<Unapplied>,
 }
 
-/// What GitHub left out of a new issue it made: each as the write that would apply it on the new
-/// issue, and why, in terms of the account's role.
+/// What GitHub left out of a write it made: each as the write that would apply it, and why, in
+/// words for the user (for a create's labels, assignees or milestone, in terms of the account's
+/// role).
 #[derive(Serialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct Unapplied {
@@ -425,7 +550,7 @@ pub struct Unapplied {
 
 /// How a write ended: kept for resends, so it's cloneable (unlike [`ApiError`]).
 #[derive(Clone, Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Gone,
     SignedOut,
     Refused(String),
@@ -438,6 +563,12 @@ enum Failure {
     Forbidden,
     /// GitHub answered a label removal 404 "Label does not exist": [`run`] takes it as done.
     NoSuchLabel,
+    /// GitHub answered 422, with its message: a relationship write reads it (an "already
+    /// exists" is done); any other write is refused.
+    Unprocessable(String),
+    /// beghu refused the write before any call, as it stands: GitHub would refuse it too (a
+    /// relationship that would make a loop, say). The reason, in words for the user.
+    Invalid(String),
     /// A comment GitHub answered with a 5xx or a 2xx beghu couldn't read, or not at all: it may
     /// have been posted. `after` and `digest`: as in [`ApiError::MaybePosted`].
     MaybePosted {
@@ -461,6 +592,10 @@ impl From<Failure> for ApiError {
     fn from(f: Failure) -> ApiError {
         match f {
             Failure::Gone | Failure::NoSuchLabel => ApiError::Gone,
+            Failure::Unprocessable(_) => {
+                ApiError::Refused("GitHub couldn't apply this change".into())
+            }
+            Failure::Invalid(m) => ApiError::BadRequest(m),
             Failure::SignedOut => ApiError::SignedOut,
             Failure::Refused(m) => ApiError::Refused(m),
             Failure::Forbidden => ApiError::Refused("GitHub didn't apply this change".into()),
@@ -476,6 +611,34 @@ impl From<Failure> for ApiError {
             Failure::Restarting => ApiError::restarting(),
             Failure::Unavailable { retry_after, why } => ApiError::Unavailable { retry_after, why },
             Failure::Internal(m) => ApiError::Internal(m),
+        }
+    }
+}
+
+impl Failure {
+    /// What the failure says to the user, as its API error's message would.
+    pub(crate) fn words(&self) -> String {
+        match self {
+            Failure::Gone | Failure::NoSuchLabel => {
+                "That issue isn't in your synced repos (any more)".into()
+            }
+            Failure::SignedOut => "Sign in to continue".into(),
+            Failure::Refused(m)
+            | Failure::Invalid(m)
+            | Failure::Conflict(m)
+            | Failure::GitHubDown(m) => m.clone(),
+            Failure::RateLimited(w) => {
+                format!("GitHub's rate limit: try again in {} s", w.as_secs().max(1))
+            }
+            Failure::Changed(_) => "Changed on GitHub meanwhile".into(),
+            Failure::Forbidden => "GitHub didn't apply this change".into(),
+            Failure::Unprocessable(_) => "GitHub couldn't apply this change".into(),
+            Failure::MaybePosted { .. } | Failure::MaybeCreated => {
+                "May or may not have reached GitHub".into()
+            }
+            Failure::Restarting => "beghu is restarting; try again in a moment".into(),
+            Failure::Unavailable { why, .. } => why.clone(),
+            Failure::Internal(_) => "Something went wrong".into(),
         }
     }
 }
@@ -496,7 +659,7 @@ impl From<dbrt::Error> for Failure {
     }
 }
 
-type Outcome = Result<OpReply, Failure>;
+pub(crate) type Outcome = Result<OpReply, Failure>;
 
 /// The writes in flight and lately done, and each issue's queue, under one lock: an op takes
 /// its turn on its issue as it arrives. And how many ops and requests for them are under way,
@@ -647,16 +810,24 @@ impl Ops {
                 outcome: rx.clone(),
             },
         );
-        // The turn: after the issue's last op, before any that arrives later.
-        let queue = op.queue();
+        // The turn: after the last op in each of its queues, before any that arrives later. A
+        // relationship write takes its turn on both ends at once, in ascending id order, under
+        // the book's one lock: every op waits only on ops that arrived before it, so two writes
+        // on two linked issues can't wait on each other.
+        let queues = op.queues();
         let turn = book.next;
         book.next += 1;
-        let (done, after) = oneshot::channel();
-        let before = book.last.insert(queue, (turn, after)).map(|(_, rx)| rx);
+        let mut before = Vec::new();
+        let mut done = Vec::new();
+        for &queue in &queues {
+            let (tx, rx) = oneshot::channel();
+            done.push(tx);
+            before.extend(book.last.insert(queue, (turn, rx)).map(|(_, rx)| rx));
+        }
         let end = End {
             _busy: Busy::new(&self.busy),
             app: app.clone(),
-            queue,
+            queues,
             turn,
             sending: Sending {
                 kind: Some(op.kind()),
@@ -670,7 +841,7 @@ impl Ops {
         // Its own task: the request that started it may go away; the write carries on. A job, so
         // a write the drain's step 3 didn't see finish in time is stopped at step 4.
         app.jobs().spawn(async move {
-            if let Some(before) = before {
+            for before in before {
                 // Done, or its task ended some other way: either way it's this op's turn.
                 let _ = before.await;
             }
@@ -721,12 +892,13 @@ fn make_room(seen: &mut HashMap<(i64, String), Seen>, account: i64) -> Result<()
 struct End {
     _busy: Busy,
     app: App,
-    queue: Queue,
+    /// The queues it took its turn in.
+    queues: Vec<Queue>,
     turn: u64,
     sending: Sending,
     tx: watch::Sender<Option<Outcome>>,
-    /// Dropped last: the next op on the issue waits on it.
-    _done: oneshot::Sender<()>,
+    /// Dropped last: the next op in each of its queues waits on it.
+    _done: Vec<oneshot::Sender<()>>,
 }
 
 impl Drop for End {
@@ -743,19 +915,17 @@ impl Drop for End {
                 .is_some()
         });
         let mut book = self.app.ops().book();
-        if book
-            .last
-            .get(&self.queue)
-            .is_some_and(|(t, _)| *t == self.turn)
-        {
-            book.last.remove(&self.queue);
+        for queue in &self.queues {
+            if book.last.get(queue).is_some_and(|(t, _)| *t == self.turn) {
+                book.last.remove(queue);
+            }
         }
     }
 }
 
 /// What an op's task knows of its GitHub call, for an end that comes without an outcome.
 #[derive(Default)]
-struct Sending {
+pub(crate) struct Sending {
     /// What the op is.
     kind: Option<OpKind>,
     /// Set as the call goes out.
@@ -839,30 +1009,13 @@ fn is_uuid(s: &str) -> bool {
 
 /// Makes the write: GitHub, then the mirror and the push.
 async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
+    if op.is_relationship() {
+        return crate::relationship_writes::run(app, account, op, sending).await;
+    }
     let Some(id) = op.issue() else {
         return create(app, account, op, sending).await;
     };
-    let target = app
-        .mirrors()
-        .read(account, Caller::Request, move |c| q::op_target(c, id))
-        .await
-        .map_err(Failure::from)?
-        .ok_or(Failure::Gone)?;
-    if target.is_stub || !target.synced {
-        return Err(Failure::Refused(
-            "This issue is in a repo that isn't synced".into(),
-        ));
-    }
-    if ItemKind::of(&target.kind)? != ItemKind::Issue {
-        return Err(Failure::Refused(
-            "beghu doesn't write to pull requests; open it on GitHub".into(),
-        ));
-    }
-    if app.github().is_down() {
-        return Err(Failure::GitHubDown(
-            "GitHub is unreachable; try again once it's back".into(),
-        ));
-    }
+    let target = writable(app, account, id).await?;
     let issue_path = format!(
         "/repos/{}/{}/issues/{}",
         target.owner, target.repo, target.number
@@ -928,6 +1081,17 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             json!({ "milestone": milestone }),
         ),
         Op::Create { .. } => return Err(Failure::Internal("a new issue names no issue".into())),
+        Op::SubAdd { .. }
+        | Op::SubRemove { .. }
+        | Op::SubReorder { .. }
+        | Op::BlockAdd { .. }
+        | Op::BlockRemove { .. }
+        | Op::RelateAdd { .. }
+        | Op::RelateRemove { .. } => {
+            return Err(Failure::Internal(
+                "a relationship write is made in relationship_writes.rs".into(),
+            ));
+        }
         Op::TitleEdit { new, .. } => (
             reqwest::Method::PATCH,
             issue_path,
@@ -1025,7 +1189,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 comment: Some(comment),
                 body: None,
                 refs,
-                unapplied: None,
+                unapplied: Vec::new(),
             })
         }
         // GitHub answers with the labels the issue has afterwards, but not the issue's
@@ -1052,10 +1216,19 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 comment: None,
                 body: None,
                 refs: Refs::new(),
-                unapplied: None,
+                unapplied: Vec::new(),
             })
         }
         Op::Create { .. } => Err(Failure::Internal("a new issue names no issue".into())),
+        Op::SubAdd { .. }
+        | Op::SubRemove { .. }
+        | Op::SubReorder { .. }
+        | Op::BlockAdd { .. }
+        | Op::BlockRemove { .. }
+        | Op::RelateAdd { .. }
+        | Op::RelateRemove { .. } => Err(Failure::Internal(
+            "a relationship write is made in relationship_writes.rs".into(),
+        )),
         Op::Close { .. }
         | Op::Reopen { .. }
         | Op::AssigneeAdd { .. }
@@ -1110,6 +1283,7 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         labels,
         assignees,
         milestone,
+        parent,
     } = op
     else {
         return Err(Failure::Internal(format!("{op:?} isn't a new issue")));
@@ -1131,9 +1305,14 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
     // Read opens issues with a title and a body only; a role not read yet is GitHub's to judge.
     let role = target.role.as_deref().and_then(Role::parse);
     let extras = !labels.is_empty() || !assignees.is_empty() || milestone.is_some();
-    if let Some(role) = role.filter(|r| extras && *r < Role::Triage) {
+    if let Some(role) = role.filter(|r| (extras || parent.is_some()) && *r < Role::Triage) {
+        let what = if parent.is_some() {
+            "labels, assignees, a milestone or a parent"
+        } else {
+            "labels, assignees or a milestone"
+        };
         return Err(Failure::Refused(format!(
-            "you have {} on {name}, which can't set labels, assignees or a milestone",
+            "you have {} on {name}, which can't set {what}",
             role.name()
         )));
     }
@@ -1251,20 +1430,68 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         webhook::write_issue(tx, repo, &issue, seq)
     })
     .await;
-    let unapplied = match unapplied.first() {
-        Some(first) => Some(Unapplied {
+    let mut left = Vec::new();
+    if let Some(first) = unapplied.first() {
+        left.push(Unapplied {
             why: refused_why(app, account, &on, first).await,
             ops: unapplied,
-        }),
-        None => None,
-    };
+        });
+    }
+    // The second step: the new issue becomes the parent's last sub-issue. The issue is made
+    // whatever this comes to; a failure comes back unapplied, to show on the new issue.
+    if let Some(parent) = *parent {
+        let adopt = Op::SubAdd {
+            issue: parent,
+            child: RelatedEnd {
+                id: Some(id),
+                owner: target.owner.clone(),
+                repo: target.name.clone(),
+                number: made.number,
+            },
+            replace_parent: false,
+            after: None,
+        };
+        if let Err(f) = crate::relationship_writes::run(app, account, &adopt, sending).await {
+            left.push(Unapplied {
+                why: f.words(),
+                ops: vec![adopt],
+            });
+        }
+    }
     Ok(OpReply {
         issue: id,
         comment: None,
         body: None,
         refs: Refs::new(),
-        unapplied,
+        unapplied: left,
     })
+}
+
+/// Issue `id` as a write's target: in the mirror, in a synced repo, an issue (not a PR), and
+/// GitHub not down.
+pub(crate) async fn writable(app: &App, account: i64, id: i64) -> Result<q::OpTargetRow, Failure> {
+    let target = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| q::op_target(c, id))
+        .await
+        .map_err(Failure::from)?
+        .ok_or(Failure::Gone)?;
+    if target.is_stub || !target.synced {
+        return Err(Failure::Refused(
+            "This issue is in a repo that isn't synced".into(),
+        ));
+    }
+    if ItemKind::of(&target.kind)? != ItemKind::Issue {
+        return Err(Failure::Refused(
+            "beghu doesn't write to pull requests; open it on GitHub".into(),
+        ));
+    }
+    if app.github().is_down() {
+        return Err(Failure::GitHubDown(
+            "GitHub is unreachable; try again once it's back".into(),
+        ));
+    }
+    Ok(target)
 }
 
 /// The reply to a write that changed the issue itself: with `body`, a body edit's body as GitHub
@@ -1282,12 +1509,12 @@ async fn edited(app: &App, account: i64, t: &q::OpTargetRow, body: Option<String
         comment: None,
         body,
         refs,
-        unapplied: None,
+        unapplied: Vec::new(),
     }
 }
 
 /// GitHub's answer to one write, through the retry matrix.
-async fn call(
+pub(crate) async fn call(
     app: &App,
     account: i64,
     op: &Op,
@@ -1506,6 +1733,7 @@ where
             github::Error::Status(422) => {
                 return Err(Failure::Refused("GitHub couldn't apply this change".into()));
             }
+            github::Error::Unprocessable(m) => return Err(Failure::Unprocessable(m)),
             // A 2xx beghu couldn't read: GitHub made the write.
             e @ github::Error::Malformed(_) => {
                 if let Some(f) = sending.unsure() {
@@ -1520,11 +1748,11 @@ where
 
 /// The repo an op's issue is in, and whether the account opened the issue.
 #[derive(Clone)]
-struct IssueRepo {
-    repo_id: i64,
-    owner: String,
-    repo: String,
-    own: bool,
+pub(crate) struct IssueRepo {
+    pub(crate) repo_id: i64,
+    pub(crate) owner: String,
+    pub(crate) repo: String,
+    pub(crate) own: bool,
 }
 
 /// Whether `role` allows `op` on an issue the account opened (`own`) or not: anyone can
@@ -1545,6 +1773,14 @@ fn allows(role: Role, op: &Op, own: bool) -> bool {
         | Op::AssigneeRemove { .. }
         | Op::MilestoneSet { .. } => role >= Role::Triage,
         Op::TitleEdit { .. } | Op::BodyEdit { .. } => own || role >= Role::Write,
+        // Authorship gives no relationship rights (verified live).
+        Op::SubAdd { .. }
+        | Op::SubRemove { .. }
+        | Op::SubReorder { .. }
+        | Op::BlockAdd { .. }
+        | Op::BlockRemove { .. }
+        | Op::RelateAdd { .. }
+        | Op::RelateRemove { .. } => role >= Role::Triage,
     }
 }
 
@@ -1552,7 +1788,7 @@ fn allows(role: Role, op: &Op, own: bool) -> bool {
 /// on the repo, re-read from GitHub at once and stored for the next write and the next
 /// `/api/me`. Only the wait for it is bounded (by [`REREAD_WAIT`]): a slower re-read is still
 /// stored when it comes. Just the reason: the tab says what couldn't be done.
-async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String {
+pub(crate) async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String {
     // The repo by its bare name, as the user knows it.
     let repo = &at.repo;
     let reread = {
@@ -1744,6 +1980,13 @@ mod tests {
             ("title_edit", OpKind::TitleEdit),
             ("body_edit", OpKind::BodyEdit),
             ("create", OpKind::Create),
+            ("sub_add", OpKind::SubAdd),
+            ("sub_remove", OpKind::SubRemove),
+            ("sub_reorder", OpKind::SubReorder),
+            ("block_add", OpKind::BlockAdd),
+            ("block_remove", OpKind::BlockRemove),
+            ("relate_add", OpKind::RelateAdd),
+            ("relate_remove", OpKind::RelateRemove),
         ]
         .map(|(name, kind)| {
             let words = serde_json::to_string(kind.lost_message()).unwrap();

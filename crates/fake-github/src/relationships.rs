@@ -66,7 +66,7 @@ pub(crate) fn plan_reorder(
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Sub,
     Blocks,
     Relates,
@@ -139,6 +139,44 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
+/// The changes one REST write makes from issue `from`: the edge `src → dst` of `kind`, added or
+/// removed, checked against GitHub's rules. With `replace` (a sub-issue add's `replace_parent`),
+/// a sub-issue of another parent moves: its old link is removed first.
+pub(crate) fn plan_one(
+    c: &Connection,
+    from: i64,
+    kind: Kind,
+    add: bool,
+    (src, dst): (i64, i64),
+    replace: bool,
+) -> rusqlite::Result<Result<Vec<Change>, String>> {
+    let mut out = Vec::new();
+    let old = match kind {
+        Kind::Sub if add && replace => q::parent_of(c, dst)?.filter(|&p| p != src),
+        _ => None,
+    };
+    if let Some(old) = old {
+        out.push(Change {
+            from,
+            kind,
+            add: false,
+            src: old,
+            dst,
+        });
+    }
+    if let Err(why) = check_moving(c, kind, add, src, dst, old.is_some())? {
+        return Ok(Err(why));
+    }
+    out.push(Change {
+        from,
+        kind,
+        add,
+        src,
+        dst,
+    });
+    Ok(Ok(out))
+}
+
 /// GitHub's refusals for one change.
 fn check(
     c: &Connection,
@@ -146,6 +184,19 @@ fn check(
     add: bool,
     src: i64,
     dst: i64,
+) -> rusqlite::Result<Result<(), String>> {
+    check_moving(c, kind, add, src, dst, false)
+}
+
+/// [`check`], for a sub-issue that leaves its parent (`moving`) as it's added: its one parent
+/// isn't a refusal then.
+fn check_moving(
+    c: &Connection,
+    kind: Kind,
+    add: bool,
+    src: i64,
+    dst: i64,
+    moving: bool,
 ) -> rusqlite::Result<Result<(), String>> {
     let exists = q::has_edge(c, kind_name(kind), src, dst)?;
     let refuse = |why: &str| Ok(Err(why.to_owned()));
@@ -158,7 +209,7 @@ fn check(
     }
     match kind {
         Kind::Sub => {
-            if q::parent_of(c, dst)?.is_some() {
+            if !moving && q::parent_of(c, dst)?.is_some() {
                 return refuse("Sub issue may only have one parent");
             }
             let ancestry = q::ancestry(c, src)?;

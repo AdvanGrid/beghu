@@ -28,6 +28,11 @@
 //   a failed write on its row, with Retry (writes.tsx, `leftOut`).
 // - The form is kept as typed until it's created, across opening issues meanwhile; leaving the page
 //   with text in it asks first.
+// - `+ Create a new sub-issue` on an issue (Relationships.tsx) opens the form with that issue as
+//   the parent, in its repo. The create carries it (`parent`): the server makes the new issue, then
+//   its parent's sub-issue, in the one write. Should that second step fail, the issue is made all
+//   the same and the step comes back unapplied: a failed write on the new issue, with Retry. On a
+//   Read repo the parent is kept, greyed and unsent, as the labels are.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useNavigate } from "@solidjs/router";
@@ -55,15 +60,17 @@ import {
 } from "./api";
 import type { Label } from "./bindings/Label";
 import type { Milestone } from "./bindings/Milestone";
+import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import type { RepoLabel } from "./bindings/RepoLabel";
 import { Avatar, link } from "./bits";
 import { Panel } from "./IssuePanel";
 import { touch } from "./keys";
 import { writesPaused } from "./live";
-import { setCreateNote, type Prop } from "./overlay";
+import { newSubIssueOf, setCreateNote, setNewSubIssueOf, type PickProp as Prop } from "./overlay";
 import type { Pickable } from "./Pickers";
 import { tokenize, queryOf } from "./query";
+import { standIn } from "./related";
 import { holdsText } from "./unsaved";
 import { Failure, reloadOnce } from "./Root";
 import { ChunkFailed } from "./router";
@@ -98,6 +105,8 @@ type Draft = {
   labels: Label[];
   assignees: { login: string }[];
   milestone: Milestone | null;
+  /** The issue the new one becomes a sub-issue of, from `+ Create a new sub-issue`. */
+  parent?: Related;
 };
 
 const EMPTY: Draft = { title: "", body: "", labels: [], assignees: [], milestone: null };
@@ -274,6 +283,7 @@ async function create(r: Repo): Promise<void> {
     labels: read ? [] : d.labels.map((l) => l.name),
     assignees: read ? [] : d.assignees.map((u) => u.login),
     milestone: read ? null : (d.milestone?.number ?? null),
+    parent: read ? null : (d.parent?.id ?? null),
   };
   change({ repo: r.id });
   sending = true;
@@ -303,15 +313,21 @@ async function create(r: Repo): Promise<void> {
   rememberRepo(r.id);
   draftNow = EMPTY;
   setDraft(EMPTY);
-  if (reply.unapplied) {
-    const unapplied = reply.unapplied;
+  const unapplied = reply.unapplied ?? [];
+  if (unapplied.length > 0) {
     const look = (o: IssueOp): Look | undefined => {
       if (o.kind === "label_add") return { label: d.labels.find((l) => same(l.name, o.label)) };
       if (o.kind === "milestone_set") return { milestone: d.milestone };
+      // The new issue under its parent, as the parent's list would have shown it.
+      if (o.kind === "sub_add" && d.parent) return { relationship: { issue: d.parent, other: standIn(o.child, { title }) } };
       return undefined;
     };
     // Without the writes code, what GitHub left out isn't flagged; the new issue shows what it has.
-    await import("./writes").then(({ leftOut }) => leftOut(unapplied, `the new issue in ${r.name}`, look)).catch(() => {});
+    await import("./writes")
+      .then(({ leftOut }) => {
+        for (const u of unapplied) leftOut(u, `the new issue in ${r.name}`, look);
+      })
+      .catch(() => {});
   }
   if (openFromForm) openFromForm(`/issues/${reply.issue}`);
   else {
@@ -431,6 +447,13 @@ function Form() {
   onSettled(() => {
     setCreateNote(undefined);
     title.focus();
+    // From `+ Create a new sub-issue`: that issue is the parent, and its repo the form's.
+    const parent = newSubIssueOf();
+    if (parent) {
+      setNewSubIssueOf(undefined);
+      const home = offered().find((r) => same(r.owner, parent.owner) && same(r.name, parent.repo));
+      change({ parent, ...(home ? { repo: home.id } : {}) });
+    }
   });
 
   // Picks follow the form's repo.
@@ -545,10 +568,32 @@ function Form() {
               {(m) => <span data-perf="milestone-title">{m().title}</span>}
             </Show>
           </PropRow>
+          {/* Set from `+ Create a new sub-issue` only; × takes it off. */}
+          <Show when={draft().parent}>
+            {(p) => (
+              <>
+                <dt {...stylex.attrs(s.key)}>Parent</dt>
+                <dd {...stylex.attrs(s.value, limited() && s.unsent)} data-perf="parent" data-unsent={limited() ? "true" : undefined}>
+                  <span>
+                    {p().repo}#{p().number} {p().title}
+                  </span>
+                  <button type="button" aria-label="No parent" title="No parent" {...stylex.attrs(s.unparent)} onClick={() => change({ parent: undefined })}>
+                    ×
+                  </button>
+                </dd>
+              </>
+            )}
+          </Show>
         </dl>
         {/* One line, always there, so the role note moves nothing when the repo changes. */}
         <p {...stylex.attrs(s.roleLine)} data-perf="create-role">
-          <Show when={limited() && repo()}>{(r) => <>You have Read on {r().name}: labels, assignees and milestone won't be sent.</>}</Show>
+          <Show when={limited() && repo()}>
+            {(r) => (
+              <>
+                You have Read on {r().name}: labels, assignees{draft().parent ? ", milestone and parent" : " and milestone"} won't be sent.
+              </>
+            )}
+          </Show>
         </p>
         <label {...stylex.attrs(s.field, s.grow)}>
           <span {...stylex.attrs(s.label)}>Description</span>
@@ -779,6 +824,18 @@ const s = stylex.create({
   // Picked on a Read repo: kept, greyed, and not sent.
   unsent: {
     color: colors.muted,
+  },
+  unparent: {
+    font: "inherit",
+    borderRadius: 4,
+    borderWidth: 0,
+    paddingInline: 4,
+    backgroundColor: {
+      default: "transparent",
+      ":hover": colors.hover,
+    },
+    color: colors.muted,
+    cursor: "pointer",
   },
   roleLine: {
     margin: 0,

@@ -55,15 +55,16 @@ import { searchOf, type Term } from "./highlight";
 import { touch, type Action } from "./keys";
 import { editorOf, openEditor, type Field } from "./editing";
 import { cantReach, coalesced, onPush, resetAt } from "./live";
-import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
+import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
-import { Blocks, Linked, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
+import { ChunkFailure } from "./chunks";
+import { Blocks, Linked, LinksRow, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
 import { openLightbox } from "./md/media";
 import { md } from "./md/tokens.stylex";
 import { marked } from "./md/walker";
 import type { Links } from "./md/links";
-import { IssueNotice, reloadOnce, resetOnChange } from "./Root";
+import { IssueNotice, resetOnChange } from "./Root";
 import { stale } from "./account";
 import { ChunkFailed } from "./router";
 import { ago, fullDate } from "./time";
@@ -624,7 +625,7 @@ function Body(props: {
             ×
           </a>
         </div>
-        <ParentCrumb rels={d().relationships} search={props.search} />
+        <ParentCrumb d={d()} search={props.search} write={d().kind === "issue"} />
         <Show when={d().kind === "issue"}>
           <Offer action="editTitle" run={editTitle} />
         </Show>
@@ -677,6 +678,13 @@ function Body(props: {
               {(m) => <span data-perf="milestone-title">{m().title}</span>}
             </Show>
           </PropRow>
+          {/* Relationship writes: an issue's only, as every write. */}
+          <Show when={d().kind === "issue"}>
+            <dt {...stylex.attrs(s.key)}>Links</dt>
+            <dd {...stylex.attrs(s.value)} data-perf="links">
+              <LinksRow d={d()} at={at()} />
+            </dd>
+          </Show>
           <Show
             when={d().pr}
             fallback={
@@ -694,8 +702,8 @@ function Body(props: {
             </dd>
           </Show>
         </dl>
-        <Blocks rels={d().relationships} open={d().state === "open"} search={props.search} />
-        <RelatesTo rels={d().relationships} search={props.search} />
+        <Blocks d={d()} search={props.search} write={d().kind === "issue"} />
+        <RelatesTo d={d()} search={props.search} write={d().kind === "issue"} />
         {/* The body is a post like each comment: on its tint, its byline inside. */}
         <div {...stylex.attrs(s.bodySlot)}>
           <div {...stylex.attrs(s.post)}>
@@ -736,7 +744,7 @@ function Body(props: {
           </div>
         </div>
         <Show when={!d().pr}>
-          <SubIssues rels={d().relationships} search={props.search} />
+          <SubIssues d={d()} search={props.search} write={d().kind === "issue"} />
         </Show>
         <h3 {...stylex.attrs(s.section)}>
           Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
@@ -916,28 +924,6 @@ function OfferImage(props: { scroller: HTMLDivElement }) {
 function Offer(props: { action: Action; run: () => void }) {
   touch(props.action, () => props.run());
   return null;
-}
-
-/**
- * A picker's or an editor's code didn't load: the URL reloads once (a deploy that replaced the
- * build is the usual cause, and a fresh page names the new chunks), then it says so with Retry.
- */
-function ChunkFailure(props: { error: unknown; reset: () => void; what?: string }) {
-  const location = useLocation();
-  // Decided once, as the failure shows: a reload leaves the page, and Retry must not flash first.
-  const chunk = untrack(() => props.error instanceof ChunkFailed);
-  const reloading = chunk && reloadOnce(location.pathname + location.search + location.hash);
-  return (
-    <Show when={!reloading}>
-      <span {...stylex.attrs(s.muted)} role="alert">
-        Couldn't load the {props.what ?? "picker"}
-        {chunk ? "; beghu may have been updated" : ""} ·{" "}
-        <button type="button" {...stylex.attrs(s.link)} onClick={() => props.reset()}>
-          Retry
-        </button>
-      </span>
-    </Show>
-  );
 }
 
 /**

@@ -20,6 +20,7 @@ body: import("../md/ast").Md | null,
  */
 refs: { [key in string]: RefTarget }, 
 /**
- * A create's labels, assignees or milestone that GitHub didn't apply.
+ * What GitHub didn't apply of what the write asked, though the write itself was made: a
+ * create's labels, assignees, milestone or parent, or a move's place among its new siblings.
  */
-unapplied?: Unapplied, };
+unapplied?: Array<Unapplied>, };
