@@ -33,12 +33,13 @@ mod repos;
 mod shell;
 mod tokens;
 mod volume;
+mod walker;
 mod webhook;
 
 pub use config::{
     Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig,
-    default_accounts_check_every, default_assets_kept_for, default_backup_every, default_drain_for,
-    default_read_back_retries,
+    default_accounts_check_every, default_activity_every, default_assets_kept_for,
+    default_backup_every, default_dormant_after, default_drain_for, default_read_back_retries,
 };
 
 use axum::Router;
@@ -115,12 +116,12 @@ struct Inner {
 ///
 /// 1. migrate the control DB (after a `VACUUM INTO` backup);
 /// 2. copy this build's assets to the volume and prune the old ones;
-/// 3. delete the mirror files of accounts that aren't active (they lost access; dormant ones
-///    too, once #114 makes any);
+/// 3. delete the mirror files of accounts that aren't active (they lost access, or went
+///    dormant);
 /// 4. listen;
 /// 5. resume the webhook deliveries acked but not processed, then redeliver for the downtime
 ///    (#92);
-/// 6. start the migration walker (#114, not built yet);
+/// 6. start the migration walker (`walker.rs`);
 ///
 /// then the other jobs. [`App::open`] runs 1 to 3; the caller listens and serves
 /// ([`Opened::app`] to [`serve_until`]); then [`Opened::start`] runs 5, 6 and the jobs, while the
@@ -244,8 +245,8 @@ impl App {
             app: Some(app.clone()),
             ..sinks
         };
-        // Step 3: delete the mirror files of accounts that aren't active, before anything can
-        // open one. TODO(#114): dormant accounts are among them once dormancy exists.
+        // Step 3: delete the mirror files of accounts that aren't active (they lost access, or
+        // went dormant), before anything can open one.
         accounts::delete_unused_mirrors(&app).await?;
         Ok(Opened {
             app,
@@ -380,7 +381,8 @@ impl Opened {
         // spawned and never awaited here. `start` isn't a job, so the drain couldn't stop what it
         // awaits, and readiness and the jobs below would wait on GitHub.
         reconcile::start(&app);
-        // Step 6. TODO(#114): start the migration walker here.
+        // Step 6: the migration walker, in the background.
+        app.spawn(walker::walk);
         app.spawn(backups::job);
         if let Some((assets, next)) = assets {
             app.jobs().spawn(assets::job(assets, Some(next)));
@@ -430,7 +432,8 @@ async fn follow_installations(
                 .await;
             // Only an account in use: one that must sign in again (or disconnected) has no
             // tokens to read with, and its mirror is gone.
-            if matches!(known, Ok(Some(a)) if a.status == tokens::account_status::ACTIVE) {
+            if matches!(known, Ok(Some(a)) if tokens::AccountStatus::from_db(&a.status) == tokens::AccountStatus::Active)
+            {
                 accounts.insert(sender);
             }
         }

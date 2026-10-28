@@ -183,7 +183,8 @@ impl From<dbrt::Error> for ApiError {
         }
         // The account's mirror is deleted or being deleted: it lost access since the request's
         // session was read (its next request is answered 401 at the gate), or it signed in again
-        // as the delete ran, and the mirror comes back empty in a moment. Either way, a moment
+        // as the delete ran, and the mirror comes back empty in a moment; or it's going dormant,
+        // and this request either keeps it (its use came first) or wakes it. Either way, a moment
         // later says which; nothing here says the session ended.
         if let dbrt::Error::Deleted = e {
             return ApiError::Unavailable {

@@ -10,22 +10,6 @@ use std::time::{Duration, Instant};
 
 const INSTALLATION: i64 = 41000001;
 
-/// Polls `f` every 50 ms until it gives a value, or panics after `secs`.
-async fn until<T, F, Fut>(secs: f64, what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    let deadline = Instant::now() + Duration::from_secs_f64(secs);
-    loop {
-        if let Some(v) = f().await {
-            return v;
-        }
-        assert!(Instant::now() < deadline, "{what}: not within {secs} s");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 /// Sweeps on a short schedule: probes every 300 ms, counts and orders every 600 ms, and every
 /// change they repair counted as missed.
 fn sweeping(c: &mut beghu::Config) {
@@ -943,7 +927,13 @@ async fn a_repo_whose_only_account_must_sign_in_again_gets_no_probes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_whose_only_account_is_dormant_gets_no_probes() {
-    let s = start_with(sweeping).await;
+    // The account goes dormant 3 s after signing in: the requests here count as use only hourly.
+    let s = start_with(|c| {
+        sweeping(c);
+        c.accounts_check_every = Duration::from_millis(100);
+        c.dormant_after = Duration::from_secs(3);
+    })
+    .await;
     let b = s.sign_in("tomsj").await;
     let me = s.api(&mut b.clone(), "/api/me").await.1["account"]["id"]
         .as_i64()
@@ -960,12 +950,15 @@ async fn a_repo_whose_only_account_is_dormant_gets_no_probes() {
         (log_reads(&s, endpoint).await >= 2).then_some(())
     })
     .await;
-    // Dormancy has no seam of its own yet (a later slice puts accounts to sleep): the control
-    // DB says so, as that job will.
-    // TODO(#114): put the account to sleep through the dormancy job's seam once it has one.
-    let db = rusqlite::Connection::open(s.control_db()).unwrap();
-    db.busy_timeout(Duration::from_secs(5)).unwrap();
-    control_db::q::set_account_status(&db, me, "dormant").unwrap();
+    // Unused, it goes dormant: its mirror goes.
+    let mirror = s
+        .control_db()
+        .with_file_name("mirrors")
+        .join(format!("{me}.db"));
+    until(10.0, "the account dormant", || async {
+        (!mirror.exists()).then_some(())
+    })
+    .await;
     // A probe already under way may finish; none starts after it.
     tokio::time::sleep(Duration::from_millis(800)).await;
     let after = log_reads(&s, endpoint).await;

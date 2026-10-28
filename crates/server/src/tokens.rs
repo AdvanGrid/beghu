@@ -29,10 +29,41 @@ const MARGIN: i64 = 300;
 const STORE_TRIES: u32 = 5;
 const STORE_BACKOFF: Duration = Duration::from_millis(100);
 
-/// The `accounts.status` values beghu writes and checks (control-db's `0001_init.sql`).
-pub mod account_status {
-    pub const ACTIVE: &str = "active";
-    pub const NEEDS_SIGN_IN: &str = "needs_sign_in";
+/// An account's `accounts.status` (control-db's `0001_init.sql` lists the values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountStatus {
+    Active,
+    /// Unused for `Config::dormant_after` (30 days): its mirror is deleted, and its next use
+    /// wakes it and re-imports it (accounts.rs).
+    Dormant,
+    /// It lost access (a revoke, a lapsed refresh token, Disconnect): it must sign in again.
+    NeedsSignIn,
+}
+
+impl AccountStatus {
+    /// The column's value. One beghu doesn't know (the schema's `CHECK` allows none) can't be
+    /// used: it must sign in again.
+    pub fn from_db(s: &str) -> AccountStatus {
+        match s {
+            "active" => AccountStatus::Active,
+            "dormant" => AccountStatus::Dormant,
+            _ => AccountStatus::NeedsSignIn,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountStatus::Active => "active",
+            AccountStatus::Dormant => "dormant",
+            AccountStatus::NeedsSignIn => "needs_sign_in",
+        }
+    }
+
+    /// Whether a request may use the account: an active one, or a dormant one, which the use
+    /// wakes. One that must sign in again can't.
+    pub fn is_usable(self) -> bool {
+        self != AccountStatus::NeedsSignIn
+    }
 }
 
 /// The `account_tokens.status` values beghu checks (control-db's `tokens.sql` writes them).
@@ -304,7 +335,7 @@ impl Tokens {
 
 /// GitHub refused the tokens issued at `issued_at` (-1: there were none), or they don't open:
 /// marks `account` as having to sign in again, so its sessions answer 401 from now on, and sends
-/// it down the lost-access path. Only if those tokens are still the account's and it's active: a
+/// it down the lost-access path. Only if those tokens are still the account's and it's active (or dormant): a
 /// sign-in since then (new tokens) wins, and an account marked already isn't sent twice. Returns
 /// the error to answer with: `SignInAgain`, or the DB's error if the mark couldn't be written
 /// (the next use will try again).
@@ -360,7 +391,7 @@ async fn store(
         .write(move |tx| {
             q::put_tokens(tx, account, &a, ae, &r, re, issued)?;
             if let AccountOnStore::Activate = then {
-                q::set_account_status(tx, account, account_status::ACTIVE)?;
+                q::set_account_status(tx, account, AccountStatus::Active.as_str())?;
             }
             Ok(())
         })

@@ -73,8 +73,15 @@ pub struct Config {
     /// period docs/deploy.md ("Stopping") asks for.
     pub drain_for: Duration,
     /// How often the accounts' check runs (a day, from startup): lapsed refresh tokens sign their
-    /// accounts out, and expired sessions are pruned (see `accounts.rs`).
+    /// accounts out, dead tokens and expired sessions are pruned, and accounts unused for
+    /// `dormant_after` go dormant (see `accounts.rs`).
     pub accounts_check_every: Duration,
+    /// How long an account goes unused before the accounts' check makes it dormant, deleting its
+    /// mirror (30 days).
+    pub dormant_after: Duration,
+    /// How often an account's use moves its `last_active_at` (an hour): a request with it
+    /// active, or its open stream, moves it once this long has passed since the last move.
+    pub activity_every: Duration,
     /// The attachment route and the image proxy (`media/`).
     pub media: MediaConfig,
 }
@@ -220,6 +227,16 @@ pub fn default_accounts_check_every() -> Duration {
     Duration::from_secs(24 * 60 * 60)
 }
 
+/// [`Config::dormant_after`]: 30 days.
+pub fn default_dormant_after() -> Duration {
+    Duration::from_secs(30 * 24 * 60 * 60)
+}
+
+/// [`Config::activity_every`]: an hour.
+pub fn default_activity_every() -> Duration {
+    Duration::from_secs(60 * 60)
+}
+
 /// [`Config::assets_kept_for`]: a day.
 pub fn default_assets_kept_for() -> Duration {
     Duration::from_secs(24 * 60 * 60)
@@ -308,6 +325,8 @@ impl Config {
             assets_kept_for: default_assets_kept_for(),
             drain_for: default_drain_for(),
             accounts_check_every: default_accounts_check_every(),
+            dormant_after: default_dormant_after(),
+            activity_every: default_activity_every(),
             media: MediaConfig {
                 dev_image_hosts,
                 ..MediaConfig::default()

@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Browser, Stack, start_with, summary};
+use common::{Browser, Stack, start_with, summary, until};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -17,25 +17,6 @@ const WAIT: f64 = 15.0;
 /// The poller at its real pace (the harness keeps it out of other tests' way).
 fn polling(c: &mut beghu::Config) {
     c.reconcile.feed_every = Duration::from_secs(2);
-}
-
-/// Polls `f` every 50 ms until it gives a value, or panics after `secs`.
-async fn until<T, F, Fut>(secs: f64, what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    let deadline = Instant::now() + Duration::from_secs_f64(secs);
-    loop {
-        if let Some(v) = f().await {
-            return v;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{what} didn't happen within {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 async fn detail(s: &Stack, b: &Browser, id: i64) -> Value {

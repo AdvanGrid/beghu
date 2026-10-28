@@ -5,9 +5,8 @@
 
 mod common;
 
-use common::{Browser, Stack, start, summary};
+use common::{Browser, Stack, start, summary, until};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 
 /// A fixture issue with no relationships: `(repo, number, id)`. 8 in web, 4 in api, 2 in docs.
 fn unlinked(repo: &str) -> Vec<(String, i64, i64)> {
@@ -37,25 +36,6 @@ async fn edit(s: &Stack, u: &(String, i64, i64), fields: Value) {
         e[k] = v.clone();
     }
     s.edit(e).await;
-}
-
-/// Polls `f` every 50 ms until it gives a value, or panics after `secs`.
-async fn until<T, F, Fut>(secs: f64, what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    let deadline = Instant::now() + Duration::from_secs_f64(secs);
-    loop {
-        if let Some(v) = f().await {
-            return v;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{what} didn't happen within {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 /// An issue's relationships as its detail shows them: the ids at the other end, by kind; `None`

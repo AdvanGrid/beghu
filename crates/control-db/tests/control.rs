@@ -80,3 +80,27 @@ async fn deleting_an_account_deletes_its_preferences_and_tokens() {
     );
     assert_eq!(tokens, 0);
 }
+
+#[tokio::test]
+async fn the_walker_takes_the_active_accounts_the_most_recently_used_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (control, _) =
+        Control::open(&dir.path().join("control.db"), &dir.path().join("backups")).unwrap();
+    let order = control
+        .write(|tx| {
+            q::upsert_account(tx, 1, "old", 100)?;
+            q::upsert_account(tx, 2, "recent", 100)?;
+            q::upsert_account(tx, 3, "dormant", 100)?;
+            q::upsert_account(tx, 4, "signed-out", 100)?;
+            q::upsert_account(tx, 5, "tied", 100)?;
+            q::touch_account(tx, 2, 300)?;
+            q::touch_account(tx, 1, 200)?;
+            q::go_dormant(tx, 3, 100, 400)?;
+            q::set_account_status(tx, 4, "needs_sign_in")?;
+            q::walk_order(tx)
+        })
+        .await
+        .unwrap();
+    // Neither a dormant account nor one that must sign in again has a mirror to walk.
+    assert_eq!(order, vec![2, 1, 5]);
+}

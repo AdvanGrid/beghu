@@ -10,7 +10,7 @@ pub mod rank;
 pub mod search;
 
 pub use dbrt::AccountId;
-pub use dbrt::mirrors::{Config, Notice};
+pub use dbrt::mirrors::{CatchUp, Config, Decision, Notice};
 pub use dbrt::{Caller, Error};
 /// The connection and result types `q`'s functions take and return, for app code that wraps
 /// them.
@@ -64,6 +64,27 @@ impl Mirrors {
     /// [`Error::Sealed`] once the drain has sealed the mirrors, leaving the file.
     pub async fn delete(&self, account: AccountId) -> Result<(), Error> {
         self.0.delete(account).await
+    }
+
+    /// [`Mirrors::delete`] if `check` still says so once the work in flight on the mirror is
+    /// done (holding off any more until it's decided): an account going dormant, whose check
+    /// makes sure it wasn't used meanwhile. [`Decision::Kept`] when the check kept it, and the
+    /// mirror goes on as before; [`Decision::Overruled`] when a plain delete (lost access) asked
+    /// meanwhile deleted it whatever the check said.
+    pub async fn delete_if(
+        &self,
+        account: AccountId,
+        check: impl Future<Output = bool> + Send + 'static,
+    ) -> Result<Decision, Error> {
+        self.0.delete_if(account, check).await
+    }
+
+    /// The migration walker's step: migrates the account's mirror in place if it's behind the
+    /// build, as its first use would. A mirror with no file or a pending `.rebuild.sql`
+    /// migration is left for its first use ([`CatchUp::LeftForFirstUse`]); a failed one is an
+    /// error, as for anyone.
+    pub async fn catch_up(&self, account: AccountId) -> Result<CatchUp, Error> {
+        self.0.catch_up(account).await
     }
 
     /// The account may use its mirror again: its next use creates an empty one and asks for its

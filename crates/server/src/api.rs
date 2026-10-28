@@ -119,7 +119,7 @@ pub async fn me(
             .map(|a| Account {
                 id: a.github_user_id,
                 login: a.login,
-                needs_sign_in: a.status != crate::tokens::account_status::ACTIVE,
+                needs_sign_in: !crate::tokens::AccountStatus::from_db(&a.status).is_usable(),
             })
             .collect(),
         comment_order: CommentOrder::from_pref(row.comment_order.as_deref()),

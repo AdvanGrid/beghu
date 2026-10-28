@@ -462,3 +462,46 @@ fn a_delete_after_a_revive_wins() {
         }]
     );
 }
+
+// The migration walker, where the gate alone shows it: it waits however long a migration takes,
+// and a request that comes while it waits gets the mirror it needs (tests/walker.rs has the
+// rest, through `Mirrors`).
+
+fn walker(id: u64) -> Event {
+    Event::Use {
+        id,
+        caller: Caller::Walker,
+    }
+}
+
+#[test]
+fn the_walker_waits_out_a_long_migration_where_a_request_would_be_turned_away() {
+    let mut g = gate(&V2);
+    assert_eq!(g.handle(s(0), walker(1)), [Effect::Open]);
+    assert_eq!(
+        g.handle(s(0), Event::Opened(Ok(Some(1)))),
+        [Effect::Migrate { from: 1, to: 2 }]
+    );
+    g.handle(ms(200), Event::Tick);
+    assert_eq!(g.next_deadline(), None, "no timeout for the walker");
+    assert_eq!(
+        g.handle(s(60), Event::Migrated(Ok(()))),
+        [Effect::Status(None), Effect::Serve { id: 1 }]
+    );
+}
+
+#[test]
+fn a_request_waiting_with_the_walker_has_the_missing_mirror_created() {
+    for (migs, file) in [(&V2, None), (&V2_REBUILD, Some(1))] {
+        let mut g = gate(migs);
+        g.handle(s(0), walker(1));
+        g.handle(s(0), request(2));
+        assert!(
+            matches!(
+                g.handle(s(0), Event::Opened(Ok(file)))[..],
+                [Effect::Create { .. }]
+            ),
+            "{file:?}"
+        );
+    }
+}

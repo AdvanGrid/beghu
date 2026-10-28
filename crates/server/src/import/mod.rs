@@ -112,6 +112,9 @@ pub struct ImportStatus {
     /// Between rounds, when the first failed repo is tried again (Unix seconds).
     #[ts(type = "number | null")]
     pub retry_at: Option<i64>,
+    /// The account was dormant (unused for 30 days, its mirror deleted) and this imports its
+    /// whole pick again: "Re-importing — you've been away a while".
+    pub away: bool,
 }
 
 /// Each account's import: the repos waiting for one, and the one running.
@@ -138,6 +141,8 @@ struct Account {
     pushed: Option<ImportStatus>,
     /// Cancelled when the account loses access ([`Imports::stop`]): its job and round end.
     stop: tokio_util::sync::CancellationToken,
+    /// The account is back from dormancy: this import, until it ends, is its re-import.
+    away: bool,
 }
 
 /// A round's phase, and how many of its repos are through it.
@@ -173,6 +178,7 @@ impl Account {
                 Some(_) => None,
                 None => self.next_retry(),
             },
+            away: self.away,
         })
     }
 
@@ -202,6 +208,12 @@ impl Imports {
         if let Some(a) = self.with(|all| all.remove(&account)) {
             a.stop.cancel();
         }
+    }
+
+    /// The account is back from dormancy: its next import, its whole pick into an empty mirror,
+    /// is a re-import, and says so until it ends.
+    pub fn mark_away(&self, account: i64) {
+        self.with(|all| all.entry(account).or_default().away = true);
     }
 
     /// Changes the account's import state with `f`, then pushes the status to its tabs if it
@@ -239,6 +251,10 @@ pub fn request(app: &App, account: i64, joined: Vec<i64>, resumed: Vec<i64>) {
             .filter(|r| !a.current.contains(r) && !a.failed.contains_key(r));
         a.pending.extend(joined.into_iter().chain(resumed));
         if a.pending.is_empty() {
+            // Nothing to import: an account back from dormancy that syncs nothing is back.
+            if !a.running {
+                a.away = false;
+            }
             return None;
         }
         if a.running {
@@ -309,6 +325,7 @@ async fn job(app: App, account: i64, stop: tokio_util::sync::CancellationToken) 
                 }
                 None => {
                     a.running = false;
+                    a.away = false;
                     Next::Done
                 }
             }

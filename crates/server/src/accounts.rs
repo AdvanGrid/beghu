@@ -35,16 +35,31 @@
 //! (its stream, a `switched` asking to sign in again) until it does; signing in revives the
 //! mirror empty, which imports the account's pick afresh. At startup, the mirrors of accounts that aren't active are
 //! deleted (a delete the drain sealed out is finished there).
+//!
+//! **Dormancy.** An account unused for `dormant_after` (30 days) costs almost nothing: the daily
+//! check makes it dormant and deletes its mirror, and from then on it gets no webhooks (they're
+//! deduped, then dropped: no active account syncs its repos) and no sweeps. Its use is
+//! `last_active_at`, which a request with it active and its open streams move at most every
+//! `activity_every` (an hour). The check reads the idle accounts, then deletes each one's mirror
+//! through [`Mirrors::delete_if`](mirror_db::Mirrors::delete_if): once the work in flight on it
+//! is done, with nothing else let in, it marks the account dormant only if `last_active_at`
+//! hasn't moved since it read it, and keeps the mirror if it has. So a request that came in
+//! meanwhile keeps the account active, and one that comes after finds it dormant and wakes it.
+//! A dormant account's mirror files are deleted at startup too. Any use wakes it ([`used`]), as
+//! does signing in again: its repo set is read afresh (dropping the repos it can no longer
+//! see), and its mirror comes back empty and imports its whole pick, which the status slot
+//! calls "Re-importing — you've been away a while". The daily check also wipes dead tokens.
 
 use crate::App;
 use crate::auth;
 use crate::live::Push;
-use crate::tokens::account_status;
+use crate::tokens::AccountStatus;
 use axum::Form;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use control_db::q;
+use mirror_db::Decision;
 use serde::Deserialize;
 
 /// Where a browser lands once nothing is signed in on it.
@@ -68,10 +83,10 @@ async fn live_session(app: &App, headers: &HeaderMap) -> Option<(String, Vec<u8>
 }
 
 /// Who a session's active account becomes once `gone` has left it: the first of the accounts
-/// still signed in that can be used, else the first of them (it will sign in again), else none.
+/// still signed in that can be used (a dormant one wakes when used), else the first of them (it will sign in again), else none.
 fn successor(left: &[q::SessionAccountsRow]) -> Option<i64> {
     left.iter()
-        .find(|a| a.status == account_status::ACTIVE)
+        .find(|a| AccountStatus::from_db(&a.status).is_usable())
         .or(left.first())
         .map(|a| a.github_user_id)
 }
@@ -151,7 +166,8 @@ pub async fn switch(
             else {
                 return Ok(None);
             };
-            if a.status != account_status::ACTIVE {
+            // A dormant account wakes once it's used.
+            if !AccountStatus::from_db(&a.status).is_usable() {
                 return Ok(Some(Err(a.login)));
             }
             q::set_active_account(tx, &h, to)?;
@@ -334,7 +350,7 @@ pub async fn disconnect(
             }
             q::delete_tokens(tx, account)?;
             q::delete_preferences(tx, account)?;
-            q::set_account_status(tx, account, account_status::NEEDS_SIGN_IN).map(|_| out)
+            q::set_account_status(tx, account, AccountStatus::NeedsSignIn.as_str()).map(|_| out)
         })
         .await;
     let sessions = match sessions {
@@ -392,7 +408,7 @@ rel="external">Authorized GitHub Apps</a>, revoke it there.</p>
 pub async fn lost_access(app: &App, account: i64) {
     let deleting = {
         let _turn = app.tokens().hold(account).await;
-        if status_of(app, account).await.as_deref() != Some(account_status::NEEDS_SIGN_IN) {
+        if status_of(app, account).await != Some(AccountStatus::NeedsSignIn) {
             return;
         }
         app.imports().stop(account);
@@ -411,7 +427,7 @@ pub async fn lost_access(app: &App, account: i64) {
     // landed while the mirror was being deleted wins, and its mirror comes back (empty, so it
     // imports); its sync state, resync mark and tabs are left alone.
     let turn = app.tokens().hold(account).await;
-    if status_of(app, account).await.as_deref() == Some(account_status::ACTIVE) {
+    if status_of(app, account).await == Some(AccountStatus::Active) {
         drop(turn);
         app.mirrors().revive(account);
         crate::repos::refresh_roles_now(app, account).await;
@@ -433,10 +449,10 @@ pub async fn lost_access(app: &App, account: i64) {
         .publish(account, Push::switched(Some(account), true));
 }
 
-/// The account's status (`account_status`), if it can be read.
-async fn status_of(app: &App, account: i64) -> Option<String> {
+/// The account's status, if it can be read.
+async fn status_of(app: &App, account: i64) -> Option<AccountStatus> {
     let a = app.control().read(move |c| q::account(c, account)).await;
-    a.ok().flatten().map(|a| a.status)
+    a.ok().flatten().map(|a| AccountStatus::from_db(&a.status))
 }
 
 /// Every account that lost access, as tokens.rs and webhook.rs find out: each goes down
@@ -448,11 +464,12 @@ pub async fn follow_lost(app: App, mut rx: tokio::sync::mpsc::UnboundedReceiver<
 }
 
 /// The accounts' daily check, from startup on: accounts whose refresh token has lapsed lose
-/// access (their tokens wiped), and sessions past their expiry are pruned.
-// TODO(#114): dormancy (30 days unused) joins this check.
+/// access (their tokens wiped), dead tokens and sessions past their expiry are pruned, and
+/// accounts unused for `dormant_after` go dormant.
 pub async fn daily(app: App) {
     loop {
         check(&app).await;
+        dormancy(&app).await;
         tokio::time::sleep(app.cfg().accounts_check_every).await;
     }
 }
@@ -465,8 +482,9 @@ async fn check(app: &App) {
             let lapsed = q::lapsed_accounts(tx, now)?;
             for &a in &lapsed {
                 q::delete_tokens(tx, a)?;
-                q::set_account_status(tx, a, account_status::NEEDS_SIGN_IN)?;
+                q::set_account_status(tx, a, AccountStatus::NeedsSignIn.as_str())?;
             }
+            q::wipe_dead_tokens(tx, now)?;
             q::prune_expired_sessions(tx, now)?;
             Ok(lapsed)
         })
@@ -480,6 +498,143 @@ async fn check(app: &App) {
         }
         Err(e) => eprintln!("accounts: the daily check failed: {e}"),
     }
+}
+
+/// The accounts unused for `dormant_after` go dormant, one at a time ([`go_dormant`]).
+async fn dormancy(app: &App) {
+    let before = crate::now() - app.cfg().dormant_after.as_secs() as i64;
+    let idle = app
+        .control()
+        .read(move |c| q::dormancy_candidates(c, before))
+        .await;
+    match idle {
+        Ok(idle) => {
+            for a in idle {
+                go_dormant(app, a.github_user_id, a.last_active_at).await;
+            }
+        }
+        Err(e) => eprintln!("accounts: reading the idle accounts failed: {e}"),
+    }
+}
+
+/// The account, last used at `seen`, goes dormant: once the work in flight on its mirror is
+/// done, and with nothing else let in, it's marked dormant if it's still active and unused
+/// since `seen`, its import stops, and its mirror files are deleted. A use since `seen` keeps
+/// it active, with its mirror.
+async fn go_dormant(app: &App, account: i64, seen: i64) {
+    let check = {
+        let app = app.clone();
+        async move {
+            let t = crate::now();
+            let marked = app
+                .control()
+                .write({
+                    let app = app.clone();
+                    move |tx| {
+                        let n = q::go_dormant(tx, account, seen, t)?;
+                        // Stopped inside the write, which a wake waits for: a request that wakes the
+                        // account right after marks its re-import on an import already stopped.
+                        if n > 0 {
+                            app.imports().stop(account);
+                        }
+                        Ok(n > 0)
+                    }
+                })
+                .await;
+            marked.unwrap_or_else(|e| {
+                eprintln!("account {account}: marking it dormant: {e}");
+                false
+            })
+        }
+    };
+    match app.mirrors().delete_if(account, check).await {
+        Ok(Decision::Deleted) => {
+            eprintln!("account {account}: unused for a while; dormant, its mirror deleted");
+            // A request may have woken it already: its sync state is then its own again.
+            if status_of(app, account).await != Some(AccountStatus::Dormant) {
+                return;
+            }
+            // Nothing left to repair: its next use imports everything afresh.
+            app.reconcile().forget(account);
+            if let Err(e) = app
+                .control()
+                .write(move |tx| q::forget_needs_resync(tx, account))
+                .await
+            {
+                eprintln!("account {account}: forgetting its resync mark: {e}");
+            }
+            // Its repos leave the sweeps, unless an active account syncs them too.
+            app.reconcile().repos_changed();
+        }
+        Ok(Decision::Kept) => {
+            eprintln!("account {account}: used as it was going dormant; it stays active")
+        }
+        // It lost access meanwhile: that delete took the mirror, and `lost_access` the rest.
+        Ok(Decision::Overruled) => {
+            eprintln!("account {account}: lost access as it was going dormant")
+        }
+        Err(mirror_db::Error::Sealed) => eprintln!(
+            "account {account}: beghu stopped as it was going dormant; if it went, the next start deletes its mirror"
+        ),
+        Err(e) => eprintln!("account {account}: deleting its mirror as it went dormant: {e}"),
+    }
+}
+
+/// A use of the account: a request with it active (auth.rs's `admit`). A dormant account wakes:
+/// it's active again from now, its repo set is read afresh, and its mirror comes back empty and
+/// imports ([`back_from_dormancy`]). An active one's `last_active_at` moves, if `activity_every`
+/// has passed since it last did.
+pub(crate) async fn used(
+    app: &App,
+    account: i64,
+    status: AccountStatus,
+    last_active_at: i64,
+) -> Result<(), control_db::Error> {
+    let t = crate::now();
+    if status == AccountStatus::Dormant {
+        let woke = app
+            .control()
+            .write(move |tx| q::wake_account(tx, account, t))
+            .await?
+            > 0;
+        // Whoever woke it brings it back; a request that found it woken goes on.
+        if woke {
+            back_from_dormancy(app, account);
+            app.mirrors().revive(account);
+            app.spawn(
+                move |app| async move { crate::repos::refresh_roles_now(&app, account).await },
+            );
+        }
+        return Ok(());
+    }
+    if t - last_active_at >= app.cfg().activity_every.as_secs() as i64
+        && let Err(e) = app
+            .control()
+            .write(move |tx| q::touch_account(tx, account, t))
+            .await
+    {
+        eprintln!("account {account}: noting its use: {e}");
+    }
+    Ok(())
+}
+
+/// The account's stream is still open: an active account's `last_active_at` moves to now.
+pub(crate) async fn streaming(app: &App, account: i64) {
+    let t = crate::now();
+    if let Err(e) = app
+        .control()
+        .write(move |tx| q::touch_account(tx, account, t))
+        .await
+    {
+        eprintln!("account {account}: noting its open stream as use: {e}");
+    }
+}
+
+/// The account was dormant and is in use again (a request woke it, or it signed in): its import,
+/// its whole pick into an empty mirror, says it's a re-import after time away.
+pub(crate) fn back_from_dormancy(app: &App, account: i64) {
+    eprintln!("account {account}: in use again after going dormant; re-importing its synced repos");
+    app.imports().mark_away(account);
 }
 
 /// Startup step 3: deletes the mirrors of accounts that aren't active (they lost access, or

@@ -275,7 +275,7 @@ fn revoked_by(event: &str, payload: &[u8]) -> Option<i64> {
 }
 
 /// A connected account revoked beghu's authorization: it lost access. Marked only if it's active
-/// and its tokens were issued before beghu received the revoke (`received_at`, Unix ms): a revoke
+/// (or dormant) and its tokens were issued before beghu received the revoke (`received_at`, Unix ms): a revoke
 /// applied late, or replayed at startup, after the account signed in again is about the old
 /// grant and leaves the new one alone. Anyone else (never signed in to beghu) is nothing to
 /// beghu. Retried until the control DB takes it, so nothing behind it is applied first.

@@ -37,6 +37,7 @@
 
 use crate::crypto::{self, b64, sha256, unb64};
 use crate::error::ApiError;
+use crate::tokens::AccountStatus;
 use crate::{App, now};
 use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -229,7 +230,8 @@ impl Refusal {
 
 /// Lets a request through as the browser session's active account, if it can be used and is
 /// the account the request names (`claimed`, when it names one; a write must). Slides the
-/// session's expiry at most hourly.
+/// session's expiry at most hourly, and counts as the account's use ([`crate::accounts::used`]):
+/// a dormant account wakes.
 pub(crate) async fn admit(
     app: &App,
     headers: &HeaderMap,
@@ -251,9 +253,16 @@ pub(crate) async fn admit(
         None if write => return Err(Refusal::Unnamed),
         _ => {}
     }
-    if live.row.status.as_deref() != Some(crate::tokens::account_status::ACTIVE) {
+    let status = live.row.status.as_deref().map(AccountStatus::from_db);
+    let Some(status) = status.filter(|s| s.is_usable()) else {
         return Err(Refusal::SignInAgain(account));
-    }
+    };
+    // The account is in use: a dormant one wakes, and is re-imported. Only a failed wake fails
+    // the request (the account would stay dormant); a failed move of `last_active_at` is
+    // logged, and the next request moves it.
+    crate::accounts::used(app, account, status, live.row.last_active_at.unwrap_or(0))
+        .await
+        .map_err(|e| Refusal::Failed(e.into()))?;
     let t = now();
     let touch = t - live.row.last_seen_at >= TOUCH_EVERY;
     if touch {
@@ -399,7 +408,7 @@ pub async fn login(
 async fn must_sign_in_again(app: &App, headers: &HeaderMap) -> Option<String> {
     let row = live_session(app, headers).await.ok()??.row;
     let account = row.active_account_id?;
-    if row.status.as_deref() != Some(crate::tokens::account_status::NEEDS_SIGN_IN) {
+    if row.status.as_deref().map(AccountStatus::from_db) != Some(AccountStatus::NeedsSignIn) {
         return None;
     }
     let a = app
@@ -683,8 +692,12 @@ pub async fn setup(State(app): State<App>, headers: HeaderMap) -> Response {
 /// The active account of the request's live session, if it has one that can be used.
 async fn active_account(app: &App, headers: &HeaderMap) -> Option<i64> {
     let row = live_session(app, headers).await.ok()??.row;
-    match (row.active_account_id, row.status.as_deref()) {
-        (Some(a), Some(crate::tokens::account_status::ACTIVE)) => Some(a),
+    // A dormant one signs in again, which wakes it.
+    match (
+        row.active_account_id,
+        row.status.as_deref().map(AccountStatus::from_db),
+    ) {
+        (Some(a), Some(AccountStatus::Active)) => Some(a),
         _ => None,
     }
 }
@@ -699,16 +712,21 @@ async fn finish(
 ) -> Result<[HeaderValue; 2], ApiError> {
     let t = now();
     let (id, login) = (user.id, user.login.clone());
-    let created = app
+    let was = app
         .control()
         .write(move |tx| {
-            let new = q::account(tx, id)?.is_none();
+            let was = q::account(tx, id)?.map(|a| a.status);
             q::sign_in_account(tx, id, &login, t)?;
-            Ok(new)
+            Ok(was)
         })
         .await?;
+    let created = was.is_none();
     app.tokens().sign_in(id, pair).await?;
-    // A mirror deleted when the account lost access comes back empty, and imports.
+    if was.as_deref().map(AccountStatus::from_db) == Some(AccountStatus::Dormant) {
+        crate::accounts::back_from_dormancy(app, id);
+    }
+    // A mirror deleted when the account lost access (or went dormant) comes back empty, and
+    // imports.
     app.mirrors().revive(id);
     if created {
         crate::repos::adopt_mirror_pick(app, id).await?;

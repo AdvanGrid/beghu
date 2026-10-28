@@ -21,7 +21,9 @@ const PHASE: Record<ImportPhase, string> = {
  * "Importing open PRs… n of m repos": the phase running and how many of the round's repos are
  * through it, then any repo whose import failed and what GitHub holds the import up with.
  * Between rounds, only the failed repos and when they're tried again, as a time of day: the
- * status only changes when the import does, so a countdown would go stale.
+ * status only changes when the import does, so a countdown would go stale. An account back from
+ * dormancy (unused for 30 days, its data deleted) says why it's importing everything again
+ * first: "Re-importing — you've been away a while · open issues… n of m repos".
  */
 export function ImportProgress(props: { status: ImportStatus }) {
   const failed = () => props.status.failed.join(", ");
@@ -31,7 +33,8 @@ export function ImportProgress(props: { status: ImportStatus }) {
     <Show when={props.status.phase} fallback={<>Couldn't import {failed()}{retry()}</>}>
       {(phase) => (
         <>
-          Importing {PHASE[phase()]}… {props.status.done} of {props.status.of} {props.status.of === 1 ? "repo" : "repos"}
+          {props.status.away ? `Re-importing — you've been away a while · ${PHASE[phase()]}…` : `Importing ${PHASE[phase()]}…`}{" "}
+          {props.status.done} of {props.status.of} {props.status.of === 1 ? "repo" : "repos"}
           {props.status.failed.length > 0 ? ` · couldn't import ${failed()}` : ""}
           {waiting() ? ` · ${waiting()}` : ""}
         </>

@@ -8,6 +8,7 @@ mod common;
 
 use common::{
     Browser, Stack, WriteLock, ids_of, start, start_on, start_with, summary, twin_repo_fixture,
+    until,
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -40,25 +41,6 @@ async fn edit(s: &Stack, u: &(String, i64, i64), fields: Value) {
         e[k] = v.clone();
     }
     s.edit(e).await;
-}
-
-/// Polls `f` every 50 ms until it gives a value, or panics after `secs`.
-async fn until<T, F, Fut>(secs: f64, what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    let deadline = Instant::now() + Duration::from_secs_f64(secs);
-    loop {
-        if let Some(v) = f().await {
-            return v;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{what} didn't happen within {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 async fn detail(s: &Stack, b: &Browser, id: i64) -> Value {

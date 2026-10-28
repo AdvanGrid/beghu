@@ -13,10 +13,13 @@ VALUES (:github_user_id, :login, :now, :now)
 ON CONFLICT (github_user_id) DO UPDATE SET login = excluded.login,
   last_active_at = excluded.last_active_at;
 
+-- Any status but dormant clears when the account went dormant.
 -- name: set_account_status :exec
 -- param: github_user_id i64
 -- param: status &str
-UPDATE accounts SET status = :status WHERE github_user_id = :github_user_id;
+UPDATE accounts SET status = :status,
+  dormant_at = CASE WHEN :status = 'dormant' THEN dormant_at END
+WHERE github_user_id = :github_user_id;
 
 -- name: create_session :exec
 -- param: id_hash &[u8]
@@ -26,11 +29,11 @@ UPDATE accounts SET status = :status WHERE github_user_id = :github_user_id;
 INSERT INTO browser_sessions (id_hash, active_account_id, created_at, last_seen_at, expires_at)
 VALUES (:id_hash, :account, :now, :now, :expires_at);
 
--- An unexpired session and its active account, if any.
+-- An unexpired session and its active account, if any, with when that account was last used.
 -- name: session :opt
 -- param: id_hash &[u8]
 -- param: now i64
-SELECT s.active_account_id, s.last_seen_at, a.status
+SELECT s.active_account_id, s.last_seen_at, a.status, a.last_active_at
 FROM browser_sessions s
 LEFT JOIN accounts a ON a.github_user_id = s.active_account_id
 WHERE s.id_hash = :id_hash AND s.expires_at > :now;

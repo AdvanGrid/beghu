@@ -137,8 +137,13 @@ The spec's startup order (#86) is:
 Then the other jobs start: the hourly backup, asset pruning, and the accounts' repo re-reads. An
 import a restart cut short resumes at its account's next re-read of its repos.
 
-Not built yet: step 3 and step 6 come with dormancy and the walker (#114). Their places in the
-startup code are marked.
+Step 3 covers accounts that lost access and dormant ones: an account nobody has used beghu as for
+30 days goes dormant at the daily accounts check, which deletes its mirror (its next use, or its
+next sign-in, re-imports it). Step 6's walker brings each active account's mirror up to the
+build's schema after a deploy with a new in-place mirror migration, one at a time and the most
+recently used first, so a returning user seldom waits on "Updating mirror…". A mirror it hasn't
+reached yet still migrates on its first use. A `.rebuild.sql` migration isn't walked: each mirror
+it replaces is rebuilt and re-imported on its account's first use.
 
 `/healthz` answers 200 with `{"build": "<build id>"}` whenever the process answers. It never
 touches a database, so use it for liveness. `/readyz` answers 503 while the startup after

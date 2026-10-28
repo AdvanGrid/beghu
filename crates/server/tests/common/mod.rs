@@ -401,6 +401,8 @@ impl Stack {
                 ..beghu::MediaConfig::default()
             },
             accounts_check_every: beghu::default_accounts_check_every(),
+            dormant_after: beghu::default_dormant_after(),
+            activity_every: beghu::default_activity_every(),
             // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
             // tests about other things: a test about them sets its own schedule
             // (tests/reconcile.rs, tests/prs.rs). Redelivery still runs once at each start, and
@@ -917,6 +919,25 @@ pub fn ids_of(ev: &Sse) -> Vec<i64> {
         .iter()
         .map(|i| i.as_i64().unwrap())
         .collect()
+}
+
+/// Polls `f` every 50 ms until it gives a value, or panics after `secs`.
+pub async fn until<T, F, Fut>(secs: f64, what: &str, mut f: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs_f64(secs);
+    loop {
+        if let Some(v) = f().await {
+            return v;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: not within {secs} s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Holds the write lock on a SQLite file, as another writer would, until dropped. Writers that

@@ -4,7 +4,8 @@
 //! and each round's per-repo tasks), the relationship read-backs, the webhook dispatcher with its
 //! lanes, settles, requeue and pruning, the accounts' re-reads of their repos and roles, the
 //! unsyncs and reconciles a repo pick starts, writes (ops) and the role re-reads they start,
-//! token refreshes, the hourly control-DB backup and asset pruning; and reconciliation's
+//! token refreshes, the hourly control-DB backup and asset pruning, the accounts' daily check
+//! and the migration walker; and reconciliation's
 //! redelivery, the sweeps' scheduler and each installation's sweeps and probes. Once the drain calls [`Jobs::stop`], no job starts, each running one is dropped
 //! at its next await, and the drain waits until all of them have ended (or its deadline).
 //!

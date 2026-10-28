@@ -11,13 +11,20 @@
 //!   refuses every caller. A transient failure (disk full, I/O, busy), opening, migrating or
 //!   creating, retries on the next use after a backoff that starts at `backoff` and doubles; any
 //!   other failure stays until a new build. There's deliberately no retry timer: an account
-//!   nobody uses stays in backoff until the migration walker (#114) exists to retry it.
+//!   nobody uses stays in backoff until its next use.
 //! - A missing file or a pending `.rebuild.sql` migration builds an empty mirror (then the
 //!   import runs). A file newer than the build is refused.
+//! - The migration walker ([`Caller::Walker`]) uses a mirror as anyone else does, so an in-place
+//!   migration it starts is the same job a request would have started, but it never creates
+//!   one: a missing file, or one a `.rebuild.sql` migration would replace, is left for the
+//!   account's first use, and the gate closes again.
 //! - A delete (the account lost access) waits for the open, migration or creation under way,
 //!   then deletes the file; until the account is revived every caller is refused, so nothing
 //!   brings the mirror back meanwhile. A revived account's first use creates an empty mirror and
 //!   asks for its import.
+//! - A conditional delete (an account going dormant) checks, once nothing else is under way,
+//!   whether it should still go ahead; when it shouldn't, the file is kept, and the gate is
+//!   closed again, so the next use opens it as a first use after startup does.
 
 use crate::migrations::{MigError, Migration, Plan, plan};
 use std::time::Duration;
@@ -28,6 +35,9 @@ pub enum Caller {
     Request,
     Webhook,
     Sweep,
+    /// The migration walker, catching mirrors up with the build in the background. It migrates
+    /// in place, but never creates a mirror: that waits for the account's first use.
+    Walker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +88,11 @@ pub enum Refusal {
     TooNew { db: u32, build: u32 },
     /// The mirror was deleted (or is being deleted) and the account not revived since.
     Deleted,
+    /// The walker's use of a mirror that would have to be created (no file, or a pending
+    /// `.rebuild.sql` migration): left for the account's first use.
+    LeftForFirstUse,
+    /// The delete's check said to keep the file: it wasn't deleted.
+    Kept,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +144,8 @@ pub enum Event {
     },
     /// The result of `Effect::Delete`.
     Deleted(Result<(), String>),
+    /// The result of `Effect::Delete` when its check said to keep the file: nothing was deleted.
+    Kept,
     /// The account may use its mirror again (it signed in again): the next use opens afresh.
     Revive,
 }
@@ -158,7 +175,8 @@ pub enum Effect {
         why: Refusal,
     },
     Status(Option<Status>),
-    /// Close every connection to the file, delete it, and answer with `Event::Deleted`.
+    /// Close every connection to the file, delete it, and answer with `Event::Deleted`; or, when
+    /// the delete's check says to keep it, delete nothing and answer with `Event::Kept`.
     Delete,
 }
 
@@ -224,6 +242,14 @@ impl Gate {
             Event::Opened(Err(e)) => self.failed(now, e, &mut fx),
             Event::Opened(Ok(v)) => match plan(v, self.migs) {
                 Plan::Current => self.ready(&mut fx),
+                // Only the walker waits: creating is left for the account's first use.
+                Plan::Create { .. }
+                    if !self.waiting.is_empty()
+                        && self.waiting.iter().all(|w| w.caller == Caller::Walker) =>
+                {
+                    self.state = State::Closed;
+                    self.refuse_all(Refusal::LeftForFirstUse, &mut fx);
+                }
                 Plan::InPlace { from, to } => {
                     self.state = State::Migrating { from, since: now };
                     fx.push(Effect::Migrate { from, to });
@@ -278,6 +304,18 @@ impl Gate {
                                 error: error.clone(),
                             },
                         },
+                    });
+                }
+            }
+            // The file stays: the next use opens it afresh. A revive asked meanwhile has nothing
+            // left to do.
+            Event::Kept => {
+                self.state = State::Closed;
+                self.revive = false;
+                for id in std::mem::take(&mut self.deleters) {
+                    fx.push(Effect::Refuse {
+                        id,
+                        why: Refusal::Kept,
                     });
                 }
             }

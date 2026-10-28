@@ -29,4 +29,9 @@ failed: Array<string>,
 /**
  * Between rounds, when the first failed repo is tried again (Unix seconds).
  */
-retry_at: number | null, };
+retry_at: number | null, 
+/**
+ * The account was dormant (unused for 30 days, its mirror deleted) and this imports its
+ * whole pick again: "Re-importing — you've been away a while".
+ */
+away: boolean, };

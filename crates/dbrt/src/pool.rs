@@ -53,7 +53,7 @@ impl From<Caller> for Patience {
     fn from(c: Caller) -> Patience {
         match c {
             Caller::Request => Patience::GiveUp,
-            Caller::Webhook | Caller::Sweep => Patience::Wait,
+            Caller::Webhook | Caller::Sweep | Caller::Walker => Patience::Wait,
         }
     }
 }
@@ -542,6 +542,9 @@ pub fn configure(conn: &Connection, kind: ConnKind) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A conditional delete's check ([`Lane::remove`]): whether to go ahead.
+pub(crate) type Check = std::pin::Pin<Box<dyn Future<Output = bool> + Send>>;
+
 /// One database file's writer lane and readers. `read` and `write` take work that fails with
 /// its own error `W` and return the caller's `E`, which both `W` and a pool error convert
 /// into, so callers get one `Result` back. A dropped caller's work keeps its turn until it ends.
@@ -631,11 +634,13 @@ impl Lane {
     /// Runs `work` (deleting the lane's file) once no connection of the lane is in use, and with
     /// none left open: it holds the writer's turn and every reader's permit, so the write and
     /// reads in flight finish first and none starts meanwhile, then closes the idle connections.
-    /// Sealed as [`Lane::write`] is.
+    /// Each of `checks` is awaited first, holding all that, in order: the first that says no
+    /// keeps the file, and `work` doesn't run (`Ok(false)`). Sealed as [`Lane::write`] is.
     pub(crate) async fn remove(
         &self,
+        checks: Vec<Check>,
         work: impl FnOnce() -> std::io::Result<()> + Send + 'static,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let turn = self.write_turn().await?;
         let readers = self
             .readers
@@ -643,6 +648,11 @@ impl Lane {
             .acquire_many_owned(self.reader_count)
             .await
             .expect("never closed");
+        for check in checks {
+            if !check.await {
+                return Ok(false);
+            }
+        }
         let (shared, key) = (self.shared.clone(), self.key);
         tokio::task::spawn_blocking(move || {
             let (_turn, _readers) = (turn, readers);
@@ -651,7 +661,8 @@ impl Lane {
         })
         .await
         .map_err(|_| Error::Panicked)?
-        .map_err(Error::Io)
+        .map_err(Error::Io)?;
+        Ok(true)
     }
 
     /// The drain's last step, once the budget is sealed: waits for the write in flight (every

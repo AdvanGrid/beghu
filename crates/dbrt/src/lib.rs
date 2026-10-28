@@ -15,7 +15,7 @@ pub mod pool;
 pub use db::Db;
 pub use gate::{Caller, Status};
 pub use migrations::{Kind, Migration};
-pub use mirrors::{Mirrors, Notice};
+pub use mirrors::{CatchUp, Decision, Mirrors, Notice};
 
 use std::time::Duration;
 

@@ -18,26 +18,26 @@ ON CONFLICT (github_user_id) DO UPDATE SET access_enc = excluded.access_enc,
 SELECT t.access_enc, t.access_expires_at, t.refresh_enc, t.refresh_expires_at, t.status, t.issued_at
 FROM account_tokens t WHERE t.github_user_id = :github_user_id;
 
--- GitHub revoked the grant: an active account whose tokens were issued before `before` (when
--- beghu received the revoke) must sign in again, and those tokens are dead. An account that
--- signed in since, or is signed out already, is left alone. 1 row when marked; then
--- `revoke_tokens` follows.
+-- GitHub revoked the grant: an active or dormant account whose tokens were issued before
+-- `before` (when beghu received the revoke) must sign in again, and those tokens are dead. An
+-- account that signed in since, or is signed out already, is left alone. 1 row when marked;
+-- then `revoke_tokens` follows.
 -- name: lose_access_if_issued_before :exec
 -- param: github_user_id i64
 -- param: before i64
-UPDATE accounts SET status = 'needs_sign_in'
-WHERE github_user_id = :github_user_id AND status = 'active'
+UPDATE accounts SET status = 'needs_sign_in', dormant_at = NULL
+WHERE github_user_id = :github_user_id AND status IN ('active', 'dormant')
   AND EXISTS (SELECT 1 FROM account_tokens t
               WHERE t.github_user_id = :github_user_id AND t.issued_at < :before);
 
--- GitHub refused the tokens issued at `issued_at` (-1: there were none): an active account
--- whose tokens are still those must sign in again. One that signed in since (new tokens), or
--- is signed out already, is left alone. 1 row when marked.
+-- GitHub refused the tokens issued at `issued_at` (-1: there were none): an active or dormant
+-- account whose tokens are still those must sign in again. One that signed in since (new
+-- tokens), or is signed out already, is left alone. 1 row when marked.
 -- name: lose_access_if_tokens_unchanged :exec
 -- param: github_user_id i64
 -- param: issued_at i64
-UPDATE accounts SET status = 'needs_sign_in'
-WHERE github_user_id = :github_user_id AND status = 'active'
+UPDATE accounts SET status = 'needs_sign_in', dormant_at = NULL
+WHERE github_user_id = :github_user_id AND status IN ('active', 'dormant')
   AND COALESCE((SELECT t.issued_at FROM account_tokens t
                 WHERE t.github_user_id = :github_user_id), -1) = :issued_at;
 
@@ -51,11 +51,17 @@ UPDATE account_tokens SET status = 'revoked' WHERE github_user_id = :github_user
 -- param: github_user_id i64
 DELETE FROM account_tokens WHERE github_user_id = :github_user_id;
 
--- Active accounts whose refresh token has lapsed: they can't get a new access token.
+-- Active or dormant accounts whose refresh token has lapsed: they can't get a new access token.
 -- name: lapsed_accounts :many
 -- param: now i64
 SELECT t.github_user_id
 FROM account_tokens t
 JOIN accounts a ON a.github_user_id = t.github_user_id
-WHERE t.refresh_expires_at <= :now AND a.status = 'active'
+WHERE t.refresh_expires_at <= :now AND a.status IN ('active', 'dormant')
 ORDER BY t.github_user_id;
+
+-- The daily job: tokens that can no longer work go. GitHub revoked or refused them, or their
+-- refresh token lapsed (an account signed out keeps its pair until then).
+-- name: wipe_dead_tokens :exec
+-- param: now i64
+DELETE FROM account_tokens WHERE status <> 'active' OR refresh_expires_at <= :now;

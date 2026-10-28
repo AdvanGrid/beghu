@@ -23,6 +23,8 @@
 //!   account that must sign in again, or once the session ended gets one at once, never a 401
 //!   or 409 the tab couldn't read.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
+//! - An open stream is its account's use: it moves `last_active_at` hourly, so an account with a
+//!   tab open never goes dormant (accounts.rs).
 //!
 //! Each account has one broadcast channel, created with its first stream and dropped with its
 //! last, so a mirror write fans out to that account's streams and no one else's. Each browser
@@ -47,6 +49,9 @@ use ts_rs::TS;
 
 /// How many events a stream may fall behind before it gets a `reset` instead.
 pub const BUFFER: usize = 256;
+
+/// The shortest wait between two moves of `last_active_at` by one open stream.
+const MIN_TOUCH_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What a mirror write tells the account's tabs.
 #[derive(Debug, Clone, PartialEq)]
@@ -358,10 +363,14 @@ pub async fn stream(
         /// After a `switched`: the stream ends.
         End,
     }
+    // An open stream is the account's use: it moves `last_active_at` every `activity_every`
+    // (not more often than a minute), so an account with a tab open never goes dormant.
+    let touch_every = app.cfg().activity_every.max(MIN_TOUCH_GAP);
+    let touch_at = tokio::time::Instant::now() + touch_every;
     // The stream ends when the drain starts: the tab reconnects to the next server.
     let events = futures_util::stream::unfold(
-        (sub, health, draining, Step::Reset),
-        move |(mut sub, mut health, mut draining, step)| {
+        (sub, health, draining, Step::Reset, touch_at),
+        move |(mut sub, mut health, mut draining, step, mut touch_at)| {
             let imports = imports.clone();
             async move {
                 let (ev, next) = match step {
@@ -373,11 +382,17 @@ pub async fn stream(
                     Step::GitHub => (github_event(*health.borrow_and_update()), Step::Live),
                     Step::End => return None,
                     Step::Live => {
-                        let push = tokio::select! {
-                            push = sub.next() => Some(push),
-                            // A closed channel (never, while the app lives) leaves only the pushes.
-                            Ok(()) = health.changed() => None,
-                            _ = draining.wait_for(|d| *d) => return None,
+                        let push = loop {
+                            tokio::select! {
+                                push = sub.next() => break Some(push),
+                                // A closed channel (never, while the app lives) leaves only the
+                                // pushes.
+                                Ok(()) = health.changed() => break None,
+                                _ = draining.wait_for(|d| *d) => return None,
+                                () = tokio::time::sleep_until(touch_at) => {}
+                            }
+                            crate::accounts::streaming(&imports, account).await;
+                            touch_at = tokio::time::Instant::now() + touch_every;
                         };
                         match push {
                             Some(Push::Status(import)) => (
@@ -406,7 +421,10 @@ pub async fn stream(
                         }
                     }
                 };
-                Some((Ok::<_, Infallible>(ev), (sub, health, draining, next)))
+                Some((
+                    Ok::<_, Infallible>(ev),
+                    (sub, health, draining, next, touch_at),
+                ))
             }
         },
     );
