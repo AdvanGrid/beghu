@@ -47,6 +47,10 @@ pub struct IssueDetail {
     /// The body, rendered.
     #[ts(type = "import(\"../md/ast\").Md")]
     pub body: Md,
+    /// The body's digest (the SHA-256 of its Markdown, hex): an open body editor compares it with
+    /// the digest of the text it opened with, to say the body changed meanwhile.
+    #[ts(type = "string")]
+    pub body_digest: Digest,
     /// The items in the mirror that the body refers to; `comments.refs` has the comments'.
     pub refs: Refs,
     /// `open` or `closed`.
@@ -307,6 +311,7 @@ pub async fn issue(
         id,
         md: item.body.take().unwrap_or_default(),
     };
+    let body_digest = Digest::of(&body.md);
     let (body, comments) =
         rendered(&app, s.account, Place::from(&item), Some(body), thread).await?;
     let (body, refs) = body.expect("a body was given, so one is rendered");
@@ -332,6 +337,7 @@ pub async fn issue(
         number: item.number,
         title: item.title,
         body,
+        body_digest,
         refs,
         state: item.state,
         state_reason: item.state_reason,
@@ -360,6 +366,36 @@ pub async fn issue(
         pr,
         closes: linked.closes,
         linked_prs: linked.linked_prs,
+    }))
+}
+
+/// An issue's body as Markdown, for its editor to open with: `GET /api/issues/:id/source`. The
+/// detail carries the body rendered, never its Markdown.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct IssueSource {
+    /// The body's Markdown as the mirror has it from GitHub (empty for none).
+    pub body: String,
+    /// Its digest, as the detail's `body_digest`.
+    #[ts(type = "string")]
+    pub body_digest: Digest,
+}
+
+pub async fn source(
+    State(app): State<App>,
+    Extension(s): Extension<Session>,
+    Path(raw): Path<String>,
+) -> Result<Json<IssueSource>, ApiError> {
+    let id = issue_id(&raw)?;
+    let body = app
+        .mirrors()
+        .read(s.account, Caller::Request, move |c| {
+            Ok(readable(c, id)?.map(|item| item.body.unwrap_or_default()))
+        })
+        .await??;
+    Ok(Json(IssueSource {
+        body_digest: Digest::of(&body),
+        body,
     }))
 }
 

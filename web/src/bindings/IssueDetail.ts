@@ -23,6 +23,11 @@ repo_id: number, owner: string, repo: string, number: number, title: string,
  */
 body: import("../md/ast").Md, 
 /**
+ * The body's digest (the SHA-256 of its Markdown, hex): an open body editor compares it with
+ * the digest of the text it opened with, to say the body changed meanwhile.
+ */
+body_digest: string, 
+/**
  * The items in the mirror that the body refers to; `comments.refs` has the comments'.
  */
 refs: { [key in string]: RefTarget }, 

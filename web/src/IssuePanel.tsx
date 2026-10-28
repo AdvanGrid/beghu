@@ -11,8 +11,11 @@
 // once the detail shows; the tab's pending writes show over the detail through overlay.ts. The
 // Labels, Assignees and Milestone rows each open a picker (Pickers.tsx, another chunk, loaded the
 // first time one opens); a pick shows on its own row only, which grows only itself, and its dot
-// and failure in the row's marker slot, a line the row always keeps.
-// A PR opens in the same layout, read-only: no composer, no pickers and no write affordances.
+// and failure in the row's marker slot, a line the row always keeps. The title and body each have
+// Edit (and the title `e`), on an issue only: the editors (Editor.tsx, another chunk) open in the
+// field's place, their state in editing.ts.
+// A PR opens in the same layout, read-only: no composer, no pickers and no write affordances
+// (no Edit on its title or body).
 // What only a PR shows (its status badge, branches and review chip, "Open on GitHub" as the
 // primary action, the link out to reviews) is a chunk of its own too (Pull.tsx); an issue shows
 // its linked PRs, and a PR the issues it closes, each in a property row.
@@ -46,7 +49,8 @@ import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
 import { searchOf, type Term } from "./highlight";
-import { touch } from "./keys";
+import { touch, type Action } from "./keys";
+import { editorOf, openEditor, type Field } from "./editing";
 import { coalesced, onPush, resetAt } from "./live";
 import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
@@ -90,6 +94,14 @@ const PullBadge = lazy(() => import("./Pull"), { export: "PullBadge" });
 const PullBranches = lazy(() => import("./Pull"), { export: "PullBranches" });
 const OpenOnGitHub = lazy(() => import("./Pull"), { export: "OpenOnGitHub" });
 const ReviewsElsewhere = lazy(() => import("./Pull"), { export: "ReviewsElsewhere" });
+
+/** The title and body editors: loaded when one first opens; a failed load is handled as a picker's. */
+const editorChunk = () =>
+  import("./Editor").catch((e: unknown) => {
+    throw new ChunkFailed(`can't load the editor: ${String(e)}`);
+  });
+const TitleEditor = lazy(editorChunk, { export: "TitleEditor" });
+const BodyEditor = lazy(editorChunk, { export: "BodyEditor" });
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
@@ -487,6 +499,23 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
     },
   );
   const setOpen = (prop: Prop) => (open: boolean) => setPicking(open ? prop : undefined);
+  /** `field`'s editor of the open issue, while it shows: not while its edit is on its way. */
+  const editing = (field: Field) => {
+    const e = d().kind === "issue" ? editorOf(d().id, field) : undefined;
+    return e !== undefined && !e.saving;
+  };
+  /** Whether an edit of `field` is on its way: Edit waits for it. */
+  const saving = (field: Field) => editorOf(d().id, field)?.saving === true;
+  // An editor that's open already takes the focus back. A title opens with the title as it
+  // shows, pending writes on it: a title edit GitHub has confirmed is the title the next edit is
+  // made over, before the refetch that shows it lands.
+  const edit = (field: Field, title?: string) => {
+    if (editing(field)) return scroller.querySelector<HTMLElement>(`[data-perf="${field}-editor"] [data-perf="edit-box"]`)?.focus();
+    openEditor(d().id, field, title);
+  };
+  const editTitle = () => edit("title", d().title);
+  const editBody = () => edit("body");
+  const backToIssue = () => scroller.focus();
   return (
     <>
       <div
@@ -541,9 +570,31 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           </a>
         </div>
         <ParentCrumb rels={d().relationships} search={props.search} />
-        <h2 {...stylex.attrs(s.title)} data-perf="title">
-          {marked(d().title, terms("title"))}
-        </h2>
+        <Show when={d().kind === "issue"}>
+          <Offer action="editTitle" run={editTitle} />
+        </Show>
+        <Show
+          when={editing("title")}
+          fallback={
+            <div {...stylex.attrs(s.titleRow)}>
+              <h2 {...stylex.attrs(s.title)} data-perf="title">
+                {marked(d().title, terms("title"))}
+                <Dynamic component={overlay()?.EditNote} issue={d().id} field="title" at={at()} />
+              </h2>
+              <Show when={d().kind === "issue"}>
+                <button type="button" {...stylex.attrs(s.edit)} data-perf="edit-title" disabled={saving("title")} onClick={editTitle} aria-label="Edit the title">
+                  Edit
+                </button>
+              </Show>
+            </div>
+          }
+        >
+          <Errored fallback={(err, reset) => <ChunkFailure error={err()} reset={reset} what="editor" />}>
+            <Loading>
+              <TitleEditor raw={props.d} d={d()} done={backToIssue} />
+            </Loading>
+          </Errored>
+        </Show>
         <Show when={d().pr}>{(pr) => <PullBranches pr={pr()} />}</Show>
         <dl {...stylex.attrs(s.props)}>
           <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")}>
@@ -593,14 +644,40 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         {/* The body is a post like each comment: on its tint, its byline inside. */}
         <div {...stylex.attrs(s.bodySlot)}>
           <div {...stylex.attrs(s.post)}>
-            <Byline author={d().author}>
-              opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
-            </Byline>
-            <div {...stylex.attrs(s.text)} data-perf="body">
-              <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.postMuted)}>No description provided.</span>}>
-                <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
+            <div {...stylex.attrs(s.postHead)}>
+              <Byline author={d().author}>
+                opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
+                <Dynamic component={overlay()?.EditNote} issue={d().id} field="body" at={at()} />
+              </Byline>
+              <Show when={d().kind === "issue" && !editing("body")}>
+                <button type="button" {...stylex.attrs(s.edit, s.editOnPost)} data-perf="edit-body" disabled={saving("body")} onClick={editBody} aria-label="Edit the description">
+                  Edit
+                </button>
               </Show>
             </div>
+            <Show
+              when={editing("body")}
+              fallback={
+                <div {...stylex.attrs(s.text)} data-perf="body">
+                  <Show
+                    when={d().typedBody === undefined}
+                    fallback={<div {...stylex.attrs(s.plain)}>{d().typedBody}</div>}
+                  >
+                    <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.postMuted)}>No description provided.</span>}>
+                      <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
+                    </Show>
+                  </Show>
+                </div>
+              }
+            >
+              <div {...stylex.attrs(s.text)}>
+                <Errored fallback={(err, reset) => <ChunkFailure error={err()} reset={reset} what="editor" />}>
+                  <Loading fallback={<span {...stylex.attrs(s.postMuted)} aria-busy="true">Loading…</span>}>
+                    <BodyEditor raw={props.d} d={d()} done={backToIssue} />
+                  </Loading>
+                </Errored>
+              </div>
+            </Show>
           </div>
         </div>
         <Show when={!d().pr}>
@@ -698,7 +775,7 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
           </span>
         </Show>
         <Show when={props.open}>
-          <Errored fallback={(err, reset) => <PickerFailure error={err()} reset={reset} />}>
+          <Errored fallback={(err, reset) => <ChunkFailure error={err()} reset={reset} />}>
             <Loading>
               <Picker prop={props.prop} d={props.d} onClose={close} opener={button} />
             </Loading>
@@ -710,16 +787,16 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
 }
 
 /** Offers `action` (keys.ts) while it's shown: a PR's rows don't show it, so offer no write keys. */
-function Offer(props: { action: Prop; run: () => void }) {
+function Offer(props: { action: Action; run: () => void }) {
   touch(props.action, () => props.run());
   return null;
 }
 
 /**
- * A picker's code didn't load: the URL reloads once (a deploy that replaced the build is the
- * usual cause, and a fresh page names the new chunks), then it says so with Retry.
+ * A picker's or an editor's code didn't load: the URL reloads once (a deploy that replaced the
+ * build is the usual cause, and a fresh page names the new chunks), then it says so with Retry.
  */
-function PickerFailure(props: { error: unknown; reset: () => void }) {
+function ChunkFailure(props: { error: unknown; reset: () => void; what?: string }) {
   const location = useLocation();
   // Decided once, as the failure shows: a reload leaves the page, and Retry must not flash first.
   const chunk = untrack(() => props.error instanceof ChunkFailed);
@@ -727,7 +804,8 @@ function PickerFailure(props: { error: unknown; reset: () => void }) {
   return (
     <Show when={!reloading}>
       <span {...stylex.attrs(s.muted)} role="alert">
-        Couldn't load the picker{chunk ? "; beghu may have been updated" : ""} ·{" "}
+        Couldn't load the {props.what ?? "picker"}
+        {chunk ? "; beghu may have been updated" : ""} ·{" "}
         <button type="button" {...stylex.attrs(s.link)} onClick={() => props.reset()}>
           Retry
         </button>
@@ -992,14 +1070,57 @@ const s = stylex.create({
     },
     fontSize: 12,
   },
+  // The title, and its Edit at the end of the first line.
+  titleRow: {
+    gap: 8,
+    paddingInline: 16,
+    alignItems: "flex-start",
+    display: "flex",
+    paddingBottom: 12,
+  },
   title: {
     margin: 0,
-    paddingInline: 16,
+    flexGrow: 1,
     fontSize: 18,
     fontWeight: 600,
     lineHeight: 1.3,
     overflowWrap: "anywhere",
-    paddingBottom: 12,
+    minWidth: 0,
+  },
+  // Edit beside the title or the body's byline: small and muted until hovered.
+  edit: {
+    font: "inherit",
+    padding: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    color: {
+      default: colors.muted,
+      ":hover": colors.fg,
+    },
+    cursor: {
+      default: "pointer",
+      ":disabled": "default",
+    },
+    flexShrink: 0,
+    fontSize: 12,
+    lineHeight: "23px",
+    opacity: {
+      default: null,
+      ":disabled": 0.5,
+    },
+  },
+  // On a post's tint frame, where the app's muted falls short of 4.5:1.
+  editOnPost: {
+    color: {
+      default: md.muted,
+      ":hover": colors.fg,
+    },
+  },
+  postHead: {
+    gap: 8,
+    alignItems: "center",
+    display: "flex",
+    justifyContent: "space-between",
   },
   props: {
     margin: 0,

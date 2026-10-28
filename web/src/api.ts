@@ -16,6 +16,7 @@ import type { Comment } from "./bindings/Comment";
 import type { IssueDetail } from "./bindings/IssueDetail";
 import type { IssuePage } from "./bindings/IssuePage";
 import type { IssueRef } from "./bindings/IssueRef";
+import type { IssueSource } from "./bindings/IssueSource";
 import type { Me } from "./bindings/Me";
 import type { Op } from "./bindings/Op";
 import type { OpReply } from "./bindings/OpReply";
@@ -106,6 +107,19 @@ export class RateLimited extends Error {
 }
 /** GitHub answered the write with a conflict. */
 export class Conflict extends Error {}
+/**
+ * A title or body edit found the field changed on GitHub since its editor opened, and wasn't
+ * made: `current` is GitHub's text now, `digest` its digest (as the detail's `body_digest`).
+ */
+export class Changed extends Error {
+  constructor(
+    message: string,
+    readonly current: string,
+    readonly digest: string,
+  ) {
+    super(message);
+  }
+}
 /** Asked again too soon (a Resync, once an hour): the message says when it's available. */
 export class TooSoon extends Error {
   constructor(
@@ -186,6 +200,8 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
       return new RateLimited(said, retryAfter);
     case "conflict":
       return new Conflict(said);
+    case "changed":
+      return new Changed(said, body.current ?? "", body.digest ?? "");
     case "too_soon":
       return new TooSoon(said, retryAfter);
     case "github_down":
@@ -502,6 +518,11 @@ export function refetchIssue(id: number, through?: Comment): Promise<IssueDetail
 /** The page of an issue's comments after the cursor `after` (the first page without), in `order`. */
 export function getComments(id: number, order: CommentOrder, after?: string): Promise<CommentPage> {
   return request<CommentPage>(`/api/issues/${id}/comments?order=${order}${after === undefined ? "" : `&after=${after}`}`);
+}
+
+/** An issue's body as Markdown, for its editor, with its digest (as the detail's `body_digest`). */
+export function getSource(id: number): Promise<IssueSource> {
+  return request<IssueSource>(`/api/issues/${id}/source`);
 }
 
 let signingIn = false;

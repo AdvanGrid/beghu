@@ -7,7 +7,9 @@
 //!   `-remaining`, `-used`, `-reset` and `-resource`. A call with none left gets GitHub's primary
 //!   rate limit (REST: 403 with the quota at 0; GraphQL: 200 with a `RATE_LIMITED` error).
 //! - A successful GET answers with a weak `ETag` over its body. Sent back in `If-None-Match`,
-//!   an unchanged answer is a 304 with no body, which costs nothing.
+//!   an unchanged answer is a 304 with no body, which costs nothing. A successful PATCH's answer
+//!   carries one too, as GitHub's do: the resource as it now is, so a GET naming it is a 304
+//!   while nothing has changed since.
 //! - A GraphQL query costs what GitHub's documented formula says (`graphql.rs`'s [`cost`]):
 //!   docs/research/github-app-mechanics.md §1 and mirror-import-and-reconciliation.md §1.
 //!
@@ -234,11 +236,12 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         return res;
     }
     let get = req.method() == Method::GET;
+    let patch = req.method() == Method::PATCH;
     let asked = req.headers().clone();
     let res = next.run(req).await;
     // A GraphQL query costs what its handler worked out; any other call, one.
     let spend = res.extensions().get::<Cost>().map_or(1, |c| c.0);
-    if !(get && res.status() == StatusCode::OK) {
+    if !((get || patch) && res.status() == StatusCode::OK) {
         let q = quotas.take(&owner, resource, now, spend);
         let mut res = res;
         headers(res.headers_mut(), q, resource);
@@ -254,7 +257,7 @@ pub(crate) async fn middleware(State(fake): State<Fake>, req: Request, next: Nex
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         matches!(parts.as_slice(), ["repos", _, _, "assignees"])
     };
-    let mut res = if matches(&asked, &tag) {
+    let mut res = if get && matches(&asked, &tag) {
         if assignees {
             fake.state()
                 .assignees

@@ -11,4 +11,6 @@ export const LOST_MESSAGE: Record<Op["kind"], string> = {
   assignee_add: "May or may not have reached GitHub",
   assignee_remove: "May or may not have reached GitHub",
   milestone_set: "May or may not have reached GitHub",
+  title_edit: "May or may not have reached GitHub",
+  body_edit: "May or may not have reached GitHub",
 };

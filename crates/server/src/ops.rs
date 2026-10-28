@@ -28,6 +28,18 @@
 //! - Only issues take writes: a PR, a stub or an issue outside the synced repos is refused.
 //! - A label is added only by a name the mirror's repo has (GitHub would create one it lacks).
 //! - While GitHub is down (see `github.rs`) a write fails at once, without a call.
+//! - A title or body edit carries `base`, the text its editor opened with. `PATCH` has no
+//!   `If-Match`, so the issue is read right before each patch attempt (the first, and each the
+//!   retries above make after a wait), conditionally on the `ETag` of the last check or patch
+//!   answer for that account and issue (kept in memory with the title and body it came with):
+//!   an issue unchanged since is a 304, which costs nothing. So the first edit of an issue
+//!   costs a full read; one after it (the next save, or "Overwrite with mine" after a 409)
+//!   costs a 304 while no one else has changed the issue. If the field is the edit's `new`
+//!   already (an edit that reached GitHub, sent again after the tab lost track of it), it's
+//!   done, unpatched. If it's anything else but `base`, the edit fails as `Changed` (409) with
+//!   GitHub's text, and nothing is patched. Only the race of one check-then-patch round trip
+//!   remains (#10). (That a patch's `ETag` is the one a read names until the issue changes is
+//!   Fake GitHub's model; only real GitHub can confirm it. Without it, a check is a full read.)
 //!
 //! - A comment that may have been posted says which comments can be it: those newer than the
 //!   newest the mirror held as it was sent.
@@ -45,7 +57,7 @@ use crate::edges::{ReadBack, Subject};
 use crate::error::ApiError;
 use crate::github::{Access, Role, Shown};
 use crate::live::Push;
-use crate::markdown::{self, Digest, Place, Post, PostKind, Refs};
+use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
 use crate::{App, github, repos, tokens, webhook};
 use axum::Json;
 use axum::extract::{Extension, State};
@@ -72,8 +84,12 @@ const QUIET_WAITS: usize = 3;
 /// The waits before each retry of a write that met a 5xx, a timeout or a reset.
 const RETRIES: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
 
-/// The longest comment GitHub takes, in characters.
-const MAX_COMMENT: usize = 65_536;
+/// The longest comment or body GitHub takes, in characters.
+const MAX_BODY: usize = 65_536;
+/// The longest title GitHub takes, in characters.
+const MAX_TITLE: usize = 256;
+/// How many issues' last checked `ETag`s are kept, across accounts; past that the oldest goes.
+const MAX_CHECKED: usize = 2_000;
 
 /// One write, in the tab's words: a tagged union on `kind`.
 #[derive(Deserialize, Serialize, TS, Clone, PartialEq, Debug)]
@@ -96,6 +112,19 @@ pub enum Op {
     AssigneeRemove { issue: i64, login: String },
     /// Put the issue in one of the repo's milestones, by its number, or in none (`null`).
     MilestoneSet { issue: i64, milestone: Option<i64> },
+    /// Set the title to `new`, if GitHub's is still `base`, the title the editor opened with.
+    TitleEdit {
+        issue: i64,
+        new: String,
+        base: String,
+    },
+    /// Set the body (Markdown) to `new`, if GitHub's is still `base`, the body the editor
+    /// opened with.
+    BodyEdit {
+        issue: i64,
+        new: String,
+        base: String,
+    },
 }
 
 #[derive(Deserialize, Serialize, TS, Clone, Copy, PartialEq, Debug)]
@@ -146,6 +175,8 @@ pub enum OpKind {
     AssigneeAdd,
     AssigneeRemove,
     MilestoneSet,
+    TitleEdit,
+    BodyEdit,
 }
 
 impl OpKind {
@@ -161,7 +192,9 @@ impl OpKind {
             | OpKind::LabelRemove
             | OpKind::AssigneeAdd
             | OpKind::AssigneeRemove
-            | OpKind::MilestoneSet => "May or may not have reached GitHub",
+            | OpKind::MilestoneSet
+            | OpKind::TitleEdit
+            | OpKind::BodyEdit => "May or may not have reached GitHub",
         }
     }
 }
@@ -176,7 +209,9 @@ impl Op {
             | Op::LabelRemove { issue, .. }
             | Op::AssigneeAdd { issue, .. }
             | Op::AssigneeRemove { issue, .. }
-            | Op::MilestoneSet { issue, .. } => *issue,
+            | Op::MilestoneSet { issue, .. }
+            | Op::TitleEdit { issue, .. }
+            | Op::BodyEdit { issue, .. } => *issue,
         }
     }
 
@@ -190,6 +225,8 @@ impl Op {
             Op::AssigneeAdd { .. } => OpKind::AssigneeAdd,
             Op::AssigneeRemove { .. } => OpKind::AssigneeRemove,
             Op::MilestoneSet { .. } => OpKind::MilestoneSet,
+            Op::TitleEdit { .. } => OpKind::TitleEdit,
+            Op::BodyEdit { .. } => OpKind::BodyEdit,
         }
     }
 
@@ -208,7 +245,19 @@ impl Op {
             | Op::LabelRemove { .. }
             | Op::AssigneeAdd { .. }
             | Op::AssigneeRemove { .. }
-            | Op::MilestoneSet { .. } => None,
+            | Op::MilestoneSet { .. }
+            | Op::TitleEdit { .. }
+            | Op::BodyEdit { .. } => None,
+        }
+    }
+
+    /// For a title or body edit: the field it edits, the text its editor opened with, and the
+    /// text it sets.
+    fn edits(&self) -> Option<(Field, &str, &str)> {
+        match self {
+            Op::TitleEdit { base, new, .. } => Some((Field::Title, base, new)),
+            Op::BodyEdit { base, new, .. } => Some((Field::Body, base, new)),
+            _ => None,
         }
     }
 
@@ -231,8 +280,53 @@ impl Op {
             {
                 Some("an assignee needs a login")
             }
+            Op::TitleEdit { new, .. } if new.trim().is_empty() => Some("A title can't be empty"),
             _ => None,
         }
+    }
+
+    /// Why the op is more than GitHub takes, in words for the user: a comment or body longer than
+    /// [`MAX_BODY`], a title longer than [`MAX_TITLE`].
+    fn too_long(&self) -> Option<&'static str> {
+        match self {
+            Op::Comment { body, .. } if body.chars().count() > MAX_BODY => {
+                Some("A comment can be at most 65,536 characters long, as on GitHub")
+            }
+            Op::BodyEdit { new, .. } if new.chars().count() > MAX_BODY => {
+                Some("A description can be at most 65,536 characters long, as on GitHub")
+            }
+            Op::TitleEdit { new, .. } if new.trim().chars().count() > MAX_TITLE => {
+                Some("A title can be at most 256 characters long, as on GitHub")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The text field a title or body edit changes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Field {
+    Title,
+    Body,
+}
+
+impl Field {
+    /// The field in GitHub's `(title, body)`.
+    fn of(self, (title, body): &(String, String)) -> &str {
+        match self {
+            Field::Title => title,
+            Field::Body => body,
+        }
+    }
+}
+
+/// Whether two texts of a field are the same, as GitHub keeps them: a title without the
+/// whitespace around it, and a body with any line ends (GitHub keeps a browser's `\r\n` as sent;
+/// a textarea gives `\n`).
+fn same_text(field: Field, a: &str, b: &str) -> bool {
+    match field {
+        Field::Title => a.trim() == b.trim(),
+        Field::Body => a.replace("\r\n", "\n") == b.replace("\r\n", "\n"),
     }
 }
 
@@ -258,7 +352,10 @@ pub struct OpReply {
     pub issue: i64,
     /// A comment op's comment, as the thread will show it.
     pub comment: Option<Comment>,
-    /// The items in the mirror that the comment refers to.
+    /// A body edit's body, rendered, as the detail will show it.
+    #[ts(type = "import(\"../md/ast\").Md | null")]
+    pub body: Option<Md>,
+    /// The items in the mirror that the comment or the body refers to.
     pub refs: Refs,
 }
 
@@ -270,6 +367,8 @@ enum Failure {
     Refused(String),
     RateLimited(Duration),
     Conflict(String),
+    /// A title or body edit's field isn't its `base` on GitHub any more: GitHub's text now.
+    Changed(String),
     GitHubDown(String),
     /// GitHub answered 403: [`run`] words it as a [`Failure::Refused`] from the role.
     Forbidden,
@@ -300,6 +399,7 @@ impl From<Failure> for ApiError {
             Failure::Forbidden => ApiError::Refused("GitHub didn't apply this change".into()),
             Failure::RateLimited(retry_after) => ApiError::RateLimited { retry_after },
             Failure::Conflict(m) => ApiError::Conflict(m),
+            Failure::Changed(current) => ApiError::Changed { current },
             Failure::GitHubDown(m) => ApiError::GitHubDown(m),
             Failure::MaybePosted { after, digest } => ApiError::MaybePosted { after, digest },
             Failure::Restarting => ApiError::restarting(),
@@ -333,6 +433,9 @@ type Outcome = Result<OpReply, Failure>;
 pub struct Ops {
     book: Mutex<Book>,
     busy: watch::Sender<usize>,
+    /// Per account and issue, what GitHub last answered a title or body edit's check or patch
+    /// with.
+    checked: Mutex<HashMap<(i64, i64), Checked>>,
 }
 
 impl Default for Ops {
@@ -340,8 +443,18 @@ impl Default for Ops {
         Ops {
             book: Mutex::default(),
             busy: watch::channel(0).0,
+            checked: Mutex::default(),
         }
     }
+}
+
+/// An issue as GitHub last answered a title or body edit's check or patch: the answer's `ETag`,
+/// and the title and body it carried, which a 304 to that `ETag` says are still GitHub's.
+#[derive(Clone)]
+struct Checked {
+    etag: String,
+    text: (String, String),
+    at: Instant,
 }
 
 /// One op task or `/api/ops` request under way, until dropped.
@@ -379,6 +492,35 @@ struct Seen {
 impl Ops {
     fn book(&self) -> std::sync::MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn checked(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Checked>> {
+        self.checked.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What GitHub last answered `account`'s check or patch of `issue` with, if it's kept.
+    fn last_check(&self, account: i64, issue: i64) -> Option<Checked> {
+        self.checked().get(&(account, issue)).cloned()
+    }
+
+    /// Keeps GitHub's `ETag` for `account`'s check or patch of `issue`, with its title and body;
+    /// past [`MAX_CHECKED`] the oldest kept goes.
+    fn note_check(&self, account: i64, issue: i64, etag: String, text: (String, String)) {
+        let mut checked = self.checked();
+        if checked.len() >= MAX_CHECKED && !checked.contains_key(&(account, issue)) {
+            let oldest = checked.iter().min_by_key(|(_, c)| c.at).map(|(k, _)| *k);
+            if let Some(k) = oldest {
+                checked.remove(&k);
+            }
+        }
+        checked.insert(
+            (account, issue),
+            Checked {
+                etag,
+                text,
+                at: Instant::now(),
+            },
+        );
     }
 
     /// Resolves once no op and no request for one is under way.
@@ -582,12 +724,8 @@ pub async fn post(
     {
         return Err(ApiError::BadRequest("a comment needs some text".into()));
     }
-    if let Op::Comment { body, .. } = &req.op
-        && body.chars().count() > MAX_COMMENT
-    {
-        return Err(ApiError::BadRequest(
-            "A comment can be at most 65,536 characters long, as on GitHub".into(),
-        ));
+    if let Some(why) = req.op.too_long() {
+        return Err(ApiError::BadRequest(why.into()));
     }
     let mut outcome = app.ops().join_or_start(
         &app,
@@ -705,6 +843,12 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             issue_path,
             json!({ "milestone": milestone }),
         ),
+        Op::TitleEdit { new, .. } => (
+            reqwest::Method::PATCH,
+            issue_path,
+            json!({ "title": new.trim() }),
+        ),
+        Op::BodyEdit { new, .. } => (reqwest::Method::PATCH, issue_path, json!({ "body": new })),
     };
     let on = IssueRepo {
         repo_id: target.repo_id,
@@ -722,7 +866,20 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             .map_err(Failure::from)?;
         sending.after.store(after, Ordering::SeqCst);
     }
-    let answer = match call(app, account, op, method, &path, &body, sending).await {
+    let answer = match op.edits() {
+        // A title or body edit is made only over the text its editor opened with.
+        Some(_) => match edit(app, account, &target, op, method, &path, &body, sending).await {
+            Ok(Edited::Patched(answer)) => Ok(answer),
+            Ok(Edited::Already(now)) => {
+                let body = matches!(op, Op::BodyEdit { .. }).then_some(now.1);
+                return Ok(edited(app, account, &target, body).await);
+            }
+            Ok(Edited::Changed(theirs)) => return Err(Failure::Changed(theirs)),
+            Err(e) => Err(e),
+        },
+        None => call(app, account, op, method, &path, &body, sending).await,
+    };
+    let answer = match answer {
         Err(Failure::Forbidden) => {
             return Err(Failure::Refused(refused_why(app, account, &on, op).await));
         }
@@ -781,6 +938,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             Ok(OpReply {
                 issue: id,
                 comment: Some(comment),
+                body: None,
                 refs,
             })
         }
@@ -806,6 +964,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             Ok(OpReply {
                 issue: id,
                 comment: None,
+                body: None,
                 refs: Refs::new(),
             })
         }
@@ -813,7 +972,9 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
         | Op::Reopen { .. }
         | Op::AssigneeAdd { .. }
         | Op::AssigneeRemove { .. }
-        | Op::MilestoneSet { .. } => {
+        | Op::MilestoneSet { .. }
+        | Op::TitleEdit { .. }
+        | Op::BodyEdit { .. } => {
             let issue: webhook::Issue = serde_json::from_value(answer)
                 .map_err(|e| Failure::Internal(format!("GitHub's issue: {e}")))?;
             let assigned = |login: &str| {
@@ -832,8 +993,11 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 Op::MilestoneSet { milestone, .. } => {
                     issue.milestone.as_ref().map(|m| m.number) == *milestone
                 }
+                Op::TitleEdit { new, .. } => same_text(Field::Title, issue.title(), new),
+                Op::BodyEdit { new, .. } => same_text(Field::Body, issue.body(), new),
                 _ => issue.state == "open",
             };
+            let body = matches!(op, Op::BodyEdit { .. }).then(|| issue.body().to_owned());
             store(app, account, &target, move |tx, seq| {
                 webhook::write_issue(tx, repo, &issue, seq)
             })
@@ -841,12 +1005,26 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             if !applied {
                 return Err(Failure::Refused(refused_why(app, account, &on, op).await));
             }
-            Ok(OpReply {
-                issue: id,
-                comment: None,
-                refs: Refs::new(),
-            })
+            Ok(edited(app, account, &target, body).await)
         }
+    }
+}
+
+/// The reply to a write that changed the issue itself: with `body`, a body edit's body as GitHub
+/// has it, rendered as the detail will show it.
+async fn edited(app: &App, account: i64, t: &q::OpTargetRow, body: Option<String>) -> OpReply {
+    let (body, refs) = match body {
+        Some(md) => {
+            let (body, refs) = rendered_body(app, account, t, md).await;
+            (Some(body), refs)
+        }
+        None => (None, Refs::new()),
+    };
+    OpReply {
+        issue: t.id,
+        comment: None,
+        body,
+        refs,
     }
 }
 
@@ -860,6 +1038,149 @@ async fn call(
     body: &serde_json::Value,
     sending: &Sending,
 ) -> Result<serde_json::Value, Failure> {
+    retrying(app, account, op, sending, |gh, token| {
+        let method = method.clone();
+        // With a token in hand: the call goes out now.
+        sending.sent.store(true, Ordering::SeqCst);
+        async move { gh.write(&token, method, path, body).await }
+    })
+    .await
+}
+
+/// What a title or body edit came to on GitHub.
+enum Edited {
+    /// The field was `base`: GitHub took the patch, and answered with this.
+    Patched(serde_json::Value),
+    /// The field was `new` already (an edit that reached GitHub, sent again): GitHub's title and
+    /// body. Nothing was patched.
+    Already((String, String)),
+    /// The field was neither: GitHub's text of it. Nothing was patched.
+    Changed(String),
+}
+
+/// A title or body edit's patch, made only while GitHub's field is still the edit's `base`: each
+/// attempt, the first and each the retry matrix makes after a wait, [`check`]s the issue right
+/// before it patches. The patch's answer, with its `ETag`, is kept as the next check's.
+#[allow(clippy::too_many_arguments)]
+async fn edit(
+    app: &App,
+    account: i64,
+    t: &q::OpTargetRow,
+    op: &Op,
+    method: reqwest::Method,
+    path: &str,
+    body: &serde_json::Value,
+    sending: &Sending,
+) -> Result<Edited, Failure> {
+    let (field, base, new) = op.edits().expect("a title or body edit");
+    retrying(app, account, op, sending, |gh, token| {
+        let method = method.clone();
+        async move {
+            let now = check(app, account, t, &gh, &token).await?;
+            if same_text(field, field.of(&now), new) {
+                return Ok(Edited::Already(now));
+            }
+            if !same_text(field, field.of(&now), base) {
+                return Ok(Edited::Changed(field.of(&now).to_owned()));
+            }
+            // Checked: the patch goes out now.
+            sending.sent.store(true, Ordering::SeqCst);
+            let (answer, etag) = gh.write_tagged(&token, method, path, body).await?;
+            if let (Some(etag), Ok(issue)) = (
+                etag,
+                serde_json::from_value::<webhook::Issue>(answer.clone()),
+            ) {
+                let text = (issue.title().to_owned(), issue.body().to_owned());
+                app.ops().note_check(account, t.id, etag, text);
+            }
+            Ok(Edited::Patched(answer))
+        }
+    })
+    .await
+}
+
+/// GitHub's title and body of the edit's issue now, asked with the `ETag` of the last check or
+/// patch kept for it, so an unchanged issue is a free 304 and the kept text is current. A fresh
+/// answer is kept for next time and written to the mirror (which pushes it to the tabs, so an
+/// editor's "changed" notice and a 409's detail both show it).
+async fn check(
+    app: &App,
+    account: i64,
+    t: &q::OpTargetRow,
+    gh: &github::GitHub,
+    token: &str,
+) -> Result<(String, String), github::Error> {
+    let last = app.ops().last_check(account, t.id);
+    let etag = last.as_ref().map(|c| c.etag.as_str());
+    let issue = match gh
+        .issue_if_changed(token, &t.owner, &t.repo, t.number, etag)
+        .await?
+    {
+        github::Revalidated::NotModified => {
+            return last
+                .map(|c| c.text)
+                .ok_or_else(|| github::Error::Malformed("a 304 to a read without an ETag".into()));
+        }
+        github::Revalidated::Fresh { etag, page } => (etag, page),
+    };
+    let (etag, issue) = issue;
+    // The number names another issue now (a transfer and a new one in its place): not this one.
+    if issue.id() != t.id {
+        return Err(github::Error::Status(404));
+    }
+    let text = (issue.title().to_owned(), issue.body().to_owned());
+    if let Some(etag) = etag {
+        app.ops().note_check(account, t.id, etag, text.clone());
+    }
+    let repo = t.repo_id;
+    store(app, account, t, move |tx, seq| {
+        webhook::write_issue(tx, repo, &issue, seq)
+    })
+    .await;
+    Ok(text)
+}
+
+/// A body GitHub took, rendered as the detail will show it, with the items in the mirror it refers
+/// to (none if they can't be read now: the detail's refetch reads them again).
+async fn rendered_body(app: &App, account: i64, t: &q::OpTargetRow, md: String) -> (Md, Refs) {
+    let post = Post {
+        kind: PostKind::Body,
+        id: t.id,
+        md,
+    };
+    let body = markdown::render(app, Place::from(t), vec![post])
+        .await
+        .remove(0)
+        .md;
+    let ask = body.clone();
+    let refs = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| markdown::refs(c, [&ask]))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "ops: account {account}: the refs of issue {}'s body: {e}",
+                t.id
+            );
+            Refs::new()
+        });
+    (body, refs)
+}
+
+/// One GitHub call of `op`'s, made by `make` with the user's token, through the retry matrix: a
+/// short rate limit waited out, a 5xx, timeout or reset tried again (but never a comment's), and
+/// each refusal as the failure it is.
+async fn retrying<T, F, Fut>(
+    app: &App,
+    account: i64,
+    op: &Op,
+    sending: &Sending,
+    make: F,
+) -> Result<T, Failure>
+where
+    F: Fn(github::GitHub, String) -> Fut,
+    Fut: std::future::Future<Output = Result<T, github::Error>>,
+{
     let mut retries = if op.retries() { &RETRIES[..] } else { &[] }.iter();
     let mut quiet_waits = 0;
     let maybe_posted = || sending.maybe_posted();
@@ -867,12 +1188,7 @@ async fn call(
         let gh = app.github().clone();
         let answer = app
             .tokens()
-            .with_token(account, |token| {
-                let (gh, method) = (gh.clone(), method.clone());
-                // With a token in hand: the call goes out now.
-                sending.sent.store(true, Ordering::SeqCst);
-                async move { gh.write(&token, method, path, body).await }
-            })
+            .with_token(account, |token| make(gh.clone(), token))
             .await;
         let e = match answer {
             Ok(v) => return Ok(v),
@@ -955,6 +1271,7 @@ fn allows(role: Role, op: &Op, own: bool) -> bool {
         | Op::AssigneeAdd { .. }
         | Op::AssigneeRemove { .. }
         | Op::MilestoneSet { .. } => role >= Role::Triage,
+        Op::TitleEdit { .. } | Op::BodyEdit { .. } => own || role >= Role::Write,
     }
 }
 
@@ -977,6 +1294,10 @@ async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String
         Ok(Ok(Some(Ok(Access::Role(role))))) => match op {
             Op::Close { .. } | Op::Reopen { .. } => format!(
                 "you have {} on {repo}, which closes or reopens only issues you opened",
+                role.name()
+            ),
+            Op::TitleEdit { .. } | Op::BodyEdit { .. } => format!(
+                "you have {} on {repo}, which edits only issues you opened",
                 role.name()
             ),
             _ => format!("you have {} on {repo}", role.name()),
@@ -1147,6 +1468,8 @@ mod tests {
             ("assignee_add", OpKind::AssigneeAdd),
             ("assignee_remove", OpKind::AssigneeRemove),
             ("milestone_set", OpKind::MilestoneSet),
+            ("title_edit", OpKind::TitleEdit),
+            ("body_edit", OpKind::BodyEdit),
         ]
         .map(|(name, kind)| {
             let words = serde_json::to_string(kind.lost_message()).unwrap();

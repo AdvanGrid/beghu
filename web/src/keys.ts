@@ -22,9 +22,14 @@
 // and its arrows, Enter and Escape are the listbox's own (Escape closes it, focus back on its
 // row's button).
 //
-// Some touchpoints have no caller yet, pending their tickets: `editTitle` for title editing
-// (#103), `create` for the create form (#104), `toggleMode` for tree mode (#108), and `imageOpen`
-// and `imageClose` for the lightbox (#100). The `?` overlay shows them dimmed until then.
+// `editTitle` (`e`) is offered by an issue's panel (not a PR's) and opens its title editor. A
+// title or body editor is marked `data-keys="editor"`, a typing area: while the focus is in it, it
+// offers `saveEdit` (Ctrl or Cmd+Enter) and `cancelEdit` (Escape, fixed there). Enter in the title
+// box saves too, as its form's own submit.
+//
+// Some touchpoints have no caller yet, pending their tickets: `create` for the create form (#104),
+// `toggleMode` for tree mode (#108), and `imageOpen` and `imageClose` for the lightbox (#100). The
+// `?` overlay shows them dimmed until then.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
@@ -48,6 +53,8 @@ export const ACTIONS = [
   "editTitle",
   "closeReopen",
   "send",
+  "saveEdit",
+  "cancelEdit",
   "imageOpen",
   "imageClose",
   "help",
@@ -76,6 +83,8 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   editTitle: ["e"],
   closeReopen: ["Shift+x"],
   send: ["Mod+Enter"],
+  saveEdit: ["Mod+Enter"],
+  cancelEdit: [],
   imageOpen: ["i"],
   imageClose: ["Escape"],
   help: ["?", "Ctrl+?"],
@@ -83,13 +92,13 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
 
 /**
  * Where the focus is: nowhere in particular (`page`), the list, the issue panel, the comment box,
- * a picker, the filter box, the `?` overlay, or another text field. Views mark their region with
- * `data-keys`.
+ * a title or body editor, a picker, the filter box, the `?` overlay, or another text field. Views
+ * mark their region with `data-keys`.
  */
-export type Area = "page" | "list" | "panel" | "composer" | "picker" | "filter" | "help" | "text";
+export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "text";
 
 /** The areas where text is typed: there only Ctrl or Cmd chords fire, and plain keys go to the widget. */
-export const TYPING: readonly Area[] = ["composer", "picker", "filter", "text"];
+export const TYPING: readonly Area[] = ["composer", "editor", "picker", "filter", "text"];
 
 const BROWSE: readonly Area[] = ["page", "list", "panel"];
 const ANYWHERE: readonly Area[] = ["page", "list", "panel", ...TYPING];
@@ -112,6 +121,8 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   editTitle: ["panel"],
   closeReopen: ["panel"],
   send: ["composer"],
+  saveEdit: ["editor"],
+  cancelEdit: ["editor"],
   imageOpen: ["panel"],
   imageClose: BROWSE,
   help: ANYWHERE,
@@ -119,11 +130,12 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
 
 /**
  * Fixed keys, not rebindable, each in its area: the ARIA list keys while the focus is in the
- * list, and Escape out of the comment box into the issue.
+ * list, Escape out of the comment box into the issue, and Escape cancelling an edit.
  */
 const FIXED: Partial<Record<Area, Readonly<Record<string, Action>>>> = {
   list: { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last" },
   composer: { Escape: "openIssue" },
+  editor: { Escape: "cancelEdit" },
 };
 
 /** Whether `binding` can fire in `where`: while text is typed, only a Ctrl or Cmd chord without Alt. */
@@ -297,7 +309,7 @@ function isTextField(el: Element | null): boolean {
 function areaOf(el: Element | null): Area {
   if (!el || el.tagName === "BODY") return "page";
   const marked = el.closest<HTMLElement>("[data-keys]")?.dataset.keys as Area | undefined;
-  if (marked === "filter" || marked === "picker" || marked === "help" || marked === "composer") return marked;
+  if (marked === "filter" || marked === "picker" || marked === "help" || marked === "composer" || marked === "editor") return marked;
   if (isTextField(el)) return "text";
   return marked ?? "page";
 }

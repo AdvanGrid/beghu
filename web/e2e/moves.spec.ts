@@ -77,6 +77,22 @@ test("a deleted open issue says so in place, and its draft stays to copy", async
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(draft);
 });
 
+test("a deleted open issue keeps an open description editor's text to copy", async ({ page }) => {
+  await signIn(page);
+  const issue = await claimBelowTheTop(page);
+  await open(page, issue.id);
+  await page.locator('[data-perf="edit-body"]').click();
+  const box = page.locator('[data-perf="body-editor"] [data-perf="edit-box"]');
+  // The editor's first opening loads its code (compiled on demand by the dev server) and the body.
+  await expect(box).toBeFocused({ timeout: 15_000 });
+  const mine = `A description I was halfway through ${Date.now().toString(36)}`;
+  await box.fill(mine);
+
+  devCtl(["fake", "edit", ref(issue), "--delete"]);
+  await expect(lost(page).getByText("This issue was deleted.", { exact: true })).toBeVisible({ timeout: SHOWS_WITHIN_MS });
+  await expect(lost(page).locator('[data-perf="kept-text"] textarea')).toHaveValue(mine);
+});
+
 test("an open issue transferred to another synced repo says where it went, and opens there with its links", async ({ page }) => {
   await signIn(page);
   const issue = await claimBelowTheTop(page, (r) => r.repo === "web");

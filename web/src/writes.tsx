@@ -34,6 +34,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
+  Changed,
   Conflict,
   GitHubDown,
   Gone,
@@ -62,6 +63,8 @@ import { setOverlay, type Prop, type ShownComment, type ShownDetail } from "./ov
 import { link } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
+import { holdsText } from "./unsaved";
+import { editorOf, unsaved, type Field } from "./editing";
 
 // --- the pending writes --------------------------------------------------------------------------
 
@@ -95,6 +98,8 @@ interface Pending {
   sentAt?: number;
   reply?: OpReply;
   error?: Error;
+  /** A title or body editor following it, and the writes sent again in its place. */
+  watch?: EditWatch;
 }
 
 /** What a pick looks like, from the picker's list: the op names only a label's name, a milestone's number. */
@@ -151,7 +156,7 @@ function setDraft(issue: number, text: string): void {
  * Makes a write and sends it. It supersedes the issue's earlier failed writes of the same thing (a
  * close or reopen, the same label or assignee, the milestone): the user has chosen it again.
  */
-function write(op: Op, ref: string, author: string, look?: Look): void {
+function write(op: Op, ref: string, author: string, look?: Look, watch?: EditWatch): string {
   const p: Pending = {
     id: crypto.randomUUID(),
     op,
@@ -163,6 +168,7 @@ function write(op: Op, ref: string, author: string, look?: Look): void {
     seen: newestSeen.get(op.issue) ?? 0,
     phase: "sending",
     slow: false,
+    watch,
   };
   const sets = kindOf(op).target(op);
   const superseded = (q: Pending) => sets !== undefined && kindOf(q.op).target(q.op) === sets && q.op.issue === op.issue && q.phase === "failed";
@@ -171,6 +177,7 @@ function write(op: Op, ref: string, author: string, look?: Look): void {
     if (find(p.id)?.phase === "sending") patch(p.id, { slow: true });
   }, SLOW_MS);
   void send(p.id);
+  return p.id;
 }
 
 /** Sends write `id` and settles it: confirmed, or failed with how. */
@@ -182,7 +189,10 @@ async function send(id: string): Promise<void> {
     if (e instanceof SessionEnded) signIn();
     patch(id, { phase: "failed", error: e as Error });
     if (p.op.kind === "comment" && howFailed(find(id)!).unsure) void lookInThread(id);
+    p.watch?.settled(id, e as Error);
+    return;
   }
+  p.watch?.settled(id);
 }
 
 /** GitHub has write `id`: a read that begins now shows it; until one is on screen, the write shows over it. */
@@ -222,7 +232,7 @@ async function lookInThread(id: string): Promise<void> {
     try {
       const page = await getComments(issue, "newest");
       const could = page.comments.filter((c) => c.id > after && !claimed.has(c.id) && c.author?.login === p.author && c.digest === digest);
-      if (could.length === 1) return confirm(id, { issue, comment: could[0]!, refs: page.refs });
+      if (could.length === 1) return confirm(id, { issue, comment: could[0]!, body: null, refs: page.refs });
       if (could.length > 1) break;
     } catch {
       // The next look, or Retry.
@@ -249,7 +259,8 @@ async function sha256(text: string): Promise<string | undefined> {
 /** Sends a failed write again, as a new op: the server remembers the old one's failure. */
 function retry(p: Pending): void {
   drop(p.id);
-  write(p.op, p.ref, p.author, p.look);
+  const id = write(p.op, p.ref, p.author, p.look, p.watch);
+  p.watch?.sent(id);
 }
 
 /** Whether `p` shows over a read that began at `at`. */
@@ -265,6 +276,7 @@ function waiting(p: Pending, at: number): boolean {
 /** What a pending write can change on a list row or a detail (a row has no milestone). */
 type Shown = {
   id: number;
+  title: string;
   state: string;
   state_reason: string | null;
   labels: Label[];
@@ -386,6 +398,19 @@ const KINDS: { [K in Op["kind"]]: Kind<OpOf<K>> } = {
     },
     noun: (op, look) => (op.milestone === null ? "Clearing the milestone" : `Milestone ${milestoneTitle(op, look)}`),
   },
+  title_edit: {
+    target: () => "title",
+    apply: (x, op) => ({ ...x, title: op.new.trim() }),
+    doing: (_, ref) => ({ verb: "edit the title", rest: onWord("of", ref) }),
+    noun: () => "Title edit",
+  },
+  // The body shows as typed, then as GitHub's reply renders it: `detailWithWrites` does that.
+  body_edit: {
+    target: () => "body",
+    apply: (x) => x,
+    doing: (_, ref) => ({ verb: "edit the description", rest: onWord("of", ref) }),
+    noun: () => "Description edit",
+  },
 };
 
 /** What `op`'s kind of write is. */
@@ -437,7 +462,7 @@ function detailShown(issue: number, at: number): void {
 
 function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
   for (const c of d.comments.comments) if (c.id > (newestSeen.get(d.id) ?? 0)) newestSeen.set(d.id, c.id);
-  const out = withWrites(d, at);
+  const out: ShownDetail = withBody(withWrites(d, at), at);
   const real = new Set(d.comments.comments.map((c) => c.id));
   const mine: ShownComment[] = [];
   let refs = d.comments.refs;
@@ -457,6 +482,17 @@ function detailWithWrites(d: IssueDetail, at: number): ShownDetail {
 }
 
 /**
+ * `d` with its latest body edit showing over a read from `at`: as GitHub's reply rendered it once
+ * there is one, and as typed until then (the browser has no Markdown parser).
+ */
+function withBody(d: IssueDetail, at: number): ShownDetail {
+  const p = ops().findLast((p) => p.op.kind === "body_edit" && p.op.issue === d.id && shows(p, at));
+  if (!p || p.op.kind !== "body_edit") return d;
+  if (p.reply?.body) return { ...d, body: p.reply.body, refs: mergeRefs(d.refs, p.reply.refs) };
+  return { ...d, typedBody: p.op.new };
+}
+
+/**
  * A comment write as the thread shows it. Once GitHub has it, the server's reply carries it
  * rendered, so it shows as it will in the thread; until then (sending, or failed) its text shows
  * as typed: the browser has no Markdown parser.
@@ -469,9 +505,9 @@ function pendingComment(p: Pending): ShownComment {
 }
 
 // Text the tab would lose: a draft, or a comment GitHub never got.
-addEventListener("beforeunload", (e) => {
+holdsText(() => {
   const unsent = pendingNow.some((p) => p.op.kind === "comment" && p.phase === "failed");
-  if (unsent || [...draftsNow.values()].some((t) => t.trim())) e.preventDefault();
+  return unsent || [...draftsNow.values()].some((t) => t.trim());
 });
 
 // --- how writes show ------------------------------------------------------------------------------
@@ -495,18 +531,27 @@ function noun(p: Pending): string {
 function howFailed(p: Pending): { unsure: boolean; why: string; retry: boolean } {
   const e = p.error;
   const unsure = e instanceof Lost || e instanceof MaybePosted;
-  const known =
-    unsure ||
+  // An issue that's gone (deleted, or transferred: it's another issue now) takes no write again,
+  // and a title or body edit someone else's change got to first would only meet it again: its
+  // editor offers "Overwrite with mine" instead.
+  const retry =
+    e instanceof Refused ? e.retry : !(e instanceof Gone) && !(e instanceof Changed) && !(unsure && p.op.kind === "comment" && (!p.looked || p.unknowable));
+  return { unsure, why: worded(e) ? e.message : "Something went wrong", retry };
+}
+
+/** Whether `e` is a failure the server (or the API layer) words for the user: its message reads as is. */
+export function worded(e: unknown): e is Error {
+  return (
+    e instanceof Lost ||
+    e instanceof MaybePosted ||
     e instanceof Gone ||
     e instanceof Refused ||
     e instanceof RateLimited ||
     e instanceof Conflict ||
+    e instanceof Changed ||
     e instanceof GitHubDown ||
-    e instanceof Unreachable;
-  // An issue that's gone (deleted, or transferred: it's another issue now) takes no write again.
-  const retry =
-    e instanceof Refused ? e.retry : !(e instanceof Gone) && !(unsure && p.op.kind === "comment" && (!p.looked || p.unknowable));
-  return { unsure, why: known ? e.message : "Something went wrong", retry };
+    e instanceof Unreachable
+  );
 }
 
 /** A failed write in a line, on `ref` if given: what didn't happen, or what may have. */
@@ -629,6 +674,47 @@ function PropNote(props: { issue: number; prop: Prop; at: number }) {
       </Show>
     </>
   );
+}
+
+/**
+ * Beside the open issue's title or body: a dot while an edit of it is on its way. A failed edit
+ * shows in its editor, open again with the text (editing.ts).
+ */
+function EditNote(props: { issue: number; field: Field; at: number }) {
+  const kind = () => (props.field === "title" ? "title_edit" : "body_edit");
+  const pending = () => ops().some((p) => p.op.issue === props.issue && p.op.kind === kind() && waiting(p, props.at));
+  return (
+    <Show when={pending()}>
+      <span {...stylex.attrs(s.note)} data-perf="edit-note" data-field={props.field}>
+        <Dot />
+      </span>
+    </Show>
+  );
+}
+
+/**
+ * A title or body editor following its edit: `sent` hears of the write sent again in its place
+ * (Retry in the status bar), `settled` how each ended: no error once GitHub has it.
+ */
+export interface EditWatch {
+  sent: (id: string) => void;
+  settled: (id: string, error?: Error) => void;
+}
+
+/** For the title and body editors (editing.ts): sends `op`, an edit of the open issue `d`. Its id. */
+export function sendEdit(op: OpOf<"title_edit" | "body_edit">, d: ShownDetail, watch: EditWatch): string {
+  return write(op, `${d.repo}#${d.number}`, "you", undefined, watch);
+}
+
+/** Forgets write `id`, a failed edit the user discarded or sent again. */
+export function forget(id: string): void {
+  drop(id);
+}
+
+/** How failed write `id` reads (see `howFailed`), while it's failed. */
+export function failure(id: string): { why: string; retry: boolean } | undefined {
+  const p = ops().find((p) => p.id === id);
+  return p?.phase === "failed" ? howFailed(p) : undefined;
 }
 
 /**
@@ -883,7 +969,7 @@ export function Composer(props: { d: ShownDetail }) {
   );
 }
 
-setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, Banner, StateNote, CommentNote, PropNote });
+setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, Banner, StateNote, CommentNote, PropNote, EditNote });
 
 const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },
@@ -891,16 +977,25 @@ const blink = stylex.keyframes({
 
 /**
  * In place of the composer of an issue that's gone (deleted, or moved away): the text the tab
- * would otherwise lose there, its draft and any comment GitHub hasn't confirmed (on its way, or
- * failed), kept to copy, since there's nowhere left to send it. A comment GitHub confirmed is in
- * the thread, not here: once the issue is gone no read of it drops the confirmed write. Nothing
- * when there's none.
+ * would otherwise lose there, kept to copy, since there's nowhere left to send it: an open title
+ * or body editor's unsaved text, any title or body edit GitHub hasn't confirmed (on its way, or
+ * failed), the draft, and any comment GitHub hasn't confirmed. A write GitHub confirmed is on the
+ * issue, not here: once the issue is gone no read of it drops the confirmed write. Nothing when
+ * there's none.
  */
 export function KeptText(props: { issue: number }) {
   const text = () => {
+    const edits: string[] = [];
+    for (const field of ["title", "body"] as const) {
+      const e = editorOf(props.issue, field);
+      if (e && e.text !== undefined && unsaved(e)) edits.push(e.text);
+    }
+    const unconfirmed = ops().filter((p) => p.op.issue === props.issue && p.phase !== "sent");
+    // A failed edit's text is its editor's too: kept once.
+    for (const { op } of unconfirmed) if ((op.kind === "title_edit" || op.kind === "body_edit") && !edits.includes(op.new)) edits.push(op.new);
+    const comments = unconfirmed.flatMap(({ op }) => (op.kind === "comment" ? [op.body] : []));
     const draft = drafts().get(props.issue)?.trim();
-    const unsent = ops().flatMap((p) => (p.op.kind === "comment" && p.op.issue === props.issue && p.phase !== "sent" ? [p.op.body] : []));
-    return [...(draft ? [draft] : []), ...unsent].join("\n\n");
+    return [...edits.filter((t) => t.trim()), ...(draft ? [draft] : []), ...comments].join("\n\n");
   };
   const [copied, setCopied] = createSignal(false);
   let box!: HTMLTextAreaElement;

@@ -11,6 +11,10 @@ export type OpReply = { issue: number,
  */
 comment: Comment | null, 
 /**
- * The items in the mirror that the comment refers to.
+ * A body edit's body, rendered, as the detail will show it.
+ */
+body: import("../md/ast").Md | null, 
+/**
+ * The items in the mirror that the comment or the body refers to.
  */
 refs: { [key in string]: RefTarget }, };

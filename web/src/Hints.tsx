@@ -25,6 +25,8 @@ export const LABEL: Record<Action, string> = {
   editTitle: "Edit title",
   closeReopen: "Close / reopen",
   send: "Send comment",
+  saveEdit: "Save",
+  cancelEdit: "Cancel editing",
   imageOpen: "Open image",
   imageClose: "Close image",
   help: "All keys",
@@ -32,12 +34,13 @@ export const LABEL: Record<Action, string> = {
 
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
 const LIST_QUICK: Action[] = ["next", "previous", "openIssue", "focusFilter", "create", "toggleMode", "help"];
-const QUICK: Record<"page" | "list" | "panel" | "composer" | "text", Action[]> = {
+const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "text", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
   panel: ["next", "previous", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "toList", "help"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
+  editor: ["saveEdit", "cancelEdit", "help"],
   text: ["focusFilter", "help"],
 };
 
@@ -69,6 +72,7 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "first", "last", "openIssue", "create", "toggleMode"] },
   { name: "Issue", areas: ["panel"], actions: ["labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "imageClose", "toList"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
+  { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },
   { name: "Anywhere", areas: ["page", "filter", "text"], actions: ["focusFilter", "help"] },
 ];

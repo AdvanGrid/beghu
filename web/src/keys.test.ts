@@ -44,6 +44,7 @@ function page() {
     list: new El("A", listPane),
     panel: new El("DIV", panel),
     composer: new El("TEXTAREA", panel, "composer"),
+    editor: new El("INPUT", new El("FORM", panel, "editor")),
     picker: new El("INPUT", picker),
     pickerOption: new El("DIV", picker),
     filter: new El("INPUT", new El("DIV", listPane, "filter")),
@@ -197,7 +198,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
     it("keeps every touchpoint silent outside the areas it works in", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      const areas = ["page", "list", "panel", "composer", "picker", "filter", "text", "help"] as const;
+      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help"] as const;
       for (const action of keys.ACTIONS) {
         const withdraw = keys.touch(action, () => ran.push(action));
         for (const area of areas.filter((a) => !keys.WHERE[action].includes(a))) {
@@ -275,6 +276,22 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
       assert.ok(press(els.composer, send));
       assert.ok(press(els.composer, { key: "Escape" }));
       assert.deepEqual(ran, ["send", "openIssue"]);
+    });
+
+    it("saves an edit by its chord and cancels it by Escape from the editor only, where single keys type", async () => {
+      const { keys, els, press } = await load(platform);
+      const ran: string[] = [];
+      for (const a of ["saveEdit", "cancelEdit", "send", "editTitle", "toList"] as const) keys.touch(a, () => ran.push(a));
+      const save = { key: "Enter", ctrl: !mac, meta: mac };
+      assert.equal(press(els.composer, { key: "Escape" }), false);
+      assert.ok(press(els.composer, save));
+      assert.equal(press(els.editor, { key: "e" }), false);
+      assert.ok(press(els.editor, save));
+      assert.ok(press(els.editor, { key: "Escape" }));
+      // In the panel, Escape is back to the list, and `e` edits the title.
+      assert.ok(press(els.panel, { key: "Escape" }));
+      assert.ok(press(els.panel, { key: "e" }));
+      assert.deepEqual(ran, ["send", "saveEdit", "cancelEdit", "toList", "editTitle"]);
     });
   });
 }

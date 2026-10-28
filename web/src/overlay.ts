@@ -6,6 +6,7 @@
 import { createSignal, type Element } from "solid-js";
 import type { Comment, IssueDetail, IssueRow } from "./api";
 import type { User } from "./bindings/User";
+import type { Field } from "./editing";
 
 /** A property row of the detail that a pick changes. */
 export type Prop = "labels" | "assignees" | "milestone";
@@ -22,6 +23,8 @@ export type ShownComment =
 /** The detail as it shows, the tab's pending comments among its own. */
 export type ShownDetail = Omit<IssueDetail, "comments"> & {
   comments: Omit<IssueDetail["comments"], "comments"> & { comments: ShownComment[] };
+  /** A pending body edit's text, as typed, until GitHub's reply renders it. */
+  typedBody?: string;
 };
 
 export interface Overlay {
@@ -43,6 +46,8 @@ export interface Overlay {
   CommentNote: (p: { op: string; at: number }) => Element;
   /** At the end of a property row: a pending pick's dot, or a failed pick with Retry and Dismiss. */
   PropNote: (p: { issue: number; prop: Prop; at: number }) => Element;
+  /** Beside the title or body: a pending edit's dot. */
+  EditNote: (p: { issue: number; field: Field; at: number }) => Element;
 }
 
 const [overlay, setOverlay] = createSignal<Overlay>();

@@ -963,6 +963,15 @@ impl Issue {
     pub(crate) fn id(&self) -> i64 {
         self.id
     }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// The body: GitHub's `null` for none is empty.
+    pub(crate) fn body(&self) -> &str {
+        self.body.as_deref().unwrap_or("")
+    }
 }
 
 /// An issue's `type` (GitHub's issue-type object); only its name is kept.

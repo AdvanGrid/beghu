@@ -47,6 +47,11 @@ pub enum ApiError {
     },
     /// A write GitHub answered with a conflict.
     Conflict(String),
+    /// A title or body edit made against text GitHub no longer has: someone changed the field
+    /// since the editor opened. `current`: the field as GitHub has it now. Nothing was patched.
+    Changed {
+        current: String,
+    },
     /// Asked again too soon (a Resync, once an hour): try again after `retry_after`.
     TooSoon {
         retry_after: Duration,
@@ -92,10 +97,15 @@ pub struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub after: Option<i64>,
+    /// With `changed`: the field as GitHub has it now, which the edit was not made over.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub current: Option<String>,
     /// With `maybe_posted` or `lost` for a comment: the comment's digest (the SHA-256 of its
     /// Markdown, hex), as a thread's comments carry theirs (`Comment.digest`). The tab compares
     /// it with them to find the comment, without hashing anything itself (a page on plain http
-    /// has no `crypto.subtle`).
+    /// has no `crypto.subtle`). With `changed`: the digest of `current`, as the detail's
+    /// `body_digest` is of its body, so a body editor can tell a later change from this one.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub digest: Option<Digest>,
@@ -144,6 +154,9 @@ pub enum ErrorKind {
     RateLimited,
     /// 409: a write GitHub answered with a conflict.
     Conflict,
+    /// 409: a title or body edit someone else's change got to first, not made: the body's
+    /// `current` has GitHub's text, and `digest` its digest.
+    Changed,
     /// 429: asked again too soon (a Resync, once an hour); try again after `retry-after` seconds.
     TooSoon,
     /// 503 (beghu's own answer, with this body; never a proxy's 502): a write that couldn't reach
@@ -196,7 +209,8 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (mut retry_after, mut issue, mut after, mut digest) = (None, None, None, None);
+        let (mut retry_after, mut issue, mut after, mut digest, mut current) =
+            (None, None, None, None, None);
         let mut moved_to = None;
         let (status, kind, message) = match self {
             ApiError::SignedOut => (
@@ -252,6 +266,15 @@ impl IntoResponse for ApiError {
                 )
             }
             ApiError::Conflict(m) => (StatusCode::CONFLICT, ErrorKind::Conflict, m),
+            ApiError::Changed { current: c } => {
+                digest = Some(Digest::of(&c));
+                current = Some(c);
+                (
+                    StatusCode::CONFLICT,
+                    ErrorKind::Changed,
+                    "Changed on GitHub since you started editing".to_owned(),
+                )
+            }
             ApiError::TooSoon {
                 retry_after: r,
                 why,
@@ -298,6 +321,7 @@ impl IntoResponse for ApiError {
                 issue,
                 moved_to,
                 after,
+                current,
                 digest,
             }),
         )

@@ -24,7 +24,7 @@ const DOWN_AFTER: u32 = 3;
 /// How many users a page of who can be assigned holds: GitHub's most.
 pub const ASSIGNABLE_PAGE: usize = 100;
 
-/// A page read again with its `ETag`.
+/// A page or an issue read again with its `ETag`.
 #[derive(Debug)]
 pub enum Revalidated<T> {
     /// GitHub answered 304: what the client holds is current. GitHub doesn't count it against
@@ -693,6 +693,18 @@ impl GitHub {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, Error> {
+        Ok(self.write_tagged(token, method, path, body).await?.0)
+    }
+
+    /// [`GitHub::write`], with the `ETag` GitHub's answer came with, if any: a `PATCH`'s answer is
+    /// the resource as it now is, so a read naming that `ETag` is a 304 while it stays so.
+    pub async fn write_tagged(
+        &self,
+        token: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(serde_json::Value, Option<String>), Error> {
         let mut req = self
             .http
             .request(method, format!("{}{path}", self.api))
@@ -705,7 +717,12 @@ impl GitHub {
         }
         let res = self.send(req).await?;
         if res.status().is_success() {
-            Ok(res.json().await?)
+            let etag = res
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            Ok((res.json().await?, etag))
         } else if res.status() == reqwest::StatusCode::NOT_FOUND {
             #[derive(Deserialize)]
             struct Body {
@@ -810,6 +827,45 @@ impl GitHub {
             }
         }
         Ok(Shown::It(all))
+    }
+
+    /// Issue `number` of `owner/repo` as GitHub has it now, asked with `etag` as `If-None-Match`
+    /// when given, so an unchanged issue is a 304 that costs nothing: a title or body edit's check
+    /// before its patch. Bounded like a write, since it holds one up. A 404 or 410 is `Status`.
+    pub async fn issue_if_changed(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        etag: Option<&str>,
+    ) -> Result<Revalidated<crate::webhook::Issue>, Error> {
+        let mut req = self
+            .http
+            .get(format!("{}/repos/{owner}/{repo}/issues/{number}", self.api))
+            .bearer_auth(token)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+            .timeout(self.write_timeout);
+        if let Some(etag) = etag {
+            req = req.header("if-none-match", etag);
+        }
+        let res = self.send(req).await?;
+        match res.status().as_u16() {
+            304 => Ok(Revalidated::NotModified),
+            200 => {
+                let etag = res
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                Ok(Revalidated::Fresh {
+                    etag,
+                    page: res.json().await?,
+                })
+            }
+            _ => Err(refusal(res).await),
+        }
     }
 
     /// The user's role on `owner/repo`, from its `permissions`.

@@ -22,9 +22,14 @@ moved_to?: number | null,
  */
 after?: number, 
 /**
+ * With `changed`: the field as GitHub has it now, which the edit was not made over.
+ */
+current?: string, 
+/**
  * With `maybe_posted` or `lost` for a comment: the comment's digest (the SHA-256 of its
  * Markdown, hex), as a thread's comments carry theirs (`Comment.digest`). The tab compares
  * it with them to find the comment, without hashing anything itself (a page on plain http
- * has no `crypto.subtle`).
+ * has no `crypto.subtle`). With `changed`: the digest of `current`, as the detail's
+ * `body_digest` is of its body, so a body editor can tell a later change from this one.
  */
 digest?: string, };

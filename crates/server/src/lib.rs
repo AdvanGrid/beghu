@@ -424,6 +424,7 @@ pub fn router(app: App) -> Router {
         .route("/facets/{facet}/counts", get(facets::counts))
         .route("/issues/{id}", get(detail::issue))
         .route("/issues/{id}/comments", get(detail::comments_page))
+        .route("/issues/{id}/source", get(detail::source))
         .route("/repos", get(repos::list).put(repos::pick))
         .route("/repos/{id}/labels", get(pickers::labels))
         .route("/repos/{id}/milestones", get(pickers::milestones))

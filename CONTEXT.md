@@ -52,6 +52,10 @@ _Avoid_: Dropped write, orphaned op
 A comment GitHub may have posted though beghu can't confirm it: GitHub answered with a 5xx or an answer beghu couldn't read, or didn't answer at all. It's never sent again on its own. It looks for itself in the thread, among the comments newer than any it could be confused with: exactly one by the same account with its text, and it shows as posted; none, or more than one, and it offers Retry.
 _Avoid_: Unconfirmed comment, ghost comment
 
+**Unsaved text**:
+Text the user typed that the tab would lose by leaving: a comment draft, a comment GitHub never got, or an open title or body editor's text that differs from what it opened with or whose edit failed. Leaving, reloading or signing out asks first while there is some; a pending write alone doesn't, since the server finishes it without the tab.
+_Avoid_: Dirty state, unsaved changes
+
 **Post**:
 An issue's or PR's body, or one of its comments: Markdown written on GitHub, which beghu renders on the server and sends as a compact tree, never as HTML.
 _Avoid_: Message, entry, content

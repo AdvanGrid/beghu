@@ -10,6 +10,7 @@ import { connectLive, reconnecting } from "./live";
 import { overlay } from "./overlay";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
+import { unsavedText } from "./unsaved";
 import { colors, fonts, media } from "./tokens.stylex";
 
 /**
@@ -99,9 +100,11 @@ const RELOADED = "beghu.chunk-reload:";
 /**
  * Reloads `target` (the URL the failed navigation was headed to) with `location.replace`, unless
  * this tab already did for that URL. A deploy that replaced the build is the usual cause, and a
- * fresh shell names the new chunks. Without session storage there's no guard, so no reload.
+ * fresh shell names the new chunks. Without session storage there's no guard, so no reload. Nor
+ * while the tab holds unsaved text (unsaved.ts): the failure offers Retry instead.
  */
 export function reloadOnce(target: string): boolean {
+  if (unsavedText()) return false;
   try {
     if (sessionStorage.getItem(RELOADED + target) !== null) return false;
     sessionStorage.setItem(RELOADED + target, "1");
