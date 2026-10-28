@@ -14,6 +14,10 @@
 //!   nobody uses stays in backoff until the migration walker (#114) exists to retry it.
 //! - A missing file or a pending `.rebuild.sql` migration builds an empty mirror (then the
 //!   import runs). A file newer than the build is refused.
+//! - A delete (the account lost access) waits for the open, migration or creation under way,
+//!   then deletes the file; until the account is revived every caller is refused, so nothing
+//!   brings the mirror back meanwhile. A revived account's first use creates an empty mirror and
+//!   asks for its import.
 
 use crate::migrations::{MigError, Migration, Plan, plan};
 use std::time::Duration;
@@ -72,6 +76,8 @@ pub enum Refusal {
     Failed { error: String },
     /// The file is newer than this build.
     TooNew { db: u32, build: u32 },
+    /// The mirror was deleted (or is being deleted) and the account not revived since.
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +103,10 @@ enum State {
         db: u32,
         build: u32,
     },
+    /// Deleting the file.
+    Deleting,
+    /// The file is gone (or its delete failed): every caller is refused until a revive.
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +122,15 @@ pub enum Event {
     Created(Result<(), MigError>),
     /// Time passed; see `Gate::next_deadline`.
     Tick,
+    /// Delete the mirror. `id` names who asked, in the `Serve` (deleted) or `Refuse` (the delete
+    /// failed) that answers once it's done.
+    Delete {
+        id: u64,
+    },
+    /// The result of `Effect::Delete`.
+    Deleted(Result<(), String>),
+    /// The account may use its mirror again (it signed in again): the next use opens afresh.
+    Revive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +158,8 @@ pub enum Effect {
         why: Refusal,
     },
     Status(Option<Status>),
+    /// Close every connection to the file, delete it, and answer with `Event::Deleted`.
+    Delete,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +178,10 @@ pub struct Gate {
     waiting: Vec<Waiter>,
     status: Option<Status>,
     attempts: u32,
+    /// Who asked for the delete pending or under way.
+    deleters: Vec<u64>,
+    /// A revive came while the delete was pending or under way: reopen once it's done.
+    revive: bool,
 }
 
 impl Gate {
@@ -168,6 +193,8 @@ impl Gate {
             waiting: Vec::new(),
             status: None,
             attempts: 0,
+            deleters: Vec::new(),
+            revive: false,
         }
     }
 
@@ -177,6 +204,21 @@ impl Gate {
 
     pub fn handle(&mut self, now: Duration, ev: Event) -> Vec<Effect> {
         let mut fx = Vec::new();
+        // A job's result while a delete waits for it: the delete goes next, and whoever waited
+        // on the job is turned away.
+        if !self.deleters.is_empty()
+            && matches!(
+                ev,
+                Event::Opened(_) | Event::Migrated(_) | Event::Created(_)
+            )
+            && matches!(
+                self.state,
+                State::Opening | State::Migrating { .. } | State::Creating
+            )
+        {
+            self.start_delete(&mut fx);
+            return fx;
+        }
         match ev {
             Event::Use { id, caller } => self.on_use(now, id, caller, &mut fx),
             Event::Opened(Err(e)) => self.failed(now, e, &mut fx),
@@ -208,8 +250,56 @@ impl Gate {
             }
             Event::Created(Err(e)) => self.failed(now, e, &mut fx),
             Event::Tick => self.tick(now, &mut fx),
+            Event::Delete { id } => {
+                // A delete after a revive wins.
+                self.revive = false;
+                self.deleters.push(id);
+                match self.state {
+                    // The job under way ends first (see the top of `handle`).
+                    State::Opening
+                    | State::Migrating { .. }
+                    | State::Creating
+                    | State::Deleting => {}
+                    _ => self.start_delete(&mut fx),
+                }
+            }
+            Event::Deleted(r) => {
+                self.state = if std::mem::take(&mut self.revive) {
+                    State::Closed
+                } else {
+                    State::Deleted
+                };
+                for id in std::mem::take(&mut self.deleters) {
+                    fx.push(match &r {
+                        Ok(()) => Effect::Serve { id },
+                        Err(error) => Effect::Refuse {
+                            id,
+                            why: Refusal::Failed {
+                                error: error.clone(),
+                            },
+                        },
+                    });
+                }
+            }
+            // A delete pending (behind an open, migration or creation) or under way: reopen once
+            // it's done.
+            Event::Revive if !self.deleters.is_empty() => self.revive = true,
+            Event::Revive => {
+                if let State::Deleted = self.state {
+                    self.state = State::Closed;
+                }
+            }
         }
         fx
+    }
+
+    /// Deletes the file now: nothing else is under way. Whoever waits is turned away.
+    fn start_delete(&mut self, fx: &mut Vec<Effect>) {
+        self.state = State::Deleting;
+        self.attempts = 0;
+        self.refuse_all(Refusal::Deleted, fx);
+        self.set_status(None, fx);
+        fx.push(Effect::Delete);
     }
 
     /// When the shell should next send `Event::Tick`.
@@ -281,6 +371,10 @@ impl Gate {
             State::TooNew { db, build } => fx.push(Effect::Refuse {
                 id,
                 why: Refusal::TooNew { db, build },
+            }),
+            State::Deleting | State::Deleted => fx.push(Effect::Refuse {
+                id,
+                why: Refusal::Deleted,
             }),
         }
     }

@@ -373,6 +373,15 @@ impl Reconcile {
         self.budgets.pause(installation, wait);
     }
 
+    /// The account lost access and its mirror is deleted: nothing of its sync is left to repair
+    /// or to say, and the import after it signs in again reads everything afresh.
+    pub(crate) fn forget(&self, account: i64) {
+        self.with(|s| {
+            s.accounts.remove(&account);
+            s.suspects.retain(|x| x.account != account);
+        });
+    }
+
     /// A sweep of `repo` repaired a change the webhooks missed in `account`'s mirror.
     pub(crate) fn missed(&self, app: &App, account: i64, repo: i64) {
         let first = self.with(|s| {

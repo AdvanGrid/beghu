@@ -19,3 +19,12 @@ WHERE a.github_user_id = :github_user_id;
 -- param: comment_order Option<&str>
 INSERT INTO preferences (github_user_id, comment_order) VALUES (:github_user_id, :comment_order)
 ON CONFLICT (github_user_id) DO UPDATE SET comment_order = excluded.comment_order;
+
+-- Disconnect: the account's preferences go.
+-- name: delete_preferences :exec
+-- param: github_user_id i64
+DELETE FROM preferences WHERE github_user_id = :github_user_id;
+
+-- Accounts that must sign in again (or are dormant): their mirrors are deleted at startup.
+-- name: accounts_without_mirrors :many
+SELECT a.github_user_id FROM accounts a WHERE a.status <> 'active' ORDER BY a.github_user_id;

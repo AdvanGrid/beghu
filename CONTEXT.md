@@ -8,6 +8,10 @@ A fast frontend for GitHub issues, for one person and a few teammates. GitHub is
 A GitHub account that has signed in to beghu and whose repos it syncs.
 _Avoid_: User, tenant
 
+**Browser session**:
+One browser's sign-in to beghu, held in its session cookie. It carries every connected account signed in on that browser, one of them active. URLs carry no account: each tab works as the account that was active when it loaded, and a tab left on another account goes stale and freezes its writes.
+_Avoid_: Login, user session
+
 **Dormant account**:
 A connected account nobody has used beghu as for 30 days. Its mirror is deleted and it receives no webhooks or sweeps; using it again re-imports its synced repos.
 _Avoid_: Inactive account, idle account

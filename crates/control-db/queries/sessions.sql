@@ -1,14 +1,16 @@
 -- Sign-in and browser sessions. A browser session is keyed by the SHA-256 of its
 -- `__Host-beghu_sid` cookie; the cookie itself is never stored.
 
--- Signing in makes an account active again and counts as use.
+-- Signing in counts as use. It doesn't make an account that must sign in again active: storing
+-- its new tokens does (`put_tokens` and `set_account_status`, in one transaction under the
+-- account's token lock), so nothing finds it active with the old, dead tokens meanwhile.
 -- name: sign_in_account :exec
 -- param: github_user_id i64
 -- param: login &str
 -- param: now i64
 INSERT INTO accounts (github_user_id, login, created_at, last_active_at)
 VALUES (:github_user_id, :login, :now, :now)
-ON CONFLICT (github_user_id) DO UPDATE SET login = excluded.login, status = 'active',
+ON CONFLICT (github_user_id) DO UPDATE SET login = excluded.login,
   last_active_at = excluded.last_active_at;
 
 -- name: set_account_status :exec
@@ -66,8 +68,33 @@ UPDATE browser_sessions SET last_seen_at = :now, expires_at = :expires_at WHERE 
 -- The accounts signed in on a browser session, in sign-in order.
 -- name: session_accounts :many
 -- param: id_hash &[u8]
-SELECT a.github_user_id, a.login
+SELECT a.github_user_id, a.login, a.status
 FROM browser_session_accounts sa
 JOIN accounts a ON a.github_user_id = sa.github_user_id
 WHERE sa.session_id = :id_hash
 ORDER BY sa.added_at, a.github_user_id;
+
+-- Signing an account out of one browser.
+-- name: remove_session_account :exec
+-- param: id_hash &[u8]
+-- param: account i64
+DELETE FROM browser_session_accounts WHERE session_id = :id_hash AND github_user_id = :account;
+
+-- Every browser session an account is signed in on, and each one's active account.
+-- name: sessions_of_account :many
+-- param: account i64
+SELECT s.id_hash, s.active_account_id
+FROM browser_session_accounts sa
+JOIN browser_sessions s ON s.id_hash = sa.session_id
+WHERE sa.github_user_id = :account
+ORDER BY s.id_hash;
+
+-- Disconnect: the account leaves every browser.
+-- name: remove_account_from_sessions :exec
+-- param: account i64
+DELETE FROM browser_session_accounts WHERE github_user_id = :account;
+
+-- The daily job: sessions unused for 30 days go.
+-- name: prune_expired_sessions :exec
+-- param: now i64
+DELETE FROM browser_sessions WHERE expires_at <= :now;

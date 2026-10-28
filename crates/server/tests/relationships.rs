@@ -624,10 +624,7 @@ async fn a_relationship_into_a_private_repo_the_account_sees_but_doesnt_sync_is_
         .filter(|id| *id != api_id)
         .collect();
     let res = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", owner.header())
-        .header("origin", &s.server)
+        .api_write(&owner, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": keep }))
         .send()
         .await

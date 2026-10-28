@@ -5,6 +5,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
 import { area, available, keysIn, MAC, touch, type Action, type Area } from "./keys";
+import { writesPaused } from "./live";
 import { colors, fonts } from "./tokens.stylex";
 
 /** What each touchpoint does, as the hint bar and the overlay say it. */
@@ -32,6 +33,14 @@ export const LABEL: Record<Action, string> = {
   help: "All keys",
 };
 
+/** The keys that write: dimmed while writes are paused (a banner shows), as their buttons are. */
+const WRITES: ReadonlySet<Action> = new Set(["closeReopen", "send", "saveEdit"]);
+
+/** Why a write key does nothing now, if it doesn't. */
+function paused(action: Action): string | undefined {
+  return WRITES.has(action) && writesPaused() ? "Writes are paused" : undefined;
+}
+
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
 const LIST_QUICK: Action[] = ["next", "previous", "openIssue", "focusFilter", "create", "toggleMode", "help"];
 const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "text", Action[]> = {
@@ -45,7 +54,7 @@ const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "text", 
 };
 
 /** A widget's own keys: what the hint bar shows while it has the focus. */
-type Syntax = { syntax: string; does: string };
+type Syntax = { syntax: string; does: string; off?: string };
 
 /** The search syntax, while the filter box has the focus. */
 const SEARCH: Syntax[] = [
@@ -100,7 +109,7 @@ function keysOf(action: Action, where: Area): string[] {
  */
 export function Hints() {
   const offered = (where: Area, actions: Action[]): Syntax[] =>
-    actions.filter((x) => available(x) && keysOf(x, where).length > 0).map((x) => ({ syntax: keysOf(x, where).join(" "), does: LABEL[x] }));
+    actions.filter((x) => available(x) && keysOf(x, where).length > 0).map((x) => ({ syntax: keysOf(x, where).join(" "), does: LABEL[x], off: paused(x) }));
   const quick = (): Syntax[] => {
     const a = area();
     if (a === "filter") return SEARCH;
@@ -113,7 +122,7 @@ export function Hints() {
       <span role="group" data-perf="hints" data-area={area()} aria-label={area() === "filter" ? "Search syntax" : "Keys"} {...stylex.attrs(s.hints)}>
         <For each={quick()}>
           {(h) => (
-            <span {...stylex.attrs(s.hint)}>
+            <span aria-disabled={h.off ? "true" : undefined} title={h.off} {...stylex.attrs(s.hint, h.off !== undefined && s.off)}>
               <kbd {...stylex.attrs(s.key)}>{h.syntax}</kbd> {h.does}
             </span>
           )}
@@ -174,9 +183,10 @@ function Help() {
                   <For each={sec.actions}>
                     {(a) => {
                       const keys = () => keysOf(a, sec.areas[0]!);
-                      // Dimmed: nothing offers it (not built yet, or a PR's write keys), or no key
-                      // runs it where the focus was.
-                      const why = () => (!available(a) ? "Nothing here offers this" : keysIn(a, from).length === 0 ? "Not with the focus where it was" : undefined);
+                      // Dimmed: nothing offers it (not built yet, or a PR's write keys), no key runs
+                      // it where the focus was, or it writes and writes are paused.
+                      const why = () =>
+                        !available(a) ? "Nothing here offers this" : keysIn(a, from).length === 0 ? "Not with the focus where it was" : paused(a);
                       const off = () => why() !== undefined;
                       return (
                         <tr aria-disabled={off() ? "true" : undefined} title={why()} {...stylex.attrs(off() && s.off)}>
@@ -188,7 +198,7 @@ function Help() {
                               </span>
                             </Show>
                             <Show when={off()}>
-                              <span {...stylex.attrs(s.unbound)}> · not here</span>
+                              <span {...stylex.attrs(s.unbound)}> · {why() === paused(a) ? "paused" : "not here"}</span>
                             </Show>
                           </td>
                         </tr>

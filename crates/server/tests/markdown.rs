@@ -843,10 +843,7 @@ async fn an_item_outside_the_synced_repos_is_never_an_in_app_ref() {
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
     let pick = tokio::spawn(
-        s.http
-            .put(format!("{}/api/repos", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+        s.api_write(&b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": keep }))
             .send(),
     );

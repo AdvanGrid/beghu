@@ -56,6 +56,9 @@ pub enum Error {
     /// part of it (`wal_checkpoint`'s busy column). The WAL is intact, so nothing is lost; the
     /// next open replays it.
     CheckpointBusy,
+    /// The account's mirror was deleted (it lost access, or went dormant), and the account
+    /// hasn't been revived since: nothing reads or writes it meanwhile.
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +130,7 @@ impl std::fmt::Display for Error {
             Error::CheckpointBusy => f.write_str(
                 "the checkpoint didn't complete: a reader held the WAL, which stays beside the file",
             ),
+            Error::Deleted => f.write_str("the account's mirror was deleted"),
         }
     }
 }

@@ -726,10 +726,7 @@ async fn a_search_lists_nothing_of_a_repo_that_is_no_longer_synced() {
         .map(|r| r["id"].as_i64().unwrap())
         .collect();
     let res = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": keep }))
         .send()
         .await

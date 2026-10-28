@@ -136,6 +136,8 @@ struct Account {
     wake: Arc<Notify>,
     /// The status last pushed to the account's tabs.
     pushed: Option<ImportStatus>,
+    /// Cancelled when the account loses access ([`Imports::stop`]): its job and round end.
+    stop: tokio_util::sync::CancellationToken,
 }
 
 /// A round's phase, and how many of its repos are through it.
@@ -194,6 +196,14 @@ impl Imports {
         self.with(|all| all.get(&account).is_some_and(|a| a.running))
     }
 
+    /// Stops the account's import (it lost access, so its mirror is about to go) and forgets it:
+    /// the job and its round end at their next await, and a later [`request`] starts afresh.
+    pub fn stop(&self, account: i64) {
+        if let Some(a) = self.with(|all| all.remove(&account)) {
+            a.stop.cancel();
+        }
+    }
+
     /// Changes the account's import state with `f`, then pushes the status to its tabs if it
     /// changed.
     fn update<T>(&self, app: &App, account: i64, f: impl FnOnce(&mut Account) -> T) -> T {
@@ -229,11 +239,11 @@ pub fn request(app: &App, account: i64, joined: Vec<i64>, resumed: Vec<i64>) {
             .filter(|r| !a.current.contains(r) && !a.failed.contains_key(r));
         a.pending.extend(joined.into_iter().chain(resumed));
         if a.pending.is_empty() {
-            return false;
+            return None;
         }
         if a.running {
             a.wake.notify_one();
-            return false;
+            return None;
         }
         a.running = true;
         // Importing from now on, before the job's first phase begins.
@@ -242,10 +252,15 @@ pub fn request(app: &App, account: i64, joined: Vec<i64>, resumed: Vec<i64>) {
             done: 0,
             of: a.pending.len(),
         });
-        true
+        Some(a.stop.clone())
     });
-    if start {
-        app.spawn(move |app| job(app, account));
+    if let Some(stop) = start {
+        app.spawn(move |app| async move {
+            tokio::select! {
+                () = stop.cancelled() => {}
+                () = job(app, account, stop.clone()) => {}
+            }
+        });
     }
 }
 
@@ -258,10 +273,16 @@ enum Next {
     Done,
 }
 
-/// Runs rounds of the import for the account until none is waiting, a failed repo's included.
-async fn job(app: App, account: i64) {
+/// Runs rounds of the import for the account until none is waiting, a failed repo's included,
+/// or `stop` (the account lost access). Every change to the account's state checks `stop` under
+/// the lock first, so once [`Imports::stop`] has forgotten the account, this job leaves alone
+/// whatever a later request starts for it.
+async fn job(app: App, account: i64, stop: tokio_util::sync::CancellationToken) {
     loop {
         let next = app.imports().update(&app, account, |a| {
+            if stop.is_cancelled() {
+                return Next::Done;
+            }
             let now = crate::now();
             let due: Vec<i64> = a
                 .failed
@@ -302,7 +323,13 @@ async fn job(app: App, account: i64) {
         };
         // Its own task: a panic ends this round, not the account's imports. A job, so the drain
         // stops it between two pages; the next start resumes the import.
-        let run = app.spawn(move |app| paging::round(app, account, ids));
+        let round_stop = stop.clone();
+        let run = app.spawn(move |app| async move {
+            tokio::select! {
+                () = round_stop.cancelled() => Ok(Outcome::default()),
+                r = paging::round(app, account, ids) => r,
+            }
+        });
         let outcome = match run.await {
             Ok(None) => return,
             Ok(Some(Ok(o))) => o,
@@ -316,6 +343,9 @@ async fn job(app: App, account: i64) {
             }
         };
         app.imports().update(&app, account, |a| {
+            if stop.is_cancelled() {
+                return;
+            }
             // A repo of the round is done, failed again, or no longer to import (unsynced, or
             // picked again: then it's pending).
             for id in std::mem::take(&mut a.current) {

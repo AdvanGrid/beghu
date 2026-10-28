@@ -43,8 +43,9 @@
 //! mirror lacks, never renames one, since it may predate a rename. Two renames of one label
 //! delivered out of order leave the older name until a sweep. `installation` and
 //! `installation_repositories` go to the accounts' re-read of their visible repos (repos.rs), which
-//! unsyncs what the App no longer reaches. Other events are acked and dropped until their slices
-//! handle them.
+//! unsyncs what the App no longer reaches. `github_app_authorization` `revoked` (a user revoked
+//! beghu in GitHub's settings) sends a connected account down the lost-access path (accounts.rs).
+//! Other events are acked and dropped until their slices handle them.
 //!
 //! The rare ones (docs/research/issue-edge-cases.md): a transfer comes as `issues.opened` with
 //! `changes.old_issue` in the new repo and `issues.transferred` in the old one, in either order
@@ -111,6 +112,9 @@ pub struct Delivery {
     guid: String,
     event: String,
     payload: Vec<u8>,
+    /// When beghu received it, in Unix milliseconds; one read back from the control DB, which
+    /// keeps seconds, counts from the start of its second (the earliest it can have come in).
+    received_at: i64,
 }
 
 /// The GUIDs of the deliveries this process holds: queued, being applied, or being marked
@@ -195,6 +199,8 @@ pub struct Sinks {
     pub hub: Arc<Hub>,
     /// Where installation changes go: the accounts' repo re-reads (repos.rs) follow them.
     pub installs: mpsc::UnboundedSender<InstallChange>,
+    /// Where an account that revoked its authorization goes (`accounts::lost_access`).
+    pub lost: crate::tokens::Lost,
     /// Reads relationships back from GitHub after their deliveries.
     pub edges: Arc<Refetcher>,
     /// What the dispatcher, its lanes and their settles run as.
@@ -247,6 +253,53 @@ impl InstallChange {
     }
 }
 
+/// The user who revoked the App's authorization, from a `github_app_authorization` `revoked`
+/// delivery: their tokens no longer work.
+fn revoked_by(event: &str, payload: &[u8]) -> Option<i64> {
+    #[derive(Deserialize)]
+    struct Sender {
+        id: i64,
+    }
+    #[derive(Deserialize)]
+    struct P {
+        action: String,
+        sender: Sender,
+    }
+    if event != "github_app_authorization" {
+        return None;
+    }
+    let p: P = serde_json::from_slice(payload).ok()?;
+    (p.action == "revoked").then_some(p.sender.id)
+}
+
+/// A connected account revoked beghu's authorization: it lost access. Marked only if it's active
+/// and its tokens were issued before beghu received the revoke (`received_at`, Unix ms): a revoke
+/// applied late, or replayed at startup, after the account signed in again is about the old
+/// grant and leaves the new one alone. Anyone else (never signed in to beghu) is nothing to
+/// beghu. Retried until the control DB takes it, so nothing behind it is applied first.
+async fn revoked(sinks: &Sinks, account: i64, received_at: i64) {
+    let control = sinks.control.clone();
+    let marked = until_ok("marking an account that revoked beghu", || {
+        let control = control.clone();
+        async move {
+            control
+                .write(move |tx| {
+                    let marked =
+                        control_db::q::lose_access_if_issued_before(tx, account, received_at)? > 0;
+                    if marked {
+                        control_db::q::revoke_tokens(tx, account)?;
+                    }
+                    Ok(marked)
+                })
+                .await
+        }
+    })
+    .await;
+    if marked {
+        let _ = sinks.lost.send(account);
+    }
+}
+
 /// Starts the dispatcher with every delivery acked but not processed before this start first,
 /// oldest first, ahead of any that came in since the server began serving (those wait in the
 /// queue, which holds them, so they aren't taken twice). An unprocessed delivery that a request
@@ -280,6 +333,7 @@ pub async fn resume(
             guid: d.guid,
             event: d.event,
             payload: d.payload,
+            received_at: d.received_at * 1000,
         })
         .collect();
     if !resumed.is_empty() {
@@ -358,6 +412,7 @@ async fn requeue(
                             guid,
                             event: d.event,
                             payload: d.payload,
+                            received_at: d.received_at * 1000,
                         },
                     );
                 }
@@ -419,11 +474,12 @@ pub async fn receive(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
         .ok()
         .and_then(|e| e.installation)
         .map(|i| i.id);
+    let received_at = crate::now_ms();
     let (g, e, payload, now) = (
         guid.to_owned(),
         event.to_owned(),
         body.to_vec(),
-        crate::now(),
+        received_at / 1000,
     );
     // Held from before it's stored, so the requeue never takes it on the way to the queue. The
     // request that stores it hands its hold on to the queue; any other lets go of its own.
@@ -451,6 +507,7 @@ pub async fn receive(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
                     guid: guid.to_owned(),
                     event: event.to_owned(),
                     payload: body.to_vec(),
+                    received_at,
                 },
             );
             StatusCode::ACCEPTED.into_response()
@@ -619,6 +676,11 @@ async fn dispatch(
             },
         };
         let started = Instant::now();
+        if let Some(account) = revoked_by(&d.event, &d.payload) {
+            revoked(&sinks, account, d.received_at).await;
+            spawn_settle(&sinks, &in_flight, d.guid);
+            continue;
+        }
         if let Some(change) = InstallChange::parse(&d.event, &d.payload) {
             let _ = sinks.installs.send(change);
             spawn_settle(&sinks, &in_flight, d.guid);
@@ -736,7 +798,8 @@ async fn lane(sinks: Sinks, account: i64, mut rx: mpsc::Receiver<Ticket>) {
 }
 
 /// Writes the delivery to one account's mirror and pushes what changed. A failed write marks the
-/// account `needs_resync`, for a sweep to repair; the lane waits until that's recorded.
+/// account `needs_resync`, for a sweep to repair; the lane waits until that's recorded. A deleted
+/// mirror (the account lost access) is nothing to repair.
 async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
     let j = job.clone();
     let written = sinks
@@ -789,6 +852,9 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
                 None => {}
             }
         }
+        // The account lost access and its mirror is deleted (or being deleted): nothing to
+        // repair. Signing in again imports afresh.
+        Err(mirror_db::Error::Deleted) => {}
         Err(e) => {
             eprintln!(
                 "webhooks: delivery {} failed for account {account}: {e}",

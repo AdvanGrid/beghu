@@ -59,6 +59,19 @@ impl Mirrors {
         self.0.open_connections(account)
     }
 
+    /// Deletes the account's mirror once the work in flight on it is done, and refuses every
+    /// use of it ([`Error::Deleted`]) until [`Mirrors::revive`]: an account that lost access.
+    /// [`Error::Sealed`] once the drain has sealed the mirrors, leaving the file.
+    pub async fn delete(&self, account: AccountId) -> Result<(), Error> {
+        self.0.delete(account).await
+    }
+
+    /// The account may use its mirror again: its next use creates an empty one and asks for its
+    /// import (`Notice::NeedsImport`).
+    pub fn revive(&self, account: AccountId) {
+        self.0.revive(account)
+    }
+
     /// The drain's last step: refuses every write from now on (`Error::Sealed`), lets each
     /// mirror's write in flight finish, folds its WAL into its file and closes its idle
     /// connections. The mirrors that failed, and why.

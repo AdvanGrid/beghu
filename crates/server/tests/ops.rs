@@ -36,10 +36,7 @@ impl Stack {
     /// As [`Stack::op`], but marked as a resend: the tab sent this op before and got no answer.
     async fn resend(&self, b: &Browser, op_id: &str, op: Value) -> (u16, Value) {
         let res = self
-            .http
-            .post(format!("{}/api/ops", self.server))
-            .header("cookie", b.header())
-            .header("origin", &self.server)
+            .api_write(b, reqwest::Method::POST, "/api/ops")
             .json(&json!({ "op_id": op_id, "op": op, "resend": true }))
             .send()
             .await
@@ -59,6 +56,7 @@ impl Stack {
             .http
             .post(format!("{}/api/ops", self.server))
             .header("cookie", b.header())
+            .header("x-beghu-account", b.account())
             .json(&json!({ "op_id": op_id, "op": op }));
         if let Some(o) = origin {
             req = req.header("origin", o);
@@ -178,10 +176,7 @@ async fn a_resent_op_id_joins_its_write_and_a_client_that_goes_away_doesnt_cance
 
     // The tab's connection drops while GitHub is still answering.
     let dropped = s
-        .http
-        .post(format!("{}/api/ops", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::POST, "/api/ops")
         .json(&json!({ "op_id": op_id, "op": op }))
         .timeout(Duration::from_millis(300))
         .send()
@@ -540,6 +535,7 @@ async fn every_api_route_refuses_a_non_get_from_another_site_but_the_webhook_tak
                 .http
                 .request(method.clone(), format!("{}{path}", s.server))
                 .header("cookie", b.header())
+                .header("x-beghu-account", b.account())
                 .header("origin", "https://evil.example")
                 .json(&json!({}))
                 .send()
@@ -659,10 +655,7 @@ async fn a_resend_the_server_has_no_record_of_is_lost_and_never_sent_again() {
     let op_id = uuid();
     // The tab's connection drops while GitHub is answering, and beghu restarts meanwhile.
     let dropped = s
-        .http
-        .post(format!("{}/api/ops", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::POST, "/api/ops")
         .json(&json!({ "op_id": op_id, "op": op }))
         .timeout(Duration::from_millis(300))
         .send()
@@ -933,6 +926,7 @@ async fn ops_on_one_issue_reach_github_in_the_order_they_arrived() {
         let req = reqwest::Client::new()
             .post(format!("{s}/api/ops"))
             .header("cookie", b.header())
+            .header("x-beghu-account", b.account())
             .header("origin", &s)
             .json(&json!({
                 "op_id": uuid(),
@@ -1223,10 +1217,7 @@ async fn sigterm_finishes_the_writes_in_flight_and_refuses_new_ones_before_it_st
     let op_id = uuid();
     let in_flight = {
         let req = s
-            .http
-            .post(format!("{}/api/ops", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::POST, "/api/ops")
             .json(&json!({ "op_id": op_id, "op": comment("In flight at SIGTERM") }));
         tokio::spawn(async move { req.send().await.map(|r| r.status().as_u16()) })
     };
@@ -1276,14 +1267,9 @@ async fn a_second_sigterm_during_the_drain_stops_the_server_at_once() {
         json!({ "endpoint": COMMENTS, "ms": 5000, "count": 1 }),
     )
     .await;
-    let req = s
-        .http
-        .post(format!("{}/api/ops", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
-        .json(
-            &json!({ "op_id": uuid(), "op": { "kind": "comment", "issue": id, "body": "Slow" } }),
-        );
+    let req = s.api_write(&b, reqwest::Method::POST, "/api/ops").json(
+        &json!({ "op_id": uuid(), "op": { "kind": "comment", "issue": id, "body": "Slow" } }),
+    );
     let _in_flight = tokio::spawn(async move { req.send().await });
     tokio::time::sleep(Duration::from_millis(300)).await;
     let stopped = s.sigterm();
@@ -1321,10 +1307,7 @@ async fn picked_quickly(s: &Stack, b: &Browser, ops: Vec<Value>) -> Vec<u16> {
     let mut sent = Vec::new();
     for op in ops {
         let req = s
-            .http
-            .post(format!("{}/api/ops", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(b, reqwest::Method::POST, "/api/ops")
             .json(&json!({ "op_id": uuid(), "op": op }));
         sent.push(tokio::spawn(async move {
             req.send().await.unwrap().status().as_u16()
@@ -1686,11 +1669,7 @@ async fn an_outside_edit_in_the_second_of_a_label_pick_isnt_lost_to_the_picks_re
         tokio::time::sleep(Duration::from_millis(u64::from(1030 - into))).await;
         let started = second_now();
         let pick = {
-            let req = s
-                .http
-                .post(format!("{}/api/ops", s.server))
-                .header("cookie", b.header())
-                .header("origin", &s.server)
+            let req = s.api_write(&b, reqwest::Method::POST, "/api/ops")
                 .json(&json!({ "op_id": uuid(), "op": { "kind": "label_add", "issue": id, "label": label } }));
             tokio::spawn(async move { req.send().await.unwrap().status().as_u16() })
         };

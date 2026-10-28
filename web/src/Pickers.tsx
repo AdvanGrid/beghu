@@ -18,7 +18,7 @@ import type { RepoLabel } from "./bindings/RepoLabel";
 import type { RepoMilestone } from "./bindings/RepoMilestone";
 import type { User } from "./bindings/User";
 import { Avatar } from "./bits";
-import { githubDown, onPush } from "./live";
+import { onPush, writesPaused } from "./live";
 import type { Prop, ShownDetail } from "./overlay";
 import { colors } from "./tokens.stylex";
 import { pick, picking, type Look } from "./writes";
@@ -163,7 +163,7 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
   let input!: HTMLInputElement;
 
   const choose = (item: Item | undefined) => {
-    if (!item || githubDown() || picking(props.d.id, item.op)) return;
+    if (!item || writesPaused() || picking(props.d.id, item.op)) return;
     pick(item.op, props.d, item.look);
     if (!kind().multi) props.onClose(true);
   };
@@ -319,7 +319,7 @@ function Options(props: {
     >
       <For each={shown()} keyed={(i) => i.key} fallback={<li {...stylex.attrs(s.note)}>No {kind().noun} match</li>}>
         {(item, i) => {
-          const busy = () => githubDown() || picking(issue(), item().op);
+          const busy = () => writesPaused() || picking(issue(), item().op);
           return (
             <li
               id={`${props.id}-${i()}`}

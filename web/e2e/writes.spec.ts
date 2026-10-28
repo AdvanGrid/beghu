@@ -285,6 +285,40 @@ test("a dropped connection resends the same op_id, and the comment is posted onc
   }
 });
 
+test("a write beghu made whose answer was lost, then a switch in another tab, shows as maybe sent", async ({ page }) => {
+  // ilze-k signs in beside tomsj and is this tab's account.
+  await page.goto("/auth/login?login=ilze-k");
+  await page.waitForURL((u) => u.pathname === "/");
+  const me = (await (await page.request.get("/api/me")).json()) as { accounts: { id: number; login: string }[] };
+  const tomsj = me.accounts.find((a) => a.login === "tomsj")!.id;
+  const origin = new URL(page.url()).origin;
+  const issue = await claimBelowTheTop(page);
+  try {
+    await open(page, issue.id);
+    const sent: Sent[] = [];
+    await page.route("**/api/ops", async (r) => {
+      sent.push(r.request().postDataJSON() as Sent);
+      if (sent.length === 1) {
+        // beghu posts it; another tab switches to tomsj before the answer gets back.
+        await r.fetch();
+        const res = await page.request.post("/auth/switch", { form: { account: String(tomsj), next: "/" }, headers: { origin }, maxRedirects: 0 });
+        expect(res.status()).toBe(303);
+        await r.abort("connectionreset");
+      } else await r.continue();
+    });
+    const text = unique("Sent, then switched");
+    await box(page).fill(text);
+    await button(page, "Comment").click();
+    // The tab's write, as it shows beside the comment GitHub posted: maybe sent, not refused.
+    const mine = page.locator('[data-perf="comment"][data-op]').filter({ hasText: text });
+    await expect(mine).toContainText("May or may not have been sent; check the thread", { timeout: 10_000 });
+    await expect(mine).not.toContainText("Couldn't");
+    expect(sent.map((s) => s.resend ?? false)).toEqual([false, true]);
+  } finally {
+    await closeForGood(page, issue);
+  }
+});
+
 test("a resend beghu has no record of shows as maybe sent, looks in the thread, and offers Retry once it isn't there", async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
@@ -704,8 +738,10 @@ test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes a
   const issue = await claimBelowTheTop(page);
   try {
     await open(page, issue.id);
-    // One close meets a 500, and so do both its retries.
-    await fail(ISSUE(issue), 500, 3);
+    // GitHub answers every call 500, as in an outage: the close and both its retries, and the
+    // server's own calls beside them (a sweep's read, a token's refresh, a probe), which would
+    // otherwise answer between the close's tries and break the run of 5xx.
+    await fail("*", 500, 1_000_000);
     await button(page, "Close issue").click();
     const banner = page.locator('[data-perf="banner"]');
     await expect(banner).toBeVisible({ timeout: SHOWS_WITHIN_MS });
@@ -718,7 +754,8 @@ test("after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes a
     await expect(composer(page).getByRole("button", { name: "More ways to close" })).toBeDisabled();
     await expect(box(page)).toHaveValue(text);
 
-    // The server probes GitHub every 10 s: one probe, and room for a stalled machine.
+    // GitHub is back. The server probes it every 10 s: one probe, and room for a stalled machine.
+    await fake("/faults", { endpoint: "*" }, "DELETE");
     await expect(banner).toBeHidden({ timeout: 10_000 + SHOWS_WITHIN_MS });
     await expect(button(page, "Comment")).toBeEnabled();
     await expect(box(page)).toHaveValue(text);

@@ -13,6 +13,9 @@ use ts_rs::TS;
 pub enum ApiError {
     /// No session, an expired one, or an account that must sign in again.
     SignedOut,
+    /// The request came from a tab on another account than the browser session's active one
+    /// (`X-Beghu-Account`): the user switched or signed out in another tab.
+    Switched,
     BadRequest(String),
     /// Refused: from another site's page.
     Forbidden(String),
@@ -130,6 +133,8 @@ pub struct IssueRef {
 pub enum ErrorKind {
     /// 401: sign in.
     SignedOut,
+    /// 409: the tab is on another account than the browser's active one; nothing was done.
+    Switched,
     /// 400.
     BadRequest,
     /// 403: refused, whoever asks.
@@ -176,6 +181,16 @@ impl From<dbrt::Error> for ApiError {
         if let dbrt::Error::Sealed = e {
             return ApiError::restarting();
         }
+        // The account's mirror is deleted or being deleted: it lost access since the request's
+        // session was read (its next request is answered 401 at the gate), or it signed in again
+        // as the delete ran, and the mirror comes back empty in a moment. Either way, a moment
+        // later says which; nothing here says the session ended.
+        if let dbrt::Error::Deleted = e {
+            return ApiError::Unavailable {
+                retry_after: Duration::from_secs(1),
+                why: "this account's data is being deleted or rebuilt".into(),
+            };
+        }
         match e.retry_after() {
             Some(retry_after) => ApiError::Unavailable {
                 retry_after,
@@ -217,6 +232,11 @@ impl IntoResponse for ApiError {
                 StatusCode::UNAUTHORIZED,
                 ErrorKind::SignedOut,
                 "Sign in to continue".to_owned(),
+            ),
+            ApiError::Switched => (
+                StatusCode::CONFLICT,
+                ErrorKind::Switched,
+                "This tab is on another account".to_owned(),
             ),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, ErrorKind::BadRequest, m),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, ErrorKind::Forbidden, m),

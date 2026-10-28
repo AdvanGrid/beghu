@@ -316,3 +316,149 @@ fn a_retried_migration_shows_updating_again_after_200_ms() {
         [Effect::Status(Some(Status::Updating))]
     );
 }
+
+// Deleting a mirror (an account that lost access): the gate deletes the file once nothing else
+// is under way, refuses everyone until the account is revived, and a revived account's first use
+// creates an empty mirror and asks for its import.
+
+#[test]
+fn a_deleted_mirror_refuses_everyone_until_revived_then_is_created_empty() {
+    let mut g = gate(&V2);
+    g.handle(s(0), request(1));
+    g.handle(s(0), Event::Opened(Ok(Some(2))));
+
+    assert_eq!(g.handle(s(1), Event::Delete { id: 7 }), [Effect::Delete]);
+    assert_eq!(
+        g.handle(s(1), webhook(2)),
+        [Effect::Refuse {
+            id: 2,
+            why: Refusal::Deleted
+        }]
+    );
+    assert_eq!(
+        g.handle(s(2), Event::Deleted(Ok(()))),
+        [Effect::Serve { id: 7 }]
+    );
+    assert_eq!(
+        g.handle(s(3), request(3)),
+        [Effect::Refuse {
+            id: 3,
+            why: Refusal::Deleted
+        }]
+    );
+
+    assert_eq!(g.handle(s(4), Event::Revive), []);
+    assert_eq!(g.handle(s(5), request(4)), [Effect::Open]);
+    assert_eq!(
+        g.handle(s(5), Event::Opened(Ok(None))),
+        [Effect::Create {
+            why: "no mirror file".into()
+        }]
+    );
+    assert_eq!(
+        g.handle(s(6), Event::Created(Ok(()))),
+        [
+            Effect::NeedsImport {
+                why: "empty mirror created".into()
+            },
+            Effect::Serve { id: 4 }
+        ]
+    );
+}
+
+#[test]
+fn a_delete_during_a_migration_waits_for_it_then_deletes() {
+    let mut g = gate(&V2);
+    g.handle(s(0), request(1));
+    g.handle(s(0), Event::Opened(Ok(Some(1))));
+
+    // The migration's job holds the file: the delete waits for it to end.
+    assert_eq!(g.handle(s(1), Event::Delete { id: 7 }), []);
+    assert_eq!(
+        g.handle(s(2), Event::Migrated(Ok(()))),
+        [
+            Effect::Refuse {
+                id: 1,
+                why: Refusal::Deleted
+            },
+            Effect::Delete
+        ]
+    );
+    // A second delete joins the one under way.
+    assert_eq!(g.handle(s(2), Event::Delete { id: 8 }), []);
+    assert_eq!(
+        g.handle(s(3), Event::Deleted(Ok(()))),
+        [Effect::Serve { id: 7 }, Effect::Serve { id: 8 }]
+    );
+}
+
+#[test]
+fn a_revive_during_the_delete_reopens_once_it_is_done() {
+    let mut g = gate(&V2);
+    assert_eq!(g.handle(s(0), Event::Delete { id: 7 }), [Effect::Delete]);
+    assert_eq!(g.handle(s(0), Event::Revive), []);
+    assert_eq!(
+        g.handle(s(1), Event::Deleted(Ok(()))),
+        [Effect::Serve { id: 7 }]
+    );
+    assert_eq!(g.handle(s(2), request(1)), [Effect::Open]);
+}
+
+#[test]
+fn a_failed_delete_tells_whoever_asked_and_still_refuses_everyone() {
+    let mut g = gate(&V2);
+    g.handle(s(0), Event::Delete { id: 7 });
+    assert_eq!(
+        g.handle(s(1), Event::Deleted(Err("permission denied".into()))),
+        [Effect::Refuse {
+            id: 7,
+            why: Refusal::Failed {
+                error: "permission denied".into()
+            }
+        }]
+    );
+    assert_eq!(
+        g.handle(s(2), webhook(1)),
+        [Effect::Refuse {
+            id: 1,
+            why: Refusal::Deleted
+        }]
+    );
+}
+
+#[test]
+fn a_revive_while_the_delete_waits_for_a_migration_reopens_once_it_is_done() {
+    let mut g = gate(&V2);
+    g.handle(s(0), request(1));
+    g.handle(s(0), Event::Opened(Ok(Some(1))));
+
+    // The delete waits behind the migration, and the account signs in again meanwhile.
+    assert_eq!(g.handle(s(1), Event::Delete { id: 7 }), []);
+    assert_eq!(g.handle(s(1), Event::Revive), []);
+    g.handle(s(2), Event::Migrated(Ok(())));
+    assert_eq!(
+        g.handle(s(3), Event::Deleted(Ok(()))),
+        [Effect::Serve { id: 7 }]
+    );
+    assert_eq!(g.handle(s(4), request(2)), [Effect::Open]);
+}
+
+#[test]
+fn a_delete_after_a_revive_wins() {
+    let mut g = gate(&V2);
+    g.handle(s(0), request(1));
+    g.handle(s(0), Event::Opened(Ok(Some(1))));
+
+    g.handle(s(1), Event::Delete { id: 7 });
+    g.handle(s(1), Event::Revive);
+    g.handle(s(1), Event::Delete { id: 8 });
+    g.handle(s(2), Event::Migrated(Ok(())));
+    g.handle(s(3), Event::Deleted(Ok(())));
+    assert_eq!(
+        g.handle(s(4), request(2)),
+        [Effect::Refuse {
+            id: 2,
+            why: Refusal::Deleted
+        }]
+    );
+}

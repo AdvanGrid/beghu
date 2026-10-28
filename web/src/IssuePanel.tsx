@@ -29,6 +29,7 @@ import {
   Moved,
   NoAccess,
   SessionEnded,
+  Switched,
   forgetPushed,
   getComments,
   getIssue,
@@ -60,6 +61,7 @@ import { md } from "./md/tokens.stylex";
 import { marked } from "./md/walker";
 import type { Links } from "./md/links";
 import { IssueNotice, reloadOnce, resetOnChange } from "./Root";
+import { stale } from "./account";
 import { ChunkFailed } from "./router";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
@@ -868,8 +870,9 @@ function githubUrl(i: Pick<IssueRef, "kind" | "owner" | "repo" | "number">): str
 }
 
 /**
- * The detail failed to load: a deleted or inaccessible issue says so in place; anything else
- * offers Retry. A new issue opened from the list tries again, and so does a push naming this one.
+ * The detail failed to load: a deleted or inaccessible issue says so in place, and so does one a
+ * stale tab can't read, keeping the tab's text on it; anything else offers Retry. A new issue
+ * opened from the list tries again, and so does a push naming this one.
  */
 function DetailFailure(props: { error: unknown; reset: () => void; id: number; search: string }) {
   resetOnChange(() => props.id, props.reset);
@@ -886,9 +889,35 @@ function DetailFailure(props: { error: unknown; reset: () => void; id: number; s
     };
   });
   return (
-    <Show when={props.error instanceof Gone || props.error instanceof NoAccess} fallback={<IssueNotice error={props.error} retry={retry} />}>
+    <Show
+      when={props.error instanceof Gone || props.error instanceof NoAccess}
+      fallback={
+        <Show when={stale() !== undefined || props.error instanceof Switched} fallback={<IssueNotice error={props.error} retry={retry} />}>
+          <StaleIssue id={props.id} />
+        </Show>
+      }
+    >
       <LostIssue error={props.error as Gone | NoAccess} search={props.search} id={props.id} />
     </Show>
+  );
+}
+
+/**
+ * An issue or PR a stale tab couldn't read, in place of the panel: what the banner offers to see
+ * it again, and any text the tab hadn't sent on it, to copy (a PR has none: it's read-only).
+ */
+function StaleIssue(props: { id: number }) {
+  return (
+    <div {...stylex.attrs(s.notice)} role="status" data-perf="detail-stale">
+      <p {...stylex.attrs(s.lostTitle)}>
+        {stale() === "switched" || stale() === undefined ? "This tab is on another account: reload it to see this." : "Sign in again to see this."}
+      </p>
+      <Errored fallback={() => null}>
+        <Loading>
+          <KeptText issue={props.id} />
+        </Loading>
+      </Errored>
+    </div>
   );
 }
 

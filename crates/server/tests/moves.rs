@@ -419,10 +419,7 @@ async fn a_link_read_back_that_meets_the_issue_transferred_leaves_the_account_he
 /// `POST /api/ops` from `b`'s tab: the status and the body.
 async fn op(s: &Stack, b: &Browser, n: usize, op: Value) -> (u16, Value) {
     let res = s
-        .http
-        .post(format!("{}/api/ops", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(b, reqwest::Method::POST, "/api/ops")
         .json(&json!({ "op_id": format!("00000000-0000-4000-8000-{n:012x}"), "op": op }))
         .send()
         .await
@@ -472,10 +469,7 @@ async fn an_issue_transferred_out_of_the_synced_repos_stays_linked_as_a_stub() {
         .filter(|&id| id != docs)
         .collect();
     let res = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": keep }))
         .send()
         .await

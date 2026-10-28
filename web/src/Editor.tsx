@@ -6,15 +6,16 @@
 // `saveEdit` and `cancelEdit` (keys.ts) while it holds the focus. A live push that changes the
 // field under edit says "Changed since you started editing" at once. A 409 keeps the user's text
 // and shows GitHub's beside it, with "Overwrite with mine" (sent again over GitHub's text) and
-// "Discard mine" (the editor closes on GitHub's). While GitHub is unreachable, Save is disabled
-// and the text stays.
+// "Discard mine" (the editor closes on GitHub's). While writes are paused (a banner shows: the tab
+// is stale, or beghu or GitHub can't be reached), Save is disabled, the editor says why, and the
+// text stays.
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, Errored, Loading, onCleanup, onSettled, runWithOwner, Show, untrack } from "solid-js";
 import { Changed, SessionEnded, getSource, signIn, type IssueDetail } from "./api";
 import type { IssueSource } from "./bindings/IssueSource";
 import { closeEditor, editorNow, editorOf, sameText, updateEditor, type Field } from "./editing";
 import { touch } from "./keys";
-import { githubDown } from "./live";
+import { writesPaused } from "./live";
 import type { ShownDetail } from "./overlay";
 import { md } from "./md/tokens.stylex";
 import { colors, fonts } from "./tokens.stylex";
@@ -151,7 +152,7 @@ function EditorForm(props: Props & { field: Field; source?: IssueSource }) {
   /** Save, or "Overwrite with mine" after a 409: over GitHub's text then. */
   const save = () => {
     const r = editorNow(issue(), field);
-    if (!r || r.saving || githubDown()) return;
+    if (!r || r.saving || writesPaused()) return;
     const mine = r.text ?? props.source?.body ?? "";
     const opened = r.base ?? props.source?.body ?? "";
     if (field === "title" && !mine.trim()) return;
@@ -250,6 +251,11 @@ function EditorForm(props: Props & { field: Field; source?: IssueSource }) {
           </p>
         )}
       </Show>
+      <Show when={writesPaused()}>
+        <p role="status" data-perf="edit-paused" {...stylex.attrs(s.changed)}>
+          Saving is paused while the banner above shows; your text is kept.
+        </p>
+      </Show>
       <div {...stylex.attrs(s.actions)}>
         <Show
           when={conflict()}
@@ -258,7 +264,7 @@ function EditorForm(props: Props & { field: Field; source?: IssueSource }) {
               <button type="button" {...stylex.attrs(s.button)} onClick={close}>
                 Cancel
               </button>
-              <button type="submit" {...stylex.attrs(s.button, s.primary)} disabled={githubDown() || blank()}>
+              <button type="submit" {...stylex.attrs(s.button, s.primary)} disabled={writesPaused() || blank()}>
                 Save
               </button>
             </>
@@ -267,7 +273,7 @@ function EditorForm(props: Props & { field: Field; source?: IssueSource }) {
           <button type="button" {...stylex.attrs(s.button)} onClick={close}>
             Discard mine
           </button>
-          <button type="submit" {...stylex.attrs(s.button, s.primary)} disabled={githubDown() || blank()}>
+          <button type="submit" {...stylex.attrs(s.button, s.primary)} disabled={writesPaused() || blank()}>
             Overwrite with mine
           </button>
         </Show>

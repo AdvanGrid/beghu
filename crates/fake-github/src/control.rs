@@ -48,7 +48,8 @@
 //!   tokens and codes expire without waiting.
 //! - `PUT /quota {remaining}`: every token owner's primary rate limit reads as at most
 //!   `remaining` left, as if other clients had spent the rest; `null` lifts it (`quota.rs`).
-//! - `POST /revoke {login}`: the user revokes the App's authorization in GitHub's settings.
+//! - `POST /revoke {login}`: the user revokes the App's authorization in GitHub's settings;
+//!   GitHub sends `github_app_authorization` `revoked`.
 //! - `PUT /permissions {login, repo, role}`: an admin gives the account `role` on the repo
 //!   (`read` … `admin`), or with `role: null` removes its access, as removing a collaborator or
 //!   a team does. The repo then drops out of what the account's token sees.
@@ -421,13 +422,27 @@ async fn revoke(State(fake): State<Fake>, axum::Json(r): axum::Json<RevokeReq>) 
         .state()
         .truth
         .write(move |tx| match q::account_by_login(tx, &r.login)? {
-            Some(a) => q::revoke_user(tx, a.id, now).map(|_| true),
-            None => Ok(false),
+            Some(a) => {
+                q::revoke_user(tx, a.id, now)?;
+                let sender = match q::user_row(tx, a.id)? {
+                    Some(u) => webhooks::user_json(u.id, &u.login, u.avatar_url.as_deref()),
+                    None => webhooks::user_json(a.id, &r.login, None),
+                };
+                // GitHub's payload: the action and who revoked, with no installation.
+                Ok(Some(webhooks::Delivery::new(
+                    "github_app_authorization",
+                    json!({ "action": "revoked", "sender": sender }),
+                )))
+            }
+            None => Ok(None),
         })
         .await;
     match done {
-        Ok(true) => ok(),
-        Ok(false) => bad_request("no fixture account with that login"),
+        Ok(Some(d)) => {
+            fake.state().webhooks.send(vec![d]);
+            ok()
+        }
+        Ok(None) => bad_request("no fixture account with that login"),
         Err(e) => api::internal(e),
     }
 }

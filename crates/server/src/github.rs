@@ -589,6 +589,7 @@ impl GitHub {
         state: &str,
         challenge: &str,
         login: Option<&str>,
+        select_account: bool,
     ) -> String {
         let mut q = vec![
             ("client_id", self.client_id.as_str()),
@@ -599,6 +600,11 @@ impl GitHub {
         ];
         if let Some(login) = login {
             q.push(("login", login));
+        }
+        // Adding another account: GitHub shows its account picker rather than signing in the
+        // account the browser is signed in to GitHub as.
+        if select_account {
+            q.push(("prompt", "select_account"));
         }
         format!(
             "{}/login/oauth/authorize?{}",
@@ -619,6 +625,29 @@ impl GitHub {
             ("code_verifier", verifier),
         ])
         .await
+    }
+
+    /// Revokes the user's grant to the App, and with it every token it issued
+    /// (`DELETE /applications/{client_id}/grant`, with the App's client id and secret). A grant
+    /// already gone (a 404 or 422 for the token) is done too.
+    pub async fn revoke_grant(&self, access_token: &str) -> Result<(), Error> {
+        let res = self
+            .send(
+                self.http
+                    .delete(format!(
+                        "{}/applications/{}/grant",
+                        self.api, self.client_id
+                    ))
+                    .basic_auth(&self.client_id, Some(&self.client_secret))
+                    .header("accept", "application/vnd.github+json")
+                    .header("x-github-api-version", "2022-11-28")
+                    .json(&serde_json::json!({ "access_token": access_token })),
+            )
+            .await?;
+        match res.status().as_u16() {
+            204 | 404 | 422 => Ok(()),
+            _ => Err(refusal(res).await),
+        }
     }
 
     /// Trades a refresh token for a new pair. GitHub's refresh tokens are single-use.

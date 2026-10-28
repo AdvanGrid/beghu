@@ -551,6 +551,8 @@ pub(crate) struct Lane {
     shared: Arc<Shared>,
     writer: Turn,
     readers: Arc<Semaphore>,
+    /// How many readers it allows at once: the permits `readers` started with.
+    reader_count: u32,
 }
 
 impl Lane {
@@ -561,6 +563,7 @@ impl Lane {
             shared,
             writer: Arc::default(),
             readers: Arc::new(Semaphore::new(readers)),
+            reader_count: readers as u32,
         }
     }
 
@@ -623,6 +626,32 @@ impl Lane {
                 work()
             })
             .await
+    }
+
+    /// Runs `work` (deleting the lane's file) once no connection of the lane is in use, and with
+    /// none left open: it holds the writer's turn and every reader's permit, so the write and
+    /// reads in flight finish first and none starts meanwhile, then closes the idle connections.
+    /// Sealed as [`Lane::write`] is.
+    pub(crate) async fn remove(
+        &self,
+        work: impl FnOnce() -> std::io::Result<()> + Send + 'static,
+    ) -> Result<(), Error> {
+        let turn = self.write_turn().await?;
+        let readers = self
+            .readers
+            .clone()
+            .acquire_many_owned(self.reader_count)
+            .await
+            .expect("never closed");
+        let (shared, key) = (self.shared.clone(), self.key);
+        tokio::task::spawn_blocking(move || {
+            let (_turn, _readers) = (turn, readers);
+            shared.close_idle(key);
+            work()
+        })
+        .await
+        .map_err(|_| Error::Panicked)?
+        .map_err(Error::Io)
     }
 
     /// The drain's last step, once the budget is sealed: waits for the write in flight (every

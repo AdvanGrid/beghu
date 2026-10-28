@@ -211,7 +211,7 @@ test("a change between the data response and the stream opening shows within 2 s
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
   const opened: number[] = [];
-  await page.route("**/api/stream", async (route) => {
+  await page.route("**/api/stream?*", async (route) => {
     await held;
     opened.push(Date.now());
     await route.continue();
@@ -257,7 +257,7 @@ test("a killed stream shows reconnecting… after 3 s, retries every second, and
 
   // beghu stays unreachable for new streams, and the open one drops.
   const attempts: number[] = [];
-  await page.route("**/api/stream", (route) => {
+  await page.route("**/api/stream?*", (route) => {
     attempts.push(Date.now());
     return route.abort("connectionrefused");
   });
@@ -283,7 +283,7 @@ test("a killed stream shows reconnecting… after 3 s, retries every second, and
   await expect(page.getByText(title)).toHaveCount(0);
 
   const refetched = liveRefetch(page);
-  await page.unroute("**/api/stream");
+  await page.unroute("**/api/stream?*");
   await refetched;
   await expect(status).not.toContainText("reconnecting…");
   await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("data-id", id);

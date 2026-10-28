@@ -5,6 +5,7 @@
 //! drain stops it and waits for it; `jobs.rs` has the contract a job keeps, and the few tasks
 //! outside it.
 
+mod accounts;
 mod api;
 mod assets;
 mod auth;
@@ -34,8 +35,8 @@ mod volume;
 mod webhook;
 
 pub use config::{
-    Config, GitHubConfig, MirrorsConfig, ReconcileConfig, default_assets_kept_for,
-    default_backup_every, default_drain_for, default_read_back_retries,
+    Config, GitHubConfig, MirrorsConfig, ReconcileConfig, default_accounts_check_every,
+    default_assets_kept_for, default_backup_every, default_drain_for, default_read_back_retries,
 };
 
 use axum::Router;
@@ -99,7 +100,8 @@ struct Inner {
 ///
 /// 1. migrate the control DB (after a `VACUUM INTO` backup);
 /// 2. copy this build's assets to the volume and prune the old ones;
-/// 3. delete dormant accounts' mirror files (#114, not built yet);
+/// 3. delete the mirror files of accounts that aren't active (they lost access; dormant ones
+///    too, once #114 makes any);
 /// 4. listen;
 /// 5. resume the webhook deliveries acked but not processed, then redeliver for the downtime
 ///    (#92);
@@ -115,6 +117,8 @@ pub struct Opened {
     sinks: webhook::Sinks,
     notices: tokio::sync::broadcast::Receiver<mirror_db::Notice>,
     installs: tokio::sync::mpsc::UnboundedReceiver<webhook::InstallChange>,
+    /// Accounts that lost access, on their way to `accounts::lost_access`.
+    lost: tokio::sync::mpsc::UnboundedReceiver<i64>,
     /// The volume's assets, and when their next prune is due (`None` without a web build, or
     /// with no build superseded, when there's none to wait for).
     assets: Option<(assets::Assets, i64)>,
@@ -158,8 +162,14 @@ impl App {
             cfg.github_write_timeout,
         );
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
-        let tokens =
-            tokens::Tokens::new(control.clone(), github.clone(), keys.clone(), jobs.clone());
+        let (lost, lost_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tokens = tokens::Tokens::new(
+            control.clone(),
+            github.clone(),
+            keys.clone(),
+            jobs.clone(),
+            lost.clone(),
+        );
         let hub = Arc::new(live::Hub::default());
         let installations = installations::Installations::new(github.clone(), &cfg.github)?;
         let budgets = Arc::new(reconcile::Budgets::default());
@@ -178,6 +188,7 @@ impl App {
             mirrors: mirrors.clone(),
             hub: hub.clone(),
             installs,
+            lost,
             edges: edges.clone(),
             jobs: jobs.clone(),
         };
@@ -207,13 +218,15 @@ impl App {
             jobs,
             assets_dir,
         }));
-        // Step 3: delete dormant accounts' mirror files, before anything can open one.
-        // TODO(#114): dormancy's startup cleanup goes here.
+        // Step 3: delete the mirror files of accounts that aren't active, before anything can
+        // open one. TODO(#114): dormant accounts are among them once dormancy exists.
+        accounts::delete_unused_mirrors(&app).await?;
         Ok(Opened {
             app,
             sinks,
             notices,
             installs: installs_rx,
+            lost: lost_rx,
             assets: prune_next.map(|next| (assets, next)),
         })
     }
@@ -325,6 +338,7 @@ impl Opened {
             sinks,
             notices,
             installs,
+            lost,
             assets,
         } = self;
         // Step 5: the deliveries acked but not processed go first, ahead of any that came in
@@ -343,6 +357,8 @@ impl Opened {
         }
         app.spawn(|app| follow_notices(app, notices));
         app.spawn(|app| follow_installations(app, installs));
+        app.spawn(|app| accounts::follow_lost(app, lost));
+        app.spawn(accounts::daily);
         app.0
             .started
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -382,7 +398,9 @@ async fn follow_installations(
                 .control()
                 .read(move |c| control_db::q::account(c, sender))
                 .await;
-            if matches!(known, Ok(Some(_))) {
+            // Only an account in use: one that must sign in again (or disconnected) has no
+            // tokens to read with, and its mirror is gone.
+            if matches!(known, Ok(Some(a)) if a.status == tokens::account_status::ACTIVE) {
                 accounts.insert(sender);
             }
         }
@@ -429,13 +447,14 @@ pub fn router(app: App) -> Router {
         .route("/repos/{id}/labels", get(pickers::labels))
         .route("/repos/{id}/milestones", get(pickers::milestones))
         .route("/repos/{id}/assignees", get(pickers::assignees))
-        .route("/stream", get(live::stream))
         .route("/ops", post(ops::post))
         .route("/resync", post(reconcile::resync))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
         ))
+        // Outside the gate: the stream lets itself in, to answer in its own terms.
+        .route("/stream", get(live::stream))
         .fallback(|| async { error::ApiError::NotFound })
         // Outermost of the API's own layers: a request from another site is refused before
         // anything else looks at it.
@@ -452,12 +471,23 @@ pub fn router(app: App) -> Router {
         .route("/issues/{id}", get(shell::shell))
         .route("/repos", get(shell::shell))
         .layer(compression());
+    // Signing out, switching and Disconnect: form posts from beghu's own pages only.
+    let session_forms = Router::new()
+        .route("/auth/switch", post(accounts::switch))
+        .route("/auth/logout", post(accounts::logout))
+        .route("/auth/disconnect", post(accounts::disconnect))
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            auth::require_same_origin,
+        ));
     let mut r = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
         .route("/auth/setup", get(auth::setup))
+        .route("/auth/signed-out", get(accounts::signed_out))
+        .merge(session_forms)
         .route(
             "/webhook",
             post(webhook::receive).layer(axum::extract::DefaultBodyLimit::max(webhook::MAX_BODY)),
@@ -664,5 +694,13 @@ pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Now, in Unix milliseconds: for ordering events closer together than a second.
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

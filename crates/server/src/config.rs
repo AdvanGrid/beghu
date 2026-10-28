@@ -72,6 +72,9 @@ pub struct Config {
     /// its WAL checkpoint (22 s), which gets 3 s more: 25 s in all, inside the 30 s stop grace
     /// period docs/deploy.md ("Stopping") asks for.
     pub drain_for: Duration,
+    /// How often the accounts' check runs (a day, from startup): lapsed refresh tokens sign their
+    /// accounts out, and expired sessions are pruned (see `accounts.rs`).
+    pub accounts_check_every: Duration,
 }
 
 /// The schedules of reconciliation (`reconcile.rs`): GitHub's own figures and the spec's.
@@ -162,6 +165,11 @@ pub fn default_drain_for() -> Duration {
     Duration::from_secs(22)
 }
 
+/// [`Config::accounts_check_every`]: a day.
+pub fn default_accounts_check_every() -> Duration {
+    Duration::from_secs(24 * 60 * 60)
+}
+
 /// [`Config::assets_kept_for`]: a day.
 pub fn default_assets_kept_for() -> Duration {
     Duration::from_secs(24 * 60 * 60)
@@ -241,6 +249,7 @@ impl Config {
             backup_every: default_backup_every(),
             assets_kept_for: default_assets_kept_for(),
             drain_for: default_drain_for(),
+            accounts_check_every: default_accounts_check_every(),
         })
     }
 

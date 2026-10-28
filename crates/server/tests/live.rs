@@ -377,14 +377,21 @@ async fn the_stream_is_origin_checked_unbuffered_and_keeps_a_heartbeat() {
     let res = open(Some("https://evil.example".into())).await.unwrap();
     assert_eq!(res.status(), 403);
     assert_eq!(res.json::<Value>().await.unwrap()["error"], "forbidden");
-    // Signed out: no stream.
+    // Signed out: a stream that says so (a tab's EventSource can't read a 401), and ends.
     let res = s
         .http
         .get(format!("{}/api/stream", s.server))
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 401);
+    assert_eq!(res.status(), 200);
+    let mut st = common::Stream::new(res);
+    let ev = st.event_within(SECS).await.unwrap();
+    assert_eq!(
+        (ev.event.as_str(), ev.data.as_str()),
+        ("switched", r#"{"account":null,"sign_in_again":false}"#)
+    );
+    assert!(st.ends_within(SECS).await);
 
     // beghu's own origin, or none (a same-origin EventSource sends none).
     for origin in [Some(s.server.clone()), None] {

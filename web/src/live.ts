@@ -6,9 +6,16 @@
 // pushes down to one fetch now and one after it.
 //
 // Reconnecting is the tab's own: about a second after a drop, never EventSource's backoff.
-// `reconnecting()` turns true once the stream has been down for 3 s. `githubDown()` follows the
-// server's `github` event, sent as each stream opens and whenever it changes: writes pause while
-// it's true.
+// `reconnecting()` turns true once the stream has been down for 3 s, and `cantReach()` (the
+// "Can't reach beghu" banner) at 15 s. `githubDown()` follows the server's `github` event, sent as
+// each stream opens and whenever it changes. Writes pause while any banner shows
+// (`writesPaused()`).
+//
+// The stream names the tab's account (account.ts). A `switched` event (the browser's active account
+// changed, or the tab's lost access) makes the tab stale, and the stream ends for good; beghu sends
+// one too to a stream that opens once the tab's account can't be used. A stream that fails
+// otherwise asks `/api/me` whether beghu refuses the account, so a 401 or 409 in front of it reads
+// as the tab going stale, not as "Can't reach beghu".
 //
 // `status` events say what the status slot shows besides: `importing()` is the account's import
 // while one runs, and `sync()` its sync state while it's degraded or resyncing. Every `reset`
@@ -17,22 +24,26 @@
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { forgetRemembered } from "./api";
+import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
 import type { ImportStatus } from "./bindings/ImportStatus";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
 import type { StreamStatus } from "./bindings/StreamStatus";
+import type { StreamSwitched } from "./bindings/StreamSwitched";
 import type { SyncStatus } from "./bindings/SyncStatus";
 
 export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset" };
 
 const RETRY_MS = 1000;
 const RECONNECTING_AFTER_MS = 3000;
+const CANT_REACH_AFTER_MS = 15_000;
 
 const listeners = new Set<(p: Push) => void>();
 const [reconnecting, setReconnecting] = createSignal(false);
 const [importing, setImporting] = createSignal<ImportStatus | null>(null);
 const [sync, setSync] = createSignal<SyncStatus | null>(null);
 const [githubDown, setGithubDown] = createSignal(false);
+const [cantReach, setCantReach] = createSignal(false);
 
 /** True while the stream has been down for 3 s or more. */
 export { reconnecting };
@@ -42,6 +53,13 @@ export { importing };
 export { sync };
 /** True while the server finds GitHub unreachable. */
 export { githubDown };
+/** True once the stream has been down for 15 s: the "Can't reach beghu" banner. */
+export { cantReach };
+
+/** Writes pause while any banner shows: the tab is stale, beghu or GitHub can't be reached. */
+export function writesPaused(): boolean {
+  return stale() !== undefined || cantReach() || githubDown();
+}
 
 /** When the stream last reset (`performance.now()`): anything read before may be stale. */
 let lastReset = -Infinity;
@@ -84,15 +102,27 @@ export function connectLive(): () => void {
   let source: EventSource | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let down: ReturnType<typeof setTimeout> | undefined;
+  let gone: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  const account = tabAccount();
 
   const open = () => {
-    const es = new EventSource("/api/stream");
+    const es = new EventSource(account === undefined ? "/api/stream" : `/api/stream?account=${account}`);
     source = es;
     es.addEventListener("open", () => {
       clearTimeout(down);
-      down = undefined;
+      clearTimeout(gone);
+      down = gone = undefined;
       setReconnecting(false);
+      setCantReach(false);
+    });
+    es.addEventListener("switched", (e) => {
+      const sw = JSON.parse((e as MessageEvent<string>).data) as StreamSwitched;
+      if (sw.sign_in_again) noteSignInAgain();
+      else noteActive(sw.account);
+      // The tab's account is done here: no more pushes, and no reconnecting.
+      closed = true;
+      es.close();
     });
     es.addEventListener("reset", () => {
       setImporting(null);
@@ -113,9 +143,23 @@ export function connectLive(): () => void {
     es.addEventListener("error", () => {
       // Our own retry, not EventSource's.
       es.close();
-      if (closed || source !== es) return;
+      if (closed || stale() || source !== es) return;
       down ??= setTimeout(() => setReconnecting(true), RECONNECTING_AFTER_MS);
+      gone ??= setTimeout(() => setCantReach(true), CANT_REACH_AFTER_MS);
       retry = setTimeout(open, RETRY_MS);
+      // beghu may be up and refusing the tab's account (something in front of it answered the
+      // stream for it): asked plainly, it says, and the tab goes stale, not "Can't reach".
+      void refused().then((why) => {
+        if (why === undefined || closed) return;
+        why();
+        closed = true;
+        clearTimeout(retry);
+        clearTimeout(down);
+        clearTimeout(gone);
+        setReconnecting(false);
+        setCantReach(false);
+        source?.close();
+      });
     });
   };
   open();
@@ -123,8 +167,29 @@ export function connectLive(): () => void {
     closed = true;
     clearTimeout(retry);
     clearTimeout(down);
+    clearTimeout(gone);
     source?.close();
   };
+}
+
+/**
+ * Whether beghu refuses the tab's account, asked through `/api/me` after the stream failed: how to
+ * mark the tab stale (`switched` for a 409; for a 401, by the cookie, signed out, switched or
+ * sign in again), or undefined if it answered otherwise or not at all.
+ */
+async function refused(): Promise<(() => void) | undefined> {
+  let res: Response;
+  try {
+    res = await fetch("/api/me", { headers: accountHeaders() });
+  } catch {
+    return undefined;
+  }
+  if (res.status === 409) return noteSwitched;
+  if (res.status !== 401) return undefined;
+  const now = cookieAccount();
+  if (now === undefined) return () => noteActive(null);
+  if (now !== tabAccount()) return () => noteActive(now);
+  return noteSignInAgain;
 }
 
 /**

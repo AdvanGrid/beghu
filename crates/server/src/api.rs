@@ -42,6 +42,8 @@ pub struct Me {
 pub struct Account {
     pub id: i64,
     pub login: String,
+    /// It lost access to GitHub: switching to it signs it in again.
+    pub needs_sign_in: bool,
 }
 
 #[derive(Serialize, TS, Clone, Copy)]
@@ -110,12 +112,14 @@ pub async fn me(
         account: Account {
             id: row.github_user_id,
             login: row.login,
+            needs_sign_in: false,
         },
         accounts: accounts
             .into_iter()
             .map(|a| Account {
                 id: a.github_user_id,
                 login: a.login,
+                needs_sign_in: a.status != crate::tokens::account_status::ACTIVE,
             })
             .collect(),
         comment_order: CommentOrder::from_pref(row.comment_order.as_deref()),

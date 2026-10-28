@@ -2581,6 +2581,28 @@ async fn an_installation_token_gets_the_permissions_asked_for_within_the_apps() 
     assert_eq!(minted, [&all["permissions"], &narrow["permissions"]]);
 }
 
+#[tokio::test]
+async fn revoking_in_githubs_settings_sends_github_app_authorization_revoked() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    fake.sign_in("ilze-k").await;
+    fake.control(
+        reqwest::Method::POST,
+        "/revoke",
+        json!({ "login": "ilze-k" }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "github_app_authorization");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "revoked");
+    assert_eq!(p["sender"]["login"], "ilze-k");
+    assert_eq!(p["sender"]["type"], "User");
+    // GitHub's payload has no installation: the authorization is the user's, not an install's.
+    assert!(p.get("installation").is_none(), "{p}");
+}
+
 impl Fake {
     /// A GraphQL operation with an installation token: the whole answer.
     async fn query(&self, token: &Value, op: &str, variables: Value) -> Value {

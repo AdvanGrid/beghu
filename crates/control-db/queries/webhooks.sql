@@ -23,7 +23,7 @@ ON CONFLICT (installation_id) DO UPDATE SET last_webhook_at = excluded.last_webh
 -- startup, and queued again when nothing holds them.
 -- name: pending_deliveries :many
 -- param: received_by i64
-SELECT d.guid AS "guid!", d.event, d.payload FROM deliveries d
+SELECT d.guid AS "guid!", d.event, d.payload, d.received_at FROM deliveries d
 WHERE d.processed_at IS NULL AND d.received_at <= :received_by
 ORDER BY d.received_at, d.rowid;
 
@@ -38,7 +38,7 @@ ORDER BY d.received_at, d.rowid;
 -- A delivery not yet processed, to queue again; none once it has been.
 -- name: pending_delivery :opt
 -- param: guid &str
-SELECT d.event, d.payload FROM deliveries d WHERE d.guid = :guid AND d.processed_at IS NULL;
+SELECT d.event, d.payload, d.received_at FROM deliveries d WHERE d.guid = :guid AND d.processed_at IS NULL;
 
 -- Applied everywhere it fans out to: only the GUID is still needed, to dedupe redeliveries.
 -- name: mark_processed :exec
@@ -60,13 +60,14 @@ WHERE s.repo_id = :repo_id AND a.status = 'active'
 ORDER BY a.github_user_id;
 
 -- A fan-out write to the account's mirror failed: a sweep must repair it. `needs_resync_at`
--- keeps the first mark's time.
+-- keeps the first mark's time. Only an active account: one that lost access (or went dormant)
+-- has no mirror to repair, and imports afresh once it's used again.
 -- name: set_needs_resync :exec
 -- param: github_user_id i64
 -- param: now i64
 UPDATE accounts SET needs_resync = 1, needs_resync_at = coalesce(needs_resync_at, :now),
   resync_marks = resync_marks + 1
-WHERE github_user_id = :github_user_id;
+WHERE github_user_id = :github_user_id AND status = 'active';
 
 -- name: add_synced_repo :exec
 -- param: github_user_id i64
@@ -100,6 +101,12 @@ ORDER BY a.github_user_id;
 -- param: marks i64
 UPDATE accounts SET needs_resync = 0, needs_resync_at = NULL
 WHERE github_user_id = :github_user_id AND resync_marks = :marks;
+
+-- The account lost access and its mirror is deleted: there's nothing left to repair, and the
+-- import after it signs in again reads everything afresh.
+-- name: forget_needs_resync :exec
+-- param: github_user_id i64
+UPDATE accounts SET needs_resync = 0, needs_resync_at = NULL WHERE github_user_id = :github_user_id;
 
 -- How many marks the account has had, as a repair begins.
 -- name: resync_marks :one

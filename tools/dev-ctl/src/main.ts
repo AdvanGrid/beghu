@@ -119,7 +119,9 @@ Commands:
   fake clear                  Remove every fault rule, webhook ones included.
   fake tokens [--access-ttl T] [--refresh-ttl T]
                               Lifetimes of new tokens: 30s, 5m, 8h, 184d.
-  fake revoke USER            USER revokes beghu's authorization on "GitHub".
+  fake revoke USER            USER revokes beghu's authorization on "GitHub", which sends
+                              github_app_authorization revoked: beghu asks USER to sign in
+                              again, and re-imports once they do.
   fake uninstall USER         USER uninstalls the App from their own account (GitHub sends
                               installation deleted); signing in again offers to install it.
   fake suspend USER | fake unsuspend USER

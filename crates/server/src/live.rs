@@ -14,17 +14,27 @@
 //! - `github` (`{"state":"up"|"down"}`): whether GitHub is answering, process-wide. Sent right
 //!   after the opening `reset` and its `status`, then on every change; while it's down the tab
 //!   pauses writes.
+//! - `switched` (`{"account":…,"sign_in_again":…}`): the tab's account is no longer the one it
+//!   can use, and the stream ends. Pushed to every stream of a browser session when its active
+//!   account changes (a switch, a sign-in, a sign-out or Disconnect in another tab), with the
+//!   account now active (`null` once none is signed in); and to an account's streams when it
+//!   lost access (`sign_in_again`). A stream opened for another account than the active one
+//!   (`?account=`, the stream's `X-Beghu-Account`: an `EventSource` can't send headers), for an
+//!   account that must sign in again, or once the session ended gets one at once, never a 401
+//!   or 409 the tab couldn't read.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //!
 //! Each account has one broadcast channel, created with its first stream and dropped with its
-//! last, so a mirror write fans out to that account's streams and no one else's.
+//! last, so a mirror write fans out to that account's streams and no one else's. Each browser
+//! session has one too, for `switched`; a sign-in, which gives the session a new id, moves the
+//! channel to it ([`Hub::rekey_session`]).
 
 use crate::App;
-use crate::auth::Session;
+use crate::auth::Refusal;
 use crate::error::ApiError;
 use crate::import::ImportStatus;
 use crate::reconcile::SyncStatus;
-use axum::extract::{Extension, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -50,8 +60,32 @@ pub enum Push {
     Defs,
     /// The import's status changed: this is it now.
     Status(Option<ImportStatus>),
+    /// The tab's account is no longer the one it can use.
+    Switched(StreamSwitched),
     /// The sync state changed: the stream reads it as the event goes out.
     Sync,
+}
+
+impl Push {
+    /// `switched`: the browser session's active account is now `account` (`None`: none is
+    /// signed in), or, with `sign_in_again`, the tab's account `account` lost access.
+    pub fn switched(account: Option<i64>, sign_in_again: bool) -> Push {
+        Push::Switched(StreamSwitched {
+            account,
+            sign_in_again,
+        })
+    }
+}
+
+/// The `switched` event's data.
+#[derive(Serialize, TS, Debug, Clone, PartialEq)]
+#[ts(export)]
+pub struct StreamSwitched {
+    /// The browser session's active account now; `null` once none is signed in.
+    pub account: Option<i64>,
+    /// The tab's account lost access to GitHub (a revoke, a refused refresh): it must sign in
+    /// again.
+    pub sign_in_again: bool,
 }
 
 /// The `status` event's data.
@@ -97,20 +131,40 @@ fn github_event(down: bool) -> Event {
         .data(serde_json::to_string(&StreamGitHub { state }).expect("plain struct"))
 }
 
-/// Every account's broadcast channel, while it has streams.
+/// A browser session's channel. Shared, so a sign-in can move it to the session's new id while
+/// its streams keep it.
+type SessionChannel = Arc<broadcast::Sender<Push>>;
+
+/// Every account's broadcast channel, and every browser session's, while it has streams.
 #[derive(Default)]
-pub struct Hub(Mutex<HashMap<i64, broadcast::Sender<Push>>>);
+pub struct Hub {
+    accounts: Mutex<HashMap<i64, broadcast::Sender<Push>>>,
+    /// By the session id's hash.
+    sessions: Mutex<HashMap<Vec<u8>, SessionChannel>>,
+}
 
 impl Hub {
-    /// A new stream for `account`, creating its channel if this is the first.
-    pub fn subscribe(self: &Arc<Self>, account: i64) -> Subscription {
-        let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let rx = all
-            .entry(account)
-            .or_insert_with(|| broadcast::channel(BUFFER).0)
-            .subscribe();
+    /// A new stream for `account`'s tab in browser session `session`, creating their channels
+    /// if this is the first.
+    pub fn subscribe(self: &Arc<Self>, account: i64, session: &[u8]) -> Subscription {
+        let rx = {
+            let mut all = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
+            all.entry(account)
+                .or_insert_with(|| broadcast::channel(BUFFER).0)
+                .subscribe()
+        };
+        let (session_rx, channel) = {
+            let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let channel = all
+                .entry(session.to_vec())
+                .or_insert_with(|| Arc::new(broadcast::channel(BUFFER).0))
+                .clone();
+            (channel.subscribe(), channel)
+        };
         Subscription {
             rx: Some(rx),
+            session_rx: Some(session_rx),
+            session: channel,
             hub: self.clone(),
             account,
         }
@@ -118,7 +172,7 @@ impl Hub {
 
     /// Whether `account` has a stream open.
     pub fn has_streams(&self, account: i64) -> bool {
-        self.0
+        self.accounts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(&account)
@@ -126,31 +180,58 @@ impl Hub {
 
     /// Sends `push` to `account`'s streams; with none open, it goes nowhere.
     pub fn publish(&self, account: i64, push: Push) {
-        let all = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let all = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(tx) = all.get(&account) {
             let _ = tx.send(push);
         }
     }
+
+    /// Sends `push` to the streams of the browser session `session` (its id's hash).
+    pub fn publish_session(&self, session: &[u8], push: Push) {
+        let all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tx) = all.get(session) {
+            let _ = tx.send(push);
+        }
+    }
+
+    /// The browser session `old` has a new id, `new` (a sign-in): its streams hear what's sent
+    /// to `new` from now on.
+    pub fn rekey_session(&self, old: &[u8], new: &[u8]) {
+        let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(channel) = all.remove(old) {
+            all.insert(new.to_vec(), channel);
+        }
+    }
 }
 
-/// One stream's place in its account's channel. Dropping the last one drops the channel.
+/// One stream's place in its account's channel and its browser session's. Dropping the last
+/// one of either drops that channel.
 pub struct Subscription {
     /// Always `Some` until the drop takes it.
     rx: Option<broadcast::Receiver<Push>>,
+    /// Always `Some` until the drop takes it.
+    session_rx: Option<broadcast::Receiver<Push>>,
+    session: SessionChannel,
     hub: Arc<Hub>,
     account: i64,
 }
 
 impl Subscription {
-    /// The next push; `Reset` in place of anything missed by falling behind.
+    /// The next push, from the account's channel or the session's; `Reset` in place of
+    /// anything missed by falling behind.
     pub async fn next(&mut self) -> Push {
-        let Some(rx) = &mut self.rx else {
+        let (Some(rx), Some(session)) = (&mut self.rx, &mut self.session_rx) else {
             return std::future::pending().await;
         };
-        match rx.recv().await {
+        let got = tokio::select! {
+            r = rx.recv() => r,
+            r = session.recv() => r,
+        };
+        match got {
             Ok(p) => p,
             Err(broadcast::error::RecvError::Lagged(_)) => Push::Reset,
-            // The sender lives in the hub for as long as this subscription does.
+            // The senders live in the hub (or, moved out of it, here) for as long as this
+            // subscription does.
             Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
         }
     }
@@ -158,14 +239,21 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        let mut all = self.hub.0.lock().unwrap_or_else(|e| e.into_inner());
-        // Dropped under the lock, so two streams closing at once can't each count the other.
-        drop(self.rx.take());
-        if all
-            .get(&self.account)
-            .is_some_and(|tx| tx.receiver_count() == 0)
         {
-            all.remove(&self.account);
+            let mut all = self.hub.accounts.lock().unwrap_or_else(|e| e.into_inner());
+            // Dropped under the lock, so two streams closing at once can't each count the other.
+            drop(self.rx.take());
+            if all
+                .get(&self.account)
+                .is_some_and(|tx| tx.receiver_count() == 0)
+            {
+                all.remove(&self.account);
+            }
+        }
+        let mut all = self.hub.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        drop(self.session_rx.take());
+        if self.session.receiver_count() == 0 {
+            all.retain(|_, c| !Arc::ptr_eq(c, &self.session));
         }
     }
 }
@@ -180,6 +268,9 @@ fn event(push: &Push) -> Event {
         Push::Defs => Event::default().event("defs").data("{}"),
         // Sent through `status_event`, which reads the sync state.
         Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
+        Push::Switched(sw) => Event::default()
+            .event("switched")
+            .data(serde_json::to_string(sw).expect("plain struct")),
     }
 }
 
@@ -195,9 +286,26 @@ async fn status_event(app: &App, account: i64, import: Option<Option<ImportStatu
         .data(serde_json::to_string(&status).expect("plain struct"))
 }
 
+#[derive(serde::Deserialize)]
+pub struct StreamQuery {
+    /// The tab's account (`X-Beghu-Account`, which an `EventSource` can't send as a header).
+    account: Option<i64>,
+}
+
+/// A stream that says only `push` (a `switched`), then ends.
+fn once(push: Push) -> Response {
+    let once = futures_util::stream::once(async move { Ok::<_, Infallible>(event(&push)) });
+    Sse::new(once).into_response()
+}
+
+/// `GET /api/stream`. It lets itself in ([`auth::admit`](crate::auth::admit)), so a tab whose
+/// stream (re)opens once its account can't be used hears why as an event, as a live one would,
+/// rather than an error an `EventSource` can't read: a `switched` to the session's active
+/// account (the tab is on another), asking the tab's account to sign in again (it lost access),
+/// or with no account (the session ended). Then the stream ends.
 pub async fn stream(
     State(app): State<App>,
-    Extension(s): Extension<Session>,
+    Query(sq): Query<StreamQuery>,
     headers: HeaderMap,
 ) -> Response {
     // From beghu's own pages: no `Origin` (a same-origin `EventSource` sends none) or beghu's.
@@ -212,11 +320,29 @@ pub async fn stream(
         }
         .into_response();
     }
+    let claimed = sq.account.map(|a| a.to_string());
+    let admitted = match crate::auth::admit(&app, &headers, claimed.as_deref(), false).await {
+        Ok(a) => a,
+        Err(r) => {
+            let hint = r.hint(&headers);
+            let mut res = match r {
+                Refusal::SignedOut => once(Push::switched(None, false)),
+                Refusal::SignInAgain(account) => once(Push::switched(Some(account), true)),
+                Refusal::Switched(active) => once(Push::switched(Some(active), false)),
+                r => ApiError::from(r).into_response(),
+            };
+            // The browser's next load is on the session's active account.
+            res.headers_mut()
+                .extend(hint.map(|c| (axum::http::header::SET_COOKIE, c)));
+            return res;
+        }
+    };
+    let s = admitted.session;
     // Subscribed before the first event, so nothing published after the `reset` is missed. Every
     // `reset` (the first, and one in place of pushes missed by falling behind) is followed by the
     // status slot's state, read after it, so a change is either in it or pushed after; `null`
     // too, so a tab that reconnects after an import ended stops showing it.
-    let sub = app.hub().subscribe(s.account);
+    let sub = app.hub().subscribe(s.account, &s.id_hash);
     let health = app.github().health();
     let draining = app.drain_watch();
     let (imports, account) = (app.clone(), s.account);
@@ -224,9 +350,13 @@ pub async fn stream(
     /// whatever comes; every later `reset` is followed by the status slot's state too.
     enum Step {
         Reset,
-        Status { opening: bool },
+        Status {
+            opening: bool,
+        },
         GitHub,
         Live,
+        /// After a `switched`: the stream ends.
+        End,
     }
     // The stream ends when the drain starts: the tab reconnects to the next server.
     let events = futures_util::stream::unfold(
@@ -241,6 +371,7 @@ pub async fn stream(
                         if opening { Step::GitHub } else { Step::Live },
                     ),
                     Step::GitHub => (github_event(*health.borrow_and_update()), Step::Live),
+                    Step::End => return None,
                     Step::Live => {
                         let push = tokio::select! {
                             push = sub.next() => Some(push),
@@ -259,6 +390,14 @@ pub async fn stream(
                             Some(Push::Reset) => {
                                 (event(&Push::Reset), Step::Status { opening: false })
                             }
+                            // The tab's own account signed in again, or became active again:
+                            // nothing changed for it.
+                            Some(Push::Switched(sw))
+                                if sw.account == Some(account) && !sw.sign_in_again =>
+                            {
+                                (Event::default().comment("still yours"), Step::Live)
+                            }
+                            Some(p @ Push::Switched(_)) => (event(&p), Step::End),
                             Some(p) => (event(&p), Step::Live),
                             None => {
                                 let down = *health.borrow_and_update();
@@ -281,6 +420,9 @@ pub async fn stream(
     // The edge must not buffer the stream.
     res.headers_mut()
         .insert("x-accel-buffering", HeaderValue::from_static("no"));
+    for c in admitted.cookies {
+        res.headers_mut().append(axum::http::header::SET_COOKIE, c);
+    }
     res
 }
 
@@ -294,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn a_stream_that_falls_more_than_the_buffer_behind_gets_a_reset() {
         let hub = Arc::new(Hub::default());
-        let mut slow = hub.subscribe(1);
+        let mut slow = hub.subscribe(1, b"session");
         for id in 0..=BUFFER as i64 {
             hub.publish(1, Push::Ids(Arc::from([id])));
         }
@@ -309,7 +451,7 @@ mod tests {
     fn the_channel_goes_with_the_last_stream_even_when_streams_close_at_once() {
         for _ in 0..5_000 {
             let hub = Arc::new(Hub::default());
-            let (a, b) = (hub.subscribe(1), hub.subscribe(1));
+            let (a, b) = (hub.subscribe(1, b"one"), hub.subscribe(1, b"two"));
             let together = Arc::new(std::sync::Barrier::new(2));
             let other = {
                 let together = together.clone();
@@ -321,12 +463,13 @@ mod tests {
             together.wait();
             drop(b);
             other.join().unwrap();
-            let all = hub.0.lock().unwrap();
+            let all = hub.accounts.lock().unwrap();
             assert!(
                 all.get(&1).is_none(),
                 "a channel with {} receivers outlived its streams",
                 all[&1].receiver_count()
             );
+            assert!(hub.sessions.lock().unwrap().is_empty());
         }
     }
 }

@@ -15,10 +15,7 @@ impl Stack {
     /// `PUT /api/repos` from beghu's own page.
     async fn pick(&self, b: &Browser, repos: &[i64]) -> (u16, Value) {
         let res = self
-            .http
-            .put(format!("{}/api/repos", self.server))
-            .header("cookie", b.header())
-            .header("origin", &self.server)
+            .api_write(b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": repos }))
             .send()
             .await
@@ -818,10 +815,7 @@ async fn an_unsync_a_restart_cuts_short_lists_none_of_the_repo_and_finishes_at_t
         .collect();
     let pick = {
         let req = s
-            .http
-            .put(format!("{}/api/repos", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": keep }));
         tokio::spawn(req.send())
     };
@@ -906,10 +900,7 @@ async fn a_relationship_made_while_an_unsync_is_held_keeps_its_end_as_a_stub() {
         .unwrap();
     let pick = {
         let req = s
-            .http
-            .put(format!("{}/api/repos", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": keep }));
         tokio::spawn(req.send())
     };
@@ -1005,10 +996,7 @@ async fn a_pick_whose_request_goes_away_still_imports_the_repos_it_picked() {
         .unwrap();
     let pick = {
         let req = s
-            .http
-            .put(format!("{}/api/repos", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": without(web) }));
         tokio::spawn(req.send())
     };
@@ -1144,6 +1132,7 @@ async fn only_repos_the_account_can_see_can_be_picked_and_only_from_beghus_own_p
         .http
         .put(format!("{}/api/repos", s.server))
         .header("cookie", b.header())
+        .header("x-beghu-account", b.account())
         .header("origin", "https://evil.example")
         .json(&json!({ "repos": [visible[0].1] }))
         .send()

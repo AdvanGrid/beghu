@@ -43,6 +43,7 @@ import {
   RateLimited,
   Refused,
   SessionEnded,
+  Switched,
   Unreachable,
   getComments,
   getMe,
@@ -58,7 +59,7 @@ import {
 import { touch } from "./keys";
 import type { Label } from "./bindings/Label";
 import type { Milestone } from "./bindings/Milestone";
-import { githubDown, reconnecting, refetchShown } from "./live";
+import { reconnecting, refetchShown, writesPaused } from "./live";
 import { setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { link } from "./bits";
 import { colors } from "./tokens.stylex";
@@ -550,6 +551,7 @@ export function worded(e: unknown): e is Error {
     e instanceof Conflict ||
     e instanceof Changed ||
     e instanceof GitHubDown ||
+    e instanceof Switched ||
     e instanceof Unreachable
   );
 }
@@ -575,7 +577,7 @@ function Actions(props: { p: Pending; open?: string; edit?: () => void }) {
     <>
       <Show when={howFailed(props.p).retry}>
         {" · "}
-        <button type="button" {...stylex.attrs(link.button)} disabled={githubDown()} onClick={() => retry(props.p)}>
+        <button type="button" {...stylex.attrs(link.button)} disabled={writesPaused()} onClick={() => retry(props.p)}>
           Retry
         </button>
       </Show>
@@ -831,24 +833,10 @@ function Status() {
 }
 
 /**
- * While the server finds GitHub unreachable, a banner says so under the header. Comment, Close and
- * Reopen are disabled meanwhile, and the composer keeps its text. (The tab's other banners, for
- * an account switch and for beghu itself being unreachable, come later and go before this one.)
- */
-function Banner() {
-  return (
-    <Show when={githubDown()}>
-      <p role="alert" data-perf="banner" {...stylex.attrs(s.banner)}>
-        GitHub is unreachable. Writes are paused until it's back; your text is kept.
-      </p>
-    </Show>
-  );
-}
-
-/**
  * The pinned composer under the detail: the comment box, Comment, and Close (as completed, or
- * as not planned from its menu) or Reopen. While GitHub is unreachable, Comment, Close and
- * Reopen are disabled and the text stays. A button stays disabled while its write is pending.
+ * as not planned from its menu) or Reopen. While a banner shows (the tab is on another account,
+ * or beghu or GitHub can't be reached), Comment, Close and Reopen are disabled and the text
+ * stays. A button stays disabled while its write is pending.
  */
 export function Composer(props: { d: ShownDetail }) {
   const me = createMemo(() => getMe());
@@ -871,7 +859,7 @@ export function Composer(props: { d: ShownDetail }) {
   const comment = () => {
     const body = draftsNow.get(issue()) ?? "";
     const sending = pendingNow.some((p) => p.phase === "sending" && p.op.kind === "comment" && p.op.issue === issue());
-    if (!body.trim() || githubDown() || sending) return;
+    if (!body.trim() || writesPaused() || sending) return;
     write({ kind: "comment", issue: issue(), body }, ref(), author());
     setDraft(issue(), "");
   };
@@ -886,7 +874,7 @@ export function Composer(props: { d: ShownDetail }) {
   touch("comment", () => box.focus());
   touch("send", comment);
   touch("closeReopen", () => {
-    if (githubDown() || changingState()) return;
+    if (writesPaused() || changingState()) return;
     setState(props.d.state === "open" ? { kind: "close", issue: issue(), reason: "completed" } : { kind: "reopen", issue: issue() });
   });
   onCleanup(() => {
@@ -912,7 +900,7 @@ export function Composer(props: { d: ShownDetail }) {
         <Show
           when={props.d.state === "open"}
           fallback={
-            <button type="button" {...stylex.attrs(s.button)} disabled={githubDown() || changingState()} onClick={() => setState({ kind: "reopen", issue: issue() })}>
+            <button type="button" {...stylex.attrs(s.button)} disabled={writesPaused() || changingState()} onClick={() => setState({ kind: "reopen", issue: issue() })}>
               Reopen issue
             </button>
           }
@@ -921,7 +909,7 @@ export function Composer(props: { d: ShownDetail }) {
             <button
               type="button"
               {...stylex.attrs(s.button)}
-              disabled={githubDown() || changingState()}
+              disabled={writesPaused() || changingState()}
               onClick={() => setState({ kind: "close", issue: issue(), reason: "completed" })}
             >
               Close issue
@@ -931,7 +919,7 @@ export function Composer(props: { d: ShownDetail }) {
               {...stylex.attrs(s.button)}
               aria-label="More ways to close"
               aria-expanded={menu() ? "true" : "false"}
-              disabled={githubDown() || changingState()}
+              disabled={writesPaused() || changingState()}
               onClick={() => setMenu((v) => !v)}
             >
               ▾
@@ -942,7 +930,7 @@ export function Composer(props: { d: ShownDetail }) {
                   type="button"
                   role="menuitem"
                   {...stylex.attrs(s.button)}
-                  disabled={githubDown() || changingState()}
+                  disabled={writesPaused() || changingState()}
                   onClick={() => setState({ kind: "close", issue: issue(), reason: "completed" })}
                 >
                   Close as completed
@@ -951,7 +939,7 @@ export function Composer(props: { d: ShownDetail }) {
                   type="button"
                   role="menuitem"
                   {...stylex.attrs(s.button)}
-                  disabled={githubDown() || changingState()}
+                  disabled={writesPaused() || changingState()}
                   onClick={() => setState({ kind: "close", issue: issue(), reason: "not_planned" })}
                 >
                   Close as not planned
@@ -961,7 +949,7 @@ export function Composer(props: { d: ShownDetail }) {
           </span>
         </Show>
         <span {...stylex.attrs(s.spacer)} />
-        <button type="button" {...stylex.attrs(s.button, s.primary)} disabled={!text().trim() || githubDown() || commenting()} onClick={comment}>
+        <button type="button" {...stylex.attrs(s.button, s.primary)} disabled={!text().trim() || writesPaused() || commenting()} onClick={comment}>
           Comment
         </button>
       </div>
@@ -969,7 +957,7 @@ export function Composer(props: { d: ShownDetail }) {
   );
 }
 
-setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, Banner, StateNote, CommentNote, PropNote, EditNote });
+setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, StateNote, CommentNote, PropNote, EditNote });
 
 const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },
@@ -1069,17 +1057,6 @@ const s = stylex.create({
   },
   failed: {
     color: colors.danger,
-  },
-  banner: {
-    margin: 0,
-    paddingBlock: 4,
-    paddingInline: 14,
-    backgroundColor: colors.bgRaised,
-    color: colors.danger,
-    flexShrink: 0,
-    borderBottomColor: colors.line,
-    borderBottomStyle: "solid",
-    borderBottomWidth: 1,
   },
   failure: {
     paddingBlock: 4,

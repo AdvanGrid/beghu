@@ -3,7 +3,8 @@
 // fills this in as it loads, and the views that show writes (the list's rows, the detail, the
 // status slot) go through it. Until then there are no writes, and views show the server's data as
 // it came.
-import { createSignal, type Element } from "solid-js";
+import { createSignal, flush, type Element } from "solid-js";
+import { cookieAccount, tabAccount } from "./account";
 import type { Comment, IssueDetail, IssueRow } from "./api";
 import type { User } from "./bindings/User";
 import type { Field } from "./editing";
@@ -38,8 +39,6 @@ export interface Overlay {
   detailShown(issue: number, at: number): void;
   /** The status slot's content. */
   Status: () => Element;
-  /** Under the header: GitHub is unreachable, so writes pause. */
-  Banner: () => Element;
   /** Beside the open issue's state: a pending close or reopen, or its failure. */
   StateNote: (p: { issue: number; at: number }) => Element;
   /** On a pending or failed comment: sending, or "not sent" with Retry, Edit and Discard. */
@@ -52,3 +51,22 @@ export interface Overlay {
 
 const [overlay, setOverlay] = createSignal<Overlay>();
 export { overlay, setOverlay };
+
+/**
+ * The tab is leaving on purpose (a sign-out or a switch, confirmed if it held unsaved text): the
+ * whole app blanks, header and banners included, so the page the back-forward cache keeps (and
+ * every frame of it restored) never shows the old account, and leaving doesn't ask again.
+ */
+const [leaving, setLeaving] = createSignal(false);
+export { leaving };
+export function leave(): void {
+  setLeaving(true);
+  // Blank now, before the navigation that follows can freeze the page as it was.
+  flush();
+}
+// Back to a page that left on purpose but whose account is unchanged (the post failed, say): it
+// shows again. One whose account the browser no longer has active stays blank, and reloads
+// (account.ts).
+addEventListener("pageshow", (e) => {
+  if (e.persisted && cookieAccount() === tabAccount()) setLeaving(false);
+});

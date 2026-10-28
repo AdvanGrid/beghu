@@ -116,7 +116,8 @@ test.describe("signed in", () => {
     // Everything before the stream is the first load. The stream's opening reset then refetches
     // the list (`through=`) and the facets, as may pushes from edits elsewhere; those are the
     // live path's, not the first load's.
-    const stream = api.indexOf("/api/stream");
+    // The stream names the tab's account (`?account=`).
+    const stream = api.findIndex((u) => u.startsWith("/api/stream?account="));
     expect(stream).toBeGreaterThan(0);
     expect(api.slice(0, stream).sort()).toEqual(["/api/facets", "/api/issues?view=e2e", "/api/me"]);
     const live = api.slice(stream + 1);

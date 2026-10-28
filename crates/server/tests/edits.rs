@@ -30,10 +30,7 @@ impl Stack {
     /// `POST /api/ops` from `b`'s tab with a fresh op id; the status and the body.
     async fn op(&self, b: &Browser, op: Value) -> (u16, Value) {
         let res = self
-            .http
-            .post(format!("{}/api/ops", self.server))
-            .header("cookie", b.header())
-            .header("origin", &self.server)
+            .api_write(b, reqwest::Method::POST, "/api/ops")
             .json(&json!({ "op_id": uuid(), "op": op }))
             .send()
             .await

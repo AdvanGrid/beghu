@@ -389,6 +389,7 @@ impl Stack {
             backup_every: beghu::default_backup_every(),
             assets_kept_for: beghu::default_assets_kept_for(),
             drain_for: beghu::default_drain_for(),
+            accounts_check_every: beghu::default_accounts_check_every(),
             // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
             // tests about other things: a test about them sets its own schedule
             // (tests/reconcile.rs, tests/prs.rs). Redelivery still runs once at each start, and
@@ -449,6 +450,12 @@ pub struct Browser {
 }
 
 impl Browser {
+    /// The account the browser's tabs are on (`beghu_acct`): what a tab's writes name
+    /// (`X-Beghu-Account`).
+    pub fn account(&self) -> String {
+        self.cookies.get("beghu_acct").cloned().unwrap_or_default()
+    }
+
     pub fn header(&self) -> String {
         self.cookies
             .iter()
@@ -540,6 +547,93 @@ impl Stack {
         assert!(res.status().is_success(), "{}", res.status());
         assert!(b.cookies.contains_key(SID), "{:?}", b.cookies);
         b
+    }
+
+    /// Signs `login` in on `b`, a browser that may hold a session already: the session gains
+    /// the account, which becomes active.
+    pub async fn sign_in_on(&self, b: &mut Browser, login: &str) {
+        let (_, res) = self.follow(b, &format!("/auth/login?login={login}")).await;
+        assert!(res.status().is_success(), "{}", res.status());
+    }
+
+    /// A form post from one of beghu's own pages (sign out, switch, disconnect): its `Origin`
+    /// is beghu's, as a browser sends it. Keeps the cookies it sets; doesn't follow redirects.
+    pub async fn post_form(
+        &self,
+        b: &mut Browser,
+        path: &str,
+        form: &[(&str, &str)],
+    ) -> reqwest::Response {
+        self.post_form_from(b, path, form, Some(&self.server.clone()))
+            .await
+    }
+
+    /// [`Stack::post_form`] with `origin` as the `Origin` header (`None`: none at all).
+    pub async fn post_form_from(
+        &self,
+        b: &mut Browser,
+        path: &str,
+        form: &[(&str, &str)],
+        origin: Option<&str>,
+    ) -> reqwest::Response {
+        let mut req = self
+            .http
+            .post(format!("{}{path}", self.server))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(serde_urlencoded::to_string(form).unwrap());
+        if !b.cookies.is_empty() {
+            req = req.header("cookie", b.header());
+        }
+        if let Some(o) = origin {
+            req = req.header("origin", o);
+        }
+        let res = req.send().await.unwrap();
+        b.take(&res);
+        res
+    }
+
+    /// A write to the API as the web app sends one: from beghu's own page (`Origin`), as the tab
+    /// on `b`'s active account (`X-Beghu-Account`, which every write must carry), with `b`'s
+    /// cookies.
+    pub fn api_write(
+        &self,
+        b: &Browser,
+        method: reqwest::Method,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .request(method, format!("{}{path}", self.server))
+            .header("cookie", b.header())
+            .header("x-beghu-account", b.account())
+            .header("origin", &self.server)
+    }
+
+    /// A GET of an API path as a tab on `account` sends it (`X-Beghu-Account`).
+    pub async fn api_as(&self, b: &mut Browser, account: i64, path: &str) -> (u16, Value) {
+        let res = self
+            .http
+            .get(format!("{}{path}", self.server))
+            .header("cookie", b.header())
+            .header("x-beghu-account", account.to_string())
+            .send()
+            .await
+            .unwrap();
+        b.take(&res);
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Opens `/api/stream` as a tab on `account` would (`?account=`).
+    pub async fn stream_as(&self, b: &Browser, account: i64) -> Stream {
+        let res = self
+            .http
+            .get(format!("{}/api/stream?account={account}", self.server))
+            .header("cookie", b.header())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        Stream::new(res)
     }
 
     pub async fn api(&self, b: &mut Browser, path: &str) -> (u16, Value) {
@@ -716,6 +810,19 @@ impl Stream {
                 .await
                 .ok()??;
             self.buf.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        }
+    }
+
+    /// Whether the server ends the stream within `wait`, reading past anything it sends first.
+    pub async fn ends_within(&mut self, wait: Duration) -> bool {
+        use futures_util::StreamExt as _;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, self.body.next()).await {
+                Err(_) => return false,
+                Ok(None) | Ok(Some(Err(_))) => return true,
+                Ok(Some(Ok(_))) => {}
+            }
         }
     }
 

@@ -409,10 +409,7 @@ async fn a_pr_in_a_repo_not_synced_linked_in_the_sidebar_shows_on_the_issue_as_a
         .map(|r| r["id"].as_i64().unwrap())
         .collect();
     let res = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": keep }))
         .send()
         .await
@@ -547,10 +544,7 @@ async fn a_resync_removes_a_sidebar_link_nothing_else_saw_go() {
 /// Asks for a Resync as `b` and waits for it to end.
 async fn resync(s: &Stack, b: &Browser) {
     let res = s
-        .http
-        .post(format!("{}/api/resync", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(b, reqwest::Method::POST, "/api/resync")
         .send()
         .await
         .unwrap();

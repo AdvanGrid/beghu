@@ -57,16 +57,43 @@ async fn a_401_from_github_forces_one_refresh_and_one_retry() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_refused_refresh_signs_the_account_out() {
+async fn a_refused_refresh_signs_the_account_out_and_deletes_its_mirror() {
     let s = start_with(|c| c.repo_refresh_every = Duration::ZERO).await;
     s.fake("PUT", "/tokens", json!({ "access_ttl": 60 })).await;
     let mut b = s.sign_in("tomsj").await;
+    let id = s.api(&mut b, "/api/me").await.1["account"]["id"]
+        .as_i64()
+        .unwrap();
+    let mut tab = s.stream_as(&b, id).await;
+    tab.reset().await;
+    // GitHub's grant goes, and with it the refresh token; with no webhook to say so, the
+    // refresh is what finds out.
+    s.fake("PUT", "/webhooks", json!({ "url": null })).await;
     s.fake("POST", "/revoke", json!({ "login": "tomsj" })).await;
 
     let (status, body) = s.api(&mut b, "/api/me").await;
     assert_eq!(status, 401);
     assert_eq!(body["error"], "signed_out");
     assert_eq!(s.api(&mut b, "/api/issues").await.0, 401);
+    // The tab hears once the mirror is deleted: signing in again imports afresh (slowed, so
+    // it's still under way when looked at).
+    let ev = tab
+        .event_within(Duration::from_secs(5))
+        .await
+        .expect("a switched push");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ev.data).unwrap(),
+        json!({ "account": id, "sign_in_again": true })
+    );
+    s.fake(
+        "POST",
+        "/faults/latency",
+        json!({ "endpoint": "POST /graphql", "ms": 300 }),
+    )
+    .await;
+    s.sign_in_on(&mut b, "tomsj").await;
+    let me = s.api(&mut b, "/api/me").await.1;
+    assert!(!me["import"].is_null(), "a fresh import: {me}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -91,6 +118,7 @@ async fn a_token_moved_to_another_account_in_the_control_db_does_not_open() {
         row.access_expires_at,
         &row.refresh_enc,
         row.refresh_expires_at,
+        row.issued_at,
     )
     .unwrap();
 
@@ -176,6 +204,7 @@ async fn an_access_and_refresh_token_swapped_in_the_control_db_do_not_open() {
         row.access_expires_at,
         &row.access_enc,
         row.refresh_expires_at,
+        row.issued_at,
     )
     .unwrap();
 

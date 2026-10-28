@@ -247,10 +247,7 @@ impl Stack {
     /// `PUT /api/repos` from beghu's own page: the repos `b`'s account syncs.
     async fn pick(&self, b: &Browser, repos: &[i64]) {
         let res = self
-            .http
-            .put(format!("{}/api/repos", self.server))
-            .header("cookie", b.header())
-            .header("origin", &self.server)
+            .api_write(b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": repos }))
             .send()
             .await

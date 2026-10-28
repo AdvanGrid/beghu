@@ -141,6 +141,50 @@ impl Mirrors {
         acct.lane.write(caller.into(), f).await
     }
 
+    /// Deletes the account's mirror (its file, WAL and shared memory), once the open, migration
+    /// or creation under way and the reads and write in flight are done. From then on every use
+    /// of it is refused with [`Error::Deleted`], so no webhook, import or request brings it back,
+    /// until [`Mirrors::revive`]. Refused with [`Error::Sealed`] once the drain has sealed the
+    /// mirrors: the file stays, and the startup after it deletes it again.
+    ///
+    /// The delete is asked for as this is called, before the returned future is first polled:
+    /// a [`Mirrors::revive`] that comes after the call, however soon, reopens the mirror once
+    /// the delete is done.
+    pub fn delete(
+        &self,
+        account: AccountId,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+        let asked = self.inner.shared.unsealed().map(|()| {
+            let acct = self.account(account);
+            let mut sh = acct.gate.lock().unwrap();
+            let id = sh.next_id;
+            sh.next_id += 1;
+            let (tx, rx) = oneshot::channel();
+            sh.waiters.insert(id, tx);
+            let fx = sh.gate.handle(self.now(), Event::Delete { id });
+            self.apply(&acct, &mut sh, fx);
+            rx
+        });
+        let shared = self.inner.shared.clone();
+        async move {
+            match asked?.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) if shared.is_sealed() => Err(Error::Sealed),
+                Ok(Err(why)) => Err(refused(why)),
+                Err(_) => Err(Error::Panicked),
+            }
+        }
+    }
+
+    /// The account may use its mirror again (it signed in again): its next use creates an
+    /// empty mirror and asks for its import. Nothing for a mirror that wasn't deleted.
+    pub fn revive(&self, account: AccountId) {
+        let acct = self.inner.accounts.lock().unwrap().get(&account).cloned();
+        if let Some(acct) = acct {
+            self.feed(&acct, Event::Revive);
+        }
+    }
+
     /// The drain's last step: seals every mirror, so each write from now on fails with
     /// [`Error::Sealed`] and no mirror is created, then lets each one's write in flight finish,
     /// folds its WAL into its file and closes its idle connections. The mirrors go all at once,
@@ -273,6 +317,10 @@ impl Mirrors {
                         Event::Migrated(a.migrate(migs, from, to).await)
                     })
                 }
+                Effect::Delete => {
+                    let a = acct.clone();
+                    self.job(acct, async move { Event::Deleted(a.delete().await) })
+                }
                 Effect::Create { .. } => {
                     // Nothing of this account's is in use: the gate only creates on first use.
                     self.inner.shared.close_idle(LaneKey::Account(acct.id));
@@ -325,6 +373,27 @@ impl Account {
             .await
     }
 
+    /// Closes every connection to the file and deletes it, with its WAL and shared memory.
+    async fn delete(&self) -> Result<(), String> {
+        let path = self.path.clone();
+        self.lane
+            .remove(move || {
+                for p in [
+                    path.clone(),
+                    PathBuf::from(format!("{}-wal", path.display())),
+                    PathBuf::from(format!("{}-shm", path.display())),
+                ] {
+                    match std::fs::remove_file(&p) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                        _ => {}
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn migrate(
         &self,
         migs: &'static [Migration],
@@ -351,5 +420,6 @@ fn refused(why: Refusal) -> Error {
         },
         Refusal::Failed { error } => Error::MigrationFailed(error),
         Refusal::TooNew { db, build } => Error::TooNew { db, build },
+        Refusal::Deleted => Error::Deleted,
     }
 }

@@ -144,6 +144,8 @@ pub(crate) async fn refetch(inner: &Inner, p: &Pull) -> Result<(), Failure> {
             Ok(ids) if ids.is_empty() => {}
             Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
             Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            // The account lost access and its mirror is deleted: nothing to repair.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 eprintln!(
                     "pulls: writing PR {}/{}#{} failed for account {account}: {e}",
@@ -415,6 +417,8 @@ pub(crate) async fn refetch_linked(inner: &Inner, s: &Subject) -> Result<(), Fai
             Ok(ids) if ids.is_empty() => {}
             Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
             Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            // The account lost access and its mirror is deleted: nothing to repair.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 eprintln!(
                     "pulls: writing issue {}'s linked PRs failed for account {account}: {e}",

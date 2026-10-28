@@ -6,6 +6,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createSignal, onCleanup, Show } from "solid-js";
 import { resync, TooSoon } from "./api";
 import { link } from "./bits";
+import { writesPaused } from "./live";
 import type { SyncStatus } from "./bindings/SyncStatus";
 
 /** Unix seconds now, kept current every 15 s: the countdown's clock. */
@@ -43,7 +44,7 @@ export function SyncState(props: { status: SyncStatus }) {
           fallback={<>Resync available in {Math.max(1, Math.ceil(wait() / 60))} min</>}
         >
           <Show when={refused()}>{(why) => <>{why()} · </>}</Show>
-          <button type="button" {...stylex.attrs(link.button)} disabled={asking()} onClick={() => void ask()}>
+          <button type="button" {...stylex.attrs(link.button)} disabled={asking() || writesPaused()} onClick={() => void ask()}>
             Resync
           </button>
         </Show>

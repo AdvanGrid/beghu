@@ -5,6 +5,8 @@
 // maps to one of them. Every read is a router `query`, so a preload and the read that uses it
 // share one fetch. The wire types come from the server through ts-rs (./bindings).
 import { query, revalidate } from "@solidjs/router";
+import { createSignal } from "solid-js";
+import { accountHeaders, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -39,6 +41,11 @@ export function mergeRefs(...maps: Refs[]): Refs {
 export class Unreachable extends Error {}
 /** No session, or it ended: the user must sign in. */
 export class SessionEnded extends Error {}
+/**
+ * The tab is on another account than the browser's active one: the user switched or signed out
+ * in another tab. Nothing was done; the tab shows the switched banner.
+ */
+export class Switched extends Error {}
 /** The account can't see this. For an issue outside the synced repos, `issue` says where it is. */
 export class NoAccess extends Error {
   constructor(
@@ -177,7 +184,11 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
   const retryAfter = Math.max(1, Number(res.headers.get("retry-after")) || 1);
   switch (kind) {
     case "signed_out":
+      noteSignedOut();
       return new SessionEnded(why);
+    case "switched":
+      noteSwitched();
+      return new Switched(said);
     case "unavailable":
       return new Unavailable(why, retryAfter);
     case "not_found":
@@ -219,6 +230,7 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
   // No error body: a proxy or something else in front of beghu.
   switch (res.status) {
     case 401:
+      noteSignedOut();
       return new SessionEnded(why);
     case 403:
       return new NoAccess(why);
@@ -230,15 +242,78 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
   }
 }
 
-/** A call to beghu's API: its JSON, or the named error for how it failed. */
+/**
+ * The reads the shell preloads (`<link rel=preload as=fetch>`), until each has been fetched once.
+ * The browser hands a preload over only to a fetch with the same headers, so those go without the
+ * tab's account: they're for whoever was active as the page loaded. Each answer names the account
+ * it was made as (`X-Beghu-Account`), and one made for another account than the tab's is
+ * dropped and asked again as the tab's, which beghu answers `switched`.
+ */
+const preloaded = new Set(
+  [...document.querySelectorAll<HTMLLinkElement>('link[rel="preload"][as="fetch"]')].map((l) => {
+    const u = new URL(l.href);
+    return u.pathname + u.search;
+  }),
+);
+
+/** How long a read waits out beghu being busy (503 with `retry-after`) before it fails. */
+const READY_FOR_MS = 60_000;
+
+/** How many reads are waiting out a 503 now. */
+const [waiting, setWaiting] = createSignal(0);
+/**
+ * True while a read waits for beghu to be ready: at its connection cap, a mirror still opening,
+ * or the account's data being deleted or rebuilt (signed in again just after it lost access). The
+ * status slot says "Getting this account ready…".
+ */
+export function gettingReady(): boolean {
+  return waiting() > 0;
+}
+
+/**
+ * A call to beghu's API: its JSON, or the named error for how it failed. A read beghu answers
+ * busy (`Unavailable`) is asked again after the `retry-after` it gave, for up to a minute: busy
+ * passes, and the view loads rather than fail.
+ */
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  let res: Response;
+  if ((init?.method ?? "GET") !== "GET") return requestOnce(url, init);
+  const since = performance.now();
+  let counted = false;
   try {
-    res = await fetch(url, init);
+    for (;;) {
+      try {
+        return await requestOnce<T>(url, init);
+      } catch (e) {
+        if (!(e instanceof Unavailable) || performance.now() - since + e.retryAfter * 1000 > READY_FOR_MS) throw e;
+        if (!counted) {
+          counted = true;
+          setWaiting((n) => n + 1);
+        }
+        await new Promise((r) => setTimeout(r, e.retryAfter * 1000));
+      }
+    }
+  } finally {
+    if (counted) setWaiting((n) => n - 1);
+  }
+}
+
+async function requestOnce<T>(url: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  // Only a GET can be a preload's: every write names the tab's account.
+  const preload = (init?.method ?? "GET") === "GET" && preloaded.delete(url);
+  const headers = new Headers(init?.headers);
+  if (!preload) for (const [k, v] of Object.entries(accountHeaders())) if (!headers.has(k)) headers.set(k, v);
+  try {
+    res = await fetch(url, { ...init, headers });
   } catch (e) {
     throw new Unreachable(`can't reach beghu: ${String(e)}`);
   }
-  if (res.ok) return (await res.json()) as T;
+  const mine = tabAccount();
+  if (preload && res.ok && mine !== undefined && res.headers.get("x-beghu-account") !== String(mine)) return requestOnce(url, init);
+  if (res.ok) {
+    noteAnswered();
+    return (await res.json()) as T;
+  }
   throw failure(res, await bodyOf(res), `${res.status} from ${url}`);
 }
 
@@ -251,7 +326,7 @@ async function postOp(op_id: string, op: Op, resend: boolean): Promise<OpReply> 
   try {
     res = await fetch("/api/ops", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...accountHeaders() },
       body: JSON.stringify({ op_id, op, ...(resend && { resend }) } satisfies OpRequest),
     });
     // A 2xx is GitHub's confirmation; one cut short on the way back is a lost answer, and the
@@ -284,7 +359,8 @@ const RESEND_FOR_MS = 9 * 60_000;
  * answered) marks the ones after it as resends, which the server joins to the write it has, or
  * answers `Lost`; one sent while the browser was offline didn't arrive. After 9 minutes the write
  * fails: `Lost` (in the server's words) if a send may have arrived, else `Unreachable`, saying
- * whether beghu was busy or didn't answer.
+ * whether beghu was busy or didn't answer. A resend after a send that may have arrived, turned
+ * away as `Switched` or `SessionEnded`, is `Lost` too: the first may have been made.
  */
 export async function sendOp(op_id: string, op: Op): Promise<OpReply> {
   const since = performance.now();
@@ -312,6 +388,10 @@ export async function sendOp(op_id: string, op: Op): Promise<OpReply> {
         await new Promise((r) => setTimeout(r, e.retryAfter * 1000));
         continue;
       }
+      // A send that may have reached beghu, then a resend turned away because the tab's
+      // account is no longer the browser's (a switch, a sign-out, Disconnect): the write may
+      // have been made all the same, its answer lost. Nothing says it wasn't.
+      if (reached && (e instanceof Switched || e instanceof SessionEnded)) throw new Lost(LOST_MESSAGE[op.kind]);
       throw e;
     }
   }
@@ -336,7 +416,12 @@ export function issuesUrl(search: string, after?: string): string {
   return `/api/issues?${p}`;
 }
 
-export const getMe = query(() => request<Me>("/api/me"), "me");
+/** The active account and the browser's others. One that isn't the tab's makes the tab stale. */
+export const getMe = query(async () => {
+  const me = await request<Me>("/api/me");
+  if (tabAccount() !== undefined && me.account.id !== tabAccount()) noteActive(me.account.id);
+  return me;
+}, "me");
 
 /** When each read's fetch began (`performance.now()`), for telling an older read from a newer one. */
 const startedAt = new WeakMap<object, number>();
@@ -371,12 +456,14 @@ export const getFacetCounts = query(
 );
 
 /**
- * Hands `read`'s value to `ok`. A lapsed session leaves for sign-in; any other failure calls
+ * Hands `read`'s value to `ok`. A lapsed session leaves for sign-in (unless the tab went stale);
+ * any other failure calls
  * `failed`, for a notice whose Retry calls `forgetFailure` before reading again.
  */
 export function readThen<T>(read: Promise<T>, ok: (value: T) => void, failed: () => void): void {
   read.then(ok, (e: unknown) => {
-    if (e instanceof SessionEnded) signIn();
+    // A tab that holds a view went stale instead (its banner offers sign-in): a notice then.
+    if (e instanceof SessionEnded && !stale()) signIn();
     else failed();
   });
 }
@@ -527,9 +614,13 @@ export function getSource(id: number): Promise<IssueSource> {
 
 let signingIn = false;
 
-/** Leaves for sign-in, once, coming back to this URL afterwards. */
+/**
+ * Leaves for sign-in, once, coming back to this URL afterwards. Not from a stale tab (a 401 makes
+ * one that holds a view stale, account.ts): its banner offers sign-in, and leaving now would lose
+ * its drafts.
+ */
 export function signIn(): void {
-  if (signingIn) return;
+  if (signingIn || stale()) return;
   signingIn = true;
   location.replace(signInUrl());
 }

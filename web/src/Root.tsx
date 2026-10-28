@@ -1,24 +1,30 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, Errored, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { Background } from "./WhileSyncing";
-import { connectLive, reconnecting } from "./live";
-import { overlay } from "./overlay";
+import { stale } from "./account";
+import { cantReach, connectLive, githubDown, reconnecting } from "./live";
+import { leaving, overlay } from "./overlay";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { unsavedText } from "./unsaved";
 import { colors, fonts, media } from "./tokens.stylex";
 
+/** The account menu is its own chunk: nothing on first paint needs it. */
+const AccountMenu = lazy(() => import("./AccountMenu"), { export: "AccountMenu" });
+
 /**
  * The app: a header over the list, with the open issue's panel (the route's content) beside the
  * list, or under it below 900 px. The root `Errored` sends a signed-out tab to sign in. The panel
  * has boundaries of its own, so while its code loads, or if that fails, the list carries on. The
- * bottom bar holds the status slot. The tab's live stream opens with the app. Once the tab can
- * write, the writes code adds its banner under the header (overlay.ts).
+ * bottom bar holds the status slot. The tab's live stream opens with the app. One banner at a
+ * time shows under the header. Leaving on purpose (a sign-out or a switch) blanks the whole app
+ * first, header and banners included, so no frame of a page restored from the back-forward cache
+ * shows the old account.
  */
 export function Root(props: { children?: Element }) {
   onSettled(connectLive);
@@ -34,10 +40,10 @@ export function Root(props: { children?: Element }) {
     },
   );
   return (
-    <div {...stylex.attrs(s.app)}>
+    <div aria-hidden={leaving() ? "true" : undefined} {...stylex.attrs(s.app, leaving() && s.blank)}>
       <Errored fallback={(err) => <RootFailure error={err()} />}>
         <Header />
-        <Dynamic component={overlay()?.Banner} />
+        <Banner />
         <main {...stylex.attrs(s.main)}>
           <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
             <List />
@@ -49,6 +55,47 @@ export function Root(props: { children?: Element }) {
         <StatusBar />
       </Errored>
     </div>
+  );
+}
+
+/** Which banner shows: the first that holds, in the spec's order. */
+function banner(): "switched" | "signed_out" | "sign_in_again" | "cant_reach" | "github" | undefined {
+  return stale() ?? (cantReach() ? "cant_reach" : githubDown() ? "github" : undefined);
+}
+
+/**
+ * One banner at a time under the header (`role="alert"`), in precedence order: the tab is on
+ * another account (or signed out, or its account must sign in again), beghu can't be reached
+ * (after 15 s), GitHub is unreachable. Each one disables Save and Send, and keeps any text.
+ */
+function Banner() {
+  return (
+    <Show when={banner()}>
+      {(which) => (
+        <p role="alert" data-perf="banner" data-banner={which()} {...stylex.attrs(s.banner)}>
+          <Show when={which() === "switched"}>
+            This tab is on another account —{" "}
+            <button type="button" {...stylex.attrs(s.link)} onClick={() => location.reload()}>
+              Reload
+            </button>
+          </Show>
+          <Show when={which() === "signed_out"}>
+            You signed out in another tab —{" "}
+            <a href={signInUrl()} rel="external" {...stylex.attrs(s.link)}>
+              Sign in
+            </a>
+          </Show>
+          <Show when={which() === "sign_in_again"}>
+            GitHub access for this account ended. Your text is kept —{" "}
+            <a href={signInUrl()} rel="external" {...stylex.attrs(s.link)}>
+              Sign in again
+            </a>
+          </Show>
+          <Show when={which() === "cant_reach"}>Can't reach beghu. What's shown may be out of date; your text is kept.</Show>
+          <Show when={which() === "github"}>GitHub is unreachable. Writes are paused until it's back; your text is kept.</Show>
+        </p>
+      )}
+    </Show>
   );
 }
 
@@ -189,11 +236,34 @@ function Header() {
   );
 }
 
+/**
+ * The active account, opening the account menu: switch, add an account, sign out, Disconnect.
+ * The menu's code loads on the first hover, focus or click.
+ */
 function Account() {
   const me = createMemo(() => getMe());
+  const [open, setOpen] = createSignal(false);
+  const warm = () => void import("./AccountMenu").catch(() => {});
   return (
-    <span {...stylex.attrs(s.account)} data-perf="account">
-      {me().account.login}
+    <span {...stylex.attrs(s.accountWrap)}>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open() ? "true" : "false"}
+        title="Accounts"
+        {...stylex.attrs(s.accountButton)}
+        onPointerEnter={warm}
+        onFocus={warm}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span data-perf="account">{me().account.login}</span>
+        <span aria-hidden="true"> ▾</span>
+      </button>
+      <Show when={open()}>
+        <Loading fallback={null}>
+          <AccountMenu me={me()} close={() => setOpen(false)} />
+        </Loading>
+      </Show>
     </span>
   );
 }
@@ -231,10 +301,20 @@ function List() {
   );
 }
 
-/** A failed read: a signed-out one goes to sign in; any other shows `children`. */
+/**
+ * A failed read: a signed-out one goes to sign in, or, in a tab that went stale instead (its
+ * banner offers sign-in, account.ts), says so; any other shows `children`.
+ */
 export function Failure(props: { error: unknown; children: Element }) {
   return (
-    <Show when={!(props.error instanceof SessionEnded)} fallback={<SigningIn />}>
+    <Show
+      when={!(props.error instanceof SessionEnded)}
+      fallback={
+        <Show when={!stale()} fallback={<p {...stylex.attrs(s.notice)}>Sign in again to see this.</p>}>
+          <SigningIn />
+        </Show>
+      }
+    >
       {props.children}
     </Show>
   );
@@ -289,6 +369,10 @@ function RootFailure(props: { error: unknown }) {
 }
 
 const s = stylex.create({
+  // Leaving on purpose: nothing of the app paints, the page's own background only.
+  blank: {
+    visibility: "hidden",
+  },
   app: {
     backgroundColor: colors.bg,
     color: colors.fg,
@@ -319,8 +403,30 @@ const s = stylex.create({
   spacer: {
     flexGrow: 1,
   },
-  account: {
-    color: colors.muted,
+  accountWrap: {
+    position: "relative",
+  },
+  accountButton: {
+    font: "inherit",
+    padding: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    color: {
+      default: colors.muted,
+      ":hover": colors.fg,
+    },
+    cursor: "pointer",
+  },
+  banner: {
+    margin: 0,
+    paddingBlock: 4,
+    paddingInline: 14,
+    backgroundColor: colors.bgRaised,
+    color: colors.danger,
+    flexShrink: 0,
+    borderBottomColor: colors.line,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
   },
   headerLink: {
     textDecoration: "none",

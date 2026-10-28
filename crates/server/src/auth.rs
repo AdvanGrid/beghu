@@ -1,9 +1,11 @@
 //! Signing in with the GitHub App web flow (PKCE and `state`), and the browser session behind
 //! every API request.
 //!
-//! - `GET /auth/login?next=…&login=…` seals `state`, the PKCE verifier and `next` into a
+//! - `GET /auth/login?next=…&login=…&add=1` seals `state`, the PKCE verifier and `next` into a
 //!   short-lived cookie, then sends the browser to GitHub's authorize page. `login` is passed
-//!   through (GitHub's account hint; Fake GitHub signs that fixture user in at once).
+//!   through (GitHub's account hint; Fake GitHub signs that fixture user in at once); without
+//!   one, a browser whose active account must sign in again hints that account. `add` (adding
+//!   another account) asks GitHub to offer its account picker (`prompt=select_account`).
 //! - `GET /auth/callback?code&state` checks `state` against that cookie, trades the code for the
 //!   user's token pair, stores it encrypted, adds the account to the browser session and makes
 //!   it active, then lands on `next`. A user who can reach no installation of the App gets the
@@ -14,7 +16,19 @@
 //! - `__Host-beghu_sid` is 256 random bits, `HttpOnly; Secure; SameSite=Lax; Path=/` with no
 //!   `Domain`, sliding 30 days. Only its SHA-256 is stored. Every sign-in rotates it: a new id,
 //!   the session's accounts moved over, the old id deleted, so an id planted or seen before
-//!   sign-in is worth nothing after it. `beghu_acct` is a readable hint of the active account.
+//!   sign-in is worth nothing after it. `beghu_acct` is a readable hint of the active account;
+//!   every answer as an account puts it right when the session changed under the browser.
+//! - Every API request may name the tab's account (`X-Beghu-Account`; the stream's `?account=`),
+//!   and every write must (400 without). One that isn't the session's active account is answered
+//!   409 `switched`, having done nothing: the user switched or signed out in another tab. The
+//!   shell's preloads name none; they're for whoever is active, and every answer names the
+//!   account it was made as (`X-Beghu-Account`), so the tab drops a preload made for another.
+//!
+//! The sign-in cookie is `__Host-` prefixed too, so a sibling subdomain can't plant one: a planted
+//! `state` and verifier would let another site finish its own sign-in in this browser. The
+//! accounts a session carries over at sign-in are shown plainly: the header names the active
+//! one, and the account menu lists every one, so an account the user didn't sign in as can't
+//! hide (see `accounts.rs`).
 //!
 //! The `__Host-` prefix makes browsers refuse the cookie unless it's `Secure` and set from a
 //! secure origin. Dev runs over plain `http://localhost`, which Chrome and Firefox treat as a
@@ -33,7 +47,9 @@ use serde::{Deserialize, Serialize};
 
 pub const SESSION_COOKIE: &str = "__Host-beghu_sid";
 pub const ACCOUNT_COOKIE: &str = "beghu_acct";
-const SIGN_IN_COOKIE: &str = "beghu_signin";
+/// The tab's account, on every API request it makes.
+pub const ACCOUNT_HEADER: &str = "x-beghu-account";
+const SIGN_IN_COOKIE: &str = "__Host-beghu_signin";
 /// The sign-in cookie's associated data: its key seals nothing else.
 const SIGN_IN_AAD: &[u8] = b"";
 /// 30 days, sliding.
@@ -51,7 +67,7 @@ pub struct Session {
     pub account: i64,
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -62,7 +78,13 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(|(_, v)| v.to_owned())
 }
 
-fn set_cookie(name: &str, value: &str, path: &str, max_age: i64, http_only: bool) -> HeaderValue {
+pub(crate) fn set_cookie(
+    name: &str,
+    value: &str,
+    path: &str,
+    max_age: i64,
+    http_only: bool,
+) -> HeaderValue {
     let http_only = if http_only { "; HttpOnly" } else { "" };
     HeaderValue::from_str(&format!(
         "{name}={value}; Path={path}; Max-Age={max_age}{http_only}; Secure; SameSite=Lax"
@@ -70,7 +92,7 @@ fn set_cookie(name: &str, value: &str, path: &str, max_age: i64, http_only: bool
     .expect("cookie values are base64url or digits")
 }
 
-fn session_cookies(sid: &str, account: i64) -> [HeaderValue; 2] {
+pub(crate) fn session_cookies(sid: &str, account: i64) -> [HeaderValue; 2] {
     [
         set_cookie(SESSION_COOKIE, sid, "/", SESSION_TTL, true),
         set_cookie(
@@ -81,6 +103,17 @@ fn session_cookies(sid: &str, account: i64) -> [HeaderValue; 2] {
             false,
         ),
     ]
+}
+
+/// The `beghu_acct` hint to send back when the request's doesn't name `active`, the session's
+/// active account: the session changed under this browser (a switch, a sign-in or a Disconnect
+/// in another browser), and a tab loaded with the old hint would be on an account the session
+/// no longer has active. Sent on every answer as the account, refusals included (a 409
+/// `switched`, the stream's one event), so the browser's next load is on the active account.
+pub(crate) fn account_hint(headers: &HeaderMap, active: i64) -> Option<HeaderValue> {
+    let active = active.to_string();
+    (cookie(headers, ACCOUNT_COOKIE).as_deref() != Some(active.as_str()))
+        .then(|| set_cookie(ACCOUNT_COOKIE, &active, "/", SESSION_TTL, false))
 }
 
 /// Whether a request comes from beghu's own pages: its `Origin` is beghu's public URL, or, when
@@ -108,48 +141,173 @@ pub async fn require_same_origin(State(app): State<App>, req: Request, next: Nex
     next.run(req).await
 }
 
-/// The API's gate: answers 401 without a live session whose active account can be used, and
-/// slides the session's expiry (re-sending the cookie) at most hourly.
-pub async fn require_session(State(app): State<App>, mut req: Request, next: Next) -> Response {
-    let Some(sid) = cookie(req.headers(), SESSION_COOKIE) else {
-        return ApiError::SignedOut.into_response();
+/// The hash of the session id the browser holds, if it holds a well-formed one.
+pub(crate) fn session_hash(headers: &HeaderMap) -> Option<Vec<u8>> {
+    cookie(headers, SESSION_COOKIE)
+        .and_then(|c| unb64(&c))
+        .filter(|r| r.len() == 32)
+        .map(|r| sha256(&r))
+}
+
+/// The cookies that end the browser's session: both cleared.
+pub(crate) fn cleared_cookies() -> [HeaderValue; 2] {
+    [
+        set_cookie(SESSION_COOKIE, "", "/", 0, true),
+        set_cookie(ACCOUNT_COOKIE, "", "/", 0, false),
+    ]
+}
+
+/// The browser's live session, as its cookie names it: the cookie's id, its hash, and the
+/// session's row (its active account and that account's status). `None` without one: no cookie,
+/// a malformed one, or a session that expired or ended.
+pub(crate) struct LiveSession {
+    pub sid: String,
+    pub id_hash: Vec<u8>,
+    pub row: q::SessionRow,
+}
+
+pub(crate) async fn live_session(
+    app: &App,
+    headers: &HeaderMap,
+) -> Result<Option<LiveSession>, control_db::Error> {
+    let Some(sid) = cookie(headers, SESSION_COOKIE) else {
+        return Ok(None);
     };
-    let Some(raw) = unb64(&sid).filter(|r| r.len() == 32) else {
-        return ApiError::SignedOut.into_response();
+    let Some(id_hash) = session_hash(headers) else {
+        return Ok(None);
     };
-    let id_hash = sha256(&raw);
-    let t = now();
-    let looked = {
-        let h = id_hash.clone();
-        app.control().read(move |c| q::session(c, &h, t)).await
-    };
-    let row = match looked {
-        Ok(Some(row)) => row,
-        Ok(None) => return ApiError::SignedOut.into_response(),
-        Err(e) => return ApiError::from(e).into_response(),
-    };
-    let (Some(account), Some(crate::tokens::account_status::ACTIVE)) =
-        (row.active_account_id, row.status.as_deref())
-    else {
-        return ApiError::SignedOut.into_response();
-    };
-    let touch = t - row.last_seen_at >= TOUCH_EVERY;
-    if touch {
-        let h = id_hash.clone();
-        if let Err(e) = app
-            .control()
-            .write(move |tx| q::touch_session(tx, &h, t, t + SESSION_TTL))
-            .await
-        {
-            return ApiError::from(e).into_response();
+    let (h, t) = (id_hash.clone(), now());
+    let row = app.control().read(move |c| q::session(c, &h, t)).await?;
+    Ok(row.map(|row| LiveSession { sid, id_hash, row }))
+}
+
+/// Why a request can't go on as the browser session's active account.
+pub(crate) enum Refusal {
+    /// No live session, or one with no account left: sign in.
+    SignedOut,
+    /// The session's active account lost access to GitHub: it must sign in again.
+    SignInAgain(i64),
+    /// The request names another account (`X-Beghu-Account`, the stream's `?account=`) than
+    /// the session's active one, which this is.
+    Switched(i64),
+    /// A write that names no account: beghu can't tell which tab's account it was made for.
+    Unnamed,
+    Failed(ApiError),
+}
+
+impl From<Refusal> for ApiError {
+    fn from(r: Refusal) -> ApiError {
+        match r {
+            Refusal::SignedOut | Refusal::SignInAgain(_) => ApiError::SignedOut,
+            Refusal::Switched(_) => ApiError::Switched,
+            Refusal::Unnamed => ApiError::BadRequest(format!(
+                "every API request that isn't a GET must carry {ACCOUNT_HEADER}"
+            )),
+            Refusal::Failed(e) => e,
         }
     }
-    req.extensions_mut().insert(Session { id_hash, account });
-    let mut res = next.run(req).await;
-    if touch {
-        for c in session_cookies(&sid, account) {
-            res.headers_mut().append(header::SET_COOKIE, c);
+}
+
+/// A request let through: its session, and the cookies to send back: both if the session's
+/// expiry slid (at most hourly), else the account hint if the request's names another account
+/// ([`account_hint`]).
+pub(crate) struct Admitted {
+    pub session: Session,
+    pub cookies: Vec<HeaderValue>,
+}
+
+impl Refusal {
+    /// The account hint to send back with this refusal, when the session has an active account
+    /// the request's hint doesn't name ([`account_hint`]).
+    pub(crate) fn hint(&self, headers: &HeaderMap) -> Option<HeaderValue> {
+        match self {
+            Refusal::Switched(a) | Refusal::SignInAgain(a) => account_hint(headers, *a),
+            _ => None,
         }
+    }
+}
+
+/// Lets a request through as the browser session's active account, if it can be used and is
+/// the account the request names (`claimed`, when it names one; a write must). Slides the
+/// session's expiry at most hourly.
+pub(crate) async fn admit(
+    app: &App,
+    headers: &HeaderMap,
+    claimed: Option<&str>,
+    write: bool,
+) -> Result<Admitted, Refusal> {
+    let live = match live_session(app, headers).await {
+        Ok(Some(l)) => l,
+        Ok(None) => return Err(Refusal::SignedOut),
+        Err(e) => return Err(Refusal::Failed(e.into())),
+    };
+    let Some(account) = live.row.active_account_id else {
+        return Err(Refusal::SignedOut);
+    };
+    match claimed {
+        Some(c) if c.parse::<i64>().ok() != Some(account) => {
+            return Err(Refusal::Switched(account));
+        }
+        None if write => return Err(Refusal::Unnamed),
+        _ => {}
+    }
+    if live.row.status.as_deref() != Some(crate::tokens::account_status::ACTIVE) {
+        return Err(Refusal::SignInAgain(account));
+    }
+    let t = now();
+    let touch = t - live.row.last_seen_at >= TOUCH_EVERY;
+    if touch {
+        let h = live.id_hash.clone();
+        app.control()
+            .write(move |tx| q::touch_session(tx, &h, t, t + SESSION_TTL))
+            .await
+            .map_err(|e| Refusal::Failed(e.into()))?;
+    }
+    Ok(Admitted {
+        session: Session {
+            id_hash: live.id_hash,
+            account,
+        },
+        cookies: if touch {
+            session_cookies(&live.sid, account).into()
+        } else {
+            account_hint(headers, account).into_iter().collect()
+        },
+    })
+}
+
+/// The API's gate: answers 401 without a live session whose active account can be used, 409
+/// `switched` to a request naming another account than the active one (`X-Beghu-Account`), and
+/// 400 to a write that names none. Every answer it lets through names the account it was made
+/// as (`X-Beghu-Account`), so a tab can tell a preload served for another account, and every
+/// answer as an account puts a stale `beghu_acct` right ([`account_hint`]). The stream
+/// is let in by [`admit`] itself, to answer in its own terms (live.rs).
+pub async fn require_session(State(app): State<App>, mut req: Request, next: Next) -> Response {
+    let write = !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    let claimed = req
+        .headers()
+        .get(ACCOUNT_HEADER)
+        .map(|v| v.to_str().unwrap_or("").to_owned());
+    let admitted = match admit(&app, req.headers(), claimed.as_deref(), write).await {
+        Ok(a) => a,
+        Err(r) => {
+            let hint = r.hint(req.headers());
+            let mut res = ApiError::from(r).into_response();
+            res.headers_mut()
+                .extend(hint.map(|c| (header::SET_COOKIE, c)));
+            return res;
+        }
+    };
+    let account = admitted.session.account;
+    req.extensions_mut().insert(admitted.session);
+    let mut res = next.run(req).await;
+    res.headers_mut()
+        .insert(ACCOUNT_HEADER, HeaderValue::from(account));
+    for c in admitted.cookies {
+        res.headers_mut().append(header::SET_COOKIE, c);
     }
     res
 }
@@ -158,6 +316,8 @@ pub async fn require_session(State(app): State<App>, mut req: Request, next: Nex
 pub struct LoginQuery {
     next: Option<String>,
     login: Option<String>,
+    /// Adding another account: GitHub offers its account picker.
+    add: Option<String>,
 }
 
 /// What the sign-in cookie carries from `/auth/login` to the callback, sealed.
@@ -171,7 +331,7 @@ struct Pending {
 
 /// `next` if it's a path inside beghu, else `/`. Bytes that can't go in a `Location` header as
 /// they are (non-ASCII text, spaces) are percent-encoded, which is how the browser sent them.
-fn safe_next(next: Option<&str>) -> String {
+pub(crate) fn safe_next(next: Option<&str>) -> String {
     match next {
         Some(n)
             if n.starts_with('/')
@@ -197,7 +357,16 @@ pub fn callback_url(app: &App) -> String {
     format!("{}/auth/callback", app.cfg().public_url)
 }
 
-pub async fn login(State(app): State<App>, Query(q): Query<LoginQuery>) -> Response {
+pub async fn login(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(q): Query<LoginQuery>,
+) -> Response {
+    let hint = match q.login.as_deref().filter(|l| !l.is_empty()) {
+        Some(l) => Some(l.to_owned()),
+        None if q.add.is_none() => must_sign_in_again(&app, &headers).await,
+        None => None,
+    };
     let pending = Pending {
         state: crypto::random_token(32),
         verifier: crypto::random_token(32),
@@ -208,7 +377,8 @@ pub async fn login(State(app): State<App>, Query(q): Query<LoginQuery>) -> Respo
         &callback_url(&app),
         &pending.state,
         &crypto::pkce_challenge(&pending.verifier),
-        q.login.as_deref().filter(|l| !l.is_empty()),
+        hint.as_deref(),
+        q.add.is_some(),
     );
     let sealed = b64(&app.keys().sign_in.seal(
         SIGN_IN_AAD,
@@ -219,9 +389,25 @@ pub async fn login(State(app): State<App>, Query(q): Query<LoginQuery>) -> Respo
     *res.status_mut() = StatusCode::FOUND;
     res.headers_mut().append(
         header::SET_COOKIE,
-        set_cookie(SIGN_IN_COOKIE, &sealed, "/auth", SIGN_IN_TTL, true),
+        set_cookie(SIGN_IN_COOKIE, &sealed, "/", SIGN_IN_TTL, true),
     );
     res
+}
+
+/// The login of the browser session's active account, if it must sign in again (it lost
+/// access): signing in asks GitHub for that account.
+async fn must_sign_in_again(app: &App, headers: &HeaderMap) -> Option<String> {
+    let row = live_session(app, headers).await.ok()??.row;
+    let account = row.active_account_id?;
+    if row.status.as_deref() != Some(crate::tokens::account_status::NEEDS_SIGN_IN) {
+        return None;
+    }
+    let a = app
+        .control()
+        .read(move |c| q::account(c, account))
+        .await
+        .ok()??;
+    Some(a.login)
 }
 
 #[derive(Deserialize)]
@@ -268,7 +454,7 @@ fn sign_in_failed(status: StatusCode, why: &str, next: &str) -> Response {
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res.headers_mut().append(
         header::SET_COOKIE,
-        set_cookie(SIGN_IN_COOKIE, "", "/auth", 0, true),
+        set_cookie(SIGN_IN_COOKIE, "", "/", 0, true),
     );
     res
 }
@@ -352,7 +538,7 @@ pub async fn callback(
             }
             res.headers_mut().append(
                 header::SET_COOKIE,
-                set_cookie(SIGN_IN_COOKIE, "", "/auth", 0, true),
+                set_cookie(SIGN_IN_COOKIE, "", "/", 0, true),
             );
             res
         }
@@ -496,16 +682,7 @@ pub async fn setup(State(app): State<App>, headers: HeaderMap) -> Response {
 
 /// The active account of the request's live session, if it has one that can be used.
 async fn active_account(app: &App, headers: &HeaderMap) -> Option<i64> {
-    let raw = cookie(headers, SESSION_COOKIE)
-        .and_then(|c| unb64(&c))
-        .filter(|r| r.len() == 32)?;
-    let h = sha256(&raw);
-    let t = now();
-    let row = app
-        .control()
-        .read(move |c| q::session(c, &h, t))
-        .await
-        .ok()??;
+    let row = live_session(app, headers).await.ok()??.row;
     match (row.active_account_id, row.status.as_deref()) {
         (Some(a), Some(crate::tokens::account_status::ACTIVE)) => Some(a),
         _ => None,
@@ -531,29 +708,38 @@ async fn finish(
         })
         .await?;
     app.tokens().sign_in(id, pair).await?;
+    // A mirror deleted when the account lost access comes back empty, and imports.
+    app.mirrors().revive(id);
     if created {
         crate::repos::adopt_mirror_pick(app, id).await?;
     }
 
     // Always a new id. A live session the browser already has keeps its accounts under it.
-    let old = cookie(headers, SESSION_COOKIE)
-        .and_then(|c| unb64(&c))
-        .filter(|r| r.len() == 32)
-        .map(|r| sha256(&r));
+    let old = session_hash(headers);
     let sid = crypto::random_token(32);
     let id_hash = sha256(&unb64(&sid).expect("just encoded"));
-    app.control()
-        .write(move |tx| {
-            q::create_session(tx, &id_hash, id, t, t + SESSION_TTL)?;
-            if let Some(old) = old {
-                if q::session(tx, &old, t)?.is_some() {
-                    q::move_session_accounts(tx, &old, &id_hash)?;
+    {
+        let (old, id_hash) = (old.clone(), id_hash.clone());
+        app.control()
+            .write(move |tx| {
+                q::create_session(tx, &id_hash, id, t, t + SESSION_TTL)?;
+                if let Some(old) = old {
+                    if q::session(tx, &old, t)?.is_some() {
+                        q::move_session_accounts(tx, &old, &id_hash)?;
+                    }
+                    q::delete_session(tx, &old)?;
                 }
-                q::delete_session(tx, &old)?;
-            }
-            q::add_session_account(tx, &id_hash, id, t)
-        })
-        .await?;
+                q::add_session_account(tx, &id_hash, id, t)
+            })
+            .await?;
+    }
+    // The browser's open tabs follow the session to its new id, and hear that this account is
+    // now the active one.
+    if let Some(old) = &old {
+        app.hub().rekey_session(old, &id_hash);
+    }
+    app.hub()
+        .publish_session(&id_hash, crate::live::Push::switched(Some(id), false));
     // The role table starts current.
     crate::repos::refresh_roles_now(app, id).await;
     Ok(session_cookies(&sid, id))

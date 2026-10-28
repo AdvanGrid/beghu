@@ -781,6 +781,8 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
             Ok(ids) if ids.is_empty() => {}
             Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
             Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            // The account lost access and its mirror is deleted: nothing to repair.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 eprintln!(
                     "edges: writing issue {} as read again failed for account {account}: {e}",
@@ -840,6 +842,8 @@ async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
                     place = Some((r.owner, r.name));
                 }
             }
+            // The account lost access and its mirror is deleted: nothing to write there.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 return Err(Failure::Retry(format!(
                     "reading account {account}'s mirror: {e}"
@@ -901,6 +905,8 @@ async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
         match written {
             Ok(false) => {}
             Ok(true) => inner.hub.publish(account, Push::Ids(vec![item].into())),
+            // The account lost access and its mirror is deleted: nothing to repair.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 eprintln!(
                     "edges: writing issue {item}'s comments as read again failed for account {account}: {e}"
@@ -1077,6 +1083,8 @@ async fn refetch(inner: &Inner, s: &Subject, kind: Kind) -> Result<(), Failure> 
             Ok(ids) if ids.is_empty() => {}
             Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
             Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            // The account lost access and its mirror is deleted: nothing to repair.
+            Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
                 eprintln!(
                     "edges: writing issue {id}'s {} edges failed for account {account}: {e}",
@@ -1132,7 +1140,8 @@ async fn unseen_subject(inner: &Inner, s: &Subject, targets: &[i64]) {
                 Ok(!q::item_repos(c, &[id])?.is_empty())
             })
             .await;
-        if !matches!(held, Ok(false)) {
+        // Held, or unknown; not a mirror deleted since (the account lost access).
+        if !matches!(held, Ok(false) | Err(mirror_db::Error::Deleted)) {
             eprintln!(
                 "edges: installation {} can't see issue {id}, which account {account} holds; marking it for resync",
                 s.installation

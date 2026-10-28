@@ -10,7 +10,7 @@ import { createMemo, createSignal, Errored, For, Loading, Show } from "solid-js"
 import { query, revalidate, useNavigate } from "@solidjs/router";
 import { forgetFailure, request, SessionEnded, signIn } from "./api";
 import { StillImporting } from "./WhileImporting";
-import { onPush } from "./live";
+import { onPush, writesPaused } from "./live";
 import type { PickableRepo } from "./bindings/PickableRepo";
 import type { RepoPicker } from "./bindings/RepoPicker";
 import { Failure } from "./Root";
@@ -132,7 +132,7 @@ function Picker() {
         </For>
       </Show>
       <div {...stylex.attrs(s.actions)}>
-        <button type="button" {...stylex.attrs(s.save)} disabled={saving() || !changed()} onClick={() => void save()}>
+        <button type="button" {...stylex.attrs(s.save)} disabled={saving() || !changed() || writesPaused()} onClick={() => void save()}>
           {saving() ? "Saving…" : "Save"}
         </button>
         <a href="/" {...stylex.attrs(s.link)}>

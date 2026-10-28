@@ -701,6 +701,38 @@ async fn conditional(s: &Stack) -> (u64, u64) {
     )
 }
 
+/// Losing access deletes the mirror, and with it whatever sync had missed in it: signing in again
+/// imports afresh, and sync is healthy, not degraded from before.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_that_lost_access_with_sync_degraded_signs_in_again_to_healthy_sync() {
+    let s = start_with(sweeping).await;
+    let mut b = s.sign_in("tomsj").await;
+    let me = unlinked("web")[0].clone();
+    s.fake("POST", "/faults/webhooks", json!({ "drop": 1 }))
+        .await;
+    edit(&s, &me, json!({ "title": "Webhook lost" })).await;
+    until(5.0, "sync degraded", || async {
+        (sync(&s, &b).await["degraded"] == true).then_some(())
+    })
+    .await;
+
+    // The user revokes beghu on GitHub: the account must sign in again, its mirror deleted.
+    s.fake("POST", "/revoke", json!({ "login": "tomsj" })).await;
+    until(5.0, "signed out", || async {
+        (s.api(&mut b.clone(), "/api/me").await.0 == 401).then_some(())
+    })
+    .await;
+
+    s.sign_in_on(&mut b, "tomsj").await;
+    until(30.0, "the fresh import's end", || async {
+        let (status, me) = s.api(&mut b.clone(), "/api/me").await;
+        (status == 200 && me["import"].is_null()).then_some(())
+    })
+    .await;
+    assert_eq!(title_of(&s, &b, me.2).await, "Webhook lost");
+    assert_eq!(sync(&s, &b).await, Value::Null);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unchanged_probe_is_a_304_that_costs_nothing_and_changes_nothing() {
     let s = start_with(sweeping).await;
@@ -836,10 +868,7 @@ async fn a_repo_no_account_syncs_gets_no_probes() {
             .map(|r| r["id"].as_i64().unwrap())
             .collect();
         let res = s
-            .http
-            .put(format!("{}/api/repos", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(b, reqwest::Method::PUT, "/api/repos")
             .json(&json!({ "repos": keep }))
             .send()
             .await
@@ -1171,10 +1200,7 @@ async fn everything_in(s: &Stack, b: &Browser, repo: &str) -> Vec<(i64, String, 
 
 /// POST /api/resync as `b`: its status.
 async fn ask_resync(s: &Stack, b: &Browser) -> u16 {
-    s.http
-        .post(format!("{}/api/resync", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+    s.api_write(b, reqwest::Method::POST, "/api/resync")
         .send()
         .await
         .unwrap()
@@ -1410,10 +1436,7 @@ async fn resync_runs_a_full_sweep_at_most_once_an_hour() {
 
     let resync = || async {
         let res = s
-            .http
-            .post(format!("{}/api/resync", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::POST, "/api/resync")
             .send()
             .await
             .unwrap();
@@ -1455,10 +1478,12 @@ async fn resync_runs_a_full_sweep_at_most_once_an_hour() {
 async fn a_resync_cannot_be_asked_for_from_another_site() {
     let s = start().await;
     let b = s.sign_in("tomsj").await;
+    // Everything as the web app sends it but the Origin.
     let res = s
         .http
         .post(format!("{}/api/resync", s.server))
         .header("cookie", b.header())
+        .header("x-beghu-account", b.account())
         .header("origin", "https://elsewhere.example")
         .send()
         .await
@@ -1575,10 +1600,7 @@ async fn a_resync_whose_request_was_dropped_half_way_leaves_resync_working() {
     // it meanwhile (a closed tab, say).
     let lock = WriteLock::take(&s.control_db());
     let asked = s
-        .http
-        .post(format!("{}/api/resync", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::POST, "/api/resync")
         .timeout(Duration::from_millis(500))
         .send()
         .await;
@@ -1586,10 +1608,7 @@ async fn a_resync_whose_request_was_dropped_half_way_leaves_resync_working() {
     drop(lock);
     until(20.0, "a later Resync to run", || async {
         let res = s
-            .http
-            .post(format!("{}/api/resync", s.server))
-            .header("cookie", b.header())
-            .header("origin", &s.server)
+            .api_write(&b, reqwest::Method::POST, "/api/resync")
             .send()
             .await
             .unwrap();
@@ -1651,10 +1670,7 @@ async fn a_repo_whose_repair_keeps_failing_is_tried_again_only_after_a_backoff()
         .map(|r| r["id"].as_i64().unwrap())
         .collect();
     let res = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": web }))
         .send()
         .await

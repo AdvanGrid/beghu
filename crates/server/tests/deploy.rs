@@ -377,10 +377,7 @@ async fn the_drain_stops_the_import_between_pages_and_leaves_no_wal_behind() {
         .map(|r| r["id"].as_i64().unwrap())
         .collect();
     let picked = s
-        .http
-        .put(format!("{}/api/repos", s.server))
-        .header("cookie", b.header())
-        .header("origin", &s.server)
+        .api_write(&b, reqwest::Method::PUT, "/api/repos")
         .json(&json!({ "repos": repos }))
         .send()
         .await

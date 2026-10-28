@@ -7,6 +7,8 @@
 // failing to load, Root.tsx) waits while there's unsaved text, as the build-id reload (#115) and
 // sign-out (#112) are to: they call `unsavedText`.
 
+import { leaving } from "./overlay";
+
 /** Each holder of text says whether it has some unsaved now. */
 const holders = new Set<() => boolean>();
 
@@ -22,6 +24,7 @@ export function unsavedText(): boolean {
   return false;
 }
 
+// Leaving on purpose (a sign-out or a switch the user confirmed) doesn't ask again.
 addEventListener("beforeunload", (e) => {
-  if (unsavedText()) e.preventDefault();
+  if (!leaving() && unsavedText()) e.preventDefault();
 });
