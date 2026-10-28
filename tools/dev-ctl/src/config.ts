@@ -14,6 +14,16 @@ export const FAKE_DB = join(DATA, "fake", "truth.db");
 /** What `start` seeded the data with (`Seeded`). Gone after a plain `reset`, so `start` seeds again. */
 export const SEEDED = join(DATA, "seeded.json");
 export const FIXTURES = join(ROOT, "perf", "data");
+/** Web builds `deploy` made, one directory per build id. */
+export const WEB_BUILDS = join(DEV, "web");
+/**
+ * What `deploy` put the server on (`Deployed`); none while it runs as `dev` with no web build of
+ * its own (Vite serves the app). `start` removes it.
+ */
+export const DEPLOYED = join(DEV, "deployed.json");
+/** The volume's asset store, and each build's record of its assets (crates/server/src/assets.rs). */
+export const ASSETS = join(DATA, "assets");
+export const BUILDS = join(DATA, "builds");
 export const TARGET = join(ROOT, "target", "debug");
 
 const port = (name: string, fallback: number): number => {
@@ -67,6 +77,9 @@ export const DEFAULT_SCALE: Scale = "50k";
  * `reset --fresh`, `fresh` (mirrors deleted, so the accounts import their own).
  */
 export type Seeded = { scale: Scale; fixture?: string; fresh?: boolean };
+
+/** The build the server runs after `deploy`, and the web build it serves (BEGHU_WEB_DIR). */
+export type Deployed = { build: string; web: string };
 
 export const PROCS = ["dev-ctl", "cargo", "fixture", "fake", "server", "vite"] as const;
 

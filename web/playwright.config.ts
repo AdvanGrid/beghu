@@ -20,7 +20,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|relationship-writes|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|relationships|relationship-writes|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs|deploy)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts, relationships.spec.ts with relationship-writes.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
     // sync.spec.ts, prs.spec.ts, lost-access.spec.ts, moves.spec.ts and create.spec.ts): their
@@ -55,7 +55,11 @@ export default defineConfig({
     // Makes new issues, which every tab's lists take in, and archives a repo, which changes what
     // every tab's create form offers: after the rest but prefs, alone.
     { name: "create", testMatch: /create\.spec\.ts$/, dependencies: ["moves"], timeout: 60_000, workers: 1 },
-    // Changes tomsj's keymap and comment order, which every other spec relies on: last, alone.
+    // Changes tomsj's keymap and comment order, which every other spec relies on: after the
+    // others, alone.
     { name: "prefs", testMatch: /prefs\.spec\.ts$/, dependencies: ["create"], workers: 1 },
+    // Deploys new builds (./dev-ctl deploy), restarting the server every other spec's tabs use:
+    // last, alone. It puts the server back on build `dev` when it's done.
+    { name: "deploy", testMatch: /deploy\.spec\.ts$/, dependencies: ["prefs"], workers: 1 },
   ],
 });

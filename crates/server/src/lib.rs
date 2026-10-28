@@ -509,6 +509,7 @@ pub fn router(app: App) -> Router {
     let shell = Router::new()
         .route("/", get(shell::shell))
         .route("/issues/{id}", get(shell::shell))
+        .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))
         .layer(compression());

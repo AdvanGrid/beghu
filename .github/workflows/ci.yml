@@ -160,7 +160,9 @@ jobs:
         run: deploy/smoke.sh beghu:ci
 
   e2e:
-    # Playwright on full Chromium against the ./dev-ctl stack in fixture mode.
+    # Playwright on full Chromium (new headless mode) against the ./dev-ctl stack in fixture mode.
+    # The stale-page specs (back-forward, accounts, deploy) turn the back-forward cache on
+    # (web/e2e/bfcache.ts); deploy.spec.ts builds the web app twice through ./dev-ctl deploy.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

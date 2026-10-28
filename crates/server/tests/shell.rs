@@ -1,7 +1,8 @@
 //! The SPA shell: account-free, cached for 5 minutes, and generated per URL with preloads for
 //! `/api/me`, the filter bar's facets, that URL's list page and the issue it opens, so the data
 //! fetches start alongside the JS. An issue's URL also modulepreloads the issue panel's chunk, so
-//! it loads alongside the entry instead of after it.
+//! it loads alongside the entry instead of after it. It names its build, so the tab running it
+//! can tell when the server has moved on to another (a deploy).
 
 mod common;
 
@@ -13,7 +14,8 @@ async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_a
     let s = start().await;
     let res = s.get(&mut Browser::default(), "/").await;
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["cache-control"], "max-age=300");
+    // The browser only: a shared cache (the edge) would keep serving a build's shell past a deploy.
+    assert_eq!(res.headers()["cache-control"], "private, max-age=300");
     assert!(
         res.headers()["content-type"]
             .to_str()
@@ -137,4 +139,47 @@ async fn a_web_build_without_its_vite_manifest_stops_startup_and_says_so() {
     std::fs::remove_file(s.web.join(".vite").join("manifest.json")).unwrap();
     let err = s.try_restart_with(|_| {}).await.unwrap_err();
     assert!(err.contains(".vite/manifest.json"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_names_the_build_it_belongs_to() {
+    let mut s = start().await;
+    let tag = |build: &str| format!(r#"<meta name="beghu-build" content="{build}">"#);
+    let html = s.get(&mut Browser::default(), "/issues/1").await;
+    assert!(html.text().await.unwrap().contains(&tag(common::BUILD)));
+
+    // A deploy: the shell's build is the server's, so a tab knows what it runs.
+    s.restart_with(|c| c.build_id = "next-build".into()).await;
+    let html = s
+        .get(&mut Browser::default(), "/")
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains(&tag("next-build")), "{html}");
+}
+
+/// Every route the app has (`web/src/router.tsx`) gets the shell: a tab loads any of them afresh
+/// once beghu runs a new build (`web/src/build.ts`), or when a route's code failed to load.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_app_route_gets_the_shell() {
+    let s = start().await;
+    for path in [
+        "/",
+        "/issues/1",
+        "/new",
+        "/new?repo=acme%2Fweb",
+        "/repos",
+        "/prefs",
+    ] {
+        let res = s.get(&mut Browser::default(), path).await;
+        assert_eq!(res.status(), 200, "{path}");
+        assert!(
+            res.text()
+                .await
+                .unwrap()
+                .contains(r#"<meta name="beghu-build""#),
+            "{path}"
+        );
+    }
 }

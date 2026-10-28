@@ -3,9 +3,11 @@
 //! - `ids` (`{"ids":[…]}`): one per mirror transaction that changed what the account sees.
 //! - `defs` (`{}`): a repo's labels or milestones changed while no item carrying them did: what
 //!   offers them (the filter bar, the detail's pickers) reads again; rows needn't.
-//! - `reset`: refetch everything shown. Every stream opens with one, so a change that landed
-//!   between the tab's data response and the stream opening is never missed; a stream that falls
-//!   more than [`BUFFER`] events behind gets one in place of what it missed.
+//! - `reset` (`{"build":…}`): refetch everything shown. Every stream opens with one, so a change
+//!   that landed between the tab's data response and the stream opening is never missed; a
+//!   stream that falls more than [`BUFFER`] events behind gets one in place of what it missed. It
+//!   names the server's build, as `X-Beghu-Build` does (which an `EventSource` can't read): a tab
+//!   whose stream reconnects to a new build after a deploy hears so at once.
 //! - `status` (`{"import":…,"sync":…}`): what the status slot shows, whenever it changes: the
 //!   import's phase and progress, `null` once it's done; and the sync state ("sync degraded ·
 //!   Resync", "resyncing…"), `null` while sync is healthy. Every `reset` is followed by the
@@ -105,6 +107,23 @@ pub struct StreamStatus {
     pub import: Option<ImportStatus>,
     /// Sync degraded, or resyncing; `null` while sync is healthy.
     pub sync: Option<SyncStatus>,
+}
+
+/// The `reset` event's data.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct StreamReset {
+    /// The build the server runs (`X-Beghu-Build`).
+    pub build: String,
+}
+
+fn reset_event(app: &App) -> Event {
+    let reset = StreamReset {
+        build: app.cfg().build_id.clone(),
+    };
+    Event::default()
+        .event("reset")
+        .data(serde_json::to_string(&reset).expect("plain struct"))
 }
 
 /// The `ids` event's data.
@@ -272,7 +291,7 @@ fn event(push: &Push) -> Event {
         Push::Ids(ids) => Event::default()
             .event("ids")
             .data(serde_json::to_string(&StreamIds { ids: ids.to_vec() }).expect("plain struct")),
-        // An event with no data is never dispatched by EventSource.
+        // Sent through `reset_event`, which names the build.
         Push::Reset => Event::default().event("reset").data("{}"),
         Push::Defs => Event::default().event("defs").data("{}"),
         Push::Prefs => Event::default().event("prefs").data("{}"),
@@ -379,7 +398,7 @@ pub async fn stream(
             let imports = imports.clone();
             async move {
                 let (ev, next) = match step {
-                    Step::Reset => (event(&Push::Reset), Step::Status { opening: true }),
+                    Step::Reset => (reset_event(&imports), Step::Status { opening: true }),
                     Step::Status { opening } => (
                         status_event(&imports, account, None).await,
                         if opening { Step::GitHub } else { Step::Live },
@@ -408,7 +427,7 @@ pub async fn stream(
                                 (status_event(&imports, account, None).await, Step::Live)
                             }
                             Some(Push::Reset) => {
-                                (event(&Push::Reset), Step::Status { opening: false })
+                                (reset_event(&imports), Step::Status { opening: false })
                             }
                             // The tab's own account signed in again, or became active again:
                             // nothing changed for it.

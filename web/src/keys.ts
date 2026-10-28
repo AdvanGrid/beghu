@@ -433,7 +433,7 @@ function trigger(action: Action): void {
 }
 
 /** Whether `el` takes typing: there, single keys type. */
-function isTextField(el: Element | null): boolean {
+export function isTextField(el: Element | null): boolean {
   if (!el) return false;
   if ((el as HTMLElement).isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return true;
   return el.tagName === "INPUT" && !["button", "checkbox", "radio", "range", "reset", "submit", "color", "file", "image"].includes((el as HTMLInputElement).type);

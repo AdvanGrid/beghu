@@ -1,11 +1,16 @@
 // ./dev-ctl: runs the beghu dev stack (Fake GitHub, the server, Vite) in the background.
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, watchFile, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  ASSETS,
+  BUILDS,
   DATA,
   DEFAULT_SCALE,
+  DEPLOYED,
+  type Deployed,
   DEV,
   DEV_WEBHOOK_SECRET,
   FAKE_DB,
@@ -23,6 +28,7 @@ import {
   SUPERVISOR,
   type State,
   URLS,
+  WEB_BUILDS,
   alive,
   fakeState,
   urls,
@@ -132,6 +138,16 @@ Commands:
                               USER suspends the App's installation on their own account,
                               or lifts it (GitHub sends installation suspend/unsuspend):
                               it still lists, but beghu reads nothing through it.
+  deploy BUILD [--prune]      Deploy as production does, to see open tabs across it: build
+                              the web app as build BUILD (letters, digits, . _ -; rebuilt
+                              only when its sources changed) into .dev/web/BUILD, then
+                              restart the server on it (BEGHU_BUILD_ID, BEGHU_WEB_DIR). It
+                              then serves the built app at the server's URL, where only
+                              reads work (writes come from the app's origin), while Vite's
+                              tabs see the new build id. The volume keeps earlier builds'
+                              assets; --prune deletes those this build doesn't have, and
+                              the other builds' records, as their day being up would.
+  deploy dev                  Back to build dev, the app served by Vite.
   reset [--all] [--fresh]     Restore pristine mirrors and the fake's state (sign-ins,
                               faults, its data), keeping the control DB (less its Resync
                               marks and hourly limits). Restarts the stack if it's running.
@@ -312,6 +328,8 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     children: s?.children ?? null,
     mode: s?.mode,
     scale: s?.scale,
+    // The server's build: `dev` (Vite serves the app) unless `deploy` put it on another.
+    build: readJson<Deployed>(DEPLOYED)?.build ?? "dev",
     urls: urls(),
     // Dev data only: what the fake signs deliveries with, for a test that sends its own.
     webhook_secret: DEV_WEBHOOK_SECRET,
@@ -327,7 +345,7 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
     `running (pid ${r.pid}, ${s?.phase ?? "unknown"}): ${s?.mode ?? "?"} mode, scale ${s?.scale ?? "?"}`,
     ...(s?.error ? [`  ${s.error}`] : []),
     `  app     ${urls().app}  ${word(app)}`,
-    `  server  ${urls().server}  ${word(server)}`,
+    `  server  ${urls().server}  ${word(server)}  (build ${data.build}${data.build === "dev" ? "" : ", serving the app"})`,
     `  fake    ${urls().fake}  ${word(fakeUp)}  (control ${urls().control})`,
     `signed in to the fake: ${fake ? fake.signed_in.join(", ") || "nobody" : "unknown (fake down)"}`,
     `fault rules:${fake ? (faults.length ? "" : " none") : " unknown (fake down)"}`,
@@ -703,6 +721,81 @@ async function fake(args: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// deploy
+
+/** The web app's sources: a build made from other contents is rebuilt. */
+function webSources(): string {
+  const web = join(ROOT, "web");
+  const files = ["index.html", "theme.js", "vite.config.ts", "package-lock.json", "markdown-parsers.ts"].map((f) => join(web, f));
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else files.push(p);
+    }
+  };
+  walk(join(web, "src"));
+  const h = createHash("sha256");
+  for (const f of files.sort()) {
+    if (!existsSync(f)) continue;
+    h.update(f).update("\0").update(readFileSync(f)).update("\0");
+  }
+  return h.digest("hex");
+}
+
+/** `.dev/web/<build>`, built from the sources as they are now; exits if the build fails. */
+function webBuild(build: string, json: boolean): string {
+  const out = join(WEB_BUILDS, build);
+  const stamp = join(out, ".sources");
+  const sources = webSources();
+  if (existsSync(stamp) && readFileSync(stamp, "utf8") === sources) return out;
+  if (!json) console.log(`building the web app as ${build}`);
+  const vite = spawnSync(
+    process.execPath,
+    [join(ROOT, "web", "node_modules", "vite", "bin", "vite.js"), "build", "--outDir", out, "--emptyOutDir", "--logLevel", "warn"],
+    { cwd: join(ROOT, "web"), env: { ...process.env, BEGHU_BUILD_ID: build }, stdio: ["ignore", json ? "ignore" : "inherit", "inherit"] },
+  );
+  if (vite.status !== 0) die(`vite build failed for ${build}`);
+  writeFileSync(stamp, sources);
+  return out;
+}
+
+async function deploy(args: string[]): Promise<void> {
+  const { set, pos, json } = parse(args, [], ["--prune"]);
+  const [build] = pos;
+  if (pos.length !== 1 || !/^[A-Za-z0-9._-]{1,64}$/.test(build!)) throw new Usage("usage: ./dev-ctl deploy BUILD [--prune] | deploy dev");
+  if (build === "dev" && set.has("--prune")) throw new Usage("deploy dev has no assets to prune");
+  const r = running();
+  if (!r || r.state?.phase !== "ready") die("the stack isn't running (or isn't ready); ./dev-ctl start first");
+  if (build === "dev") remove(DEPLOYED);
+  else {
+    const web = webBuild(build!, json);
+    if (set.has("--prune") && existsSync(ASSETS)) {
+      // As if every earlier build's day were up: only what this build has stays.
+      const keep = new Set(readdirSync(join(web, "assets")));
+      for (const f of readdirSync(ASSETS)) if (!keep.has(f)) remove(join(ASSETS, f));
+      // And their records, as pruning drops them.
+      if (existsSync(BUILDS)) for (const f of readdirSync(BUILDS)) if (f !== `${build}.json`) remove(join(BUILDS, f));
+    }
+    writeJson(DEPLOYED, { build: build!, web } satisfies Deployed);
+  }
+  process.kill(r.pid, "SIGUSR2");
+  const deadline = Date.now() + 90_000;
+  for (;;) {
+    await sleep(250);
+    try {
+      const res = await fetch(`${urls().server}/healthz`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok && ((await res.json()) as { build: string }).build === build) break;
+    } catch {
+      // Still restarting.
+    }
+    if (Date.now() > deadline) die(`the server isn't up as ${build} after 90 s; see ./dev-ctl logs server`);
+  }
+  const at = build === "dev" ? urls().app : urls().server;
+  print(json, { build, url: at }, `deployed ${build}: the app is at ${at}`);
+}
+
+// ---------------------------------------------------------------------------------------------
 // reset
 
 /**
@@ -794,6 +887,8 @@ async function main(): Promise<void> {
       return login(args);
     case "fake":
       return fake(args);
+    case "deploy":
+      return deploy(args);
     case "reset":
       return reset(args);
     case "help":

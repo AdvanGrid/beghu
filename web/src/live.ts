@@ -1,9 +1,10 @@
 // Live updates: one EventSource per tab on /api/stream. The server pushes `ids` (these items
 // changed), `defs` (a repo's labels or milestones changed, no row did: what offers them reads
 // again) and `reset` (refetch everything shown); every stream opens with a reset, so a change
-// that landed before the stream was up is never missed. Views register a refetch with `onPush`
-// (the list in IssueList.tsx, the open detail in IssuePanel.tsx); `coalesced` keeps a burst of
-// pushes down to one fetch now and one after it.
+// that landed before the stream was up is never missed. A reset names the build beghu runs
+// (build.ts); a page the back-forward cache restores opens its stream again, and so resets too.
+// Views register a refetch with `onPush` (the list in IssueList.tsx, the open detail in
+// IssuePanel.tsx); `coalesced` keeps a burst of pushes down to one fetch now and one after it.
 //
 // Reconnecting is the tab's own: about a second after a drop, never EventSource's backoff.
 // `reconnecting()` turns true once the stream has been down for 3 s, and `cantReach()` (the
@@ -29,14 +30,21 @@ import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { forgetRemembered, prefsChanged } from "./api";
 import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
+import { noteBuild } from "./build";
 import type { ImportStatus } from "./bindings/ImportStatus";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
+import type { StreamReset } from "./bindings/StreamReset";
 import type { StreamStatus } from "./bindings/StreamStatus";
 import type { StreamSwitched } from "./bindings/StreamSwitched";
 import type { SyncStatus } from "./bindings/SyncStatus";
 
-export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset" };
+/**
+ * A push. A `reset` with `restored` is the first of a stream opened again as the back-forward
+ * cache restored the page: the user came back to it (Back), rather than the world changing under
+ * them.
+ */
+export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset"; restored?: true };
 
 const RETRY_MS = 1000;
 const RECONNECTING_AFTER_MS = 3000;
@@ -101,13 +109,24 @@ function emit(p: Push): void {
   for (const fn of [...listeners]) fn(p);
 }
 
-/** Opens the tab's stream and keeps it open; the returned function closes it for good. */
+/**
+ * Opens the tab's stream and keeps it open; the returned function closes it for good. A page
+ * going into the back-forward cache closes it: Chrome evicts a cached page whose request is still
+ * open after about two minutes, and Back would then reload. Restored, still on the browser's
+ * active account (account.ts reloads one that isn't), the page opens it again, and its opening
+ * `reset` refetches what the page shows, which may be minutes old, and names the build beghu runs
+ * now (build.ts).
+ */
 export function connectLive(): () => void {
   let source: EventSource | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let down: ReturnType<typeof setTimeout> | undefined;
   let gone: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  /** In the back-forward cache: the stream is closed until the page is restored. */
+  let away = false;
+  /** The stream was opened as the page was restored: its first `reset` says so. */
+  let restoring = false;
   const account = tabAccount();
 
   const open = () => {
@@ -128,10 +147,12 @@ export function connectLive(): () => void {
       closed = true;
       es.close();
     });
-    es.addEventListener("reset", () => {
+    es.addEventListener("reset", (e) => {
+      noteBuild((JSON.parse((e as MessageEvent<string>).data) as Partial<StreamReset>).build);
       setImporting(null);
       setSync(null);
-      emit({ kind: "reset" });
+      emit(restoring ? { kind: "reset", restored: true } : { kind: "reset" });
+      restoring = false;
     });
     es.addEventListener("status", (e) => {
       const status = JSON.parse((e as MessageEvent<string>).data) as StreamStatus;
@@ -149,14 +170,14 @@ export function connectLive(): () => void {
     es.addEventListener("error", () => {
       // Our own retry, not EventSource's.
       es.close();
-      if (closed || stale() || source !== es) return;
+      if (closed || away || stale() || source !== es) return;
       down ??= setTimeout(() => setReconnecting(true), RECONNECTING_AFTER_MS);
       gone ??= setTimeout(() => setCantReach(true), CANT_REACH_AFTER_MS);
       retry = setTimeout(open, RETRY_MS);
       // beghu may be up and refusing the tab's account (something in front of it answered the
       // stream for it): asked plainly, it says, and the tab goes stale, not "Can't reach".
       void refused().then((why) => {
-        if (why === undefined || closed) return;
+        if (why === undefined || closed || away) return;
         why();
         closed = true;
         clearTimeout(retry);
@@ -168,9 +189,32 @@ export function connectLive(): () => void {
       });
     });
   };
+  const hide = () => {
+    if (closed) return;
+    away = true;
+    clearTimeout(retry);
+    clearTimeout(down);
+    clearTimeout(gone);
+    down = gone = undefined;
+    source?.close();
+    source = undefined;
+  };
+  const show = (e: PageTransitionEvent) => {
+    if (!e.persisted || !away) return;
+    away = false;
+    setReconnecting(false);
+    setCantReach(false);
+    if (closed || stale() || cookieAccount() !== account) return;
+    restoring = true;
+    open();
+  };
+  addEventListener("pagehide", hide);
+  addEventListener("pageshow", show);
   open();
   return () => {
     closed = true;
+    removeEventListener("pagehide", hide);
+    removeEventListener("pageshow", show);
     clearTimeout(retry);
     clearTimeout(down);
     clearTimeout(gone);
@@ -190,6 +234,7 @@ async function refused(): Promise<(() => void) | undefined> {
   } catch {
     return undefined;
   }
+  noteBuild(res.headers.get("x-beghu-build"));
   if (res.status === 409) return noteSwitched;
   if (res.status !== 401) return undefined;
   const now = cookieAccount();

@@ -7,6 +7,7 @@ import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { Background } from "./WhileSyncing";
 import { stale } from "./account";
+import { loadAfresh, newBuildOnNavigate } from "./build";
 import { cantReach, connectLive, githubDown, reconnecting } from "./live";
 import { createNote, leaving, overlay } from "./overlay";
 import { ChunkFailed } from "./router";
@@ -24,10 +25,12 @@ const AccountMenu = lazy(() => import("./AccountMenu"), { export: "AccountMenu" 
  * bottom bar holds the status slot. The tab's live stream opens with the app. One banner at a
  * time shows under the header. Leaving on purpose (a sign-out or a switch) blanks the whole app
  * first, header and banners included, so no frame of a page restored from the back-forward cache
- * shows the old account.
+ * shows the old account. Once beghu runs another build, the next navigation loads the document
+ * afresh (build.ts).
  */
 export function Root(props: { children?: Element }) {
   onSettled(connectLive);
+  newBuildOnNavigate();
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
   // Another view (its query string, with an issue open or not) or leaving the issue for the
@@ -154,10 +157,11 @@ function StatusBar() {
 const RELOADED = "beghu.chunk-reload:";
 
 /**
- * Reloads `target` (the URL the failed navigation was headed to) with `location.replace`, unless
- * this tab already did for that URL. A deploy that replaced the build is the usual cause, and a
- * fresh shell names the new chunks. Without session storage there's no guard, so no reload. Nor
- * while the tab holds unsaved text (unsaved.ts): the failure offers Retry instead.
+ * Reloads `target` (the URL the failed navigation was headed to) in place of this history entry,
+ * unless this tab already did for that URL. A deploy that replaced the build is the usual cause,
+ * and a fresh shell names the new chunks (`loadAfresh`, build.ts). Without session storage
+ * there's no guard, so no reload. Nor while the tab holds unsaved text (unsaved.ts): the failure
+ * offers Retry instead.
  */
 export function reloadOnce(target: string): boolean {
   if (unsavedText()) return false;
@@ -167,7 +171,7 @@ export function reloadOnce(target: string): boolean {
   } catch {
     return false;
   }
-  location.replace(target);
+  loadAfresh(target, true);
   return true;
 }
 

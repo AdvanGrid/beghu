@@ -3,6 +3,11 @@
 // has its own browser context (its own session), so switching and signing out touch no other
 // test; nothing here changes an account for anyone else (lost-access.spec.ts does, serially).
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { bfcache } from "./bfcache";
+
+// Among the stale-page specs (spec #86): a side-by-side tab sees the switch with the browser's
+// back-forward cache on, as a person's browser has it.
+test.use(bfcache);
 
 const account = (page: Page) => page.locator('[data-perf="account"]');
 const banner = (page: Page) => page.locator('[data-perf="banner"]');

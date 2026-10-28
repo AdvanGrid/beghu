@@ -211,8 +211,10 @@ it (Cloudflare proxied DNS, a Kubernetes ingress, Caddy, nginx) must:
   beghu's errors carry typed JSON bodies that the app acts on: 503 `github_down` and `unavailable`
   (with `retry-after`), 424 `maybe_posted`, 409 `conflict`, and the rest. A replaced body
   turns a recoverable state into a generic failure.
-- **Add no cache rules for HTML or `/api/*`.** beghu sets its own `Cache-Control`: `max-age=300`
-  on the shell, `no-store` on the API, and `public, max-age=31536000, immutable` on `/assets/*`.
+- **Add no cache rules for HTML or `/api/*`.** beghu sets its own `Cache-Control`:
+  `private, max-age=300` on the shell (kept by browsers only, so no shared cache serves an old
+  build's shell after a deploy), `no-store` on the API, and
+  `public, max-age=31536000, immutable` on `/assets/*`.
 - **Leave `POST /webhook` unchallenged** by WAF, bot and rate rules. GitHub can't answer a
   challenge. beghu checks each delivery's signature itself.
 
@@ -276,6 +278,15 @@ deployed again keeps the files it listed before, as well as its new ones. A buil
 ago is pruned, along with every file no remaining build lists. Pruning runs at startup and when a
 superseded build's day is up. Any unknown `/assets/*` path is a 404, never the shell. That's
 about 1–2 MB per build.
+
+The tab moves itself to the new build. The shell names its build (`<meta name="beghu-build">`),
+and every API answer and the stream's opening `reset` name the server's. Once a tab hears of
+another build, its next navigation inside the app loads the document afresh instead, revalidating
+the cached shell, unless the tab holds unsaved text: then it navigates in place, and the first
+navigation without loads. A route's chunk that fails to load anyway (the tab hadn't heard yet,
+and the old files are gone) reloads its URL once; a failed preload says nothing.
+`./dev-ctl deploy` does this locally, and `web/e2e/deploy.spec.ts` checks it with the old
+build's assets kept and pruned.
 
 ## First-load size
 

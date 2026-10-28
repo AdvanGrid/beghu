@@ -1,6 +1,7 @@
 //! The SPA shell: the built `index.html`, generated per URL with `<link rel=preload>` for the
 //! data that URL shows first, so the fetches start alongside the JS. It holds nothing about the
-//! account, so it's cacheable (`max-age=300`) and the same for everyone.
+//! account, so it's cacheable (`private, max-age=300`: by the browser, never by a shared cache,
+//! which would keep a build's shell past a deploy) and the same for everyone.
 //!
 //! The preloads must match the client's fetches byte for byte (`web/src/api.ts`): `/api/me`,
 //! `/api/facets` (the filter bar's suggestions), `/api/issues` with the page's own query string,
@@ -10,6 +11,11 @@
 //! An issue's URL also gets `<link rel=modulepreload>` for the issue panel's chunk, so a cold deep
 //! link fetches it alongside the entry instead of after it. The chunk's hashed name comes from
 //! the build's Vite manifest, read once at startup.
+//!
+//! The shell names the build it belongs to (`<meta name="beghu-build">`, the server's build id),
+//! since its scripts are that build's. A tab compares it with the `X-Beghu-Build` of beghu's
+//! answers and of its stream's opening `reset`: once the server runs another build (a deploy),
+//! the tab's next navigation loads the document afresh (`web/src/build.ts`).
 
 use crate::App;
 use axum::extract::{OriginalUri, State};
@@ -65,9 +71,13 @@ impl Shell {
         })
     }
 
-    /// The shell for an app URL's path and query string.
-    fn render(&self, path: &str, query: Option<&str>) -> String {
-        let mut tags = preloads(path, query);
+    /// The shell for an app URL's path and query string, as build `build`'s.
+    fn render(&self, path: &str, query: Option<&str>, build: &str) -> String {
+        let mut tags = format!(
+            r#"<meta name="beghu-build" content="{}">"#,
+            escape_attr(build)
+        );
+        tags.push_str(&preloads(path, query));
         // The route the app matches (`/issues/:id`, one non-empty segment) renders the panel,
         // whether or not the id is one the server will find.
         if path
@@ -126,7 +136,7 @@ pub async fn shell(State(app): State<App>, OriginalUri(uri): OriginalUri) -> Res
         )
             .into_response();
     };
-    let html = shell.render(uri.path(), uri.query());
+    let html = shell.render(uri.path(), uri.query(), &app.cfg().build_id);
     let mut res = (
         [(
             header::CONTENT_TYPE,
@@ -137,7 +147,7 @@ pub async fn shell(State(app): State<App>, OriginalUri(uri): OriginalUri) -> Res
         .into_response();
     res.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("max-age=300"),
+        HeaderValue::from_static("private, max-age=300"),
     );
     res
 }

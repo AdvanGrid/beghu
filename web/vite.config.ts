@@ -204,6 +204,15 @@ function noMarkdownParser(): Plugin {
 
 const firstLoad = firstLoadInEntry();
 
+/**
+ * With `BEGHU_BUILD_ID` set, a comment at the top of the entry chunk names the build (after
+ * minifying, so it stays, and before hashing, so it counts). Two commits' builds differ in their
+ * entry, and so in every chunk that imports it, as a deploy's do: `./dev-ctl deploy` builds two
+ * versions of one tree this way. Without it the build is reproducible.
+ */
+const BUILD = process.env.BEGHU_BUILD_ID;
+const banner = (chunk: { isEntry: boolean }) => (BUILD && chunk.isEntry ? `/*! beghu ${BUILD.replace(/[^\w.-]/g, "")} */` : "");
+
 export default defineConfig({
   plugins: [unchangedUpdatesNothing(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser()],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
@@ -229,6 +238,6 @@ export default defineConfig({
     // Every target supports <link rel="modulepreload">: no polyfill in first-load JS.
     modulePreload: { polyfill: false },
     manifest: true,
-    rolldownOptions: { output: { codeSplitting: { groups: [{ name: "index", test: firstLoad.test }] } } },
+    rolldownOptions: { output: { postBanner: banner, codeSplitting: { groups: [{ name: "index", test: firstLoad.test }] } } },
   },
 });

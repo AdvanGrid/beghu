@@ -10,6 +10,8 @@ import { join } from "node:path";
 import {
   CLIENT,
   DATA,
+  DEPLOYED,
+  type Deployed,
   DEV_APP,
   DEV_TOKEN_KEY,
   DEV_WEBHOOK_SECRET,
@@ -102,6 +104,8 @@ export async function supervise(scale: Scale): Promise<void> {
   writeJson(PID, process.pid);
   save();
 
+  // A fresh stack serves the app through Vite, as build `dev`.
+  remove(DEPLOYED);
   const busy = await busyPort();
   if (busy) return fail(busy);
   log("dev-ctl", "building the server and Fake GitHub");
@@ -146,6 +150,11 @@ export async function supervise(scale: Scale): Promise<void> {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  // `deploy` wrote what the server is to run as: a restart puts it on that build.
+  process.on("SIGUSR2", () => {
+    log("dev-ctl", `deploying ${readJson<Deployed>(DEPLOYED)?.build ?? "dev"}`);
+    void stack.restart("server");
+  });
 
   stack.startAll();
   const ready = await waitUntilUp(60_000, stack.running);
@@ -266,7 +275,8 @@ function commands(fixture: () => string): Commands {
       [],
       {
         PORT: String(PORTS.server),
-        BEGHU_BUILD_ID: "dev",
+        // `deploy` puts the server on a web build of its own, as a deploy would.
+        ...deployedEnv(),
         BEGHU_PUBLIC_URL: URLS.app,
         // control.db, backups/ and mirrors/ live here; `reset --all` deletes the first two.
         BEGHU_DATA_DIR: DATA,
@@ -292,6 +302,12 @@ function commands(fixture: () => string): Commands {
       { BEGHU_SERVER: URLS.server },
     ],
   };
+}
+
+/** The server's build and web build: `dev` and none (Vite serves the app), unless deployed. */
+function deployedEnv(): NodeJS.ProcessEnv {
+  const d = readJson<Deployed>(DEPLOYED);
+  return d ? { BEGHU_BUILD_ID: d.build, BEGHU_WEB_DIR: d.web } : { BEGHU_BUILD_ID: "dev" };
 }
 
 type Stack = ReturnType<typeof processes>;

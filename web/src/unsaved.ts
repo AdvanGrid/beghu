@@ -4,8 +4,8 @@
 // write alone doesn't, since it's on its way and the server finishes it without the tab.
 //
 // `beforeunload` covers closing and reloading. A reload the app makes itself (a route's code
-// failing to load, Root.tsx) waits while there's unsaved text, as the build-id reload (#115) and
-// sign-out (#112) are to: they call `unsavedText`.
+// failing to load, Root.tsx; a navigation once beghu runs a new build, build.ts) waits while
+// there's unsaved text, and sign-out asks first (AccountMenu.tsx): they call `unsavedText`.
 
 import { leaving } from "./overlay";
 

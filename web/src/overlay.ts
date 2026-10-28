@@ -78,7 +78,8 @@ export { newSubIssueOf, setNewSubIssueOf };
 /**
  * The tab is leaving on purpose (a sign-out or a switch, confirmed if it held unsaved text): the
  * whole app blanks, header and banners included, so the page the back-forward cache keeps (and
- * every frame of it restored) never shows the old account, and leaving doesn't ask again.
+ * every frame of it restored) never shows the old account, and leaving doesn't ask again. A
+ * signed-in page going into the back-forward cache any other way blanks too (below).
  */
 const [leaving, setLeaving] = createSignal(false);
 export { leaving };
@@ -87,9 +88,19 @@ export function leave(): void {
   // Blank now, before the navigation that follows can freeze the page as it was.
   flush();
 }
-// Back to a page that left on purpose but whose account is unchanged (the post failed, say): it
-// shows again. One whose account the browser no longer has active stays blank, and reloads
-// (account.ts).
+// A signed-in page going into the back-forward cache blanks as well, however it left (a link out,
+// a typed URL): the account may change before it comes back, and no test can see whether Chrome
+// paints a restored page before `pageshow` (the spec's contingency, decided the conservative way).
+addEventListener("pagehide", (e) => {
+  if (!e.persisted || tabAccount() === undefined || leaving()) return;
+  setLeaving(true);
+  flush();
+});
+// Back to a page whose account is unchanged (a link out, or a sign-out whose post failed): it
+// shows again before its first frame. One whose account the browser no longer has active stays
+// blank, and reloads (account.ts).
 addEventListener("pageshow", (e) => {
-  if (e.persisted && cookieAccount() === tabAccount()) setLeaving(false);
+  if (!e.persisted || cookieAccount() !== tabAccount()) return;
+  setLeaving(false);
+  flush();
 });

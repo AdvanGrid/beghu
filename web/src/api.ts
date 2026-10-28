@@ -6,6 +6,7 @@
 // share one fetch. The wire types come from the server through ts-rs (./bindings).
 import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
+import { noteBuild, whileWriting } from "./build";
 import { accountHeaders, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
@@ -320,6 +321,7 @@ async function requestOnce<T>(url: string, init?: RequestInit): Promise<T> {
   } catch (e) {
     throw new Unreachable(`can't reach beghu: ${String(e)}`);
   }
+  noteBuild(res.headers.get("x-beghu-build"));
   const mine = tabAccount();
   if (preload && res.ok && mine !== undefined && res.headers.get("x-beghu-account") !== String(mine)) return requestOnce(url, init);
   if (res.ok) {
@@ -343,6 +345,7 @@ async function postOp(op_id: string, op: Op, resend: boolean): Promise<OpReply> 
       headers: { "content-type": "application/json", ...accountHeaders() },
       body: JSON.stringify({ op_id, op, ...(resend && { resend }) } satisfies OpRequest),
     });
+    noteBuild(res.headers.get("x-beghu-build"));
     // A 2xx is GitHub's confirmation; one cut short on the way back is a lost answer, and the
     // resend gets it again.
     if (res.ok) return (await res.json()) as OpReply;
@@ -376,7 +379,12 @@ const RESEND_FOR_MS = 9 * 60_000;
  * whether beghu was busy or didn't answer. A resend after a send that may have arrived, turned
  * away as `Switched` or `SessionEnded`, is `Lost` too: the first may have been made.
  */
-export async function sendOp(op_id: string, op: Op): Promise<OpReply> {
+export function sendOp(op_id: string, op: Op): Promise<OpReply> {
+  // A full document load for a new build waits for it (build.ts).
+  return whileWriting(() => sendUntilAnswered(op_id, op));
+}
+
+async function sendUntilAnswered(op_id: string, op: Op): Promise<OpReply> {
   const since = performance.now();
   let reached = false;
   let busy = false;
@@ -677,11 +685,6 @@ export function readBefore(detail: IssueDetail, since: number): boolean {
   const at = startedAt.get(detail);
   return at !== undefined && at < Math.max(since, pushedAt.get(detail.id) ?? -Infinity);
 }
-
-// A page restored from the bfcache resets (spec #86): what it remembered may be long stale.
-addEventListener("pageshow", (e) => {
-  if (e.persisted) forgetRemembered();
-});
 
 /** A comment's place in its thread, as cursors name it: `<created_at>.<id>`. */
 export function cursorOf(c: Comment): string {

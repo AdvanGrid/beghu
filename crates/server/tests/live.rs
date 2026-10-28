@@ -408,7 +408,9 @@ async fn the_stream_is_origin_checked_unbuffered_and_keeps_a_heartbeat() {
             st.next_within(SECS).await,
             Some(Sse {
                 event: "reset".into(),
-                data: "{}".into()
+                // The build the server runs: a tab on another build loads afresh on its next
+                // navigation (an EventSource can't read the response's `X-Beghu-Build`).
+                data: format!(r#"{{"build":"{}"}}"#, common::BUILD)
             })
         );
         assert_eq!(st.next_within(SECS).await.unwrap().event, "status");
