@@ -1,6 +1,7 @@
 // The detail's pickers: Labels, Assignees and Milestone each open one under their property row. A
 // chunk of its own, loaded the first time one opens (IssuePanel.tsx); it brings the writes code
-// with it, since every pick is a write.
+// with it, since every pick is a write. The create form (CreateIssue.tsx) opens the same pickers
+// on its draft (`DraftPicker`), where a pick only changes the draft.
 //
 // A picker lists what the repo offers, filters it as the user types, and ticks the issue's current
 // values as the detail shows them, pending picks included. Each pick is sent at once as its own op
@@ -13,7 +14,9 @@
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, Errored, For, Loading, onSettled, Show } from "solid-js";
 import { query } from "@solidjs/router";
-import { forgetFailure, GitHubDown, Gone, RateLimited, Refused, request, SessionEnded, signIn, Unreachable, type Op } from "./api";
+import { forgetFailure, GitHubDown, Gone, RateLimited, Refused, request, SessionEnded, signIn, Unreachable, type IssueOp } from "./api";
+import type { Label } from "./bindings/Label";
+import type { Milestone } from "./bindings/Milestone";
 import type { RepoLabel } from "./bindings/RepoLabel";
 import type { RepoMilestone } from "./bindings/RepoMilestone";
 import type { User } from "./bindings/User";
@@ -43,8 +46,20 @@ interface Item {
   /** The milestone picker's "No milestone": always listed, never filtered out. */
   none?: boolean;
   on: boolean;
-  op: Op;
+  op: IssueOp;
   look?: Look;
+}
+
+/**
+ * What a picker picks for: the open issue, or the create form's draft (whose `id` is 0: it has no
+ * issue yet). Its repo's labels, people and milestones list; its own values are ticked.
+ */
+export interface Pickable {
+  id: number;
+  repo_id: number;
+  labels: Label[];
+  assignees: { login: string }[];
+  milestone: Milestone | null;
 }
 
 /** What each picker is: what it calls its things, where it reads them, and how they list. */
@@ -58,7 +73,7 @@ interface PropKind<T> {
   /** Stays open for more picks; picking a milestone closes its picker. */
   multi: boolean;
   /** The lines, from what the repo offers and what the issue `d` has. */
-  items(d: ShownDetail, offered: T[]): Item[];
+  items(d: Pickable, offered: T[]): Item[];
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -124,7 +139,7 @@ const PROPS: { [P in Prop]: PropKind<P extends "labels" ? RepoLabel : P extends 
           hint: m.state === "closed" ? "closed" : undefined,
           on: m.number === now,
           // Picking the one it's in takes it out.
-          op: { kind: "milestone_set", issue: d.id, milestone: m.number === now ? null : m.number } satisfies Op,
+          op: { kind: "milestone_set", issue: d.id, milestone: m.number === now ? null : m.number } satisfies IssueOp,
           look: { milestone: m.number === now ? null : { number: m.number, title: m.title, state: m.state, due_on: m.due_on } },
         })),
       ];
@@ -149,6 +164,44 @@ function whyNot(e: unknown): string {
  * (Escape, a milestone picked), or stays where the user clicked.
  */
 export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: boolean) => void; opener?: HTMLElement }) {
+  return (
+    <PickerOn
+      prop={props.prop}
+      d={props.d}
+      busy={(op) => writesPaused() || picking(props.d.id, op)}
+      pick={(op, look) => pick(op, props.d, look)}
+      onClose={props.onClose}
+      opener={props.opener}
+    />
+  );
+}
+
+/**
+ * The picker for `prop` on the create form's draft `d`: each pick goes to `onPick`, which changes
+ * the draft, and nothing is sent.
+ */
+export function DraftPicker(props: {
+  prop: Prop;
+  d: Pickable;
+  onPick: (op: IssueOp, look?: Look) => void;
+  onClose: (refocus: boolean) => void;
+  opener?: HTMLElement;
+}) {
+  return <PickerOn prop={props.prop} d={props.d} busy={() => false} pick={props.onPick} onClose={props.onClose} opener={props.opener} />;
+}
+
+/**
+ * A picker for `prop` on `d`: `pick` makes a pick, and `busy` says when one can't be made (a pick of
+ * the same thing on its way, GitHub unreachable).
+ */
+function PickerOn(props: {
+  prop: Prop;
+  d: Pickable;
+  busy: (op: IssueOp) => boolean;
+  pick: (op: IssueOp, look?: Look) => void;
+  onClose: (refocus: boolean) => void;
+  opener?: HTMLElement;
+}) {
   const kind = () => propKind(props.prop);
   const [text, setText] = createSignal("");
   const [active, setActive] = createSignal(0);
@@ -163,8 +216,8 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
   let input!: HTMLInputElement;
 
   const choose = (item: Item | undefined) => {
-    if (!item || writesPaused() || picking(props.d.id, item.op)) return;
-    pick(item.op, props.d, item.look);
+    if (!item || props.busy(item.op)) return;
+    props.pick(item.op, item.look);
     if (!kind().multi) props.onClose(true);
   };
 
@@ -269,6 +322,7 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
             id={listId()}
             listed={(shown) => setList(() => shown)}
             choose={choose}
+            busy={props.busy}
             hover={setActive}
           />
         </Loading>
@@ -279,17 +333,17 @@ export function Picker(props: { prop: Prop; d: ShownDetail; onClose: (refocus: b
 
 function Options(props: {
   prop: Prop;
-  d: ShownDetail;
+  d: Pickable;
   text: string;
   active: number;
   id: string;
   /** The shown items once the list is on screen, and `undefined` once it's gone. */
   listed: (shown: (() => Item[]) | undefined) => void;
   choose: (item: Item) => void;
+  busy: (op: IssueOp) => boolean;
   hover: (i: number) => void;
 }) {
   const kind = () => propKind(props.prop);
-  const issue = () => props.d.id;
   // Labels and milestones read again on every push; who can be assigned only as the picker opens.
   const offered = createMemo(() => {
     if (kind().live) pushes();
@@ -319,7 +373,7 @@ function Options(props: {
     >
       <For each={shown()} keyed={(i) => i.key} fallback={<li {...stylex.attrs(s.note)}>No {kind().noun} match</li>}>
         {(item, i) => {
-          const busy = () => writesPaused() || picking(issue(), item().op);
+          const busy = () => props.busy(item().op);
           return (
             <li
               id={`${props.id}-${i()}`}

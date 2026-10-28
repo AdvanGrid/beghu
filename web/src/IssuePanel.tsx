@@ -137,6 +137,22 @@ export function IssuePanel(props: RouteSectionProps) {
   const location = useLocation();
   // A path id that isn't a number asks for an issue that can't exist; the server says Gone.
   const id = () => issueId(props.params.id);
+  return (
+    <Panel label="Issue" perf="panel">
+      <Errored fallback={(err, reset) => <DetailFailure error={err()} reset={reset} id={id()} search={location.search} />}>
+        <Loading fallback={<div data-perf="detail-loading" {...stylex.attrs(s.loading)} aria-busy="true" />}>
+          <Detail id={id()} search={location.search} />
+        </Loading>
+      </Errored>
+    </Panel>
+  );
+}
+
+/**
+ * The panel beside the list (under it below 900 px), with the divider that resizes it and the
+ * width kept on this device: the open issue's, and the create form's (CreateIssue.tsx).
+ */
+export function Panel(props: { label: string; perf: string; children: Element }) {
   const stacked = media(STACKED);
   const [preferred, setPreferred] = createSignal<number | undefined>(readWidth());
   const [room, setRoom] = createSignal(0);
@@ -205,16 +221,12 @@ export function IssuePanel(props: RouteSectionProps) {
       </Show>
       <section
         ref={panel}
-        aria-label="Issue"
-        data-perf="panel"
+        aria-label={props.label}
+        data-perf={props.perf}
         data-keys="panel"
         {...stylex.attrs(s.panel, stacked() ? s.stacked : s.side(width()))}
       >
-        <Errored fallback={(err, reset) => <DetailFailure error={err()} reset={reset} id={id()} search={location.search} />}>
-          <Loading fallback={<div data-perf="detail-loading" {...stylex.attrs(s.loading)} aria-busy="true" />}>
-            <Detail id={id()} search={location.search} />
-          </Loading>
-        </Errored>
+        {props.children}
       </section>
     </>
   );

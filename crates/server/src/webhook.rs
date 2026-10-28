@@ -1057,6 +1057,19 @@ impl Issue {
         self.id
     }
 
+    pub(crate) fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    pub(crate) fn number(&self) -> i64 {
+        self.number
+    }
+
+    /// The names of the labels it has.
+    pub(crate) fn label_names(&self) -> impl Iterator<Item = &str> {
+        self.labels.iter().map(|l| l.name.as_str())
+    }
+
     pub(crate) fn title(&self) -> &str {
         &self.title
     }

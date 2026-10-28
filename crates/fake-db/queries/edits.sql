@@ -197,3 +197,20 @@ DELETE FROM comments WHERE item_id = :id;
 -- name: delete_issue_relationships :exec
 -- param: id i64
 DELETE FROM relationships WHERE src_id = :id OR dst_id = :id;
+
+-- A new issue, as `POST /repos/{owner}/{repo}/issues` makes it: open, by `author_id`, created and
+-- updated `at`, with no comments yet. Its labels, assignees and milestone are set after.
+-- name: create_issue :exec
+-- param: id i64
+-- param: node_id &str
+-- param: repo_id i64
+-- param: number i64
+-- param: title &str
+-- param: body Option<&str>
+-- param: author_id i64
+-- param: at i64
+INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, body, state, state_reason,
+                   locked, author_id, created_at, updated_at, closed_at, last_commented_at,
+                   comments_count, issue_type, seq)
+VALUES (:id, :node_id, :repo_id, :number, 'issue', 0, :title, :body, 'open', NULL,
+        0, :author_id, :at, :at, NULL, NULL, 0, NULL, 0);

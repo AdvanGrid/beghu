@@ -27,13 +27,16 @@
 // offers `saveEdit` (Ctrl or Cmd+Enter) and `cancelEdit` (Escape, fixed there). Enter in the title
 // box saves too, as its form's own submit.
 //
+// `create` is offered by the filter bar, always there: it opens the create form in the panel
+// (CreateIssue.tsx), whose rows offer `labels`, `assignees` and `milestone` as an issue's do.
+//
 // `imageOpen` is offered by the issue panel while a post in it shows an image the lightbox can
 // open: it opens the focused image (images are in the Tab order), else the first one in view.
 // The lightbox offers `imageClose` while it's open; it's marked `data-keys="lightbox"`, an area
 // where nothing else runs, so j/k and the list's keys don't drive the list behind it.
 //
-// Some touchpoints have no caller yet, pending their tickets: `create` for the create form (#104)
-// and `toggleMode` for tree mode (#108). The `?` overlay shows them dimmed until then.
+// Some touchpoints have no caller yet, pending their tickets: `toggleMode` for tree mode (#108).
+// The `?` overlay shows it dimmed until then.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.

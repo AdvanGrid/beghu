@@ -8,7 +8,7 @@ import { IssueList } from "./IssueList";
 import { Background } from "./WhileSyncing";
 import { stale } from "./account";
 import { cantReach, connectLive, githubDown, reconnecting } from "./live";
-import { leaving, overlay } from "./overlay";
+import { createNote, leaving, overlay } from "./overlay";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { unsavedText } from "./unsaved";
@@ -113,9 +113,11 @@ const Hints = lazy(
 
 /**
  * The always-shown bottom bar. Its left end is the status slot: quiet states, one at a time. Once
- * the tab can write, the writes code fills it, failed writes first (overlay.ts); otherwise a lost
- * connection comes before the import (whose progress it can't hear meanwhile), and the import
- * before the sync state. Its right side shows the quick keys for where the focus is (Hints.tsx).
+ * the tab can write, the writes code fills it, failed writes first, a failed create among them,
+ * then a create made while its form was closed (overlay.ts); otherwise that create's word comes
+ * first, then a lost connection before the import (whose progress it can't hear meanwhile), and
+ * the import before the sync state. Its right side shows the quick keys for where the focus is
+ * (Hints.tsx).
  */
 function StatusBar() {
   return (
@@ -124,8 +126,15 @@ function StatusBar() {
         <Show
           when={overlay()?.Status}
           fallback={
-            <Show when={reconnecting()} fallback={<Background />}>
-              reconnecting…
+            <Show
+              when={createNote()?.Note}
+              fallback={
+                <Show when={reconnecting()} fallback={<Background />}>
+                  reconnecting…
+                </Show>
+              }
+            >
+              {(note) => <Dynamic component={note()} />}
             </Show>
           }
         >
@@ -164,8 +173,8 @@ export function reloadOnce(target: string): boolean {
 
 /**
  * The panel failed outside its own boundaries: its code didn't load (the URL reloads once, then
- * offers Retry), or something else broke in it. The notice names what the panel held, an issue
- * or repo picking. The list stays usable, and opening anything else tries again.
+ * offers Retry), or something else broke in it. The notice names what the panel held: an issue,
+ * repo picking, or the create form. The list stays usable, and opening anything else tries again.
  */
 function PanelFailure(props: { error: unknown; reset: () => void }) {
   const location = useLocation();
@@ -175,8 +184,11 @@ function PanelFailure(props: { error: unknown; reset: () => void }) {
   return (
     <div {...stylex.attrs(s.panelSlot)} aria-busy={reloading ? "true" : undefined}>
       <Show when={!reloading}>
-        <Show when={location.pathname === "/repos"} fallback={<IssueNotice error={props.error} retry={props.reset} />}>
-          <ReposNotice error={props.error} retry={props.reset} />
+        <Show
+          when={location.pathname === "/repos" || location.pathname === "/new"}
+          fallback={<IssueNotice error={props.error} retry={props.reset} />}
+        >
+          <ChunkNotice what={location.pathname === "/new" ? "the create form" : "repo picking"} error={props.error} retry={props.reset} />
         </Show>
       </Show>
     </div>
@@ -204,12 +216,12 @@ export function IssueNotice(props: { error: unknown; retry: () => void }) {
   );
 }
 
-/** Repo picking's code couldn't load: says so, with Retry (or, signed out, goes to sign in). */
-function ReposNotice(props: { error: unknown; retry: () => void }) {
+/** Repo picking's code, or the create form's, couldn't load: says so, with Retry (or, signed out, goes to sign in). */
+function ChunkNotice(props: { what: string; error: unknown; retry: () => void }) {
   return (
     <Failure error={props.error}>
       <p {...stylex.attrs(s.notice)} role="alert">
-        Couldn't load repo picking ·{" "}
+        Couldn't load {props.what} ·{" "}
         <button type="button" {...stylex.attrs(s.link)} onClick={() => props.retry()}>
           Retry
         </button>

@@ -21,8 +21,14 @@
 //!   Any other 404 (GitHub's "Not Found": the issue or repo is out of sight), a 410, or a 301
 //!   (the issue transferred since, before its webhooks came) is Gone.
 //! - 5xx answers, timeouts and resets are tried again after 1 s and then 3 s, except for a
-//!   comment, which is never sent twice: GitHub may have posted it before failing, and the
-//!   failure says so ("maybe posted").
+//!   comment or a new issue, which is never sent twice: GitHub may have made it before failing,
+//!   and the failure says so ("maybe posted" for a comment; for a new issue, "lost", which says
+//!   to check the list).
+//! - A new issue (`create`) names its repo, not an issue: it goes in a synced repo that isn't
+//!   archived, and its labels, assignees and milestone need Triage (Read sends title and body
+//!   only). GitHub drops any of the three it won't apply without saying so: the reply names
+//!   each as the write that would apply it on the new issue, for the tab to show as failed there.
+//!   New issues take turns per repo, as ops on one issue do.
 //! - A refusal, or a close or reopen GitHub didn't apply, re-reads the account's role on that
 //!   repo at once and says why in its terms.
 //! - Only issues take writes: a PR, a stub or an issue outside the synced repos is refused.
@@ -125,6 +131,19 @@ pub enum Op {
         new: String,
         base: String,
     },
+    /// Open a new issue in a synced repo: labels by name, assignees by login, a milestone by its
+    /// number. The reply's `issue` is the new issue's id.
+    Create {
+        repo: i64,
+        title: String,
+        body: String,
+        #[serde(default)]
+        labels: Vec<String>,
+        #[serde(default)]
+        assignees: Vec<String>,
+        #[serde(default)]
+        milestone: Option<i64>,
+    },
 }
 
 #[derive(Deserialize, Serialize, TS, Clone, Copy, PartialEq, Debug)]
@@ -177,6 +196,7 @@ pub enum OpKind {
     MilestoneSet,
     TitleEdit,
     BodyEdit,
+    Create,
 }
 
 impl OpKind {
@@ -195,12 +215,24 @@ impl OpKind {
             | OpKind::MilestoneSet
             | OpKind::TitleEdit
             | OpKind::BodyEdit => "May or may not have reached GitHub",
+            OpKind::Create => {
+                "May or may not have been created; check the list before trying again"
+            }
         }
     }
 }
 
+/// Where an op waits its turn: behind the earlier ops on its issue, or, for a new issue, behind
+/// the earlier new issues in its repo.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Queue {
+    Issue(i64),
+    Repo(i64),
+}
+
 impl Op {
-    fn issue(&self) -> i64 {
+    /// The issue the op changes; none for a new issue.
+    fn issue(&self) -> Option<i64> {
         match self {
             Op::Comment { issue, .. }
             | Op::Close { issue, .. }
@@ -211,7 +243,16 @@ impl Op {
             | Op::AssigneeRemove { issue, .. }
             | Op::MilestoneSet { issue, .. }
             | Op::TitleEdit { issue, .. }
-            | Op::BodyEdit { issue, .. } => *issue,
+            | Op::BodyEdit { issue, .. } => Some(*issue),
+            Op::Create { .. } => None,
+        }
+    }
+
+    fn queue(&self) -> Queue {
+        match (self, self.issue()) {
+            (Op::Create { repo, .. }, _) => Queue::Repo(*repo),
+            (_, Some(issue)) => Queue::Issue(issue),
+            (_, None) => Queue::Repo(0),
         }
     }
 
@@ -227,6 +268,7 @@ impl Op {
             Op::MilestoneSet { .. } => OpKind::MilestoneSet,
             Op::TitleEdit { .. } => OpKind::TitleEdit,
             Op::BodyEdit { .. } => OpKind::BodyEdit,
+            Op::Create { .. } => OpKind::Create,
         }
     }
 
@@ -247,7 +289,8 @@ impl Op {
             | Op::AssigneeRemove { .. }
             | Op::MilestoneSet { .. }
             | Op::TitleEdit { .. }
-            | Op::BodyEdit { .. } => None,
+            | Op::BodyEdit { .. }
+            | Op::Create { .. } => None,
         }
     }
 
@@ -261,13 +304,14 @@ impl Op {
         }
     }
 
-    /// Whether a 5xx, timeout or reset is tried again: not for a comment, which GitHub may have
-    /// posted before failing. Every other op leaves the issue as it asks however often it's made.
+    /// Whether a 5xx, timeout or reset is tried again: not for a comment or a new issue, which
+    /// GitHub may have made before failing. Every other op leaves the issue as it asks however
+    /// often it's made.
     fn retries(&self) -> bool {
-        !self.is_comment()
+        !matches!(self.kind(), OpKind::Comment | OpKind::Create)
     }
 
-    /// What the op names besides its issue that must not be blank: a label or a login.
+    /// What the op names that must not be blank: a label, a login, or a title.
     fn blank_name(&self) -> Option<&'static str> {
         match self {
             Op::LabelAdd { label, .. } | Op::LabelRemove { label, .. }
@@ -281,6 +325,9 @@ impl Op {
                 Some("an assignee needs a login")
             }
             Op::TitleEdit { new, .. } if new.trim().is_empty() => Some("A title can't be empty"),
+            Op::Create { title, .. } if title.trim().is_empty() => {
+                Some("A new issue needs a title")
+            }
             _ => None,
         }
     }
@@ -292,10 +339,14 @@ impl Op {
             Op::Comment { body, .. } if body.chars().count() > MAX_BODY => {
                 Some("A comment can be at most 65,536 characters long, as on GitHub")
             }
-            Op::BodyEdit { new, .. } if new.chars().count() > MAX_BODY => {
+            Op::BodyEdit { new: body, .. } | Op::Create { body, .. }
+                if body.chars().count() > MAX_BODY =>
+            {
                 Some("A description can be at most 65,536 characters long, as on GitHub")
             }
-            Op::TitleEdit { new, .. } if new.trim().chars().count() > MAX_TITLE => {
+            Op::TitleEdit { new: title, .. } | Op::Create { title, .. }
+                if title.trim().chars().count() > MAX_TITLE =>
+            {
                 Some("A title can be at most 256 characters long, as on GitHub")
             }
             _ => None,
@@ -357,6 +408,19 @@ pub struct OpReply {
     pub body: Option<Md>,
     /// The items in the mirror that the comment or the body refers to.
     pub refs: Refs,
+    /// A create's labels, assignees or milestone that GitHub didn't apply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unapplied: Option<Unapplied>,
+}
+
+/// What GitHub left out of a new issue it made: each as the write that would apply it on the new
+/// issue, and why, in terms of the account's role.
+#[derive(Serialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct Unapplied {
+    pub ops: Vec<Op>,
+    pub why: String,
 }
 
 /// How a write ended: kept for resends, so it's cloneable (unlike [`ApiError`]).
@@ -380,6 +444,9 @@ enum Failure {
         after: i64,
         digest: Option<Digest>,
     },
+    /// A new issue GitHub answered with a 5xx or a 2xx beghu couldn't read, or not at all: it may
+    /// have been made. Never sent again; the tab is told to check, as for a lost write.
+    MaybeCreated,
     /// The drain stopped the jobs before the write's token could be refreshed: nothing was sent.
     Restarting,
     /// A mirror said to try again later (at its connection cap, or migrating): nothing was sent.
@@ -402,6 +469,10 @@ impl From<Failure> for ApiError {
             Failure::Changed(current) => ApiError::Changed { current },
             Failure::GitHubDown(m) => ApiError::GitHubDown(m),
             Failure::MaybePosted { after, digest } => ApiError::MaybePosted { after, digest },
+            Failure::MaybeCreated => ApiError::Lost {
+                kind: OpKind::Create,
+                digest: None,
+            },
             Failure::Restarting => ApiError::restarting(),
             Failure::Unavailable { retry_after, why } => ApiError::Unavailable { retry_after, why },
             Failure::Internal(m) => ApiError::Internal(m),
@@ -476,9 +547,10 @@ impl Drop for Busy {
 #[derive(Default)]
 struct Book {
     seen: HashMap<(i64, String), Seen>,
-    /// Per issue, the last op to take a turn: its number, and what ends when it's done. An op
-    /// that finds one waits on it; the last one done removes its entry.
-    last: HashMap<i64, (u64, oneshot::Receiver<()>)>,
+    /// Per queue (an issue, or a repo's new issues), the last op to take a turn: its number, and
+    /// what ends when it's done. An op that finds one waits on it; the last one done removes its
+    /// entry.
+    last: HashMap<Queue, (u64, oneshot::Receiver<()>)>,
     next: u64,
 }
 
@@ -576,18 +648,18 @@ impl Ops {
             },
         );
         // The turn: after the issue's last op, before any that arrives later.
-        let issue = op.issue();
+        let queue = op.queue();
         let turn = book.next;
         book.next += 1;
         let (done, after) = oneshot::channel();
-        let before = book.last.insert(issue, (turn, after)).map(|(_, rx)| rx);
+        let before = book.last.insert(queue, (turn, after)).map(|(_, rx)| rx);
         let end = End {
             _busy: Busy::new(&self.busy),
             app: app.clone(),
-            issue,
+            queue,
             turn,
-            comment: op.is_comment(),
             sending: Sending {
+                kind: Some(op.kind()),
                 digest: op.digest(),
                 ..Sending::default()
             },
@@ -644,14 +716,13 @@ fn make_room(seen: &mut HashMap<(i64, String), Seen>, account: i64) -> Result<()
 
 /// The end of an op's task, however it ends: an outcome for whoever waits on it (a task that
 /// panicked fails rather than leaving them waiting: as `MaybePosted` for a comment whose call
-/// may have gone out, else as `Internal`), its issue's next op's turn, and the issue's queue
-/// entry gone if no op came after.
+/// may have gone out, `MaybeCreated` for such a new issue, else as `Internal`), its queue's next
+/// op's turn, and the queue's entry gone if no op came after.
 struct End {
     _busy: Busy,
     app: App,
-    issue: i64,
+    queue: Queue,
     turn: u64,
-    comment: bool,
     sending: Sending,
     tx: watch::Sender<Option<Outcome>>,
     /// Dropped last: the next op on the issue waits on it.
@@ -660,14 +731,13 @@ struct End {
 
 impl Drop for End {
     fn drop(&mut self) {
-        let maybe_posted = self.comment && self.sending.sent.load(Ordering::SeqCst);
+        let sent = self.sending.sent.load(Ordering::SeqCst);
         self.tx.send_if_modified(|o| {
             o.is_none()
                 .then(|| {
-                    *o = Some(Err(if maybe_posted {
-                        self.sending.maybe_posted()
-                    } else {
-                        Failure::Internal("the write's task ended without an outcome".into())
+                    *o = Some(Err(match self.sending.unsure() {
+                        Some(f) if sent => f,
+                        _ => Failure::Internal("the write's task ended without an outcome".into()),
                     }));
                 })
                 .is_some()
@@ -675,10 +745,10 @@ impl Drop for End {
         let mut book = self.app.ops().book();
         if book
             .last
-            .get(&self.issue)
+            .get(&self.queue)
             .is_some_and(|(t, _)| *t == self.turn)
         {
-            book.last.remove(&self.issue);
+            book.last.remove(&self.queue);
         }
     }
 }
@@ -686,6 +756,8 @@ impl Drop for End {
 /// What an op's task knows of its GitHub call, for an end that comes without an outcome.
 #[derive(Default)]
 struct Sending {
+    /// What the op is.
+    kind: Option<OpKind>,
     /// Set as the call goes out.
     sent: AtomicBool,
     /// For a comment: the newest comment id the mirror held on the issue as the call went out.
@@ -700,6 +772,16 @@ impl Sending {
         Failure::MaybePosted {
             after: self.after.load(Ordering::SeqCst),
             digest: self.digest,
+        }
+    }
+
+    /// For an op that's never sent twice, once its call may have reached GitHub: that GitHub may
+    /// have made it. `None` for every other op.
+    fn unsure(&self) -> Option<Failure> {
+        match self.kind {
+            Some(OpKind::Comment) => Some(self.maybe_posted()),
+            Some(OpKind::Create) => Some(Failure::MaybeCreated),
+            _ => None,
         }
     }
 }
@@ -757,7 +839,9 @@ fn is_uuid(s: &str) -> bool {
 
 /// Makes the write: GitHub, then the mirror and the push.
 async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
-    let id = op.issue();
+    let Some(id) = op.issue() else {
+        return create(app, account, op, sending).await;
+    };
     let target = app
         .mirrors()
         .read(account, Caller::Request, move |c| q::op_target(c, id))
@@ -843,6 +927,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             issue_path,
             json!({ "milestone": milestone }),
         ),
+        Op::Create { .. } => return Err(Failure::Internal("a new issue names no issue".into())),
         Op::TitleEdit { new, .. } => (
             reqwest::Method::PATCH,
             issue_path,
@@ -940,6 +1025,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 comment: Some(comment),
                 body: None,
                 refs,
+                unapplied: None,
             })
         }
         // GitHub answers with the labels the issue has afterwards, but not the issue's
@@ -966,8 +1052,10 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 comment: None,
                 body: None,
                 refs: Refs::new(),
+                unapplied: None,
             })
         }
+        Op::Create { .. } => Err(Failure::Internal("a new issue names no issue".into())),
         Op::Close { .. }
         | Op::Reopen { .. }
         | Op::AssigneeAdd { .. }
@@ -995,7 +1083,8 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 }
                 Op::TitleEdit { new, .. } => same_text(Field::Title, issue.title(), new),
                 Op::BodyEdit { new, .. } => same_text(Field::Body, issue.body(), new),
-                _ => issue.state == "open",
+                Op::Reopen { .. } => issue.state == "open",
+                _ => return Err(Failure::Internal(format!("{op:?} took the wrong path"))),
             };
             let body = matches!(op, Op::BodyEdit { .. }).then(|| issue.body().to_owned());
             store(app, account, &target, move |tx, seq| {
@@ -1008,6 +1097,174 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             Ok(edited(app, account, &target, body).await)
         }
     }
+}
+
+/// Makes a new issue: GitHub, then the mirror and the push, as for any other write. GitHub's
+/// answer is the issue as made; what it left out of what was asked comes back in the reply's
+/// `unapplied`, since the issue is there all the same.
+async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
+    let Op::Create {
+        repo,
+        title,
+        body,
+        labels,
+        assignees,
+        milestone,
+    } = op
+    else {
+        return Err(Failure::Internal(format!("{op:?} isn't a new issue")));
+    };
+    let repo = *repo;
+    let target = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| q::create_target(c, repo))
+        .await
+        .map_err(Failure::from)?
+        .filter(|r| r.synced)
+        .ok_or_else(|| Failure::Refused("This repo isn't synced".into()))?;
+    let name = &target.name;
+    if target.archived {
+        return Err(Failure::Refused(format!(
+            "{name} is archived, so it's read-only"
+        )));
+    }
+    // Read opens issues with a title and a body only; a role not read yet is GitHub's to judge.
+    let role = target.role.as_deref().and_then(Role::parse);
+    let extras = !labels.is_empty() || !assignees.is_empty() || milestone.is_some();
+    if let Some(role) = role.filter(|r| extras && *r < Role::Triage) {
+        return Err(Failure::Refused(format!(
+            "you have {} on {name}, which can't set labels, assignees or a milestone",
+            role.name()
+        )));
+    }
+    if app.github().is_down() {
+        return Err(Failure::GitHubDown(
+            "GitHub is unreachable; try again once it's back".into(),
+        ));
+    }
+    // As for `label_add`: only labels the mirror's repo has, by the name it has for each, since
+    // GitHub would create one it lacks.
+    let mut names = Vec::with_capacity(labels.len());
+    for label in labels {
+        let wanted = label.clone();
+        let named = app
+            .mirrors()
+            .read(account, Caller::Request, move |c| {
+                q::repo_label_named(c, repo, &wanted)
+            })
+            .await
+            .map_err(Failure::from)?
+            .ok_or_else(|| {
+                Failure::Refused(format!(
+                    "{name} has no label called {label}; it may have been renamed or deleted"
+                ))
+            })?;
+        names.push(named.name);
+    }
+    let mut ask = json!({ "title": title.trim(), "body": body });
+    if !names.is_empty() {
+        ask["labels"] = json!(names);
+    }
+    if !assignees.is_empty() {
+        ask["assignees"] = json!(assignees);
+    }
+    if let Some(m) = milestone {
+        ask["milestone"] = json!(m);
+    }
+    let on = IssueRepo {
+        repo_id: repo,
+        owner: target.owner.clone(),
+        repo: target.name.clone(),
+        own: true,
+    };
+    let path = format!("/repos/{}/{name}/issues", target.owner);
+    let answer = match call(
+        app,
+        account,
+        op,
+        reqwest::Method::POST,
+        &path,
+        &ask,
+        sending,
+    )
+    .await
+    {
+        Err(Failure::Forbidden) => {
+            return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+        }
+        // 404: out of sight now; 410: the repo has issues turned off.
+        Err(Failure::Gone) => {
+            return Err(Failure::Refused(format!(
+                "GitHub won't take new issues in {name}: it may have issues turned off, or be out of your reach"
+            )));
+        }
+        answer => answer?,
+    };
+    // GitHub made it, but an answer beghu can't read doesn't say as what.
+    let issue: webhook::Issue = serde_json::from_value(answer).map_err(|e| {
+        eprintln!("ops: account {account}: GitHub's 201 for a new issue: {e}");
+        Failure::MaybeCreated
+    })?;
+    let id = issue.id();
+    // What it was asked for and doesn't have, as the writes that would apply it.
+    let mut unapplied: Vec<Op> = Vec::new();
+    for label in &names {
+        if !issue.label_names().any(|l| l.eq_ignore_ascii_case(label)) {
+            unapplied.push(Op::LabelAdd {
+                issue: id,
+                label: label.clone(),
+            });
+        }
+    }
+    for login in assignees {
+        if !issue
+            .assignees
+            .iter()
+            .any(|u| u.login.eq_ignore_ascii_case(login))
+        {
+            unapplied.push(Op::AssigneeAdd {
+                issue: id,
+                login: login.clone(),
+            });
+        }
+    }
+    if milestone.is_some() && issue.milestone.as_ref().map(|m| m.number) != *milestone {
+        unapplied.push(Op::MilestoneSet {
+            issue: id,
+            milestone: *milestone,
+        });
+    }
+    let made = q::OpTargetRow {
+        id,
+        node_id: issue.node_id().to_owned(),
+        kind: "issue".into(),
+        is_stub: false,
+        synced: true,
+        repo_id: repo,
+        installation_id: target.installation_id,
+        owner: target.owner.clone(),
+        repo: target.name.clone(),
+        number: issue.number(),
+        author_id: Some(account),
+    };
+    store(app, account, &made, move |tx, seq| {
+        webhook::write_issue(tx, repo, &issue, seq)
+    })
+    .await;
+    let unapplied = match unapplied.first() {
+        Some(first) => Some(Unapplied {
+            why: refused_why(app, account, &on, first).await,
+            ops: unapplied,
+        }),
+        None => None,
+    };
+    Ok(OpReply {
+        issue: id,
+        comment: None,
+        body: None,
+        refs: Refs::new(),
+        unapplied,
+    })
 }
 
 /// The reply to a write that changed the issue itself: with `body`, a body edit's body as GitHub
@@ -1025,6 +1282,7 @@ async fn edited(app: &App, account: i64, t: &q::OpTargetRow, body: Option<String
         comment: None,
         body,
         refs,
+        unapplied: None,
     }
 }
 
@@ -1183,7 +1441,6 @@ where
 {
     let mut retries = if op.retries() { &RETRIES[..] } else { &[] }.iter();
     let mut quiet_waits = 0;
-    let maybe_posted = || sending.maybe_posted();
     loop {
         let gh = app.github().clone();
         let answer = app
@@ -1207,16 +1464,24 @@ where
             github::Error::Unsent(_)
             | github::Error::Network(_)
             | github::Error::Status(500..=599) => {
-                // A comment GitHub may have got is never sent again (see [`Op::retries`]).
+                // A comment or new issue GitHub may have got is never sent again (see
+                // [`Op::retries`]).
                 let reached = !matches!(e, github::Error::Unsent(_));
-                if reached && op.is_comment() {
-                    return Err(maybe_posted());
+                if let Some(f) = sending.unsure().filter(|_| reached) {
+                    return Err(f);
                 }
                 match retries.next() {
                     Some(wait) => tokio::time::sleep(*wait).await,
-                    None => {
+                    // Tried again and again: GitHub kept failing.
+                    None if op.retries() => {
                         return Err(Failure::GitHubDown(
                             "GitHub kept failing on this change; try again".into(),
+                        ));
+                    }
+                    // Tried once, and never sent: one sent is unsure, above.
+                    None => {
+                        return Err(Failure::GitHubDown(
+                            "Couldn't reach GitHub, so it wasn't sent; try again".into(),
                         ));
                     }
                 }
@@ -1242,7 +1507,12 @@ where
                 return Err(Failure::Refused("GitHub couldn't apply this change".into()));
             }
             // A 2xx beghu couldn't read: GitHub made the write.
-            github::Error::Malformed(_) if op.is_comment() => return Err(maybe_posted()),
+            e @ github::Error::Malformed(_) => {
+                if let Some(f) = sending.unsure() {
+                    return Err(f);
+                }
+                return Err(Failure::Internal(e.to_string()));
+            }
             e => return Err(Failure::Internal(e.to_string())),
         }
     }
@@ -1265,6 +1535,9 @@ struct IssueRepo {
 fn allows(role: Role, op: &Op, own: bool) -> bool {
     match op {
         Op::Comment { .. } => true,
+        // Anyone who sees the repo opens an issue; its labels, assignees and milestone are each
+        // their own write's question.
+        Op::Create { .. } => true,
         Op::Close { .. } | Op::Reopen { .. } => own || role >= Role::Triage,
         Op::LabelAdd { .. }
         | Op::LabelRemove { .. }
@@ -1470,6 +1743,7 @@ mod tests {
             ("milestone_set", OpKind::MilestoneSet),
             ("title_edit", OpKind::TitleEdit),
             ("body_edit", OpKind::BodyEdit),
+            ("create", OpKind::Create),
         ]
         .map(|(name, kind)| {
             let words = serde_json::to_string(kind.lost_message()).unwrap();

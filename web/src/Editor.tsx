@@ -11,7 +11,7 @@
 // text stays.
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, Errored, Loading, onCleanup, onSettled, runWithOwner, Show, untrack } from "solid-js";
-import { Changed, SessionEnded, getSource, signIn, type IssueDetail } from "./api";
+import { Changed, MAX_BODY, MAX_TITLE, SessionEnded, getSource, signIn, type IssueDetail } from "./api";
 import type { IssueSource } from "./bindings/IssueSource";
 import { closeEditor, editorNow, editorOf, sameText, updateEditor, type Field } from "./editing";
 import { touch } from "./keys";
@@ -20,11 +20,6 @@ import type { ShownDetail } from "./overlay";
 import { md } from "./md/tokens.stylex";
 import { colors, fonts } from "./tokens.stylex";
 import { failure, forget, sendEdit, worded } from "./writes";
-
-/** The longest title GitHub takes, in characters. */
-const MAX_TITLE = 256;
-/** The longest body GitHub takes, in characters. */
-const MAX_BODY = 65_536;
 
 type Props = {
   /** The open issue as the server sent it, for what's on GitHub now. */

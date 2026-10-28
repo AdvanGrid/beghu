@@ -233,7 +233,9 @@ test("the hint bar and the ? overlay follow the focus: list, issue, filter", asy
   await page.keyboard.press("?");
   await expect(help(page).locator("h3").first()).toHaveText("Issue");
   // The overlay dims what isn't on offer here, saying why.
-  await expect(help(page).getByRole("row", { name: /New issue/ })).toHaveAttribute("aria-disabled", "true");
+  await expect(help(page).getByRole("row", { name: /List \/ Tree/ })).toHaveAttribute("aria-disabled", "true");
+  // `c` opens the create form from the issue too.
+  await expect(help(page).getByRole("row", { name: /New issue/ })).not.toHaveAttribute("aria-disabled", "true");
   await expect(help(page).getByRole("row", { name: /Comment/ })).not.toHaveAttribute("aria-disabled", "true");
   await page.keyboard.press("Escape");
   await expect(detail(page)).toBeFocused();

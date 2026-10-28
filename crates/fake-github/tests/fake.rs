@@ -1762,6 +1762,152 @@ async fn read_on_someone_elses_issue_may_comment_but_not_close_it() {
 }
 
 #[tokio::test]
+async fn a_new_issue_answers_201_with_the_issue_and_sends_issues_opened() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let label = fake.get("/repos/acme/web/labels", token).await;
+    let label = label.json::<Value>().await.unwrap()[0]["name"].clone();
+    let milestone = fake.get("/repos/acme/web/milestones", token).await;
+    let milestone = milestone.json::<Value>().await.unwrap()[0]["number"].clone();
+    let res = fake
+        .http
+        .post(format!("{}/repos/acme/web/issues", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .json(&json!({
+            "title": "Made in beghu",
+            "body": "With **everything**",
+            "labels": [label],
+            "assignees": ["tomsj"],
+            "milestone": milestone,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let location = res.headers()["location"].to_str().unwrap().to_owned();
+    let issue: Value = res.json().await.unwrap();
+    assert_eq!(issue["url"], location);
+    assert_eq!(issue["title"], "Made in beghu");
+    assert_eq!(issue["body"], "With **everything**");
+    assert_eq!(issue["state"], "open");
+    assert_eq!(issue["user"]["login"], "tomsj");
+    assert_eq!(issue["labels"][0]["name"], label);
+    assert_eq!(issue["assignees"][0]["login"], "tomsj");
+    assert_eq!(issue["milestone"]["number"], milestone);
+    assert_eq!(issue["comments"], 0);
+    let number = issue["number"].as_i64().unwrap();
+    // The repo's next number, and its own issue from then on.
+    let got = fake
+        .get(&format!("/repos/acme/web/issues/{number}"), token)
+        .await;
+    assert_eq!(got.json::<Value>().await.unwrap(), issue);
+
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "issues");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "opened");
+    assert_eq!(p["issue"], issue);
+    assert_eq!(p["sender"]["login"], "tomsj");
+
+    // The next one takes the number after it.
+    let (status, next) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues",
+            token,
+            json!({ "title": "And another" }),
+        )
+        .await;
+    assert_eq!(status, 201, "{next}");
+    assert_eq!(next["number"], number + 1);
+    assert_eq!(next["body"], Value::Null);
+    assert_eq!(next["labels"], json!([]));
+}
+
+#[tokio::test]
+async fn read_opens_an_issue_but_its_labels_assignees_and_milestone_are_silently_dropped() {
+    let fake = start().await;
+    // Read on `web`.
+    let token = &fake.sign_in("octo-ext").await["access_token"];
+    let label = fake.get("/repos/acme/web/labels", token).await;
+    let label = label.json::<Value>().await.unwrap()[0]["name"].clone();
+    let (status, issue) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues",
+            token,
+            json!({ "title": "From outside", "labels": [label], "assignees": ["tomsj"], "milestone": 1 }),
+        )
+        .await;
+    assert_eq!(status, 201, "{issue}");
+    assert_eq!(issue["user"]["login"], "octo-ext");
+    assert_eq!(issue["labels"], json!([]));
+    assert_eq!(issue["assignees"], json!([]));
+    assert_eq!(issue["milestone"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_new_issue_github_cant_make_is_refused_and_sends_nothing() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    let create =
+        |body: Value| fake.rest(reqwest::Method::POST, "/repos/acme/web/issues", token, body);
+    // No title, a label the repo hasn't got, someone who can't be assigned, a milestone it
+    // hasn't got, a field the fake doesn't model.
+    for untitled in [json!({ "body": "untitled" }), json!({ "title": " " })] {
+        let (status, body) = create(untitled).await;
+        assert_eq!(status, 422);
+        assert_eq!(body["errors"][0]["field"], "title");
+        assert_eq!(body["errors"][0]["code"], "missing_field");
+    }
+    assert_eq!(
+        create(json!({ "title": "t", "labels": ["no-such-label"] }))
+            .await
+            .0,
+        422
+    );
+    let (status, body) = create(json!({ "title": "t", "assignees": ["octo-ext"] })).await;
+    assert_eq!(status, 422);
+    assert_eq!(body["errors"][0]["field"], "assignees");
+    assert_eq!(body["errors"][0]["value"], "octo-ext");
+    let (status, body) = create(json!({ "title": "t", "milestone": 99_999 })).await;
+    assert_eq!(status, 422);
+    assert_eq!(body["errors"][0]["field"], "milestone");
+    assert_eq!(body["errors"][0]["code"], "invalid");
+    assert_eq!(create(json!({ "title": "t", "type": "Bug" })).await.0, 422);
+    // A repo the user can't see.
+    let outsider = &fake.sign_in("octo-ext").await["access_token"];
+    let (status, _) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/api/issues",
+            outsider,
+            json!({ "title": "t" }),
+        )
+        .await;
+    assert_eq!(status, 404);
+    // An archived repo takes no new issue.
+    fake.control(
+        reqwest::Method::POST,
+        "/archive",
+        json!({ "repo": "web", "archived": true }),
+    )
+    .await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let (status, body) = create(json!({ "title": "t" })).await;
+    assert_eq!(status, 403);
+    assert_eq!(body["message"], "Repository was archived so is read-only.");
+    assert!(
+        received_for(&mut rx, Duration::from_millis(1500))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn triage_on_someone_elses_issue_closes_it_but_its_title_edit_is_silently_dropped() {
     let fake = start().await;
     // Triage on `infra`.

@@ -33,6 +33,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { useLocation } from "@solidjs/router";
+import { Dynamic } from "@solidjs/web";
 import {
   Changed,
   Conflict,
@@ -53,14 +54,16 @@ import {
   mergeRefs,
   type IssueDetail,
   type IssueRow,
-  type Op,
+  // The tab's pending writes are on issues; a new issue isn't one (CreateIssue.tsx sends it).
+  type IssueOp as Op,
   type OpReply,
 } from "./api";
 import { touch } from "./keys";
 import type { Label } from "./bindings/Label";
+import type { Unapplied } from "./bindings/Unapplied";
 import type { Milestone } from "./bindings/Milestone";
 import { reconnecting, refetchShown, writesPaused } from "./live";
-import { setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
+import { createNote, setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { link } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
@@ -727,6 +730,21 @@ export function pick(op: Op, d: ShownDetail, look?: Look): void {
   write(op, `${d.repo}#${d.number}`, "you", look);
 }
 
+/**
+ * For the create form (CreateIssue.tsx): what GitHub left out of the new issue `ref` it made, each
+ * as a failed write on that issue, refused for the reason the server gave, with Retry and Dismiss
+ * on its property row as a refused pick has. `look` is how each would have shown.
+ */
+export function leftOut(u: Unapplied, ref: string, look: (op: Op) => Look | undefined): void {
+  const at = Math.floor(Date.now() / 1000);
+  const failed = u.ops.flatMap((op): Pending[] =>
+    op.kind === "create"
+      ? []
+      : [{ id: crypto.randomUUID(), op, ref, look: look(op), commentId: -++writesMade, author: "you", createdAt: at, seen: 0, phase: "failed", slow: false, error: new Refused(u.why) }],
+  );
+  commit([...pendingNow, ...failed]);
+}
+
 /** Whether a pick of the same thing (a label, an assignee, the milestone) is on its way on `issue`. */
 export function picking(issue: number, op: Op): boolean {
   const sets = kindOf(op).target(op);
@@ -768,10 +786,12 @@ function CommentNote(props: { op: string; at: number }) {
 
 /**
  * The status slot (a live region). Failed writes on issues that aren't open come first and never
- * time out: one shows whole, with Retry, Open and Dismiss; two or more collapse to "n changes
- * failed", which opens the list. The quiet states (sending, reconnecting) show alone, or behind an
- * icon beside a failure, which shows them; hidden, their text is still there for screen readers.
- * With neither, the import's progress or the sync state shows, as without the writes code.
+ * time out, a create that failed while its form was closed among them (first): one shows whole,
+ * with its actions; two or more collapse to "n changes failed", which opens the list. A create
+ * made while its form was closed comes next, with the quiet states (sending, reconnecting): those
+ * show alone, or behind an icon beside a failure or the create's word, which shows them; hidden,
+ * their text is still there for screen readers. With none of them, the import's progress or the
+ * sync state shows, as without the writes code.
  */
 function Status() {
   const location = useLocation();
@@ -791,15 +811,26 @@ function Status() {
       <Actions p={p} open={`/issues/${p.op.issue}${location.search}`} />
     </>
   );
+  const failedCreate = () => (createNote()?.failed ? createNote()!.Note : undefined);
+  const madeCreate = () => (createNote()?.failed === false ? createNote()!.Note : undefined);
+  const failures = () => failed().length + (failedCreate() ? 1 : 0);
   return (
-    <Show when={failed().length > 0} fallback={quiet() ?? <Background />}>
-      <Show when={failed().length > 1} fallback={line(failed()[0]!)}>
+    <Show when={failures() > 0 || madeCreate()} fallback={quiet() ?? <Background />}>
+      <Show when={failures() > 0} fallback={<Dynamic component={madeCreate()} />}>
+      <Show when={failures() > 1} fallback={<Show when={failedCreate()} fallback={line(failed()[0]!)}>{(note) => <Dynamic component={note()} />}</Show>}>
         <span {...stylex.attrs(s.split)}>
         <button type="button" {...stylex.attrs(link.button, s.failed)} aria-expanded={listing() ? "true" : "false"} onClick={() => setListing((v) => !v)}>
-          {failed().length} changes failed
+          {failures()} changes failed
         </button>
         <Show when={listing()}>
           <span {...stylex.attrs(s.menu)} data-perf="failures">
+            <Show when={failedCreate()}>
+              {(note) => (
+                <span {...stylex.attrs(s.failure)} data-perf="failure">
+                  <Dynamic component={note()} />
+                </span>
+              )}
+            </Show>
             <For each={failed()} keyed={(p) => p.id}>
               {(p) => (
                 <span {...stylex.attrs(s.failure)} data-perf="failure">
@@ -810,6 +841,7 @@ function Status() {
           </span>
         </Show>
         </span>
+      </Show>
       </Show>
       <Show when={quiet()}>
         {(q) => (

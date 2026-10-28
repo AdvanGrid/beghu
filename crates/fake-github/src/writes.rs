@@ -1,6 +1,11 @@
 //! The REST writes beghu makes with a user access token, and the rate-limit endpoint it probes
 //! while GitHub is down:
 //!
+//! - `POST /repos/{owner}/{repo}/issues {title, body?, labels?, assignees?, milestone?}`: 201
+//!   with the new issue (the next number in the repo), and a `Location` naming it. Labels and
+//!   assignees are names and logins, the milestone a number. `issues` `opened` follows, carrying
+//!   the issue with all three. (Whether GitHub also sends `labeled`, `assigned` and `milestoned`
+//!   for a new issue's own fields is unrecorded: the fake sends `opened` alone.)
 //! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment.
 //! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?,
 //!   milestone?}`: 200 with the issue as stored afterwards. `milestone` is the milestone's number
@@ -17,7 +22,11 @@
 //! is a 403 for Read on someone else's issue, and is silently dropped (200, unchanged) for
 //! Triage. A milestone needs Triage: Read gets 403 on someone else's issue, and on its own the
 //! milestone is silently dropped (200, unchanged). A repo the user can't see is a 404, and an
-//! archived repo refuses every write with 403. Fields the fake doesn't model on an update
+//! archived repo refuses every write with 403. Anyone who can see the repo may open an issue;
+//! its labels, assignees and milestone need Triage and are silently dropped below it (verified
+//! live: Read gets 201 with none of the three). A label the repo doesn't have is a loud 422 (GitHub
+//! would create it, which the fake doesn't model), and so is a milestone number it doesn't have; a
+//! login that can't be assigned is GitHub's 422 naming it. Fields the fake doesn't model on an update
 //! (labels, assignees, type) are a loud 422 rather than a silent guess; labels and assignees have
 //! their own endpoints (`triage.rs`).
 
@@ -211,6 +220,205 @@ async fn create_comment(
         },
     )
     .await
+}
+
+/// The fields of a new issue the fake models.
+const CREATED: [&str; 5] = ["title", "body", "labels", "assignees", "milestone"];
+
+/// GitHub's 422 for a new issue's field, naming it as its documented `errors` do: `code` is
+/// `invalid` for a value it won't take (`value`), `missing_field` for one that isn't set.
+fn rejected(field: &str, code: &str, value: Option<Value>) -> Response {
+    let mut error = json!({ "resource": "Issue", "field": field, "code": code });
+    if let Some(v) = value {
+        error["value"] = v;
+    }
+    let body = json!({
+        "message": "Validation Failed",
+        "errors": [error],
+        "documentation_url": "https://docs.github.com/rest/issues/issues#create-an-issue",
+        "status": "422",
+    });
+    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response()
+}
+
+/// What a create asks for, read from its body; `Err` is GitHub's answer to a body it can't take.
+struct NewIssue {
+    title: String,
+    body: Option<String>,
+    labels: Vec<String>,
+    assignees: Vec<String>,
+    milestone: Option<i64>,
+}
+
+impl NewIssue {
+    fn read(body: &Bytes) -> Result<NewIssue, Response> {
+        let body = json_body(body)?;
+        if let Some(k) = body.keys().find(|k| !CREATED.contains(&k.as_str())) {
+            return Err(unprocessable(&format!(
+                "fake GitHub doesn't model `{k}` on a new issue yet"
+            )));
+        }
+        let names = |k: &str| -> Result<Vec<String>, Response> {
+            match body.get(k) {
+                None | Some(Value::Null) => Ok(Vec::new()),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => Ok(s.clone()),
+                        _ => Err(unprocessable("Validation Failed")),
+                    })
+                    .collect(),
+                Some(_) => Err(unprocessable("Validation Failed")),
+            }
+        };
+        let title = match body.get("title") {
+            Some(Value::String(t)) if !t.trim().is_empty() => t.clone(),
+            _ => return Err(rejected("title", "missing_field", None)),
+        };
+        let issue_body = match body.get("body") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => return Err(unprocessable("Validation Failed")),
+        };
+        let milestone = match body.get("milestone") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_i64() {
+                Some(n) => Some(n),
+                None => return Err(rejected("milestone", "invalid", Some(v.clone()))),
+            },
+        };
+        Ok(NewIssue {
+            title,
+            body: issue_body,
+            labels: names("labels")?,
+            assignees: names("assignees")?,
+            milestone,
+        })
+    }
+}
+
+pub(crate) async fn create_issue(
+    State(fake): State<Fake>,
+    TokenUser(user): TokenUser,
+    Path((owner, name)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let new = match NewIssue::read(&body) {
+        Ok(n) => n,
+        Err(res) => return res,
+    };
+    let now = fake.now();
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| create_in(tx, user, &owner, &name, &new, now))
+        .await;
+    match done {
+        Ok(Ok((issue, deliveries))) => {
+            fake.state().webhooks.send(deliveries);
+            let mut res = (StatusCode::CREATED, axum::Json(&issue)).into_response();
+            if let Some(Ok(v)) = issue["url"].as_str().map(HeaderValue::from_str) {
+                res.headers_mut().insert(header::LOCATION, v);
+            }
+            res
+        }
+        Ok(Err(res)) => res,
+        Err(e) => internal(e),
+    }
+}
+
+/// Makes the new issue inside the truth's transaction: the issue, and its `opened` delivery; or
+/// the answer GitHub gives instead.
+fn create_in(
+    tx: &rusqlite::Transaction,
+    user: i64,
+    owner: &str,
+    name: &str,
+    new: &NewIssue,
+    now: i64,
+) -> rusqlite::Result<Result<(Value, Vec<crate::webhooks::Delivery>), Response>> {
+    let Some(repo) = q::repo_by_full_name(tx, owner, name)? else {
+        return Ok(Err(error(StatusCode::NOT_FOUND, "Not Found")));
+    };
+    let repo = q::repo(tx, repo)?;
+    let role = q::permission(tx, user, repo.id)?
+        .as_deref()
+        .and_then(Role::from_name);
+    if role.is_none() && repo.private {
+        return Ok(Err(error(StatusCode::NOT_FOUND, "Not Found")));
+    }
+    if repo.archived {
+        return Ok(Err(error(
+            StatusCode::FORBIDDEN,
+            "Repository was archived so is read-only.",
+        )));
+    }
+    let Some(sender) = q::user_row(tx, user)? else {
+        return Ok(Err(error(StatusCode::UNAUTHORIZED, "Bad credentials")));
+    };
+    // Below Triage the three are silently dropped, unchecked.
+    let triage = role >= Some(Role::Triage);
+    let mut labels = Vec::new();
+    let mut assignees = Vec::new();
+    let mut milestone = None;
+    if triage {
+        for l in &new.labels {
+            match q::label_by_name(tx, repo.id, l)? {
+                Some(found) => labels.push(found.id),
+                None => {
+                    return Ok(Err(unprocessable(&format!(
+                        "fake GitHub doesn't model creating the label {l:?} by naming it"
+                    ))));
+                }
+            }
+        }
+        let can = crate::triage::assignable(tx, &repo)?;
+        for login in &new.assignees {
+            match can.iter().find(|a| a.login.eq_ignore_ascii_case(login)) {
+                Some(a) => assignees.push(a.id),
+                None => return Ok(Err(rejected("assignees", "invalid", Some(json!(login))))),
+            }
+        }
+        if let Some(n) = new.milestone {
+            match q::milestone_by_number(tx, repo.id, n)? {
+                Some(id) => milestone = Some(id),
+                None => return Ok(Err(rejected("milestone", "invalid", Some(json!(n))))),
+            }
+        }
+    }
+    let id = q::next_issue_id(tx)?;
+    let number = q::next_number(tx, repo.id)?;
+    q::create_issue(
+        tx,
+        id,
+        &format!("I_kw{id}"),
+        repo.id,
+        number,
+        &new.title,
+        new.body.as_deref(),
+        user,
+        now,
+    )?;
+    for l in labels {
+        q::add_issue_label(tx, id, l)?;
+    }
+    for u in assignees {
+        q::add_issue_assignee(tx, id, u)?;
+    }
+    if milestone.is_some() {
+        q::set_issue_milestone(tx, id, milestone)?;
+    }
+    let issue = crate::webhooks::issue_json(tx, id)?;
+    let mut deliveries = Vec::new();
+    if repo.installation_id.is_some() {
+        let sender =
+            crate::webhooks::user_json(sender.id, &sender.login, sender.avatar_url.as_deref());
+        let mut p = crate::webhooks::envelope(&repo, &sender);
+        p["action"] = json!("opened");
+        p["issue"] = issue.clone();
+        deliveries.push(crate::webhooks::Delivery::new("issues", p));
+    }
+    Ok(Ok((issue, deliveries)))
 }
 
 /// The fields of an issue update the fake models.

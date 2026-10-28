@@ -21,3 +21,11 @@ SELECT coalesce(max(c.id), 0) AS "id!: i64" FROM comments c WHERE c.item_id = :i
 -- param: item_id i64
 -- param: label_id i64
 DELETE FROM item_labels WHERE item_id = :item_id AND label_id = :label_id;
+
+-- The repo a new issue (`create`) goes in, with what its GitHub call and its checks need. A repo
+-- that isn't synced comes back too: the caller refuses it.
+-- name: create_target :opt
+-- param: id i64
+SELECT r.id, r.owner, r.name, r.synced AS "synced: bool", r.archived AS "archived: bool", r.role,
+       r.installation_id AS "installation_id?"
+FROM repos r WHERE r.id = :id;

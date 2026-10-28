@@ -14,6 +14,15 @@ const IssuePanel = lazy(
   { export: "IssuePanel" },
 );
 
+/** The create form is its own chunk: it loads when "New issue" (or its key) opens it. */
+const CreatePanel = lazy(
+  () =>
+    import("./CreateIssue").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load the create form: ${String(e)}`);
+    }),
+  { export: "CreatePanel" },
+);
+
 /** Repo picking is its own chunk too: a page visited rarely. */
 const RepoPickerPanel = lazy(
   () =>
@@ -40,6 +49,8 @@ export const Router = createRouter({
       },
       component: IssuePanel,
     },
+    // The create form opens in the panel, the view kept in the query string.
+    { path: "/new", component: CreatePanel },
     // Repo picking takes the panel's place beside the list.
     { path: "/repos", component: RepoPickerPanel },
   ],

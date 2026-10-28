@@ -37,6 +37,8 @@ export function FilterBar() {
     box.focus();
     box.setSelectionRange(box.value.length, box.value.length);
   });
+  // "New issue" beside the presets, by key: the create form in the panel, the view kept.
+  touch("create", () => navigate(`/new${location.search}`));
   // Filled from the URL once; after that only typing, picks and Back/Forward change it.
   const initial = untrack(() => queryOf(location.search));
   const [text, setText] = createSignal(initial);
@@ -284,6 +286,9 @@ export function FilterBar() {
             </button>
           )}
         </For>
+        <a href={`/new${location.search}`} noscroll {...stylex.attrs(s.preset, s.create)} data-perf="new-issue">
+          New issue
+        </a>
       </div>
     </div>
   );
@@ -396,6 +401,12 @@ const s = stylex.create({
     color: colors.muted,
     cursor: "pointer",
     fontSize: 12,
+  },
+  // "New issue": a link, at the end of the presets' row.
+  create: {
+    textDecoration: "none",
+    color: colors.accent,
+    marginInlineStart: "auto",
   },
   presetOn: {
     borderColor: colors.accent,

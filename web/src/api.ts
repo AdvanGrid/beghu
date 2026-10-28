@@ -29,6 +29,16 @@ import { LOST_MESSAGE } from "./bindings/lostMessage";
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply };
 export type { IssueRow } from "./bindings/IssueRow";
 
+/** Every write but a new issue: each names the issue it changes. */
+export type IssueOp = Exclude<Op, { kind: "create" }>;
+/** A new issue: it names its repo, and its reply names the issue GitHub made. */
+export type CreateOp = Extract<Op, { kind: "create" }>;
+
+/** The longest title GitHub takes, in characters, as the server checks it (ops.rs). */
+export const MAX_TITLE = 256;
+/** The longest body or comment GitHub takes, in characters, as the server checks it (ops.rs). */
+export const MAX_BODY = 65_536;
+
 /** A `refs` map: what the mirror holds of the items some posts refer to. */
 export type Refs = IssueDetail["refs"];
 

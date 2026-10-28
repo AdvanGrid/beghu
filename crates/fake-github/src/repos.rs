@@ -49,7 +49,11 @@ pub(crate) fn router() -> Router<Fake> {
             "/repos/{owner}/{repo}/milestones/{number}",
             get(one_milestone),
         )
-        .route("/repos/{owner}/{repo}/issues", get(issues))
+        // A new issue is a write (`writes.rs`) on the list's path.
+        .route(
+            "/repos/{owner}/{repo}/issues",
+            get(issues).post(crate::writes::create_issue),
+        )
         .route("/repos/{owner}/{repo}/issues/comments", get(repo_comments))
         .route(
             "/repos/{owner}/{repo}/issues/comments/{comment_id}",

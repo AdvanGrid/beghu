@@ -53,6 +53,15 @@ const [overlay, setOverlay] = createSignal<Overlay>();
 export { overlay, setOverlay };
 
 /**
+ * The create form's word on a create that ended while the form was closed (CreateIssue.tsx), until
+ * it's dismissed or the form opens again: `failed`, it's a failure, and shows among the failed
+ * writes; made, it's a quiet state, below them.
+ */
+export type CreateNote = { failed: boolean; Note: () => Element };
+const [createNote, setCreateNote] = createSignal<CreateNote>();
+export { createNote, setCreateNote };
+
+/**
  * The tab is leaving on purpose (a sign-out or a switch, confirmed if it held unsaved text): the
  * whole app blanks, header and banners included, so the page the back-forward cache keeps (and
  * every frame of it restored) never shows the old account, and leaving doesn't ask again.
