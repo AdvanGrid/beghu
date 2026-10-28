@@ -22,6 +22,8 @@
 //!   (`?account=`, the stream's `X-Beghu-Account`: an `EventSource` can't send headers), for an
 //!   account that must sign in again, or once the session ended gets one at once, never a 401
 //!   or 409 the tab couldn't read.
+//! - `prefs` (`{}`): the account's preferences changed (prefs.rs), in this tab or another,
+//!   maybe in another browser: the tab reads `/api/me` again.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //! - An open stream is its account's use: it moves `last_active_at` hourly, so an account with a
 //!   tab open never goes dormant (accounts.rs).
@@ -69,6 +71,8 @@ pub enum Push {
     Switched(StreamSwitched),
     /// The sync state changed: the stream reads it as the event goes out.
     Sync,
+    /// The account's preferences changed (prefs.rs): its tabs read `/api/me` again.
+    Prefs,
 }
 
 impl Push {
@@ -271,6 +275,7 @@ fn event(push: &Push) -> Event {
         // An event with no data is never dispatched by EventSource.
         Push::Reset => Event::default().event("reset").data("{}"),
         Push::Defs => Event::default().event("defs").data("{}"),
+        Push::Prefs => Event::default().event("prefs").data("{}"),
         // Sent through `status_event`, which reads the sync state.
         Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
         Push::Switched(sw) => Event::default()

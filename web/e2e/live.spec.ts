@@ -442,7 +442,7 @@ test("a comment made on GitHub shows in the open issue within 2 s, in one reques
     // One push, one request; give a stray second one time to show.
     await page.waitForTimeout(1000);
     expect(api.filter((p) => p.startsWith(`/api/issues/${issue.id}`))).toEqual([
-      `/api/issues/${issue.id}?through=${cursor(before.at(-1)!)}`,
+      `/api/issues/${issue.id}?through=${cursor(before.at(-1)!)}&order=newest`,
     ]);
   } finally {
     // Out of the default list again: it rose to the top with few comments.

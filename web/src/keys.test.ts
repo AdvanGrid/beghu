@@ -1,11 +1,13 @@
 // The keys module on its own, in Node: synthetic key events against stand-in elements, with no
 // view involved. An exception to "tests go through public seams" (AGENTS.md): the browser suite
 // can't drive what this covers. It runs on one platform and one layout, with no input method, so
-// a Mac's Cmd and Alt, AltGr, a non-Latin layout and IME composition are only reachable here; no
-// view yet offers some touchpoints (pickers, title editing) to reach their areas through; and no
-// keymap preference seam exists until #113, so a swapped binding can only be set through the
-// module's own `setKeymap`. What the browser can drive (j/k, the list's arrows, Escape out of the
-// comment box, the lightbox's keys) is in e2e/keys.spec.ts and e2e/media.spec.ts, not here.
+// a Mac's Cmd and Alt, AltGr, a non-Latin layout and IME composition are only reachable here,
+// as is what the setup page records for a Mac's keys and a non-Latin letter (`keyOf`; an Alt
+// binding is set through the module's own `setKeymap` to reach them); and no view yet
+// offers some touchpoints (tree mode) to reach their areas through. What the browser can
+// drive (j/k, the list's arrows, Escape out of the comment box, the lightbox's keys) is in
+// e2e/keys.spec.ts and e2e/media.spec.ts, and rebinding (swaps, refusals, sequences, other tabs)
+// through the setup page in e2e/prefs.spec.ts, not here.
 // `npm run test:lint`.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -111,11 +113,9 @@ function asPress(binding: string, mac: boolean): Press {
 for (const platform of ["Linux x86_64", "MacIntel"]) {
   const mac = platform === "MacIntel";
   describe(`on ${platform}`, () => {
-    it("drives every touchpoint by its binding, in each area it works in, and by a swapped binding instead", async () => {
+    it("drives every touchpoint by its binding, in each area it works in", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      // A spare key for each: a letter in each area that takes plain keys, Ctrl/Cmd where text is typed.
-      const spare = (a: (typeof keys.ACTIONS)[number]) => (keys.WHERE[a].some((w) => keys.TYPING.includes(w)) ? "Mod+Shift+F2" : "Shift+F2");
       for (const action of keys.ACTIONS) {
         const where = keys.WHERE[action];
         assert.ok(where.length > 0, `${action} works somewhere`);
@@ -127,14 +127,6 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
             assert.deepEqual(ran, [action], `${binding} runs ${action} in ${area}`);
           }
         }
-        // Swapped: the new binding runs it, the preset's no longer does.
-        const preset = keys.GITHUB[action].find((b) => !b.startsWith("Mod+") && !b.startsWith("Ctrl+"));
-        assert.deepEqual(keys.setKeymap({ [action]: spare(action) }), []);
-        ran.length = 0;
-        assert.ok(press(els[where[0]!], asPress(spare(action), mac)));
-        if (preset && !keys.TYPING.includes(where[0]!)) assert.equal(press(els[where[0]!], asPress(preset, mac)), false, `${preset} no longer runs ${action}`);
-        assert.deepEqual(ran, [action]);
-        keys.setKeymap({});
         withdraw();
       }
     });
@@ -167,6 +159,36 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
       assert.deepEqual(keys.setKeymap({ focusFilter: "Mod+Shift+e" }), []);
       assert.ok(press(els.composer, { key: "E", code: "KeyE", shift: true, ctrl: !mac, meta: mac }));
       assert.deepEqual(ran, ["next", "focusFilter"]);
+    });
+
+    it("records a key as the binding that the same key then runs: Cmd or Ctrl as Mod, Alt by the key's place", async () => {
+      const { keys, els, press } = await load(platform);
+      const ran: string[] = [];
+      keys.touch("next", () => ran.push("next"));
+      const presses: [Press, string][] = [
+        [{ key: "K", code: "KeyK", shift: true, ctrl: !mac, meta: mac }, "Mod+Shift+k"],
+        // Alt types a character on a Mac (and on many layouts): the binding names the key's place.
+        [{ key: mac ? "¬" : "ł", code: "KeyL", alt: true }, "Alt+KeyL"],
+        // Option+E on a Mac is a dead key (an accent waiting for its letter): still the key in E's place.
+        [{ key: "Dead", code: "KeyE", alt: true }, "Alt+KeyE"],
+        [{ key: "Dead", code: "Digit6", alt: true, shift: true }, "Alt+Shift+Digit6"],
+        // A Russian layout's key in J's place.
+        [{ key: "о", code: "KeyJ" }, "j"],
+        [{ key: "?", code: "Slash", shift: true }, "?"],
+        [{ key: " ", code: "Space" }, "Space"],
+      ];
+      for (const [p, binding] of presses) {
+        const e = Object.assign(new Event("keydown"), { key: p.key, code: p.code, ctrlKey: !!p.ctrl, altKey: !!p.alt, shiftKey: !!p.shift, metaKey: !!p.meta }) as unknown as KeyboardEvent;
+        assert.equal(keys.keyOf(e), binding);
+        assert.deepEqual(keys.setKeymap({ next: binding }), []);
+        ran.length = 0;
+        assert.ok(press(els.list, p), `${binding} runs what it was recorded for`);
+        assert.deepEqual(ran, ["next"]);
+      }
+      // A dead key without Alt (an accent key) is no key to bind: what it types isn't known yet.
+      assert.equal(keys.keyOf(Object.assign(new Event("keydown"), { key: "Dead", code: "Equal" }) as unknown as KeyboardEvent), undefined);
+      // A modifier alone is no key yet.
+      assert.equal(keys.keyOf(Object.assign(new Event("keydown"), { key: "Shift", code: "ShiftLeft", shiftKey: true }) as unknown as KeyboardEvent), undefined);
     });
 
     it("leaves a key alone while an input method composes it", async () => {

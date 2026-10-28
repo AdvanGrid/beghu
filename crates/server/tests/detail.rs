@@ -302,11 +302,13 @@ async fn through_refetches_an_oldest_first_thread_even_through_a_position_no_com
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let id = target();
-    // No API sets the comment order yet (preferences come later): written as the server would.
-    let (_, me) = s.api(&mut b, "/api/me").await;
-    let account = me["account"]["id"].as_i64().unwrap();
-    let control = rusqlite::Connection::open(s.control_db()).unwrap();
-    control_db::q::set_comment_order(&control, account, Some("oldest")).unwrap();
+    let res = s
+        .api_write(&b, reqwest::Method::PATCH, "/api/prefs")
+        .json(&serde_json::json!({ "field": "comment_order", "value": "oldest" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
 
     let all = walk(&s, &mut b, id, "oldest").await;
     let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;

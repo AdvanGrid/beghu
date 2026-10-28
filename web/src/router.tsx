@@ -32,6 +32,15 @@ const RepoPickerPanel = lazy(
   { export: "RepoPickerPanel" },
 );
 
+/** The account's preferences and the keymap's setup: their own chunk too. */
+const PrefsPanel = lazy(
+  () =>
+    import("./Prefs").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load preferences: ${String(e)}`);
+    }),
+  { export: "PrefsPanel" },
+);
+
 // The list is the root layout and always mounted; the view lives in the query string. An open
 // issue is its own path (`/issues/:id`, with the view kept in the query string), shown in the
 // panel beside the list. Rows are plain <a href>s under the router's one delegated click
@@ -53,6 +62,8 @@ export const Router = createRouter({
     { path: "/new", component: CreatePanel },
     // Repo picking takes the panel's place beside the list.
     { path: "/repos", component: RepoPickerPanel },
+    // So do the account's preferences.
+    { path: "/prefs", component: PrefsPanel },
   ],
   preloadLinks: [intentPreload(), tapPreload()],
 });

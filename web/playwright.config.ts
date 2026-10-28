@@ -20,7 +20,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|relationships|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts, relationships.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
     // sync.spec.ts, prs.spec.ts, lost-access.spec.ts, moves.spec.ts and create.spec.ts): their
@@ -50,10 +50,12 @@ export default defineConfig({
     { name: "prs", testMatch: /prs\.spec\.ts$/, dependencies: ["sync"], timeout: 60_000, workers: 1 },
     { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["prs"], timeout: 60_000 },
     // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
-    // label every tab shows: alone, after the rest but create.
+    // label every tab shows: alone, after the rest but create and prefs.
     { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["lost-access"], timeout: 60_000, workers: 1 },
     // Makes new issues, which every tab's lists take in, and archives a repo, which changes what
-    // every tab's create form offers: last, alone.
+    // every tab's create form offers: after the rest but prefs, alone.
     { name: "create", testMatch: /create\.spec\.ts$/, dependencies: ["moves"], timeout: 60_000, workers: 1 },
+    // Changes tomsj's keymap and comment order, which every other spec relies on: last, alone.
+    { name: "prefs", testMatch: /prefs\.spec\.ts$/, dependencies: ["create"], workers: 1 },
   ],
 });

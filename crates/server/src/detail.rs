@@ -192,6 +192,10 @@ impl fmt::Display for Cursor {
 #[derive(Deserialize)]
 pub struct DetailQuery {
     through: Option<String>,
+    /// The order the tab shows the thread in (`newest` or `oldest`), for a refetch: without it,
+    /// the account's. A tab keeps its order until it opens an issue afresh, when another tab
+    /// changed the account's.
+    order: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -283,13 +287,18 @@ pub async fn issue(
     crate::import::comments_on_demand(&app, account, id).await;
     // A parent's sub-issue order is read back: a reorder made outside beghu sends nothing.
     crate::reconcile::opened(&app, account, id).await;
-    let pref = app
-        .control()
-        .read(move |c| control_db::q::account(c, account))
-        .await?
-        .ok_or(ApiError::SignedOut)?
-        .comment_order;
-    let order = CommentOrder::from_pref(pref.as_deref());
+    let order = match dq.order.as_deref() {
+        Some(o) => o.parse()?,
+        None => {
+            let pref = app
+                .control()
+                .read(move |c| control_db::q::account(c, account))
+                .await?
+                .ok_or(ApiError::SignedOut)?
+                .comment_order;
+            CommentOrder::from_pref(pref.as_deref())
+        }
+    };
     let read = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {

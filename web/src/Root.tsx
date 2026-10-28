@@ -174,7 +174,8 @@ export function reloadOnce(target: string): boolean {
 /**
  * The panel failed outside its own boundaries: its code didn't load (the URL reloads once, then
  * offers Retry), or something else broke in it. The notice names what the panel held: an issue,
- * repo picking, or the create form. The list stays usable, and opening anything else tries again.
+ * repo picking, the create form or preferences. The list stays usable, and opening anything else
+ * tries again.
  */
 function PanelFailure(props: { error: unknown; reset: () => void }) {
   const location = useLocation();
@@ -184,11 +185,8 @@ function PanelFailure(props: { error: unknown; reset: () => void }) {
   return (
     <div {...stylex.attrs(s.panelSlot)} aria-busy={reloading ? "true" : undefined}>
       <Show when={!reloading}>
-        <Show
-          when={location.pathname === "/repos" || location.pathname === "/new"}
-          fallback={<IssueNotice error={props.error} retry={props.reset} />}
-        >
-          <ChunkNotice what={location.pathname === "/new" ? "the create form" : "repo picking"} error={props.error} retry={props.reset} />
+        <Show when={PAGES[location.pathname]} fallback={<IssueNotice error={props.error} retry={props.reset} />}>
+          {(what) => <PageNotice what={what()} error={props.error} retry={props.reset} />}
         </Show>
       </Show>
     </div>
@@ -216,8 +214,11 @@ export function IssueNotice(props: { error: unknown; retry: () => void }) {
   );
 }
 
-/** Repo picking's code, or the create form's, couldn't load: says so, with Retry (or, signed out, goes to sign in). */
-function ChunkNotice(props: { what: string; error: unknown; retry: () => void }) {
+/** The panel's pages besides an issue, by path: what each is called in its failure notice. */
+const PAGES: Record<string, string> = { "/repos": "repo picking", "/new": "the create form", "/prefs": "preferences" };
+
+/** A page's code couldn't load (repo picking, the create form, preferences): says so, with Retry (or, signed out, goes to sign in). */
+function PageNotice(props: { what: string; error: unknown; retry: () => void }) {
   return (
     <Failure error={props.error}>
       <p {...stylex.attrs(s.notice)} role="alert">
@@ -237,6 +238,9 @@ function Header() {
       <span {...stylex.attrs(s.spacer)} />
       <a href="/repos" {...stylex.attrs(s.headerLink)} data-perf="repos-link">
         Repos
+      </a>
+      <a href="/prefs" {...stylex.attrs(s.headerLink)} data-perf="prefs-link">
+        Preferences
       </a>
       <Errored fallback={(err, reset) => <AccountFailure error={err()} reset={reset} />}>
         <Loading fallback={<span />}>

@@ -28,7 +28,10 @@ pub struct Me {
     pub account: Account,
     /// Every account signed in on this browser, in sign-in order.
     pub accounts: Vec<Account>,
+    /// The account's comment order: the detail comes in it.
     pub comment_order: CommentOrder,
+    /// The account's own key bindings, by action (prefs.rs); an action left out has the preset's.
+    pub keymap: crate::prefs::Keymap,
     /// The synced repos and the account's role on each.
     pub repos: Vec<Repo>,
     /// The import running, if any: the status slot's "Importing… n of m repos".
@@ -46,7 +49,7 @@ pub struct Account {
     pub needs_sign_in: bool,
 }
 
-#[derive(Serialize, TS, Clone, Copy)]
+#[derive(Serialize, Deserialize, TS, Clone, Copy)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum CommentOrder {
@@ -68,6 +71,14 @@ impl std::str::FromStr for CommentOrder {
 }
 
 impl CommentOrder {
+    /// As on the wire, and as `preferences` stores it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CommentOrder::Newest => "newest",
+            CommentOrder::Oldest => "oldest",
+        }
+    }
+
     /// The account's stored preference. None means newest first, and so does one this build
     /// doesn't know (written by a newer build): a preference never fails a read.
     pub fn from_pref(pref: Option<&str>) -> CommentOrder {
@@ -94,12 +105,13 @@ pub async fn me(
 ) -> Result<Json<Me>, ApiError> {
     repos::refresh_roles_if_stale(&app, s.account).await?;
     let (account, hash) = (s.account, s.id_hash.clone());
-    let (row, accounts) = app
+    let (row, accounts, keys) = app
         .control()
         .read(move |c| {
             Ok((
                 control_db::q::account(c, account)?,
                 control_db::q::session_accounts(c, &hash)?,
+                control_db::q::key_bindings(c, account)?,
             ))
         })
         .await?;
@@ -123,6 +135,7 @@ pub async fn me(
             })
             .collect(),
         comment_order: CommentOrder::from_pref(row.comment_order.as_deref()),
+        keymap: crate::prefs::keymap(keys),
         repos: repos
             .into_iter()
             .map(|r| Repo {

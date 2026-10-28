@@ -38,10 +38,12 @@ import {
   readAt,
   readBefore,
   refetchIssue,
+  setAccountOrder,
   signIn,
   stamp,
   takeRemembered,
   type Comment,
+  type CommentOrder,
   type IssueDetail,
   type IssueRef,
 } from "./api";
@@ -52,7 +54,7 @@ import type { User } from "./bindings/User";
 import { searchOf, type Term } from "./highlight";
 import { touch, type Action } from "./keys";
 import { editorOf, openEditor, type Field } from "./editing";
-import { coalesced, onPush, resetAt } from "./live";
+import { cantReach, coalesced, onPush, resetAt } from "./live";
 import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { queryOf } from "./query";
 import { Blocks, Linked, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
@@ -369,13 +371,13 @@ function Detail(props: { id: number; search: string }) {
    * out read goes to sign in, and a deleted or inaccessible issue shows its in-place state; any
    * other failure rejects, for the caller to decide, as long as the issue is still on screen.
    */
-  const refetch = async (read: (id: number, last?: Comment) => Promise<IssueDetail> = refetchIssue) => {
+  const refetch = async (read: (have: IssueDetail, last?: Comment) => Promise<IssueDetail> = (have, last) => refetchIssue(have.id, have.comment_order, last)) => {
     const have = current();
     if (!have) return;
     const last = have.comments.comments.at(-1);
     let fresh: IssueDetail;
     try {
-      fresh = await read(have.id, last);
+      fresh = await read(have, last);
     } catch (e) {
       if (e instanceof SessionEnded) signIn();
       else if (current()?.id !== have.id) return;
@@ -384,7 +386,8 @@ function Detail(props: { id: number; search: string }) {
       return;
     }
     const now = current();
-    if (now?.id !== have.id) return;
+    // Re-sorted meanwhile (`resort`): the thread on screen is in another order now.
+    if (now?.id !== have.id || now.comment_order !== have.comment_order) return;
     setLost(undefined);
     // Pages that landed after the refetch left stay, after the comment it went through.
     const got = fresh.comments.comments;
@@ -404,6 +407,22 @@ function Detail(props: { id: number; search: string }) {
         readAt(fresh),
       ),
     );
+  };
+
+  /**
+   * Shows the thread in `order`, from its top: the account's comment order just changed in this
+   * tab. Other tabs keep theirs until they open an issue afresh. Rejects if the read fails, with
+   * what's on screen kept.
+   */
+  const resort = async (order: CommentOrder) => {
+    const have = current();
+    if (!have || have.comment_order === order) return;
+    const fresh = await refetchIssue(have.id, order);
+    if (current()?.id !== have.id) return;
+    setD(fresh);
+    requestAnimationFrame(() => {
+      if (nearEnd()) void loadMore();
+    });
   };
 
   /**
@@ -438,7 +457,7 @@ function Detail(props: { id: number; search: string }) {
       // afresh, page 2 and all.
       if (fromMemory === id) {
         fromMemory = undefined;
-        untrack(() => refetch((id) => getIssue(id)))
+        untrack(() => refetch((have) => getIssue(have.id)))
           .catch((e: unknown) => {
             failure = { error: e };
             setRerun((n) => n + 1);
@@ -457,7 +476,7 @@ function Detail(props: { id: number; search: string }) {
   });
 
   return (
-    <Show when={lost()} fallback={<Body d={d()} search={props.search} scroller={(el) => {
+    <Show when={lost()} fallback={<Body d={d()} search={props.search} resort={resort} scroller={(el) => {
             scroller = el;
             userScrolls(el);
           }} onScroll={() => nearEnd() && void loadMore()} />}>
@@ -489,7 +508,13 @@ function scrollToMatch(scroller: HTMLDivElement): number | undefined {
   return NaN;
 }
 
-function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivElement) => void; onScroll: () => void }) {
+function Body(props: {
+  d: IssueDetail;
+  search: string;
+  resort: (order: CommentOrder) => Promise<void>;
+  scroller: (el: HTMLDivElement) => void;
+  onScroll: () => void;
+}) {
   /** When the detail's read began: the tab's writes show over anything older. */
   const at = () => readAt(props.d);
   const d = createMemo((): ShownDetail => overlay()?.detailWithWrites(props.d, at()) ?? props.d);
@@ -715,7 +740,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </Show>
         <h3 {...stylex.attrs(s.section)}>
           Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
-          <span {...stylex.attrs(s.muted, s.order)} data-perf="comment-order">{d().comment_order === "newest" ? "newest first" : "oldest first"}</span>
+          <CommentOrderSwitch order={d().comment_order} resort={props.resort} />
           <Show when={d().pr}>
             <ReviewsElsewhere href={githubUrl(d())} />
           </Show>
@@ -752,6 +777,53 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
             <Composer d={d()} />
           </Loading>
         </Errored>
+      </Show>
+    </>
+  );
+}
+
+/**
+ * The thread's order, newest or oldest first: an account preference. Switching it re-sorts this
+ * tab's thread at once and stores it for the account; other tabs pick it up as they next open an
+ * issue. If it can't be stored, the thread goes back to the order it was in, and says so.
+ */
+function CommentOrderSwitch(props: { order: CommentOrder; resort: (order: CommentOrder) => Promise<void> }) {
+  const [busy, setBusy] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
+  const other = (): CommentOrder => (props.order === "newest" ? "oldest" : "newest");
+  const change = async () => {
+    const was = props.order;
+    const to = other();
+    setBusy(true);
+    setFailed(false);
+    // Stored and re-sorted side by side. A re-sort that fails keeps the thread as it is (the next
+    // open shows the new order); a preference that isn't stored puts the thread back.
+    const [saved, shown] = await Promise.allSettled([setAccountOrder(to), props.resort(to)]);
+    if (saved.status === "rejected") {
+      if (saved.reason instanceof SessionEnded) signIn();
+      setFailed(true);
+      if (shown.status === "fulfilled") await props.resort(was).catch(() => {});
+    }
+    setBusy(false);
+  };
+  return (
+    <>
+      <button
+        type="button"
+        data-perf="comment-order"
+        data-order={props.order}
+        title={`Show ${other()} first, in every tab of this account`}
+        aria-label={`Show ${other()} comments first (now ${props.order} first)`}
+        disabled={busy() || stale() !== undefined || cantReach()}
+        {...stylex.attrs(s.muted, s.order)}
+        onClick={() => void change()}
+      >
+        {props.order === "newest" ? "newest first" : "oldest first"} ⇅
+      </button>
+      <Show when={failed()}>
+        <span role="alert" data-perf="comment-order-failed" {...stylex.attrs(s.orderFailed)}>
+          Couldn't change the order
+        </span>
       </Show>
     </>
   );
@@ -1362,8 +1434,26 @@ const s = stylex.create({
     minWidth: "5ch",
   },
   order: {
+    font: "inherit",
+    padding: 0,
+    borderWidth: 0,
+    textDecoration: {
+      default: "none",
+      ":hover:not(:disabled)": "underline",
+    },
+    backgroundColor: "transparent",
+    cursor: {
+      default: "pointer",
+      ":disabled": "default",
+    },
     fontSize: 12,
-    paddingInlineStart: 8,
+    marginInlineStart: 8,
+  },
+  orderFailed: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: 400,
+    marginInlineStart: 8,
   },
   // Off-screen comments skip layout and paint, with a size estimate standing in for them.
   comment: {

@@ -104,3 +104,66 @@ async fn the_walker_takes_the_active_accounts_the_most_recently_used_first() {
     // Neither a dormant account nor one that must sign in again has a mirror to walk.
     assert_eq!(order, vec![2, 1, 5]);
 }
+
+/// The control DB as a build before the keymap (migration 6) left it: an account that chose
+/// oldest first.
+fn before_the_keymap(path: &std::path::Path) {
+    let c = rusqlite::Connection::open(path).unwrap();
+    // As `dbrt::migrations::migrate_control` records them.
+    c.execute_batch("CREATE TABLE _migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')))")
+        .unwrap();
+    for m in &control_db::MIGRATIONS[..5] {
+        c.execute_batch(m.sql).unwrap();
+        c.execute(
+            "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
+            (m.version, m.name),
+        )
+        .unwrap();
+    }
+    c.execute_batch(
+        "INSERT INTO accounts (github_user_id, login, created_at, last_active_at) VALUES (1, 'tomsj', 100, 100);
+         INSERT INTO preferences (github_user_id, comment_order) VALUES (1, 'oldest');",
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_migration_adding_key_actions_leaves_existing_accounts_on_the_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("control.db");
+    before_the_keymap(&path);
+    let (control, outcome) = Control::open(&path, &dir.path().join("backups")).unwrap();
+    assert!(
+        matches!(outcome, ControlOutcome::Migrated { from: 5, .. }),
+        "{outcome:?}"
+    );
+
+    let (account, keys) = control
+        .read(|c| Ok((q::account(c, 1)?.unwrap(), q::key_bindings(c, 1)?)))
+        .await
+        .unwrap();
+    assert_eq!(account.comment_order.as_deref(), Some("oldest"));
+    assert!(
+        keys.is_empty(),
+        "every new action is on its default: {:?}",
+        keys.iter().map(|k| &k.action).collect::<Vec<_>>()
+    );
+
+    // Each key change sets its own action only; '' is kept as unbound, NULL goes back to the
+    // default.
+    control
+        .write(|tx| {
+            q::set_key(tx, 1, "next", Some("n"))?;
+            q::set_key(tx, 1, "help", Some(""))?;
+            q::set_key(tx, 1, "openIssue", Some("Enter\nShift+o"))?;
+            q::set_key(tx, 1, "openIssue", None)
+        })
+        .await
+        .unwrap();
+    let keys = control.read(|c| q::key_bindings(c, 1)).await.unwrap();
+    let got: Vec<_> = keys
+        .iter()
+        .map(|k| (k.action.as_str(), k.binding.as_str()))
+        .collect();
+    assert_eq!(got, [("next", "n"), ("help", "")]);
+}

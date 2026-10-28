@@ -2,6 +2,7 @@
 import type { Account } from "./Account";
 import type { CommentOrder } from "./CommentOrder";
 import type { ImportStatus } from "./ImportStatus";
+import type { KeyAction } from "./KeyAction";
 import type { Repo } from "./Repo";
 import type { SyncStatus } from "./SyncStatus";
 
@@ -9,7 +10,15 @@ export type Me = { account: Account,
 /**
  * Every account signed in on this browser, in sign-in order.
  */
-accounts: Array<Account>, comment_order: CommentOrder, 
+accounts: Array<Account>, 
+/**
+ * The account's comment order: the detail comes in it.
+ */
+comment_order: CommentOrder, 
+/**
+ * The account's own key bindings, by action (prefs.rs); an action left out has the preset's.
+ */
+keymap: { [key in KeyAction]?: string }, 
 /**
  * The synced repos and the account's role on each.
  */

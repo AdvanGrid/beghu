@@ -1,7 +1,7 @@
 // The keyboard model, through its touchpoints, in a real browser against the ./dev-ctl stack (1k
 // fixture). Nothing here edits: closing and reopening by key is in writes.spec.ts, picking by key
-// in pickers.spec.ts. Swapped bindings, which need the keymap preference (#113) to set them here,
-// are in src/keys.test.ts.
+// in pickers.spec.ts. Rebinding, which changes the account's keymap for every tab, is in
+// prefs.spec.ts.
 import { expect, test, type Page } from "@playwright/test";
 
 const rows = (page: Page) => page.locator('[data-perf="row"]');

@@ -17,13 +17,17 @@
 // otherwise asks `/api/me` whether beghu refuses the account, so a 401 or 409 in front of it reads
 // as the tab going stale, not as "Can't reach beghu".
 //
+// A `prefs` event (the account's preferences changed, in this tab or another) reads `/api/me`
+// again (api.ts, `prefsChanged`): a new keymap takes effect, and a new comment order with the
+// next issue opened.
+//
 // `status` events say what the status slot shows besides: `importing()` is the account's import
 // while one runs, and `sync()` its sync state while it's degraded or resyncing. Every `reset`
 // (each stream open sends one) clears both and is followed by the current status, `null`s
 // included, so a tab that was reconnecting when an import or a resync ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
-import { forgetRemembered } from "./api";
+import { forgetRemembered, prefsChanged } from "./api";
 import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
 import type { ImportStatus } from "./bindings/ImportStatus";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
@@ -136,6 +140,8 @@ export function connectLive(): () => void {
     });
     es.addEventListener("github", (e) => setGithubDown((JSON.parse((e as MessageEvent<string>).data) as StreamGitHub).state === "down"));
     es.addEventListener("defs", () => emit({ kind: "defs" }));
+    // A failed read leaves the preferences as they were; the next push or load reads them again.
+    es.addEventListener("prefs", () => void prefsChanged().catch(() => {}));
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;
       emit({ kind: "ids", ids });

@@ -67,8 +67,10 @@ CI runs all of these; run them before you commit:
   ever sees highlight.js's own escaped output through the app, and the keys module's unit test
   (`web/src/keys.test.ts`), which covers what the browser suite can't drive: a Mac's Cmd and Alt,
   AltGr, non-Latin layouts and input-method composition (the suite runs one platform and layout),
-  the areas of touchpoints no view offers yet, and swapped bindings (no keymap preference seam
-  exists until #113). Both web tests run under `npm run test:lint`.
+  what the setup page records for a Mac's Cmd and Option keys (dead keys included) and a non-Latin
+  layout's letters, and the areas of touchpoints no view offers yet. Rebinding itself (swaps,
+  refusals, sequences, other tabs) goes through the setup page (`web/e2e/prefs.spec.ts`). Both
+  web tests run under `npm run test:lint`.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
   Exception: `crates/fake-github/src/web_hosts.rs` (`/ext/…`) stands in for the arbitrary web

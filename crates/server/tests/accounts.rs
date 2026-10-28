@@ -320,13 +320,29 @@ async fn disconnect_revokes_the_grant_deletes_the_mirror_and_ends_every_session(
     let s = start().await;
     let mut alone = s.sign_in("ilze-k").await;
     let ilze = me(&s, &mut alone).await["account"]["id"].as_i64().unwrap();
+    // Account preferences, set from the browser ilze-k is alone on.
+    let res = s
+        .api_write(&alone, reqwest::Method::PATCH, "/api/prefs")
+        .json(&json!({ "field": "comment_order", "value": "oldest" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let res = s
+        .api_write(&alone, reqwest::Method::PATCH, "/api/prefs")
+        .json(&json!({ "field": "key", "action": "next", "binding": "n" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let now = me(&s, &mut alone).await;
+    assert_eq!(now["comment_order"], "oldest");
+    assert_eq!(now["keymap"], json!({ "next": "n" }));
+
     let (mut shared, tomsj, _) = both(&s).await;
     let mut other = s.sign_in("ilze-k").await;
     let mut tab = s.stream_as(&shared, ilze).await;
     tab.reset().await;
-
-    // TODO(#113): set an account preference through the setting #113 adds, and check Disconnect
-    // deletes it (signing in again reads the default).
 
     let res = s
         .post_form(
@@ -381,6 +397,10 @@ async fn disconnect_revokes_the_grant_deletes_the_mirror_and_ends_every_session(
     // is remembered: no picker.
     let mut again = Browser::default();
     assert!(signs_in_to_a_fresh_import(&s, &mut again, "ilze-k").await);
+    // Its preferences went with it.
+    let now = me(&s, &mut again).await;
+    assert_eq!(now["comment_order"], "newest");
+    assert_eq!(now["keymap"], json!({}));
 }
 
 #[tokio::test(flavor = "multi_thread")]

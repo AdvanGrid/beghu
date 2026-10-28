@@ -25,6 +25,7 @@ mod markdown;
 mod media;
 mod ops;
 mod pickers;
+mod prefs;
 mod pulls;
 mod query;
 mod reconcile;
@@ -47,7 +48,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use control_db::Control;
 use mirror_db::Mirrors;
 use std::future::IntoFuture as _;
@@ -482,6 +483,7 @@ pub fn router(app: App) -> Router {
         .route("/repos/{id}/assignees", get(pickers::assignees))
         .route("/ops", post(ops::post))
         .route("/resync", post(reconcile::resync))
+        .route("/prefs", patch(prefs::patch))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
@@ -503,6 +505,7 @@ pub fn router(app: App) -> Router {
         .route("/", get(shell::shell))
         .route("/issues/{id}", get(shell::shell))
         .route("/repos", get(shell::shell))
+        .route("/prefs", get(shell::shell))
         .layer(compression());
     // The media routes stream bytes through with their own caching headers: outside the API's
     // `no-store` and its compression, behind the same session gate.

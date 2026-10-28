@@ -1,6 +1,6 @@
 // The words for the keys: the hint bar's quick keys for where the focus is, and the `?` overlay
 // with every binding in effect. Its own chunk, loaded after first paint (Root.tsx); the keys
-// module (keys.ts) does the work. A setup page for the keymap (#113) can use `LABEL` and
+// module (keys.ts) does the work. The keymap's setup page (Prefs.tsx) uses `LABEL` and
 // `showBinding` too.
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
@@ -90,11 +90,16 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
 
 const ARROWS: Record<string, string> = { ArrowDown: "↓", ArrowUp: "↑", ArrowLeft: "←", ArrowRight: "→", Escape: "Esc" };
 
-/** A binding as people read it: `Alt+KeyL` is Alt+L, `Shift+x` is Shift+X. */
+/** A binding as people read it: `Alt+KeyL` is Alt+L, `Shift+x` is Shift+X, a sequence `g i`. */
 export function showBinding(binding: string): string {
-  return binding
+  return binding.split(" ").map(showKey).join(" ");
+}
+
+/** One key of a binding as people read it. */
+function showKey(key: string): string {
+  return key
     .split(/\+(?=.)/)
-    .map((part) => ARROWS[part] ?? part.replace(/^(Key|Digit)(?=.)/, "").replace(/^[a-z]$/, (c) => (binding.includes("+") ? c.toUpperCase() : c)))
+    .map((part) => ARROWS[part] ?? part.replace(/^(Key|Digit)(?=.)/, "").replace(/^[a-z]$/, (c) => (key.includes("+") ? c.toUpperCase() : c)))
     .join("+")
     .replace(/^Mod\+/, MAC ? "⌘" : "Ctrl+");
 }
@@ -212,7 +217,12 @@ function Help() {
             </section>
           )}
         </For>
-        <p {...stylex.attrs(s.foot)}>Single keys don't fire while you type in a text field or a picker.</p>
+        <p {...stylex.attrs(s.foot)}>
+          Single keys don't fire while you type in a text field or a picker.{" "}
+          <a href="/prefs" data-perf="change-keys" {...stylex.attrs(s.link)} onClick={() => dialog.close()}>
+            Change keys
+          </a>
+        </p>
       </Show>
     </dialog>
   );
@@ -289,6 +299,9 @@ const s = stylex.create({
   unbound: {
     color: colors.muted,
     fontSize: 11.5,
+  },
+  link: {
+    color: colors.accent,
   },
   foot: {
     margin: 0,

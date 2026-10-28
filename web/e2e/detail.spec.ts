@@ -128,7 +128,7 @@ test("an issue URL with leading zeros opens that issue, its first fetch the shel
   const reads = api.filter((p) => /^\/api\/issues\/0*(\d+)(\?|$)/.exec(p)?.[1] === id);
   expect(reads[0]).toBe(`/api/issues/${id}`);
   expect(reads.length).toBeLessThanOrEqual(2);
-  for (const r of reads) expect(r).toMatch(new RegExp(`^/api/issues/${id}(\\?through=|$)`));
+  for (const r of reads) expect(r).toMatch(new RegExp(`^/api/issues/${id}(\\?through=|\\?order=|$)`));
 });
 
 test("comments come newest first, 15 at a time: page 2 after paint, later pages near the end", async ({ page }) => {

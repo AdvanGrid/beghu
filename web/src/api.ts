@@ -23,10 +23,12 @@ import type { Me } from "./bindings/Me";
 import type { Op } from "./bindings/Op";
 import type { OpReply } from "./bindings/OpReply";
 import type { OpRequest } from "./bindings/OpRequest";
+import type { PrefChange } from "./bindings/PrefChange";
 import type { ResyncReply } from "./bindings/ResyncReply";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
+import { setKeymap } from "./keys";
 
-export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply };
+export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
 
 /** Every write but a new issue: each names the issue it changes. */
@@ -322,6 +324,8 @@ async function requestOnce<T>(url: string, init?: RequestInit): Promise<T> {
   if (preload && res.ok && mine !== undefined && res.headers.get("x-beghu-account") !== String(mine)) return requestOnce(url, init);
   if (res.ok) {
     noteAnswered();
+    // A write with nothing to say (204).
+    if (res.status === 204) return null as T;
     return (await res.json()) as T;
   }
   throw failure(res, await bodyOf(res), `${res.status} from ${url}`);
@@ -426,12 +430,89 @@ export function issuesUrl(search: string, after?: string): string {
   return `/api/issues?${p}`;
 }
 
-/** The active account and the browser's others. One that isn't the tab's makes the tab stale. */
+/**
+ * When the preferences in effect here were read or set: a read of `/api/me` begun before then
+ * lands with older ones, and leaves them be.
+ */
+let prefsAt = -Infinity;
+
+/** This tab changed its preferences itself, ahead of the store: reads begun before now are older. */
+export function prefsSetHere(): void {
+  prefsAt = performance.now();
+}
+
+/**
+ * The active account and the browser's others, and the account's preferences. One that isn't the
+ * tab's makes the tab stale; the tab's own keymap takes effect as it lands (preloaded with the
+ * shell, so before the first key), and again whenever a `prefs` push reads it afresh: unless a
+ * read begun later, or a change made here since it began, already put newer ones in effect.
+ */
 export const getMe = query(async () => {
+  const at = performance.now();
   const me = await request<Me>("/api/me");
   if (tabAccount() !== undefined && me.account.id !== tabAccount()) noteActive(me.account.id);
+  else if (at >= prefsAt) {
+    prefsAt = at;
+    setKeymap(me.keymap);
+    setCommentOrder(me.comment_order);
+  }
   return me;
 }, "me");
+
+const [commentOrder, setCommentOrder] = createSignal<CommentOrder>();
+/**
+ * The account's comment order, as `/api/me` last said (or as this tab just set it); undefined
+ * until it has. An open issue keeps the order it opened in. Reactive.
+ */
+export { commentOrder };
+
+/**
+ * A `prefs` push: the account's preferences changed, here or in another tab. `/api/me` is read
+ * again, and its keymap takes effect (keys.ts holds it back while a sequence is under way). If
+ * the comment order changed, the details read in the old one are dropped, so the next issue
+ * opened comes in the new one; the open issue keeps its order.
+ */
+export async function prefsChanged(): Promise<void> {
+  const before = commentOrder();
+  void revalidate(getMe.key);
+  await getMe();
+  // As in effect now: an older read that landed late changed nothing.
+  if (before !== undefined && commentOrder() !== before) {
+    forgetRemembered();
+    void revalidate(getIssue.key);
+  }
+}
+
+/**
+ * Sets the account's comment order: stored, then pushed to its other tabs. Until it's stored, this
+ * tab takes it as set; if it isn't, it goes back. Fails with the named error.
+ */
+export async function setAccountOrder(order: CommentOrder): Promise<void> {
+  const was = commentOrder();
+  prefsSetHere();
+  setCommentOrder(order);
+  try {
+    await setPref({ field: "comment_order", value: order });
+  } catch (e) {
+    if (commentOrder() === order) setCommentOrder(was);
+    throw e;
+  }
+  // The details this tab read before come in the old order.
+  forgetRemembered();
+  void revalidate(getIssue.key);
+}
+
+/**
+ * Sets one account preference (comment order, or one action's key bindings). Last write wins;
+ * every tab of the account hears `prefs` and reads `/api/me` again. Fails with the named error.
+ */
+export async function setPref(change: PrefChange): Promise<void> {
+  await request<null>("/api/prefs", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(change),
+  });
+}
 
 /** When each read's fetch began (`performance.now()`), for telling an older read from a newer one. */
 const startedAt = new WeakMap<object, number>();
@@ -607,9 +688,14 @@ export function cursorOf(c: Comment): string {
   return `${c.created_at}.${c.id}`;
 }
 
-/** The detail again, with every comment from the top of the thread through `through`. */
-export function refetchIssue(id: number, through?: Comment): Promise<IssueDetail> {
-  return timed<IssueDetail>(through === undefined ? `/api/issues/${id}` : `/api/issues/${id}?through=${cursorOf(through)}`);
+/**
+ * The detail again, in the thread's `order` (the one the tab shows: another tab may have changed
+ * the account's), with every comment from the top of the thread through `through`.
+ */
+export function refetchIssue(id: number, order: CommentOrder, through?: Comment): Promise<IssueDetail> {
+  const p = new URLSearchParams(through === undefined ? {} : { through: cursorOf(through) });
+  p.set("order", order);
+  return timed<IssueDetail>(`/api/issues/${id}?${p}`);
 }
 
 /** The page of an issue's comments after the cursor `after` (the first page without), in `order`. */
