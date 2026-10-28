@@ -109,11 +109,11 @@ A layout change from a live update that waits while the user is in intent mode, 
 _Avoid_: Frozen order, pending reorder
 
 **Intent mode**:
-The user may be about to act: the pointer is moving or has rested under 5 s, a press or selection is in progress, or a key was pressed in the last 5 s. Held changes wait.
+The user may be about to act: the pointer is moving over the view or has rested on it under 5 s, a press, drag or text selection is in progress, a key was pressed outside a text field in the last 5 s, or a touch ended in the last 1 s. Held changes wait.
 _Avoid_: Busy, active
 
 **Reading mode**:
-The pointer has been still for 5 s or more, with no keys or presses. Held changes apply, each behind a shift cue.
+The pointer has been still for 5 s or more, or is away from the view, with no keys, presses or touches meanwhile. Held changes apply, each behind a shift cue.
 _Avoid_: Idle
 
 **Shift cue**:

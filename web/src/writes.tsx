@@ -71,7 +71,7 @@ import { link } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
 import { holdsText } from "./unsaved";
-import { editorOf, unsaved, type Field } from "./editing";
+import { editorNow, editorOf, unsaved, type Field } from "./editing";
 
 // --- the pending writes --------------------------------------------------------------------------
 
@@ -136,6 +136,13 @@ let draftsNow: ReadonlyMap<number, string> = new Map();
 const [ops, setOps] = createSignal<Pending[]>(pendingNow);
 /** Unsent comment text, per issue. */
 const [drafts, setDrafts] = createSignal(draftsNow);
+/**
+ * The issue the user last wrote to, while the panel stays on it, and whether GitHub took one of
+ * those writes. A write on its way counts too: its push can reach the list before its reply.
+ */
+let actedOn: { issue: number; took: boolean } | undefined;
+/** The issue the panel shows (the list tells, `panelOn`): what a write is made from. */
+let panelIssue: number | undefined;
 /** How many writes this tab has made: each pending comment's id is the next negative number. */
 let writesMade = 0;
 /** Per issue, the newest comment id the tab has seen in a detail. */
@@ -189,6 +196,10 @@ function write(op: Op, ref: string, author: string, look?: Look, watch?: EditWat
   const sets = kindOf(op).target(op);
   const superseded = (q: Pending) => sets !== undefined && kindOf(q.op).target(q.op) === sets && q.op.issue === op.issue && q.phase === "failed";
   commit([...pendingNow.filter((q) => !superseded(q)), p]);
+  // The issue it was made from: the panel's, which a relationship write may only name as its
+  // other end (a parent set or moved from the child's panel is written to the parent).
+  const from = panelIssue !== undefined && involves(p, panelIssue) ? panelIssue : op.issue;
+  if (actedOn?.issue !== from) actedOn = { issue: from, took: false };
   setTimeout(() => {
     if (find(p.id)?.phase === "sending") patch(p.id, { slow: true });
   }, SLOW_MS);
@@ -216,6 +227,7 @@ function confirm(id: string, reply: OpReply): void {
   const p = find(id);
   if (!p) return;
   if (reply.comment) claimed.add(reply.comment.id);
+  if (actedOn !== undefined && involves(p, actedOn.issue)) actedOn.took = true;
   patch(id, { phase: "sent", sentAt: performance.now(), reply, error: undefined });
   refetchShown(involved(p));
   // What GitHub left undone of it (a move's place among its new siblings): failed writes of their
@@ -638,6 +650,28 @@ function sweep(): void {
 
 function rowWithWrites(r: IssueRow, at: number): IssueRow {
   return withWrites(r, at);
+}
+
+/**
+ * Whether the list's selection stays on `issue` when it leaves the list: the user wrote to it from
+ * the panel and the write didn't fail, or the panel holds unsaved text of this issue's (as
+ * `holdsText` counts it: a draft, a comment GitHub never got, or a title or body editor's text,
+ * editing.ts).
+ */
+function keepsSelection(issue: number): boolean {
+  const acted = actedOn?.issue === issue && (actedOn.took || pendingNow.some((p) => involves(p, issue) && p.phase === "sending"));
+  const unsent = pendingNow.some((p) => p.op.kind === "comment" && p.op.issue === issue && p.phase === "failed");
+  const editing = (["title", "body"] as const).some((f) => {
+    const e = editorNow(issue, f);
+    return e !== undefined && unsaved(e);
+  });
+  return acted || unsent || editing || !!draftsNow.get(issue)?.trim();
+}
+
+/** The panel shows `issue` now (an issue or a PR), or nothing: a write to another no longer counts. */
+function panelOn(issue: number | undefined): void {
+  panelIssue = issue;
+  if (actedOn?.issue !== issue) actedOn = undefined;
 }
 
 function listShown(at: number): void {
@@ -1191,7 +1225,7 @@ export function Composer(props: { d: ShownDetail }) {
   );
 }
 
-setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, Status, StateNote, CommentNote, PropNote, EditNote });
+setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, keepsSelection, panelOn, Status, StateNote, CommentNote, PropNote, EditNote });
 
 const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },

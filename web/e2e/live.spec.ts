@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { claimBelowTheTop } from "./claims";
+import { claimBelowTheTop, unique } from "./claims";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -37,9 +37,6 @@ async function rowRef(page: Page, i: number): Promise<{ repo: string; number: nu
   return { repo: ref[1]!, number: Number(ref[2]), id: (await row.getAttribute("data-id"))! };
 }
 
-/** Text no other test, here or beside this one, will have used. */
-const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
 test.beforeAll(() => {
   control = (JSON.parse(devCtl(["status", "--json"])) as { urls: { control: string } }).urls.control;
 });
@@ -68,14 +65,12 @@ test("an outside edit through ./dev-ctl fake edit shows in the open list within 
   page.on("framenavigated", (f) => f === page.mainFrame() && loads++);
   const { repo, number, id } = await rowRef(page, 5);
   const title = unique("Retitled with gh");
-  // It moves to the top: it was updated last.
-  const onTop = await timeFromPush(
+  // The new title shows in its row at once; the move it brings (it was updated last, so it goes to
+  // the top) follows behind the shift cue (held.spec.ts).
+  const shown = await timeFromPush(
     page,
     id,
-    ([id, title]) => {
-      const top = document.querySelector('[data-perf="row"]');
-      return top?.getAttribute("data-id") === id && !!top.textContent?.includes(title);
-    },
+    ([id, title]) => !!document.querySelector(`[data-perf="row"][data-id="${id}"]`)?.textContent?.includes(title),
     [id, title] as const,
   );
 
@@ -83,7 +78,7 @@ test("an outside edit through ./dev-ctl fake edit shows in the open list within 
   const top = page.locator('[data-perf="row"]').first();
   await expect(top).toHaveAttribute("data-id", id, { timeout: SHOWS_WITHIN_MS });
   await expect(top).toContainText(title);
-  await onTop();
+  await shown();
   expect(loads).toBe(0);
 });
 

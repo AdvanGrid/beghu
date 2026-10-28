@@ -15,7 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { claimBelowTheTop, exclusive, fiveHundreds, shared, type Issue, type Row } from "./claims";
+import { claimBelowTheTop, exclusive, fiveHundreds, shared, unique, type Issue, type Row } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -49,9 +49,6 @@ const ISSUE = (i: Issue) => `PATCH /repos/${i.owner}/${i.repo}/issues/${i.number
 
 const fail = (endpoint: string, status: number, count = 1, retry_after?: number) =>
   fake("/faults/fail", { endpoint, status, count, retry_after });
-
-/** Text no other test, here or beside this one, will have used. */
-const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 const rows = (page: Page) => page.locator('[data-perf="row"]');
 const comments = (page: Page) => page.locator('[data-perf="comment"]');

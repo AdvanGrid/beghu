@@ -26,6 +26,8 @@ export const colors = stylex.defineVars({
   // A title or body changed on GitHub under its open editor: at least 5.3:1 on bg, bgRaised and a
   // post's tint frame, light and dark.
   warn: "light-dark(#8a5c00, #d29922)",
+  // The shift cue's tint on a row that will leave (held.ts): danger at 8% (light) and 12% (dark).
+  cueLeave: "light-dark(rgb(207 34 46 / 0.08), rgb(248 81 73 / 0.12))",
   // A search's matched words in the detail.
   mark: "light-dark(#fff1a8, #5c4a00)",
   // Hover cards, over the list.

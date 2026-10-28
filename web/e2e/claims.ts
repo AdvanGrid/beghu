@@ -45,12 +45,11 @@ export type Row = {
 };
 export type Issue = Row & { ref: string; index: number };
 
-/**
- * Open issues below the default list's top 40 rows (the browser specs rely on those), with 1 to
- * 15 comments (one page), and where each sits in the list: of its first `depth` rows (a test
- * after a few issues of one repo looks further).
- */
-export async function issuesBelowTheTop(page: Page, depth = 200): Promise<Issue[]> {
+/** Text no other test, in this file or beside it, will have used. */
+export const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/** The default list's rows as the server has them, each with where it sits: at least `depth` (or a page). */
+export async function listed(page: Page, depth = 0): Promise<Issue[]> {
   const all: Row[] = [];
   let after: string | null = null;
   do {
@@ -59,10 +58,16 @@ export async function issuesBelowTheTop(page: Page, depth = 200): Promise<Issue[
     all.push(...p.rows);
     after = p.next;
   } while (after && all.length < depth);
-  return all
-    .map((r, index) => ({ ...r, index, ref: `${r.owner}/${r.repo}#${r.number}` }))
-    .slice(40)
-    .filter((r) => r.comments >= 1 && r.comments <= 15);
+  return all.map((r, index) => ({ ...r, index, ref: `${r.owner}/${r.repo}#${r.number}` }));
+}
+
+/**
+ * Open issues below the default list's top 40 rows (the browser specs rely on those), with 1 to
+ * 15 comments (one page), and where each sits in the list: of its first `depth` rows (a test
+ * after a few issues of one repo looks further).
+ */
+export async function issuesBelowTheTop(page: Page, depth = 200): Promise<Issue[]> {
+  return (await listed(page, depth)).slice(40).filter((r) => r.comments >= 1 && r.comments <= 15);
 }
 
 /**

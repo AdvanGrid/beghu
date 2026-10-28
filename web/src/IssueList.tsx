@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
-import { SessionEnded, getIssues, readAt, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
+import { Gone, NoAccess, SessionEnded, commentOrder, getIssues, readAt, refetchIssue, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
 import type { Label } from "./bindings/Label";
 import type { ReviewDecision } from "./bindings/ReviewDecision";
 import type { SearchField } from "./bindings/SearchField";
@@ -9,6 +9,8 @@ import { Avatar, issueState, PrIcon, ProgressRing, ReviewChip, StateIcon } from 
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { StillImporting } from "./WhileImporting";
+import { stale } from "./account";
+import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import { overlay } from "./overlay";
@@ -65,7 +67,8 @@ const ListCard = lazy(
  * Every live push refetches the list from the top through the last loaded row, in one request:
  * the first push at once, and any during that fetch in one more after it. A failed refetch
  * leaves the rows on screen as they are. A page that loads while a refetch is in flight is
- * asked for again from the refetched rows, so rows never vanish and come back.
+ * asked for again from the refetched rows, so rows never vanish and come back. A refetch's new
+ * contents show at once; its new order is a held change (held.ts).
  *
  * The tab's pending writes show on their rows (overlay.ts) but never add, remove or move one.
  */
@@ -174,9 +177,17 @@ export function IssueList(props: { search: string; openId?: number }) {
       done();
     }
   });
+  // What the user wrote to from the panel keeps the list's selection only while the panel stays on
+  // it (writes.tsx).
+  createEffect(
+    () => ({ o: overlay(), open: props.openId }),
+    ({ o, open }) => o?.panelOn(open),
+  );
   // A `defs` push changes no row.
   onSettled(() =>
     onPush((p) => {
+      // Back restored the page: its refetched order applies at once (held.ts).
+      if (p.kind === "reset" && p.restored) applyNextAtOnce();
       if (p.kind !== "defs") void refetch();
     }),
   );
@@ -305,8 +316,39 @@ function Rows(props: {
   card: Card;
 }) {
   let scroller!: HTMLDivElement;
+  // The rows in the order shown: a live change to the order is held while the user may be about
+  // to act (held.ts). When a batch takes the selected issue out of the list, the selection goes to
+  // the issue that took its row, unless the panel needs it kept (`keepsSelection`).
+  const held = createHeld({
+    target: () => props.rows,
+    view: () => props.search,
+    scroller: () => scroller,
+    pitch: ROW_HEIGHT,
+    // The hover card floats over the list: the pointer on it is still on the list.
+    region: (t) => t.closest('[data-perf="card"]') !== null,
+    onApplied: ({ gone, taker, place }) => {
+      const was = untrack(selected);
+      if (was === undefined || !gone.has(was)) return;
+      const next = taker(was);
+      if (next === undefined) return;
+      // Until the check below answers, j and k step from the place the issue had, and the focus,
+      // if the list had it, goes to the row that took its place.
+      anchor = { id: was, index: place(was), taker: next.id };
+      void keepsSelection(was).then((keep) => {
+        if (keep || untrack(stale) !== undefined || untrack(selected) !== was) return;
+        chosenNow = next.id;
+        setChosen(next.id);
+        // The focus goes with it only if the list had it and the row is on screen to take it.
+        const onScreen = inView(next.index);
+        const has = document.activeElement instanceof HTMLElement && document.activeElement.dataset.id === String(next.id);
+        if ((scroller.contains(document.activeElement) || hadFocus) && onScreen && !has) setFocusing(next.id);
+        if (going === undefined) go(next.id);
+      });
+    },
+  });
+  const rows = held.rows;
   const v = createVirtualizer({
-    count: () => props.rows.length,
+    count: () => rows().length,
     getScrollElement: () => scroller,
     size: ROW_HEIGHT,
     overscan: OVERSCAN,
@@ -314,7 +356,7 @@ function Rows(props: {
   const visible = createMemo(() => {
     const items = v.items();
     const first = items[0]?.index ?? 0;
-    return { first, rows: props.rows.slice(first, first + items.length) };
+    return { first, rows: rows().slice(first, first + items.length) };
   });
 
   // The selection is the open issue, and the keys move it (keys.ts): the next or previous row,
@@ -348,7 +390,7 @@ function Rows(props: {
     },
   );
   const selected = () => chosen() ?? props.openId;
-  const index = (id = selected()) => (id === undefined ? -1 : props.rows.findIndex((r) => r.id === id));
+  const index = (id = selected()) => (id === undefined ? -1 : rows().findIndex((r) => r.id === id));
   /** Whether the selected row is in the DOM: then it's the row in the tab order, else the first row there is. */
   const selectedShown = createMemo(() => {
     const at = index();
@@ -360,13 +402,33 @@ function Rows(props: {
     const at = index(chosenNow ?? props.openId);
     if (at >= 0) return at;
     const focused = document.activeElement instanceof HTMLElement && scroller.contains(document.activeElement) ? document.activeElement.dataset.id : undefined;
-    return focused === undefined ? -1 : props.rows.findIndex((r) => String(r.id) === focused);
+    return focused === undefined ? -1 : rows().findIndex((r) => String(r.id) === focused);
   };
+  /**
+   * The selected issue that a batch took out of the list, and the index of the row that took its
+   * place: while the list checks whether the selection stays on it, a step goes from there.
+   */
+  let anchor: { id: number; index: number; taker: number } | undefined;
+  /** The anchor, while the selection `sel` is the issue it's for and that issue isn't in the list. */
+  const anchored = (sel = chosenNow ?? untrack(() => props.openId)) => (anchor !== undefined && anchor.id === sel && index(sel) < 0 ? anchor : undefined);
+  /** Steps the selection by `d` rows. */
+  const step = (d: 1 | -1) => {
+    // From where the selected issue was in the list's order: the next row is the first after it
+    // that stayed. Before any row the focus fell to.
+    const a = anchored();
+    if (a) return select(d > 0 ? a.index : a.index - 1);
+    const at = from();
+    select(at < 0 ? 0 : at + d);
+  };
+  /** The index of the first row inside the window: not one of the rows kept past its edge. */
+  const firstInView = () => Math.ceil(scroller.scrollTop / ROW_HEIGHT);
+  /** Whether row `i` is inside the window. */
+  const inView = (i: number) => i >= firstInView() && (i + 1) * ROW_HEIGHT <= scroller.scrollTop + scroller.clientHeight;
   /** The row to give the focus to once it's in the DOM. */
   const [focusing, setFocusing] = createSignal<number>();
   const select = (i: number) => {
-    const at = Math.max(0, Math.min(i, props.rows.length - 1));
-    const r = props.rows[at];
+    const at = Math.max(0, Math.min(i, rows().length - 1));
+    const r = rows()[at];
     if (!r) return;
     chosenNow = r.id;
     setChosen(r.id);
@@ -391,22 +453,26 @@ function Rows(props: {
   });
   createEffect(
     // A fresh object on every change of the window's rows, with the row the focus would go to.
+    // Otherwise, the row that took the place of a selected issue that left, while the list checks
+    // it, or the first row inside the window (not one the window keeps past its edge).
     () => {
-      const { rows } = visible();
-      return { back: selectedShown() ? selected() : rows[0]?.id };
+      visible();
+      return { back: selectedShown() ? selected() : undefined, sel: selected() };
     },
-    ({ back }) => {
-      if (!hadFocus || back === undefined || (document.activeElement !== document.body && document.activeElement !== null)) return;
-      scroller.querySelector<HTMLElement>(`[data-perf="row"][data-id="${back}"]`)?.focus({ preventScroll: true });
+    ({ back, sel }) => {
+      if (!hadFocus || (document.activeElement !== document.body && document.activeElement !== null)) return;
+      const id = back ?? untrack(() => anchored(sel)?.taker ?? rows()[firstInView()]?.id);
+      if (id === undefined) return;
+      scroller.querySelector<HTMLElement>(`[data-perf="row"][data-id="${id}"]`)?.focus({ preventScroll: true });
     },
   );
-  touch("next", () => select(from() < 0 ? 0 : from() + 1));
-  touch("previous", () => select(from() < 0 ? 0 : from() - 1));
+  touch("next", () => step(1));
+  touch("previous", () => step(-1));
   touch("first", () => select(0));
-  touch("last", () => select(props.rows.length - 1));
+  touch("last", () => select(rows().length - 1));
   touch("toList", () => {
     const at = Math.max(from(), 0);
-    const r = props.rows[at];
+    const r = rows()[at];
     if (!r) return;
     v.scrollToIndex(at);
     setFocusing(r.id);
@@ -419,7 +485,7 @@ function Rows(props: {
   createEffect(
     () => {
       const i = index();
-      return i < 0 ? "" : [props.rows[i - 1]?.id, props.rows[i + 1]?.id].filter((id) => id !== undefined).join(",");
+      return i < 0 ? "" : [rows()[i - 1]?.id, rows()[i + 1]?.id].filter((id) => id !== undefined).join(",");
     },
     (ids) => {
       clearTimeout(rest);
@@ -434,7 +500,7 @@ function Rows(props: {
   // Near the end of what's loaded, ask for the next page. Driven by the window, which the
   // virtualizer moves after its own scroll handling.
   createEffect(
-    () => (v.items().at(-1)?.index ?? 0) > props.rows.length - NEAR_END,
+    () => (v.items().at(-1)?.index ?? 0) > rows().length - NEAR_END,
     (near) => {
       if (near) props.onNearEnd();
     },
@@ -448,11 +514,21 @@ function Rows(props: {
       aria-label="Issues"
       data-keys="list"
       data-perf="list"
-      data-perf-rows={props.rows.length}
+      data-perf-rows={rows().length}
       onFocusIn={onFocusIn}
     >
-      <Show when={props.rows.length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
+      <Show when={rows().length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
+          {/* The shift cue's lines, where rows will arrive: zero height, so the cue moves nothing. */}
+          <For each={held.cue()?.lines ?? []}>{(line) => <div data-perf="cue-line" {...stylex.attrs(s.cueLine(line * ROW_HEIGHT))} />}</For>
+          {/* Rows that left the list, fading out where they were (copies: nothing to act on). */}
+          <For each={held.ghosts()}>
+            {(g) => (
+              <div aria-hidden="true" inert data-perf="ghost" ref={(el) => held.fade(el, g)} {...stylex.attrs(s.ghost(g.y))}>
+                {g.node}
+              </div>
+            )}
+          </For>
           {/* One translated wrapper around rows in normal flow: a row that stays in the window
               keeps its DOM node, and so the focus, through a refetch that replaces its data
               (rows are keyed by issue, not by object). */}
@@ -467,7 +543,8 @@ function Rows(props: {
                   selected={selected() === r().id}
                   tabbable={selectedShown() ? selected() === r().id : i() === 0}
                   pos={visible().first + i() + 1}
-                  of={props.more ? -1 : props.rows.length}
+                  of={props.more ? -1 : rows().length}
+                  leaving={held.cue()?.leaving.has(r().id) ?? false}
                   takeFocus={focusing() === r().id}
                   onFocusTaken={() => setFocusing(undefined)}
                   time={props.time}
@@ -497,6 +574,8 @@ function Row(props: {
   /** Its place in the list, from 1, and how many rows there are (-1 while more may load). */
   pos: number;
   of: number;
+  /** The shift cue marks it: it will leave this spot. */
+  leaving: boolean;
   /** Take the focus, then call `onFocusTaken`. */
   takeFocus: boolean;
   onFocusTaken: () => void;
@@ -532,9 +611,10 @@ function Row(props: {
       data-perf="row"
       data-id={r().id}
       data-blocked={blocked() ? "" : undefined}
+      data-cue={props.leaving ? "leave" : undefined}
       aria-current={props.current ? "page" : undefined}
       onPointerEnter={r().pr ? preloadPull : undefined}
-      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked)}
+      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && s.leaving)}
     >
       <span {...stylex.attrs(s.state)}>
         <Show when={r().pr} fallback={<StateIcon state={issueState(r())} />}>
@@ -576,6 +656,28 @@ function Row(props: {
       </span>
     </a>
   );
+}
+
+/**
+ * Whether the selection stays on `id` now that it has left the list: the panel is in use on it
+ * (overlay.ts), or the issue is gone from GitHub (deleted, or transferred), which the panel says in
+ * place. One that's only out of this view (closed under `is:open`) lets the selection go. When
+ * beghu can't say which, it stays.
+ */
+async function keepsSelection(id: number): Promise<boolean> {
+  // A stale tab (on another account, or signed out) can't read the issue to tell: it stays.
+  if (untrack(stale) !== undefined || untrack(overlay)?.keepsSelection(id)) return true;
+  try {
+    // Not the cached read: the panel's own may be from before the issue went.
+    // Only whether it answers matters, so any comment order will do.
+    await refetchIssue(id, untrack(commentOrder) ?? "oldest");
+    return false;
+  } catch (e) {
+    // Gone from GitHub (or out of reach): the panel says so in place.
+    if (e instanceof Gone || e instanceof NoAccess) return true;
+    // Any other failure: beghu can't say which, so it stays.
+    return true;
+  }
 }
 
 /**
@@ -845,6 +947,38 @@ const s = stylex.create({
   blocked: {
     boxShadow: `inset 3px 0 0 ${colors.danger}`,
   },
+  // The shift cue on a row that will leave its spot: an outline inside it (the row's paint is
+  // contained) and a tint.
+  leaving: {
+    backgroundColor: {
+      default: colors.cueLeave,
+      ":hover": colors.cueLeave,
+    },
+    outlineColor: colors.danger,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
+  // A row that left the list, over the rows while it fades out.
+  ghost: (y: number) => ({
+    pointerEvents: "none",
+    position: "absolute",
+    zIndex: 1,
+    left: 0,
+    right: 0,
+    top: y,
+  }),
+  // The shift cue where a row will arrive: a 2 px line on the boundary between two rows.
+  cueLine: (y: number) => ({
+    backgroundColor: colors.accent,
+    pointerEvents: "none",
+    position: "absolute",
+    zIndex: 1,
+    height: 2,
+    left: 0,
+    right: 0,
+    top: Math.max(0, y - 1),
+  }),
   state: {
     display: "flex",
     flexShrink: 0,

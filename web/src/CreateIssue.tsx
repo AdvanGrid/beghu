@@ -64,6 +64,7 @@ import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import type { RepoLabel } from "./bindings/RepoLabel";
 import { Avatar, link } from "./bits";
+import { applyNow } from "./held";
 import { Panel } from "./IssuePanel";
 import { touch } from "./keys";
 import { writesPaused } from "./live";
@@ -329,7 +330,10 @@ async function create(r: Repo): Promise<void> {
       })
       .catch(() => {});
   }
-  if (openFromForm) openFromForm(`/issues/${reply.issue}`);
+  if (openFromForm) {
+    applyNow(reply.issue);
+    openFromForm(`/issues/${reply.issue}`);
+  }
   else {
     setMade({ id: reply.issue, repo: r.name });
     setCreateNote({ failed: false, Note: CreateNote });
@@ -370,7 +374,15 @@ function CreateNote() {
         {(m) => (
           <>
             Created the issue in {m().repo} ·{" "}
-            <a href={`/issues/${m().id}${location.search}`} noscroll {...stylex.attrs(link.button)} onClick={dismiss}>
+            <a
+              href={`/issues/${m().id}${location.search}`}
+              noscroll
+              {...stylex.attrs(link.button)}
+              onClick={() => {
+                applyNow(m().id);
+                dismiss();
+              }}
+            >
               Open
             </a>{" "}
             ·{" "}

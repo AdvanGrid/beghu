@@ -44,6 +44,15 @@ export interface Overlay {
   detailWithWrites(d: IssueDetail, at: number): ShownDetail;
   /** The detail of `issue` now shows a read that began at `at`. */
   detailShown(issue: number, at: number): void;
+  /**
+   * Whether the panel on `issue` is in use, so the list's selection stays on it when it leaves the
+   * list: it holds unsaved text of the issue's (a draft, a comment GitHub never got, a title or
+   * body editor's text), or the user wrote to the issue from it and the write didn't fail, which
+   * is what took it out of the list.
+   */
+  keepsSelection(issue: number): boolean;
+  /** The panel now shows `issue` (an issue or a PR), or is closed. */
+  panelOn(issue: number | undefined): void;
   /** The status slot's content. */
   Status: () => Element;
   /** Beside the open issue's state: a pending close or reopen, or its failure. */

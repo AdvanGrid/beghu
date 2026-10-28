@@ -587,6 +587,42 @@ test("a failed write outranks the word on an issue created while away, which sho
   await expect(createStatus(page)).toContainText("Created the issue in docs");
 });
 
+test("with the pointer moving over the list, an issue created in the view shows its row at once, with no cue", async ({ page }) => {
+  await signIn(page);
+  await view(page, "is:open repo:docs");
+  await page.getByRole("link", { name: "New issue" }).click();
+  const word = unique();
+  await title(page).fill(`Made while the pointer moves ${word}`);
+  // The pointer moves over the list from here: any outside change would be held (held.ts).
+  const list = page.locator('[data-perf="list"]');
+  const box = (await list.boundingBox())!;
+  const [x, y] = [box.x + box.width / 2, box.y + 100];
+  let moving = true;
+  let i = 0;
+  const loop = (async () => {
+    while (moving) {
+      await page.mouse.move(x + (++i % 2) * 7, y);
+      await page.waitForTimeout(150);
+    }
+  })();
+  try {
+    await page.evaluate(() => {
+      const w = window as unknown as { cued: boolean };
+      w.cued = false;
+      const list = document.querySelector('[data-perf="list"]')!;
+      new MutationObserver(() => (w.cued ||= !!list.querySelector('[data-perf="cue-line"]'))).observe(list, { subtree: true, childList: true });
+    });
+    // Sent without the pointer: the button's click, from the page.
+    await submit(page).evaluate((b: HTMLButtonElement) => b.click());
+    const id = await opened(page);
+    await expect(rows(page).first()).toHaveAttribute("data-id", String(id), { timeout: SHOWS_WITHIN_MS });
+    expect(await page.evaluate(() => (window as unknown as { cued: boolean }).cued), "a cue showed").toBe(false);
+  } finally {
+    moving = false;
+    await loop;
+  }
+});
+
 test("+ Create a new sub-issue opens the form with the issue as parent, and the new issue is made its sub-issue", async ({ page }) => {
   await signIn(page);
   const web = await repoNamed(page, "web");

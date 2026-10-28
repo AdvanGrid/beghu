@@ -20,8 +20,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|relationships|relationship-writes|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs|deploy)\.spec\.ts$/ },
-    // The specs that edit (live.spec.ts, relationships.spec.ts with relationship-writes.spec.ts, writes.spec.ts with
+    { name: "browser", testIgnore: /(live|held|held-restore|relationships|relationship-writes|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|prefs|deploy)\.spec\.ts$/ },
+    // The specs that edit (live.spec.ts with held.spec.ts and held-restore.spec.ts,
+    // relationships.spec.ts with relationship-writes.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
     // sync.spec.ts, prs.spec.ts, lost-access.spec.ts, moves.spec.ts and create.spec.ts): their
     // edits reach every signed-in tab, push refetches and reorder the list; writes.spec.ts sets
@@ -36,11 +37,12 @@ export default defineConfig({
     // top of their own steps, and a test's cleanup waits for its close to land: one delivery's
     // apply took 11 s while the disk was stalled. So they get 60 s rather than 30.
     //
-    // live, relationships and repos watch what every tab shares (the list's order, its top rows)
-    // and so run on one worker, `--repeat-each` copies included. writes.spec.ts is safe side by
-    // side, and so are markdown-style.spec.ts, edits.spec.ts, media.spec.ts and pickers.spec.ts:
-    // their tests claim their own issues and take a lock for stack-wide state (claims.ts).
-    { name: "live", testMatch: /live\.spec\.ts$/, dependencies: ["browser"], timeout: 60_000, workers: 1 },
+    // live (with held and held-restore), relationships and repos watch what every tab shares (the
+    // list's order, its top rows) and so run on one worker, `--repeat-each` copies included.
+    // writes.spec.ts is safe side by side, and so are markdown-style.spec.ts, edits.spec.ts,
+    // media.spec.ts and pickers.spec.ts: their tests claim their own issues and take a lock for
+    // stack-wide state (claims.ts).
+    { name: "live", testMatch: /\/(live|held|held-restore)\.spec\.ts$/, dependencies: ["browser"], timeout: 60_000, workers: 1 },
     { name: "relationships", testMatch: /\/(relationships|relationship-writes)\.spec\.ts$/, dependencies: ["live"], timeout: 60_000, workers: 1 },
     { name: "writes", testMatch: /\/(writes|markdown-style|edits|media)\.spec\.ts$/, dependencies: ["relationships"], timeout: 60_000 },
     { name: "pickers", testMatch: /pickers\.spec\.ts$/, dependencies: ["writes"], timeout: 60_000 },

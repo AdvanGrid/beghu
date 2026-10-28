@@ -24,15 +24,15 @@ async function signIn(page: Page): Promise<void> {
   await expect(rows(page).first()).toBeVisible();
 }
 
-/** Opens `/issues/:id` inside the app, as a click on a link to it would. */
-async function open(page: Page, id: number): Promise<void> {
-  await page.evaluate((id) => {
+/** Opens `/issues/:id` inside the app (in the view `search` names), as a click on a link to it would. */
+async function open(page: Page, id: number, search = ""): Promise<void> {
+  await page.evaluate(([id, search]) => {
     const a = document.createElement("a");
-    a.href = `/issues/${id}`;
+    a.href = `/issues/${id}${search}`;
     document.body.append(a);
     a.click();
     a.remove();
-  }, id);
+  }, [id, search] as const);
   await expect(detail(page)).toHaveAttribute("data-id", String(id));
 }
 
@@ -114,7 +114,9 @@ test("an issue converted to a discussion shows closed and locked, and keeps its 
   const parent = await claimBelowTheTop(page, (r) => r.repo === "web");
   const issue = await claimBelowTheTop(page, (r) => r.repo === "web");
   devCtl(["fake", "edit", ref(parent), "--add-sub-issue", ref(issue)]);
-  await open(page, issue.id);
+  // In a view that keeps closed issues: under `is:open` the conversion's close takes it out of the
+  // list, and the selection moves on to the issue that took its row (held.spec.ts).
+  await open(page, issue.id, `?q=${encodeURIComponent("is:open is:closed")}`);
   const crumb = page.locator('[data-perf="parent"]');
   await expect(crumb).toContainText(String(parent.number), { timeout: SHOWS_WITHIN_MS });
 
