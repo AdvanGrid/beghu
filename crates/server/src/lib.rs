@@ -22,6 +22,7 @@ mod installations;
 mod jobs;
 mod live;
 mod markdown;
+mod media;
 mod ops;
 mod pickers;
 mod pulls;
@@ -35,8 +36,9 @@ mod volume;
 mod webhook;
 
 pub use config::{
-    Config, GitHubConfig, MirrorsConfig, ReconcileConfig, default_accounts_check_every,
-    default_assets_kept_for, default_backup_every, default_drain_for, default_read_back_retries,
+    Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig,
+    default_accounts_check_every, default_assets_kept_for, default_backup_every, default_drain_for,
+    default_read_back_retries,
 };
 
 use axum::Router;
@@ -54,6 +56,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The running server's shared state.
 #[derive(Clone)]
 pub struct App(Arc<Inner>);
+
+/// An [`App`] that doesn't keep it alive: for a part the app holds that needs the app back.
+#[derive(Clone)]
+pub(crate) struct WeakApp(std::sync::Weak<Inner>);
+
+impl WeakApp {
+    /// The app, while it runs.
+    pub(crate) fn upgrade(&self) -> Option<App> {
+        self.0.upgrade().map(App)
+    }
+}
 
 struct Inner {
     cfg: Config,
@@ -84,6 +97,8 @@ struct Inner {
     edges: Arc<edges::Refetcher>,
     /// Rendered bodies and comments.
     renders: markdown::Cache,
+    /// The attachment route's, the image proxy's and the probes' shared state.
+    media: media::State,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
     draining: tokio::sync::watch::Sender<bool>,
     /// True once the startup is done ([`Opened::start`]): `/readyz` answers 503 until then.
@@ -162,6 +177,8 @@ impl App {
             cfg.github_write_timeout,
         );
         let keys = Arc::new(crypto::Keys::derive(&cfg.token_key));
+        let renders = markdown::Cache::new(markdown::CACHE_BYTES, keys.images.clone());
+        let cfg_media = cfg.media.clone();
         let (lost, lost_rx) = tokio::sync::mpsc::unbounded_channel();
         let tokens = tokens::Tokens::new(
             control.clone(),
@@ -183,6 +200,9 @@ impl App {
             jobs.clone(),
         ));
         let (installs, installs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let notices = mirrors.notices();
+        let assets_dir = cfg.web_dir.is_some().then(|| assets.dir.clone());
+        let reconcile = reconcile::Reconcile::new(cfg.reconcile.clone(), budgets);
         let sinks = webhook::Sinks {
             control: control.clone(),
             mirrors: mirrors.clone(),
@@ -191,10 +211,8 @@ impl App {
             lost,
             edges: edges.clone(),
             jobs: jobs.clone(),
+            app: None,
         };
-        let notices = mirrors.notices();
-        let assets_dir = cfg.web_dir.is_some().then(|| assets.dir.clone());
-        let reconcile = reconcile::Reconcile::new(cfg.reconcile.clone(), budgets);
         let app = App(Arc::new(Inner {
             reconcile,
             edges,
@@ -212,12 +230,20 @@ impl App {
             imports: import::Imports::default(),
             ops: ops::Ops::default(),
             assignable: pickers::Assignable::default(),
-            renders: markdown::Cache::new(markdown::CACHE_BYTES),
+            renders,
+            media: media::State::new(cfg_media),
             draining: tokio::sync::watch::channel(false).0,
             started: Default::default(),
             jobs,
             assets_dir,
         }));
+        // A read-back measures the images in the comments it writes, which needs the whole app.
+        app.edges().set_app(WeakApp(Arc::downgrade(&app.0)));
+        // A webhook's push waits for its images to be measured, which needs the whole app.
+        let sinks = webhook::Sinks {
+            app: Some(app.clone()),
+            ..sinks
+        };
         // Step 3: delete the mirror files of accounts that aren't active, before anything can
         // open one. TODO(#114): dormant accounts are among them once dormancy exists.
         accounts::delete_unused_mirrors(&app).await?;
@@ -245,6 +271,10 @@ impl App {
 
     fn renders(&self) -> &markdown::Cache {
         &self.0.renders
+    }
+
+    fn media(&self) -> &media::State {
+        &self.0.media
     }
 
     fn github(&self) -> &github::GitHub {
@@ -471,6 +501,19 @@ pub fn router(app: App) -> Router {
         .route("/issues/{id}", get(shell::shell))
         .route("/repos", get(shell::shell))
         .layer(compression());
+    // The media routes stream bytes through with their own caching headers: outside the API's
+    // `no-store` and its compression, behind the same session gate.
+    let media = Router::new()
+        .route("/api/attachments/{uuid}", get(media::attachment))
+        .route("/api/img", get(media::image))
+        .route_layer(middleware::from_fn_with_state(
+            app.clone(),
+            auth::require_session,
+        ))
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            auth::require_same_origin,
+        ));
     // Signing out, switching and Disconnect: form posts from beghu's own pages only.
     let session_forms = Router::new()
         .route("/auth/switch", post(accounts::switch))
@@ -493,6 +536,7 @@ pub fn router(app: App) -> Router {
             post(webhook::receive).layer(axum::extract::DefaultBodyLimit::max(webhook::MAX_BODY)),
         )
         .merge(shell)
+        .merge(media)
         .nest("/api", api);
     if let Some(dir) = &app.0.assets_dir {
         // Hashed build assets, this build's and the previous builds' still kept on the volume:

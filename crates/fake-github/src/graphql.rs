@@ -24,6 +24,8 @@
 //! - `ImportMoreComments(id, after)`: the next 100 of one item's comments.
 //! - `IssueEdges(id, sub, blocks, relates, relatesAfter)`: the relationship read-backs' query
 //!   (`issue_edges.rs`).
+//! - `MintAttachments(ids)`: each issue's, PR's or comment's `bodyHTML`, where GitHub mints its
+//!   attachments' URLs (`attachments.rs`).
 //! - The sweeps' queries: `SweepCounts(ids)`, each repo's `issues` and `pullRequests`
 //!   `totalCount` (every state, as GitHub counts them); `SweepIssueIds(owner, name, after)` and
 //!   `SweepPullIds(owner, name, after)`, a repo's issue or PR database ids, 100 at a time; and
@@ -977,6 +979,7 @@ fn run(
 async fn graphql(
     State(fake): State<Fake>,
     AnyToken(token): AnyToken,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let Ok(req) = serde_json::from_slice::<Request>(&body) else {
@@ -1013,6 +1016,21 @@ async fn graphql(
     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     calls.count(&op);
     let vars = req.variables.clone();
+    if op == "MintAttachments" {
+        let (f, origin) = (fake.clone(), crate::attachments::origin(&headers));
+        let ids: Vec<String> = serde_json::from_value(vars["ids"].clone()).unwrap_or_default();
+        let done = fake
+            .state()
+            .truth
+            .read(move |c| crate::attachments::mint_nodes(&f, c, token, &ids, &origin))
+            .await;
+        let mut res = match done {
+            Ok(answer) => axum::Json(answer).into_response(),
+            Err(e) => api::internal(e),
+        };
+        res.extensions_mut().insert(cost);
+        return res;
+    }
     if op == "IssueEdges" {
         let done = fake
             .state()

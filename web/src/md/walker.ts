@@ -13,7 +13,8 @@
 // level's colour after a split-line level mark, alerts as tinted callouts with an icon and title,
 // coloured bullets and list numbers, code blocks with a header bar (./code.ts, which also
 // highlights them), a ↗ after links off GitHub, mention pills and zebra tables. Every colour is a
-// token (./tokens.stylex.ts), and icons come from one sprite (./icons.ts).
+// token (./tokens.stylex.ts), and icons come from one sprite (./icons.ts). Images, attachments,
+// video and file chips are ./media.ts's: every image loads through beghu, sized before it does.
 import * as stylex from "@stylexjs/stylex";
 import { issueState, STATE_LABEL } from "../bits";
 import { matchSpans, type Term } from "../highlight";
@@ -22,6 +23,7 @@ import type { Md, MdAttrs, MdNode } from "./ast";
 import { codeBlock, highlight, inBlock } from "./code";
 import { icon, type IconName } from "./icons";
 import { issueLink, linkHref, safeUrl, teamUrl, userUrl, type Links } from "./links";
+import { attachment, fileChip, image, isFile, mediaSrc } from "./media";
 import { md as tone } from "./tokens.stylex";
 
 /** How deep elements nest at most: crates/md-ast's MAX_DEPTH. */
@@ -59,6 +61,7 @@ const TAGS: Record<string, string[]> = {
   h6: [],
   hr: [],
   i: [],
+  // Made by ./media.ts, which keeps `alt` and sizes it from `width` and `height`.
   img: ["alt", "width", "height"],
   input: [],
   ins: [],
@@ -195,7 +198,25 @@ function isTask(kids: MdNode[]): boolean {
   return Array.isArray(first) && first[0] === "input";
 }
 
+/** The text of a node's children, as written: a link's, to name a file chip. */
+function textOf(kids: MdNode[]): string {
+  return kids.map((k) => (typeof k === "string" ? k : textOf(k.slice(2) as MdNode[]))).join("");
+}
+
 function element(tag: string, a: MdAttrs, kids: MdNode[], at: Place, links: Links): Made | undefined {
+  if (tag === "media") {
+    const m = attachment(a, at.parent, links, (e) => copy(e, a, []));
+    return { outer: m, into: document.createElement("span") };
+  }
+  if (tag === "img") {
+    const m = image(a, at.parent, links, (e) => copy(e, a, []));
+    return { outer: m, into: m };
+  }
+  if (tag === "a") {
+    const href = safeUrl(str(a.href) ?? "");
+    // A file attachment: a chip to GitHub, named by the link. What's inside the link goes nowhere.
+    if (href !== undefined && isFile(href)) return { outer: fileChip(href, textOf(kids)), into: document.createElement("span") };
+  }
   const keep = Object.hasOwn(TAGS, tag) ? TAGS[tag]! : undefined;
   if (keep === undefined) return undefined;
   if (tag === "input") {
@@ -253,19 +274,8 @@ function element(tag: string, a: MdAttrs, kids: MdNode[], at: Place, links: Link
       }
       break;
     }
-    case "img": {
-      // TODO(#100): images load straight from their hosts, which see the viewer's IP, until the
-      // image proxy routes them through beghu.
-      const src = safeUrl(str(a.src) ?? "");
-      if (src !== undefined) e.setAttribute("src", src);
-      e.setAttribute("loading", "lazy");
-      e.setAttribute("referrerpolicy", "no-referrer");
-      if (a.align === "left") styles.push(s.floatLeft);
-      if (a.align === "right") styles.push(s.floatRight);
-      break;
-    }
     case "source": {
-      // TODO(#100): as for img, straight from the image's host.
+      // Through beghu, as every image.
       const set = srcset(str(a.srcset) ?? "");
       if (set !== undefined) e.setAttribute("srcset", set);
       break;
@@ -367,12 +377,12 @@ function onlyImages(kids: MdNode[]): boolean {
   return kids.length > 0 && kids.every((k) => (typeof k === "string" ? k.trim() === "" : k[0] === "img" || k[0] === "picture"));
 }
 
-/** `srcset` with every candidate's URL re-checked, or undefined if any fails. */
+/** `srcset` with every candidate's URL re-checked (beghu's own routes only), or undefined if any fails. */
 function srcset(raw: string): string | undefined {
   const out: string[] = [];
   for (const candidate of raw.split(",")) {
     const [url, ...size] = candidate.trim().split(/\s+/);
-    const safe = safeUrl(url ?? "");
+    const safe = mediaSrc(url);
     if (safe === undefined) return undefined;
     out.push([safe, ...size].join(" "));
   }
@@ -513,7 +523,6 @@ const s = stylex.create({
     backgroundColor: tone.line,
     height: 1,
   },
-  img: { verticalAlign: "middle", maxWidth: "100%" },
   input: { marginBlock: 0, marginInlineEnd: 6, verticalAlign: "middle" },
   kbd: {
     borderColor: tone.line,
@@ -619,8 +628,6 @@ const s = stylex.create({
     top: "0.3em",
   },
   done: { color: tone.muted },
-  floatLeft: { float: "left", marginInlineEnd: 8 },
-  floatRight: { float: "right", marginInlineStart: 8 },
   center: { textAlign: "center" },
   right: { fontVariantNumeric: "tabular-nums", textAlign: "end" },
   alert: {
@@ -689,7 +696,6 @@ const byTag: Record<string, stylex.StyleXStyles> = {
   h5: s.h5,
   h6: s.h6,
   hr: s.hr,
-  img: s.img,
   kbd: s.kbd,
   li: s.li,
   ol: s.ol,

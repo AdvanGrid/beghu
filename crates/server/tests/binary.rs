@@ -136,6 +136,26 @@ fn it_refuses_the_committed_dev_app_key_against_anything_but_a_local_fake() {
     }
 }
 
+#[test]
+fn it_refuses_dev_image_hosts_against_anything_but_a_local_fake() {
+    let dir = tempfile::tempdir().unwrap();
+    for api in [None, Some("https://api.github.com")] {
+        let env: Vec<_> = valid_env(dir.path(), 1)
+            .into_iter()
+            .filter(|(k, _)| *k != "GITHUB_API_URL")
+            .chain(api.map(|a| ("GITHUB_API_URL", a.to_owned())))
+            .chain([("BEGHU_DEV_IMAGE_HOSTS", "127.0.0.1:3101".to_owned())])
+            .collect();
+        let out = beghu(&env).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{api:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("BEGHU_DEV_IMAGE_HOSTS is for dev against a Fake GitHub"),
+            "{stderr}"
+        );
+    }
+}
+
 /// Starts `beghu` on a free port and waits for its first `/healthz` answer.
 async fn running(dir: &std::path::Path) -> (Running, u16, reqwest::Response) {
     let port = std::net::TcpListener::bind("127.0.0.1:0")

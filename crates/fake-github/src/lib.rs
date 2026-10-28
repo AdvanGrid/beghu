@@ -21,6 +21,7 @@
 mod accounts;
 mod api;
 mod app;
+mod attachments;
 mod control;
 mod edits;
 mod events;
@@ -35,6 +36,7 @@ mod quota;
 mod relationships;
 mod repos;
 mod triage;
+mod web_hosts;
 mod webhooks;
 mod writes;
 
@@ -96,6 +98,8 @@ pub(crate) struct State {
     /// Seconds the fake's clock runs ahead of the real one (`PUT /clock`): token and code
     /// expiry, and the times edits stamp, follow it.
     clock: std::sync::atomic::AtomicI64,
+    /// Minted attachment URLs' key, and the media requests' counts (`attachments.rs`).
+    media: attachments::Media,
 }
 
 /// What the token endpoint did with refresh tokens since the start (or the last reset): how
@@ -217,6 +221,7 @@ impl Fake {
             not_modified: Default::default(),
             feeds: Default::default(),
             clock: Default::default(),
+            media: attachments::Media::default(),
         })))
     }
 
@@ -236,6 +241,9 @@ impl Fake {
             .merge(graphql::router())
             .merge(repos::router())
             .merge(events::router())
+            .merge(attachments::router())
+            // Not GitHub: the web's image hosts, which posts name (`web_hosts.rs`).
+            .merge(web_hosts::router())
             .fallback(api::not_found)
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),
@@ -244,6 +252,10 @@ impl Fake {
             .layer(axum::middleware::from_fn_with_state(
                 self.clone(),
                 faults::middleware,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                self.clone(),
+                attachments::count,
             ))
             .with_state(self.clone());
         let api = faults::DownAware::new(api, self.clone());

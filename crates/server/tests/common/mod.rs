@@ -371,6 +371,7 @@ impl Stack {
                 app_id: fake_github::DEV_APP_ID.to_string(),
                 app_key: fake_github::DEV_APP_KEY.into(),
                 app_slug: Some(fake_github::APP_SLUG.to_owned()),
+                attachments_url: format!("{}/private-user-images", self.fake_api),
             },
             web_dir: Some(self.web.clone()),
             mirrors: mirror_db_config(),
@@ -389,6 +390,16 @@ impl Stack {
             backup_every: beghu::default_backup_every(),
             assets_kept_for: beghu::default_assets_kept_for(),
             drain_for: beghu::default_drain_for(),
+            // The image proxy may fetch from Fake GitHub's stand-in for the web's image hosts.
+            media: beghu::MediaConfig {
+                dev_image_hosts: vec![
+                    self.fake_api
+                        .trim_start_matches("http://")
+                        .parse()
+                        .expect("the fake's API listens on ip:port"),
+                ],
+                ..beghu::MediaConfig::default()
+            },
             accounts_check_every: beghu::default_accounts_check_every(),
             // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
             // tests about other things: a test about them sets its own schedule

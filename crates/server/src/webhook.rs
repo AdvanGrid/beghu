@@ -205,6 +205,8 @@ pub struct Sinks {
     pub edges: Arc<Refetcher>,
     /// What the dispatcher, its lanes and their settles run as.
     pub jobs: Jobs,
+    /// The app, for measuring a post's images before its push (`media/probe.rs`).
+    pub app: Option<crate::App>,
 }
 
 /// An `installation` or `installation_repositories` delivery: the App's reach changed. Its rows
@@ -825,14 +827,39 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
             if rethread {
                 job.rethread.store(true, Ordering::Release);
             }
-            if repo || ids.len() > MAX_IDS {
-                sinks.hub.publish(account, Push::Reset);
+            let push = if repo || ids.len() > MAX_IDS {
+                Some(Push::Reset)
             } else if !ids.is_empty() {
-                sinks.hub.publish(account, Push::Ids(ids.into()));
+                Some(Push::Ids(ids.into()))
             } else if defined {
                 // A label or milestone that no item carries still changes what the filter bar
                 // and the detail's pickers offer.
-                sinks.hub.publish(account, Push::Defs);
+                Some(Push::Defs)
+            } else {
+                None
+            };
+            // A post that came in: its images are measured before the push, for a little while.
+            // Off the lane, so the account's next delivery doesn't wait on the measuring.
+            let posts: Vec<_> = match (&push, job.change.item()) {
+                (Some(Push::Ids(_)), Some(_)) if sinks.app.is_some() => job
+                    .change
+                    .posts()
+                    .into_iter()
+                    .filter(|p| crate::media::probe::may_show_images(&p.post.md))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            match (push, &sinks.app) {
+                (Some(push), Some(app)) if !posts.is_empty() => {
+                    let (app, hub, item) = (app.clone(), sinks.hub.clone(), job.change.item());
+                    sinks.jobs.spawn(async move {
+                        let wait = app.cfg().media.webhook_wait;
+                        crate::media::probe::ingest(&app, account, posts, wait, item).await;
+                        hub.publish(account, push);
+                    });
+                }
+                (Some(push), _) => sinks.hub.publish(account, push),
+                (None, _) => {}
             }
             match hidden {
                 // A sweep reads with the same installation tokens and can't find the other end
@@ -1261,6 +1288,46 @@ impl From<Vec<i64>> for Written {
 }
 
 impl RepoChange {
+    /// The issue or PR whose posts the change brings in, if it brings any.
+    fn item(&self) -> Option<i64> {
+        match &self.change {
+            Change::Issue { issue, .. } | Change::Comment { issue, .. } => Some(issue.id),
+            Change::Transfer(t) => Some(t.new.id),
+            _ => None,
+        }
+    }
+
+    /// The posts the change brings in, to measure the images of: an issue's body (a transferred
+    /// issue's under its new id), or a comment. A transferred issue's comments are the
+    /// read-back's (`edges.rs`, `ReadBack::Comments`), which measures them as it writes them.
+    fn posts(&self) -> Vec<crate::media::probe::Incoming> {
+        use crate::markdown::{Post, PostKind};
+        use crate::media::probe::Incoming;
+        match &self.change {
+            Change::Issue { issue, .. } | Change::Transfer(Transfer { new: issue, .. }) => {
+                vec![Incoming {
+                    item: issue.id,
+                    post: Post {
+                        kind: PostKind::Body,
+                        id: issue.id,
+                        md: issue.body.clone().unwrap_or_default(),
+                    },
+                    node: issue.node_id.clone(),
+                }]
+            }
+            Change::Comment { issue, comment } => vec![Incoming {
+                item: issue.id,
+                post: Post {
+                    kind: PostKind::Comment,
+                    id: comment.id,
+                    md: comment.body.clone(),
+                },
+                node: comment.node_id.clone(),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
     /// The change a delivery carries; `None` for events and actions not handled here.
     fn parse(event: &str, payload: &[u8]) -> Result<Option<RepoChange>, serde_json::Error> {
         if !matches!(

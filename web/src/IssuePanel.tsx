@@ -57,6 +57,7 @@ import { overlay, type Prop, type ShownComment, type ShownDetail } from "./overl
 import { queryOf } from "./query";
 import { Blocks, Linked, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
+import { openLightbox } from "./md/media";
 import { md } from "./md/tokens.stylex";
 import { marked } from "./md/walker";
 import type { Links } from "./md/links";
@@ -331,7 +332,12 @@ function Detail(props: { id: number; search: string }) {
       const now = d();
       // Only onto the end it was asked for: a refetch may have replaced the thread meanwhile.
       if (now.id !== have.id || now.comments.next !== after) return;
-      const comments = { comments: merge(now.comments.comments, page.comments), next: page.next, refs: mergeRefs(now.comments.refs, page.refs) };
+      const comments = {
+        comments: merge(now.comments.comments, page.comments),
+        next: page.next,
+        refs: mergeRefs(now.comments.refs, page.refs),
+        media: { ...now.comments.media, ...page.media },
+      };
       setD(stamp({ ...now, comments }, readAt(now)));
     } catch (e) {
       // A failed page never replaces what's on screen; the next scroll asks again.
@@ -380,6 +386,7 @@ function Detail(props: { id: number; search: string }) {
             comments: merge(got, tail),
             next: tail.length > 0 ? now.comments.next : fresh.comments.next,
             refs: tail.length > 0 ? mergeRefs(now.comments.refs, fresh.comments.refs) : fresh.comments.refs,
+            media: tail.length > 0 ? { ...now.comments.media, ...fresh.comments.media } : fresh.comments.media,
           },
         },
         readAt(fresh),
@@ -487,6 +494,15 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
   let scroller!: HTMLDivElement;
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
+  // Whether a post shows an image the lightbox opens: `imageOpen` is offered only then.
+  const [hasImages, setHasImages] = createSignal(false);
+  onSettled(() => {
+    const look = () => setHasImages(scroller.querySelector("img[data-zoom]") !== null);
+    const watch = new MutationObserver(look);
+    watch.observe(scroller, { childList: true, subtree: true });
+    look();
+    return () => watch.disconnect();
+  });
   /** The property row whose picker is open. */
   const [picking, setPicking] = createSignal<Prop>();
   // Another issue opens with every picker closed. (The effect runs for every new read of the
@@ -666,7 +682,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
                     fallback={<div {...stylex.attrs(s.plain)}>{d().typedBody}</div>}
                   >
                     <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.postMuted)}>No description provided.</span>}>
-                      <Markdown md={d().body} links={links(d(), d().refs, props.search)} terms={terms("body")} />
+                      <Markdown md={d().body} links={links(d(), d().refs, d().media, props.search)} terms={terms("body")} />
                     </Show>
                   </Show>
                 </div>
@@ -694,7 +710,7 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
         </h3>
         <div {...stylex.attrs(s.comments)} data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>
-            {(c) => <CommentView c={c()} at={at()} links={links(d(), d().comments.refs, props.search)} terms={terms("comments")} />}
+            {(c) => <CommentView c={c()} at={at()} links={links(d(), d().comments.refs, d().comments.media, props.search, c().id)} terms={terms("comments")} />}
           </For>
         </div>
         <Show when={d().comments.next !== null}>
@@ -703,6 +719,9 @@ function Body(props: { d: IssueDetail; search: string; scroller: (el: HTMLDivEle
           </p>
         </Show>
         <StillImporting />
+        <Show when={hasImages()}>
+          <OfferImage scroller={scroller} />
+        </Show>
       </div>
       {/* PRs take no writes in beghu. If the composer's code doesn't load, it says so in its
           place, and the detail stays. */}
@@ -788,6 +807,27 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
   );
 }
 
+/**
+ * Offers `imageOpen` (keys.ts) while a post shows an image: it opens the focused image, or else
+ * the first one in view in `scroller`.
+ */
+function OfferImage(props: { scroller: HTMLDivElement }) {
+  touch("imageOpen", () => {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLImageElement && focused.dataset.zoom !== undefined && props.scroller.contains(focused)) {
+      openLightbox(focused);
+      return;
+    }
+    const view = props.scroller.getBoundingClientRect();
+    const first = [...props.scroller.querySelectorAll<HTMLImageElement>("img[data-zoom]")].find((img) => {
+      const box = img.getBoundingClientRect();
+      return box.bottom > view.top && box.top < view.bottom;
+    });
+    if (first) openLightbox(first);
+  });
+  return null;
+}
+
 /** Offers `action` (keys.ts) while it's shown: a PR's rows don't show it, so offer no write keys. */
 function Offer(props: { action: Action; run: () => void }) {
   touch(props.action, () => props.run());
@@ -816,9 +856,24 @@ function ChunkFailure(props: { error: unknown; reset: () => void; what?: string 
   );
 }
 
-/** What the links in `d`'s posts resolve against: their place, the list's view, and `refs`. */
-function links(d: Pick<IssueDetail, "owner" | "repo" | "number">, refs: IssueDetail["refs"], search: string): Links {
-  return { place: { owner: d.owner, repo: d.repo, number: d.number }, search, refs: (key) => refs[key] };
+/**
+ * What the links and media in a post of `d` resolve against: their place, the list's view, `refs`,
+ * the `media` map, and the post on GitHub (comment `comment`, or the body).
+ */
+function links(
+  d: Pick<IssueDetail, "owner" | "repo" | "number" | "kind">,
+  refs: IssueDetail["refs"],
+  media: IssueDetail["media"],
+  search: string,
+  comment?: number,
+): Links {
+  return {
+    place: { owner: d.owner, repo: d.repo, number: d.number },
+    search,
+    refs: (key) => refs[key],
+    media: (src) => media[src],
+    onGitHub: `${githubUrl(d)}${comment === undefined ? "" : `#issuecomment-${comment}`}`,
+  };
 }
 
 function CommentView(props: { c: ShownComment; at: number; links: Links; terms: Term[] }) {

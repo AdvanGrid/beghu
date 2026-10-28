@@ -17,7 +17,12 @@ const CTX: Context = Context {
     repo: "web",
     number: 5,
     id_prefix: "c9-",
+    sign: &unsigned,
 };
+
+fn unsigned(_: &str) -> String {
+    String::new()
+}
 
 /// The smaller length tried; the larger is 8 times it.
 const LEN: usize = 16 << 10;

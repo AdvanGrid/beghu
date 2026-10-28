@@ -427,14 +427,55 @@ impl Run {
     /// (unsynced mid-import); its changed ids go to the account's tabs. A write that failed is
     /// logged as `what`; the page is lost to this round, and a later sweep or the next import
     /// finds it.
-    pub(super) async fn write_page<F>(&self, repo: &Repo, what: &str, f: F)
+    /// Whether the page was written.
+    pub(super) async fn write_page<F>(&self, repo: &Repo, what: &str, f: F) -> bool
     where
         F: FnOnce(&Transaction, i64) -> rusqlite::Result<Vec<i64>> + Send + 'static,
     {
+        self.write_page_and(repo, what, move |tx, seq| Ok((f(tx, seq)?, ())))
+            .await
+            .is_some()
+    }
+
+    /// [`Run::write_page`], for a page whose write also hands back what it wrote (`T`): `None`
+    /// when the write failed.
+    pub(super) async fn write_page_and<F, T>(&self, repo: &Repo, what: &str, f: F) -> Option<T>
+    where
+        F: FnOnce(&Transaction, i64) -> rusqlite::Result<(Vec<i64>, T)> + Send + 'static,
+        T: Default + Send + 'static,
+    {
         match write_synced(&self.app, self.account, Caller::Sweep, repo.id, f).await {
-            Ok(ids) => publish(&self.app, self.account, ids),
-            Err(e) => eprintln!("import: account {}: writing {what}: {e}", self.account),
+            Ok((ids, t)) => {
+                publish(&self.app, self.account, ids);
+                Some(t)
+            }
+            Err(e) => {
+                eprintln!("import: account {}: writing {what}: {e}", self.account);
+                None
+            }
         }
+    }
+
+    /// Measures the images in `posts` in the background (`media/probe.rs`): a page's
+    /// attachments mint together, and nothing waits for them. Called once the page is written:
+    /// the probes read each post's place from the mirror, and skip a post not in it.
+    fn measure_later(&self, posts: Vec<crate::media::probe::Incoming>) {
+        let posts: Vec<_> = posts
+            .into_iter()
+            .filter(|p| crate::media::probe::may_show_images(&p.post.md))
+            .collect();
+        if posts.is_empty() {
+            return;
+        }
+        let account = self.account;
+        self.app.spawn(move |app| async move {
+            crate::media::probe::ingest(&app, account, posts, Duration::ZERO, None).await
+        });
+    }
+
+    /// A page of issues or PRs' bodies, for [`Run::measure_later`].
+    fn bodies(items: &[ItemData]) -> Vec<crate::media::probe::Incoming> {
+        items.iter().filter_map(ItemData::incoming).collect()
     }
 
     pub(super) async fn labels_and_milestones(&self, repo: &Repo) -> Result<(), CallError> {
@@ -581,22 +622,27 @@ impl Run {
                 (i.target(repo), to)
             })
             .collect();
+        let bodies = Self::bodies(&items);
         let id = repo.id;
-        self.write_page(repo, "issues", move |tx, seq| {
-            let mut changed = Vec::new();
-            for it in &items {
-                if write_item(tx, seq, id, it)? {
-                    changed.push(it.id);
+        let wrote = self
+            .write_page(repo, "issues", move |tx, seq| {
+                let mut changed = Vec::new();
+                for it in &items {
+                    if write_item(tx, seq, id, it)? {
+                        changed.push(it.id);
+                    }
                 }
-            }
-            for (me, others) in &relates {
-                for o in others {
-                    changed.extend(write_relationship(tx, seq, Kind::Relates, me, o, None)?);
+                for (me, others) in &relates {
+                    for o in others {
+                        changed.extend(write_relationship(tx, seq, Kind::Relates, me, o, None)?);
+                    }
                 }
-            }
-            Ok(changed)
-        })
-        .await;
+                Ok(changed)
+            })
+            .await;
+        if wrote {
+            self.measure_later(bodies);
+        }
         for chunk in lists.chunks(PAGE) {
             self.relationships(repo, chunk, &ends).await?;
         }
@@ -818,20 +864,25 @@ impl Run {
             closes.extend(targets.into_iter().map(|t| (me.clone(), t)));
             items.push(it);
         }
+        let bodies = Self::bodies(&items);
         let id = repo.id;
-        self.write_page(repo, "PRs", move |tx, seq| {
-            let mut changed = Vec::new();
-            for it in &items {
-                if write_item(tx, seq, id, it)? {
-                    changed.push(it.id);
+        let wrote = self
+            .write_page(repo, "PRs", move |tx, seq| {
+                let mut changed = Vec::new();
+                for it in &items {
+                    if write_item(tx, seq, id, it)? {
+                        changed.push(it.id);
+                    }
                 }
-            }
-            for (pr, issue) in &closes {
-                changed.extend(write_linked_pr(tx, seq, pr, issue)?);
-            }
-            Ok(changed)
-        })
-        .await;
+                for (pr, issue) in &closes {
+                    changed.extend(write_linked_pr(tx, seq, pr, issue)?);
+                }
+                Ok(changed)
+            })
+            .await;
+        if wrote {
+            self.measure_later(bodies);
+        }
         Ok(())
     }
 
@@ -909,10 +960,15 @@ impl Run {
             .into_iter()
             .map(|(item, c)| CommentData::from_graphql(item, c))
             .collect();
-        self.write_page(repo, "comments", move |tx, seq| {
-            write_comments(tx, seq, &comments)
-        })
-        .await;
+        let posts = comments.iter().map(CommentData::incoming).collect();
+        let wrote = self
+            .write_page(repo, "comments", move |tx, seq| {
+                write_comments(tx, seq, &comments)
+            })
+            .await;
+        if wrote {
+            self.measure_later(posts);
+        }
     }
 
     /// Phase 4's last step: every comment in the repo, through the REST pass, for the closed
@@ -954,20 +1010,27 @@ impl Run {
             let n = items.len();
             let last = items.last().map(|c| c.updated_at.clone());
             let todo = todo.clone();
-            self.write_page(repo, "comments", move |tx, seq| {
-                let mut comments = Vec::new();
-                for c in items {
-                    let Some(number) = c.number() else { continue };
-                    match q::item_by_number(tx, id, number)? {
-                        Some(i) if !i.is_stub && todo.contains(&i.id) => {
-                            comments.push(CommentData::from_rest(i.id, c))
+            // The threads it writes are measured as phase 3's are: the closed ones' attachments
+            // mint here, with the installation's token, not one by one when a viewer opens them.
+            let posts = self
+                .write_page_and(repo, "comments", move |tx, seq| {
+                    let mut comments = Vec::new();
+                    for c in items {
+                        let Some(number) = c.number() else { continue };
+                        match q::item_by_number(tx, id, number)? {
+                            Some(i) if !i.is_stub && todo.contains(&i.id) => {
+                                comments.push(CommentData::from_rest(i.id, c))
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-                write_comments(tx, seq, &comments)
-            })
-            .await;
+                    let ids = write_comments(tx, seq, &comments)?;
+                    Ok((ids, comments.iter().map(CommentData::incoming).collect()))
+                })
+                .await;
+            if let Some(posts) = posts {
+                self.measure_later(posts);
+            }
             if n < PAGE {
                 return Ok(());
             }

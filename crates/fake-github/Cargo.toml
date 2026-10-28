@@ -13,6 +13,8 @@ futures-util = { version = "0.3", default-features = false }
 fake-db = { workspace = true }
 hmac = "0.12"
 mirror-db = { workspace = true }
+# The images the fake serves: attachments and its stand-in for the web's image hosts.
+png = "0.18"
 rand = "0.9"
 reqwest = { workspace = true }
 # RS256, to check the App's JWTs: already in the build through rustls.

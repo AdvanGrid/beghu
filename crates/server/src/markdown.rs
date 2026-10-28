@@ -1,6 +1,7 @@
-//! Bodies and comments as the detail sends them: the compact AST from `md-ast`, and the `refs`
-//! map beside it, which says which of the items the ASTs refer to are in the viewer's mirror. The
-//! AST never depends on the mirror; only `refs` does.
+//! Bodies and comments as the detail sends them: the compact AST from `md-ast`, and beside it
+//! the `refs` map, which says which of the items the ASTs refer to are in the viewer's mirror,
+//! and the `media` map, what the mirror knows of the images they show (`media/`). The AST never
+//! depends on the mirror; only the maps do.
 //!
 //! Rendering happens outside any mirror read: a handler reads the posts' Markdown, lets the
 //! connection go, renders them on the blocking pool ([`render`]), and then reads `refs`.
@@ -17,8 +18,9 @@
 //! render. And no more posts render at once than there are CPUs.
 
 use crate::App;
+use crate::crypto::ImageKey;
 use hashlink::LinkedHashMap;
-use md_ast::{Context, ItemRef};
+use md_ast::{Context, Image, ItemRef};
 use mirror_db::{QueryResult, Reader, q};
 use serde::{Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -42,12 +44,19 @@ struct Rendering {
     ast: Box<RawValue>,
     /// What it refers to (see [`md_ast::Rendered::items`]).
     items: Vec<ItemRef>,
+    /// The images it shows (see [`md_ast::Rendered::images`]).
+    images: Vec<Image>,
 }
 
 impl Md {
     /// Every issue or PR the post refers to.
     pub fn items(&self) -> &[ItemRef] {
         &self.0.items
+    }
+
+    /// Every image the post shows.
+    pub fn images(&self) -> &[Image] {
+        &self.0.images
     }
 }
 
@@ -98,7 +107,7 @@ impl From<&q::OpTargetRow> for Place {
 }
 
 impl Place {
-    fn new(owner: &str, repo: &str, number: i64) -> Place {
+    pub fn new(owner: &str, repo: &str, number: i64) -> Place {
         Place {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
@@ -175,8 +184,14 @@ fn entry_size(key: &Key, md: &Md) -> usize {
         .iter()
         .map(|i| std::mem::size_of::<ItemRef>() + i.owner.len() + i.repo.len())
         .sum();
+    let images: usize = md
+        .images()
+        .iter()
+        .map(|i| std::mem::size_of::<Image>() + 2 * i.src.len())
+        .sum();
     md.0.ast.get().len()
         + items
+        + images
         + std::mem::size_of::<Key>()
         + key.place.owner.len()
         + key.place.repo.len()
@@ -229,6 +244,8 @@ type Entries = LinkedHashMap<Key, (Md, usize)>;
 /// too; and the permits that bound how many render at once.
 pub struct Cache {
     budget: usize,
+    /// Signs the image proxy's URLs in the ASTs.
+    images: Arc<ImageKey>,
     inner: Mutex<(Entries, usize)>,
     rendering: Mutex<HashMap<Key, Arc<OnceLock<Md>>>>,
     permits: Permits,
@@ -237,9 +254,10 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new(budget: usize) -> Cache {
+    pub fn new(budget: usize, images: Arc<ImageKey>) -> Cache {
         Cache {
             budget,
+            images,
             inner: Mutex::new((LinkedHashMap::new(), 0)),
             rendering: Mutex::new(HashMap::new()),
             // A render is CPU work: more at once than there are CPUs only queues in the OS.
@@ -299,7 +317,7 @@ impl Cache {
             .get_or_init(|| {
                 mine = true;
                 self.renders.fetch_add(1, Ordering::Relaxed);
-                self.permits.with(|| render_one(place, p))
+                self.permits.with(|| render_one(place, p, &self.images))
             })
             .clone();
         if mine {
@@ -335,13 +353,19 @@ impl Cache {
     }
 }
 
-fn context<'p>(place: &'p Place, prefix: &'p str) -> Context<'p> {
+fn context<'p>(place: &'p Place, prefix: &'p str, sign: &'p dyn Fn(&str) -> String) -> Context<'p> {
     Context {
         owner: &place.owner,
         repo: &place.repo,
         number: place.number,
         id_prefix: prefix,
+        sign,
     }
+}
+
+/// Plain text shows no images: nothing to sign.
+fn unsigned(_: &str) -> String {
+    String::new()
 }
 
 fn id_prefix(p: &Post) -> String {
@@ -356,19 +380,21 @@ fn to_md(r: md_ast::Rendered) -> Md {
     Md(Arc::new(Rendering {
         ast,
         items: r.items,
+        images: r.images,
     }))
 }
 
-fn render_one(place: &Place, p: &Post) -> Md {
+fn render_one(place: &Place, p: &Post, images: &ImageKey) -> Md {
     let prefix = id_prefix(p);
-    to_md(md_ast::render(&p.md, &context(place, &prefix)))
+    let sign = |url: &str| images.sign(url);
+    to_md(md_ast::render(&p.md, &context(place, &prefix, &sign)))
 }
 
 /// `p` as plain text, its references still links: as it shows when its rendering failed.
 fn plain(place: &Place, p: &Post) -> RenderedPost {
     let prefix = id_prefix(p);
     RenderedPost {
-        md: to_md(md_ast::plain(&p.md, &context(place, &prefix))),
+        md: to_md(md_ast::plain(&p.md, &context(place, &prefix, &unsigned))),
         digest: Digest::of(&p.md),
     }
 }
@@ -432,6 +458,10 @@ mod tests {
         Place::new("acme", "web", 5)
     }
 
+    fn key() -> Arc<ImageKey> {
+        crate::crypto::Keys::derive(b"a test key that is at least 32 bytes long").images
+    }
+
     fn comment(id: i64, md: &str) -> Post {
         Post {
             kind: PostKind::Comment,
@@ -449,7 +479,7 @@ mod tests {
 
     #[test]
     fn a_post_rendered_again_comes_from_the_cache_until_it_changes() {
-        let cache = Cache::new(CACHE_BYTES);
+        let cache = Cache::new(CACHE_BYTES, key());
         assert!(rendered(&cache, &place(), comment(1, "See #2")));
         assert!(
             !rendered(&cache, &place(), comment(1, "See #2")),
@@ -467,10 +497,10 @@ mod tests {
     #[test]
     fn the_cache_forgets_the_least_recently_used_past_its_budget() {
         // Room for two posts of this size, not three.
-        let probe = Cache::new(CACHE_BYTES);
+        let probe = Cache::new(CACHE_BYTES, key());
         probe.render(&place(), &[comment(1, "aaaa")]);
         let size = probe.inner.lock().unwrap().1;
-        let cache = Cache::new(2 * size + size / 2);
+        let cache = Cache::new(2 * size + size / 2, key());
         rendered(&cache, &place(), comment(1, "aaaa"));
         rendered(&cache, &place(), comment(2, "bbbb"));
         // `a` is used again, so `b` is the one to go when `c` comes.
@@ -484,7 +514,7 @@ mod tests {
     fn many_tiny_posts_cannot_hold_more_than_the_budget() {
         // Each entry costs its key, its references and its bookkeeping, not only its AST's few
         // bytes: at least 200 bytes, so a 10,000-byte cache keeps at most 50.
-        let cache = Cache::new(10_000);
+        let cache = Cache::new(10_000, key());
         for id in 0..1_000 {
             rendered(&cache, &place(), comment(id, "a"));
         }
@@ -498,7 +528,7 @@ mod tests {
 
     #[test]
     fn concurrent_cold_opens_of_one_post_render_it_once() {
-        let cache = Cache::new(CACHE_BYTES);
+        let cache = Cache::new(CACHE_BYTES, key());
         // Long enough to render that the opens overlap.
         let md = "| a | b |\n|---|---|\n".to_owned() + &"| *x* | #1 |\n".repeat(3_000);
         let start = std::sync::Barrier::new(8);

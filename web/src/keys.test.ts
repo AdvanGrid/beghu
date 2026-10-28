@@ -2,10 +2,10 @@
 // view involved. An exception to "tests go through public seams" (AGENTS.md): the browser suite
 // can't drive what this covers. It runs on one platform and one layout, with no input method, so
 // a Mac's Cmd and Alt, AltGr, a non-Latin layout and IME composition are only reachable here; no
-// view yet offers some touchpoints (pickers, title editing, the lightbox) to reach their areas
-// through; and no keymap preference seam exists until #113, so a swapped binding can only be set
-// through the module's own `setKeymap`. What the browser can drive (j/k, the list's arrows, Escape
-// out of the comment box) is in e2e/keys.spec.ts, not here.
+// view yet offers some touchpoints (pickers, title editing) to reach their areas through; and no
+// keymap preference seam exists until #113, so a swapped binding can only be set through the
+// module's own `setKeymap`. What the browser can drive (j/k, the list's arrows, Escape out of the
+// comment box, the lightbox's keys) is in e2e/keys.spec.ts and e2e/media.spec.ts, not here.
 // `npm run test:lint`.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -52,6 +52,7 @@ function page() {
     checkbox: new El("INPUT", panel, undefined, "checkbox"),
     button: new El("INPUT", panel, undefined, "button"),
     help: new El("BUTTON", new El("DIALOG", body, "help")),
+    lightbox: new El("BUTTON", new El("DIALOG", body, "lightbox")),
   };
 }
 
@@ -198,7 +199,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
     it("keeps every touchpoint silent outside the areas it works in", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help"] as const;
+      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help", "lightbox"] as const;
       for (const action of keys.ACTIONS) {
         const withdraw = keys.touch(action, () => ran.push(action));
         for (const area of areas.filter((a) => !keys.WHERE[action].includes(a))) {

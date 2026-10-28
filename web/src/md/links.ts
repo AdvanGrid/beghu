@@ -3,6 +3,7 @@
 // in-app, where the router's hover preload warms it; every other issue reference goes to GitHub,
 // even one GitHub may not have; users and teams always go to GitHub.
 import type { RefTarget } from "../bindings/RefTarget";
+import type { MediaLinks } from "./media";
 
 /** A post's place (CONTEXT.md): the issue or PR it belongs to, as the server's `markdown::Place`. */
 export type Place = {
@@ -12,8 +13,8 @@ export type Place = {
   number: number;
 };
 
-/** What the links in the posts being shown resolve against. */
-export type Links = {
+/** What the links and media in the posts being shown resolve against. */
+export type Links = MediaLinks & {
   /** The posts' place. */
   place: Place;
   /** The list's view, kept on an in-app link (`?…`, or empty). */

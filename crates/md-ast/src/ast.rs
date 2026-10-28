@@ -11,7 +11,11 @@
 //! - Every `id` and `name`, and every `#fragment` link, gets the post's prefix.
 //! - Relative URLs resolve against the issue's page on github.com. A URL that then isn't
 //!   http(s) or mailto is dropped (ammonia already dropped such absolute ones).
+//! - An image's `src` (and a `source`'s `srcset`) is beghu's attachment route or its image proxy
+//!   (`media.rs`); an external image keeps where it came from as `orig`, for "Open original".
+//!   A paragraph holding only a bare attachment URL is `["media", {src, href}]`.
 
+use crate::media::{self, Image, Source};
 use crate::refs::{self, Found, MAX_NUMBER};
 use crate::tree::{El, Node};
 use crate::{Context, ItemRef, MAX_JSON, MAX_NODES, Rendered};
@@ -62,6 +66,8 @@ struct Pass<'c> {
     base: Option<Url>,
     items: Vec<ItemRef>,
     seen: HashSet<String>,
+    images: Vec<Image>,
+    seen_images: HashSet<String>,
     /// Elements made so far, `ref` nodes included.
     made: usize,
     /// The bytes of JSON made so far, about: at most [`MAX_JSON`] go out.
@@ -76,6 +82,7 @@ pub(crate) fn build(nodes: Vec<Node>, ctx: &Context) -> Option<Rendered> {
     pass.within().then_some(Rendered {
         ast,
         items: pass.items,
+        images: pass.images,
     })
 }
 
@@ -122,6 +129,8 @@ impl<'c> Pass<'c> {
             .ok(),
             items: Vec::new(),
             seen: HashSet::new(),
+            images: Vec::new(),
+            seen_images: HashSet::new(),
             made: 0,
             bytes: 0,
         }
@@ -301,12 +310,13 @@ impl Pass<'_> {
         matches!(url.scheme(), "http" | "https" | "mailto").then(|| url.to_string())
     }
 
-    /// `srcset`, each candidate's URL as [`Pass::url`] keeps it, or `None` if any isn't kept.
+    /// `srcset`, each candidate's URL as [`Pass::image`] routes it, or `None` if any isn't
+    /// kept.
     fn srcset(&self, v: &str) -> Option<String> {
         let mut out = Vec::new();
         for candidate in v.split(',') {
             let mut parts = candidate.split_whitespace();
-            let url = self.url(parts.next()?, false)?;
+            let url = self.image(parts.next()?)?.0;
             out.push(
                 std::iter::once(url)
                     .chain(parts.map(str::to_owned))
@@ -317,15 +327,68 @@ impl Pass<'_> {
         Some(out.join(", "))
     }
 
+    /// Where an image written as `v` loads from (`media.rs`): its `src`, and what it is; `None`
+    /// for a URL that isn't kept.
+    fn image(&self, v: &str) -> Option<(String, Source)> {
+        let url = Url::parse(&self.url(v, false)?).ok()?;
+        matches!(url.scheme(), "http" | "https").then(|| media::route(&url, self.ctx.sign))
+    }
+
+    /// Lists an image the post shows, once by `src`.
+    fn list_image(&mut self, src: &str, source: Source, sized: bool) {
+        if self.seen_images.insert(src.to_owned()) {
+            self.images.push(Image {
+                src: src.to_owned(),
+                source,
+                sized,
+            });
+        }
+    }
+
+    /// A paragraph holding only a bare attachment URL (an autolink whose text is its URL): the
+    /// attachment as a `media` node, a video or an image once the attachment route knows which.
+    fn media(&mut self, e: &El) -> Option<Value> {
+        let mut kids = e.kids.iter().filter(|k| match k {
+            Node::Text(t) => !t.trim().is_empty(),
+            Node::El(_) => true,
+        });
+        let (Some(Node::El(a)), None) = (kids.next(), kids.next()) else {
+            return None;
+        };
+        let href = a.attrs.iter().find(|(k, _)| k == "href").map(|(_, v)| v)?;
+        if a.tag != "a" || !matches!(a.kids.as_slice(), [Node::Text(t)] if t == href) {
+            return None;
+        }
+        let uuid = media::attachment(&Url::parse(href).ok()?)?;
+        let src = media::attachment_route(&uuid);
+        let href = media::attachment_url(&uuid);
+        self.list_image(&src, Source::Attachment(uuid), false);
+        self.made += 1;
+        self.bytes += json_len(&src) + json_len(&href) + 24;
+        Some(json!(["media", { "src": src, "href": href }]))
+    }
+
     fn element(&mut self, e: El, verbatim: bool) -> Value {
+        if e.tag == "p"
+            && !verbatim
+            && let Some(m) = self.media(&e)
+        {
+            return m;
+        }
         self.made += 1;
         let El { tag, attrs, kids } = e;
         let mut map = Map::new();
         let mut written_href = None;
         for (name, value) in attrs {
             let kept = match name.as_str() {
-                // TODO(#100): an image's `src` and `srcset` go out as written, so the browser
-                // loads it from its host, which sees the viewer's IP, until the image proxy.
+                "src" if tag == "img" => match self.image(&value) {
+                    Some((src, Source::External(orig))) => {
+                        map.insert("orig".into(), Value::String(orig.clone()));
+                        Some(src)
+                    }
+                    Some((src, _)) => Some(src),
+                    None => None,
+                },
                 "href" | "src" | "cite" => self.url(&value, name == "href"),
                 "srcset" => self.srcset(&value),
                 "id" | "name" => Some(format!("{}{value}", self.ctx.id_prefix)),
@@ -337,6 +400,18 @@ impl Pass<'_> {
             if let Some(v) = kept {
                 map.insert(name, Value::String(v));
             }
+        }
+        if tag == "img"
+            && let Some(src) = map.get("src").and_then(Value::as_str)
+        {
+            let src = src.to_owned();
+            let source = match map.get("orig").and_then(Value::as_str) {
+                Some(orig) => Source::External(orig.to_owned()),
+                None => Source::Attachment(src.trim_start_matches("/api/attachments/").to_owned()),
+            };
+            let px = |k: &str| map.get(k).and_then(Value::as_str).and_then(media::pixels);
+            let sized = px("width").is_some() && px("height").is_some();
+            self.list_image(&src, source, sized);
         }
         if tag == "a"
             && let Some(href) = map.get("href").and_then(Value::as_str)

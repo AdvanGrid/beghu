@@ -90,7 +90,9 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
   expect(await arrowAfter("own arrow ↗")).toBeNull();
   expect(await arrowAfter("arrow after")).toBeNull();
   expect(await body(page).locator("script, iframe, [onerror], [onclick], [style]").count()).toBe(0);
-  await expect(body(page).locator("img")).not.toHaveAttribute("src", /.*/);
+  // An image with no URL beghu serves never loads: its placeholder shows instead.
+  await expect(body(page).locator("img")).toHaveCount(0);
+  await expect(body(page).locator('[data-perf="media-failed"]')).toHaveCount(1);
   expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined();
 
   // Task lists are read-only; alerts keep their kind.

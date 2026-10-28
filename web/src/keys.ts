@@ -27,9 +27,13 @@
 // offers `saveEdit` (Ctrl or Cmd+Enter) and `cancelEdit` (Escape, fixed there). Enter in the title
 // box saves too, as its form's own submit.
 //
-// Some touchpoints have no caller yet, pending their tickets: `create` for the create form (#104),
-// `toggleMode` for tree mode (#108), and `imageOpen` and `imageClose` for the lightbox (#100). The
-// `?` overlay shows them dimmed until then.
+// `imageOpen` is offered by the issue panel while a post in it shows an image the lightbox can
+// open: it opens the focused image (images are in the Tab order), else the first one in view.
+// The lightbox offers `imageClose` while it's open; it's marked `data-keys="lightbox"`, an area
+// where nothing else runs, so j/k and the list's keys don't drive the list behind it.
+//
+// Some touchpoints have no caller yet, pending their tickets: `create` for the create form (#104)
+// and `toggleMode` for tree mode (#108). The `?` overlay shows them dimmed until then.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
@@ -92,10 +96,10 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
 
 /**
  * Where the focus is: nowhere in particular (`page`), the list, the issue panel, the comment box,
- * a title or body editor, a picker, the filter box, the `?` overlay, or another text field. Views
- * mark their region with `data-keys`.
+ * a title or body editor, a picker, the filter box, the `?` overlay, the lightbox, or another text
+ * field. Views mark their region with `data-keys`.
  */
-export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "text";
+export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "lightbox" | "text";
 
 /** The areas where text is typed: there only Ctrl or Cmd chords fire, and plain keys go to the widget. */
 export const TYPING: readonly Area[] = ["composer", "editor", "picker", "filter", "text"];
@@ -124,7 +128,7 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   saveEdit: ["editor"],
   cancelEdit: ["editor"],
   imageOpen: ["panel"],
-  imageClose: BROWSE,
+  imageClose: ["lightbox", ...BROWSE],
   help: ANYWHERE,
 };
 

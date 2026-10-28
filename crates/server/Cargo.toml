@@ -16,10 +16,13 @@ futures-util = { version = "0.3", default-features = false }
 hashlink = "0.12"
 hkdf = "0.12"
 hmac = "0.12"
+# Image sizes from the first bytes of a file, for the probes (`media/probe.rs`).
+imagesize = "0.15"
 md-ast = { path = "../md-ast" }
 mirror-db = { workspace = true }
 rand = "0.9"
-reqwest = { workspace = true, features = ["rustls-tls"] }
+# `stream`: the attachment route and the image proxy stream bytes through.
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
 # RS256 for the App's JWTs: already in the build through rustls.
 ring = "0.17"
 rusqlite = { workspace = true }
@@ -33,6 +36,8 @@ tokio = { workspace = true, features = ["net", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "fs"] }
 ts-rs = "12"
+# URL hosts as the image proxy's guard reads them: already in the build through reqwest.
+url = "2"
 
 # `statfs` on the data directory, to refuse a network filesystem (`volume.rs`).
 [target.'cfg(target_os = "linux")'.dependencies]

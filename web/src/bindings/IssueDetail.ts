@@ -2,6 +2,7 @@
 import type { CommentOrder } from "./CommentOrder";
 import type { CommentPage } from "./CommentPage";
 import type { Label } from "./Label";
+import type { MediaInfo } from "./MediaInfo";
 import type { Milestone } from "./Milestone";
 import type { PullDetail } from "./PullDetail";
 import type { RefTarget } from "./RefTarget";
@@ -31,6 +32,10 @@ body_digest: string,
  * The items in the mirror that the body refers to; `comments.refs` has the comments'.
  */
 refs: { [key in string]: RefTarget }, 
+/**
+ * What's known of the images the body shows, by `src`; `comments.media` has the comments'.
+ */
+media: { [key in string]: MediaInfo }, 
 /**
  * `open` or `closed`.
  */

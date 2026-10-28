@@ -24,6 +24,17 @@ const ICONS = {
   stop: [["path", { d: "M5.5 1.75h5l3.75 3.75v5l-3.75 3.75h-5L1.75 10.5v-5z", ...ROUND }], ["path", { d: "M8 4.75v3.5", ...ROUND }], DOT("8", "10.75", ".9")],
   // A code block's header.
   code: [["path", { d: "M5.5 4 1.75 8l3.75 4M10.5 4l3.75 4-3.75 4", ...ROUND }]],
+  // An image that won't show (./media.ts's placeholder).
+  image: [
+    ["path", { d: "M2.25 3.25h11.5v9.5H2.25z", ...ROUND }],
+    ["path", { d: "m2.75 11.5 3.5-3.75 2.5 2.5 1.75-1.75 2.75 3", ...ROUND }],
+    DOT("10.75", "5.75", "1"),
+  ],
+  // A file attachment's chip, and an attachment not known yet.
+  file: [
+    ["path", { d: "M3.75 1.75h5.5l3 3v9.5h-8.5z", ...ROUND }],
+    ["path", { d: "M9.25 1.75v3h3", ...ROUND }],
+  ],
   // A reference's state (bits.tsx's StateIcon).
   open: [RING, DOT("8", "8", "1.5")],
   done: [RING, ["path", { d: "M5.2 8.2 7.1 10l3.7-4", ...LINE }]],

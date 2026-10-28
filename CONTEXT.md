@@ -76,6 +76,30 @@ _Avoid_: Mention (for issues), link, cross-reference
 The SHA-256 of a post's Markdown. A comment's digest is how a maybe-posted or lost comment finds itself in the thread without the thread carrying every comment's text.
 _Avoid_: Hash, checksum, fingerprint
 
+**Attachment**:
+A file someone uploaded to GitHub through its editor, which a post shows by its `user-attachments` URL: an image, a video, or another file. Images and videos load through beghu's attachment route, for viewers who can read a post holding them; other files are file chips.
+_Avoid_: Upload, asset, user image
+
+**Minted URL**:
+The short-lived URL GitHub writes into a post's rendered HTML for each attachment in it, good for 300 s and for whoever holds it. beghu reads it from the HTML (with the viewer's token for the attachment route, the installation's for probes) and fetches the bytes from it; it never reaches the browser.
+_Avoid_: Signed URL, JWT URL, private image URL
+
+**Image proxy**:
+beghu's route for any image a post names that isn't an attachment (`/api/img`): it fetches only URLs beghu signed when rendering a post, through an address guard on every hop, with size and time limits, for a signed-in session.
+_Avoid_: Camo, image relay
+
+**Probe**:
+A server-side read of an image's or attachment's first bytes, to learn its size and type (or why it can't be shown) before the browser loads it, so the thread doesn't move. Its finding is stored per mirror; the bytes never are.
+_Avoid_: Image check, prefetch
+
+**Placeholder**:
+What a post shows in an image's or video's place when it can't be shown: the image's box when its size is known, the alt text, why, a link to the original or to GitHub, and one Retry for a load that failed. The browser's broken-image icon never shows.
+_Avoid_: Broken image, fallback, error tile
+
+**File chip**:
+How a post shows a file attachment that isn't an image or video: a small link with an icon and the file's name, opening on GitHub, where the viewer's own login downloads it.
+_Avoid_: File link, download button
+
 **Fake GitHub**:
 A stand-in for GitHub used in local dev and CI. It keeps its own copy of the fixture, answers the API calls beghu makes, signs in fixture users and sends webhooks back, with latency and failures set at runtime. Never used in production.
 _Avoid_: Mock GitHub, GitHub stub, stand-in

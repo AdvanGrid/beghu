@@ -143,7 +143,12 @@ pub(crate) async fn refetch(inner: &Inner, p: &Pull) -> Result<(), Failure> {
         match written {
             Ok(ids) if ids.is_empty() => {}
             Ok(ids) if ids.len() > MAX_IDS => inner.hub.publish(account, Push::Reset),
-            Ok(ids) => inner.hub.publish(account, Push::Ids(ids.into())),
+            Ok(ids) => {
+                inner.hub.publish(account, Push::Ids(ids.into()));
+                // The body's images, measured as an issue's are.
+                let posts = read.item.incoming().into_iter().collect();
+                inner.measure(account, read.item.id, posts);
+            }
             // The account lost access and its mirror is deleted: nothing to repair.
             Err(mirror_db::Error::Deleted) => {}
             Err(e) => {

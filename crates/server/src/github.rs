@@ -713,6 +713,33 @@ impl GitHub {
         }
     }
 
+    /// A post's HTML as GitHub renders it, `body_html` (`GET path`, an issue or a comment, as
+    /// `application/vnd.github.html+json`): where GitHub mints the short-lived URLs of its
+    /// attachments. `None` when GitHub shows the token no such post (404, or 410 for a deleted
+    /// issue): for a user's token, they can't read it.
+    pub async fn body_html(&self, token: &str, path: &str) -> Result<Option<String>, Error> {
+        #[derive(Deserialize)]
+        struct Html {
+            body_html: Option<String>,
+        }
+        let res = self
+            .send(
+                self.http
+                    .get(format!("{}{path}", self.api))
+                    .bearer_auth(token)
+                    .header("accept", "application/vnd.github.html+json")
+                    .header("x-github-api-version", "2022-11-28"),
+            )
+            .await?;
+        match res.status().as_u16() {
+            200 => Ok(Some(
+                res.json::<Html>().await?.body_html.unwrap_or_default(),
+            )),
+            404 | 410 => Ok(None),
+            _ => Err(refusal(res).await),
+        }
+    }
+
     /// A REST write (`POST`, `PATCH`, …) to `path` with `body` (none when it's `null`): GitHub's
     /// answer on a 2xx.
     pub async fn write(

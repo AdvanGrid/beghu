@@ -58,6 +58,8 @@ export const md = stylex.defineVars({
   mentionBg: "light-dark(#ddf4ff, #12263f)",
   // The tint frame: each post's surface.
   tint: "light-dark(#f5f6f8, #14161b)",
+  // The lightbox's dim over the page, around an image at its natural size.
+  scrim: "light-dark(rgb(15 18 24 / 0.82), rgb(0 0 0 / 0.85))",
 });
 
 /**

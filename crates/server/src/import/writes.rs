@@ -131,6 +131,20 @@ impl ItemData {
         }
     }
 
+    /// The item's body as a post for the probes to measure the images of (`media/probe.rs`):
+    /// `None` without one.
+    pub(crate) fn incoming(&self) -> Option<crate::media::probe::Incoming> {
+        Some(crate::media::probe::Incoming {
+            item: self.id,
+            post: crate::markdown::Post {
+                kind: crate::markdown::PostKind::Body,
+                id: self.id,
+                md: self.body.clone()?,
+            },
+            node: self.node_id.clone(),
+        })
+    }
+
     pub(crate) fn from_rest(i: &RestIssue) -> ItemData {
         let pr = i.pull_request.is_some();
         ItemData {
@@ -415,6 +429,19 @@ impl CommentData {
             body: c.body.unwrap_or_default(),
             created: c.created_at.as_deref().map_or(updated, time),
             updated,
+        }
+    }
+
+    /// The comment as a post for the probes to measure the images of (`media/probe.rs`).
+    pub(crate) fn incoming(&self) -> crate::media::probe::Incoming {
+        crate::media::probe::Incoming {
+            item: self.item,
+            post: crate::markdown::Post {
+                kind: crate::markdown::PostKind::Comment,
+                id: self.id,
+                md: self.body.clone(),
+            },
+            node: self.node_id.clone(),
         }
     }
 }

@@ -516,17 +516,25 @@ Inside
         ("sub", json!({})),
         ("sup", json!({})),
         ("picture", json!({})),
-        (
-            "source",
-            json!({"media": "(prefers-color-scheme: dark)", "srcset": "https://x.test/d.png"}),
-        ),
+        ("source", json!({"media": "(prefers-color-scheme: dark)"})),
         (
             "img",
-            json!({"src": "https://x.test/l.png", "alt": "logo", "width": "40", "height": "20", "align": "right"}),
+            json!({"orig": "https://x.test/l.png", "alt": "logo", "width": "40", "height": "20", "align": "right"}),
         ),
     ] {
         assert!(has(tag, attrs.clone()), "{tag} {attrs}: {a}");
     }
+    // Images load through beghu's signed proxy (tests/media.rs), never from their hosts.
+    let routed = |tag: &str, k: &str, url: &str| {
+        let prefix = format!(
+            "/api/img?u={}&sig=",
+            url.replace(':', "%3A").replace('/', "%2F")
+        );
+        els.iter()
+            .any(|(t, at)| t == tag && at[k].as_str().is_some_and(|v| v.starts_with(&prefix)))
+    };
+    assert!(routed("source", "srcset", "https://x.test/d.png"), "{a}");
+    assert!(routed("img", "src", "https://x.test/l.png"), "{a}");
 
     // Footnote and raw ids, and the links to them, carry the comment's prefix.
     let prefix = format!("md-c{}-", cs[3]["id"]);
@@ -557,10 +565,10 @@ Inside
         );
     }
 
-    // Relative URLs resolve against the issue's page on GitHub.
+    // Relative URLs resolve against the issue's page on GitHub (an image's, where it's from).
     let urls: Vec<String> = elements(&cs[4]["body"])
         .iter()
-        .filter_map(|(_, at)| at.get("href").or(at.get("src")).and_then(Value::as_str))
+        .filter_map(|(_, at)| at.get("href").or(at.get("orig")).and_then(Value::as_str))
         .map(str::to_owned)
         .collect();
     assert_eq!(

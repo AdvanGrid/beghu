@@ -279,6 +279,10 @@ function commands(fixture: () => string): Commands {
         GITHUB_APP_ID: DEV_APP.id,
         GITHUB_APP_SLUG: DEV_APP.slug,
         GITHUB_APP_PRIVATE_KEY_FILE: DEV_APP.keyFile,
+        // Attachments are minted at the fake's stand-in for GitHub's private-user-images host,
+        // and the image proxy may fetch from its stand-in for the web's image hosts (/ext).
+        GITHUB_ATTACHMENTS_URL: `${URLS.fake}/private-user-images`,
+        BEGHU_DEV_IMAGE_HOSTS: `127.0.0.1:${PORTS.fake}`,
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },
     ],

@@ -87,6 +87,10 @@ Commands:
                               be in an unsynced repo (partner-sdk#100), or #N in REPO.
                               --prioritize-sub-issue moves that sub-issue to the top, which
                               GitHub does without a webhook (sweeps find it).
+  fake upload image|video [--width W] [--height H] [--as USER]
+                              Upload an attachment as GitHub's editor would (an image is a
+                              PNG of that size, 640 × 360 by default; a video a short WebM)
+                              and print the Markdown the editor writes, for a post.
   fake label REPO NAME [--rename NEW] [--color HEX] [--as USER]
                               Someone renames or recolours one of REPO's labels on
                               "GitHub", or creates it if REPO has none called NAME: its
@@ -505,6 +509,8 @@ async function fake(args: string[]): Promise<void> {
       "--rename",
       "--color",
       "--prioritize-sub-issue",
+      "--width",
+      "--height",
       "--link-issue",
       "--unlink-issue",
       "--review",
@@ -581,6 +587,20 @@ async function fake(args: string[]): Promise<void> {
         out,
         `${pos[0]} edited (id ${out.issue.id}): ${out.deliveries} webhook(s) on the way`,
       );
+    }
+    case "upload": {
+      const [kind] = pos;
+      if (kind !== "image" && kind !== "video") {
+        throw new Usage("usage: ./dev-ctl fake upload image|video [--width W] [--height H] [--as USER]");
+      }
+      const size = (flag: string) => (opts[flag] === undefined ? undefined : Number(opts[flag]));
+      const out = (await control("POST", "/attachments", {
+        kind,
+        width: size("--width"),
+        height: size("--height"),
+        as: opts["--as"],
+      })) as { uuid: string; url: string; markdown: string };
+      return print(json, out, `uploaded: put this in a post (fake edit … --comment):\n${out.markdown}`);
     }
     case "label": {
       const [repo, name] = pos;

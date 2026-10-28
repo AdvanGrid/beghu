@@ -6,6 +6,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
 use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
+use std::sync::Arc;
 
 const NONCE: usize = 12;
 
@@ -47,12 +48,52 @@ impl SealKey {
     }
 }
 
+/// The image proxy's signing key: `/api/img?u=<url>&sig=<sig>` loads only URLs a post carried,
+/// where the server rendered it. Not tied to a viewer, so an image has one URL for everyone.
+pub struct ImageKey([u8; 32]);
+
+impl ImageKey {
+    fn derive(master: &[u8]) -> ImageKey {
+        let mut key = [0u8; 32];
+        hkdf::Hkdf::<Sha256>::new(None, master)
+            .expand(b"beghu image proxy v1", &mut key)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        ImageKey(key)
+    }
+
+    fn mac(&self) -> hmac::Hmac<Sha256> {
+        <hmac::Hmac<Sha256> as hmac::Mac>::new_from_slice(&self.0)
+            .expect("HMAC takes a key of any length")
+    }
+
+    /// `url`'s signature, base64url.
+    pub fn sign(&self, url: &str) -> String {
+        use hmac::Mac as _;
+        let mut m = self.mac();
+        m.update(url.as_bytes());
+        b64(&m.finalize().into_bytes())
+    }
+
+    /// Whether `sig` is `url`'s signature, compared in constant time.
+    pub fn verify(&self, url: &str, sig: &str) -> bool {
+        use hmac::Mac as _;
+        let Some(sig) = unb64(sig) else {
+            return false;
+        };
+        let mut m = self.mac();
+        m.update(url.as_bytes());
+        m.verify_slice(&sig).is_ok()
+    }
+}
+
 pub struct Keys {
     /// Encrypts GitHub user tokens at rest in the control DB, bound to their account (see
     /// `tokens::aad`).
     pub tokens: SealKey,
     /// Seals the sign-in state cookie (`state`, the PKCE verifier and `next`).
     pub sign_in: SealKey,
+    /// Signs the image proxy's URLs.
+    pub images: Arc<ImageKey>,
 }
 
 impl Keys {
@@ -60,6 +101,7 @@ impl Keys {
         Keys {
             tokens: SealKey::derive(master, "beghu token encryption v1"),
             sign_in: SealKey::derive(master, "beghu sign-in state v1"),
+            images: Arc::new(ImageKey::derive(master)),
         }
     }
 }

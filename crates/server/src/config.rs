@@ -75,6 +75,56 @@ pub struct Config {
     /// How often the accounts' check runs (a day, from startup): lapsed refresh tokens sign their
     /// accounts out, and expired sessions are pruned (see `accounts.rs`).
     pub accounts_check_every: Duration,
+    /// The attachment route and the image proxy (`media/`).
+    pub media: MediaConfig,
+}
+
+/// The attachment route's and the image proxy's limits (spec, "Markdown and media"), and where
+/// they may fetch from in dev.
+#[derive(Clone, Debug)]
+pub struct MediaConfig {
+    /// `BEGHU_DEV_IMAGE_HOSTS`: loopback `ip:port`s, comma-separated, the image proxy and the
+    /// probes may fetch from despite their address guard: Fake GitHub's image host, in dev and
+    /// tests. Anything but a loopback address refuses startup, and so does setting it at all
+    /// while `GITHUB_API_URL` isn't on this machine.
+    pub dev_image_hosts: Vec<std::net::SocketAddr>,
+    /// The image proxy's cap (10 MB): a larger image is refused, or cut there.
+    pub image_max: u64,
+    /// The attachment route's cap (100 MB).
+    pub attachment_max: u64,
+    /// How long an image proxy fetch may take in all (30 s). The attachment route has no total.
+    pub image_total: Duration,
+    /// How long either route waits to connect upstream (5 s).
+    pub connect: Duration,
+    /// How long either route waits for the upstream's first byte (10 s).
+    pub first_byte: Duration,
+    /// How long either route waits between chunks (15 s).
+    pub idle: Duration,
+    /// How many upstream fetches one browser session has at once, across both routes (6): more
+    /// wait their turn.
+    pub per_session: usize,
+    /// How long a webhook's push waits for its images to be measured (300 ms): what lands later
+    /// sends one more push.
+    pub webhook_wait: Duration,
+    /// How long a detail request waits for its images to be measured (100 ms), likewise.
+    pub detail_wait: Duration,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        MediaConfig {
+            dev_image_hosts: Vec::new(),
+            image_max: 10 << 20,
+            attachment_max: 100 << 20,
+            image_total: Duration::from_secs(30),
+            connect: Duration::from_secs(5),
+            first_byte: Duration::from_secs(10),
+            idle: Duration::from_secs(15),
+            per_session: 6,
+            webhook_wait: Duration::from_millis(300),
+            detail_wait: Duration::from_millis(100),
+        }
+    }
 }
 
 /// The schedules of reconciliation (`reconcile.rs`): GitHub's own figures and the spec's.
@@ -193,6 +243,9 @@ pub struct GitHubConfig {
     /// `GITHUB_APP_SLUG` (optional): the App's URL name (`github.com/apps/<slug>`). Where
     /// installing starts when GitHub can't be asked (`GET /app` failing).
     pub app_slug: Option<String>,
+    /// `GITHUB_ATTACHMENTS_URL` (default `https://private-user-images.githubusercontent.com`):
+    /// where the attachment URLs GitHub mints point. The attachment route fetches nothing else.
+    pub attachments_url: String,
 }
 
 impl Config {
@@ -207,6 +260,7 @@ impl Config {
         // A key in an env var often has its newlines escaped.
         let app_key = secret("GITHUB_APP_PRIVATE_KEY")?.replace("\\n", "\n");
         let api_url = optional("GITHUB_API_URL", "https://api.github.com");
+        let dev_image_hosts = dev_image_hosts(&api_url)?;
         if crate::installations::is_dev_key(&crate::installations::parse_key(&app_key)?)
             && !is_loopback(&api_url)
         {
@@ -230,6 +284,10 @@ impl Config {
                     .ok()
                     .map(|s| s.trim().to_owned())
                     .filter(|s| !s.is_empty()),
+                attachments_url: optional(
+                    "GITHUB_ATTACHMENTS_URL",
+                    "https://private-user-images.githubusercontent.com",
+                ),
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
@@ -250,6 +308,10 @@ impl Config {
             assets_kept_for: default_assets_kept_for(),
             drain_for: default_drain_for(),
             accounts_check_every: default_accounts_check_every(),
+            media: MediaConfig {
+                dev_image_hosts,
+                ..MediaConfig::default()
+            },
         })
     }
 
@@ -323,6 +385,28 @@ fn is_loopback(api_url: &str) -> bool {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `BEGHU_DEV_IMAGE_HOSTS`: loopback `ip:port`s only, and only against a Fake GitHub on this
+/// machine (`api_url` loopback, as for the dev App key), so no deployment can open the image
+/// proxy's guard to the network it runs in.
+fn dev_image_hosts(api_url: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    let raw = std::env::var("BEGHU_DEV_IMAGE_HOSTS").unwrap_or_default();
+    if !raw.trim().is_empty() && !is_loopback(api_url) {
+        return Err(format!(
+            "BEGHU_DEV_IMAGE_HOSTS is for dev against a Fake GitHub on this machine, and GITHUB_API_URL is {api_url}"
+        ));
+    }
+    raw.split(',')
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(|h| match h.parse::<std::net::SocketAddr>() {
+            Ok(a) if a.ip().is_loopback() => Ok(a),
+            _ => Err(format!(
+                "BEGHU_DEV_IMAGE_HOSTS takes loopback ip:port pairs (Fake GitHub's), got {h:?}"
+            )),
+        })
+        .collect()
 }
 
 fn required(name: &str) -> Result<String, String> {

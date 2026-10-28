@@ -100,6 +100,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/suspend", post(suspend))
         .route("/unsuspend", post(unsuspend))
         .route("/reset", post(reset))
+        .route("/attachments", post(crate::attachments::upload))
 }
 
 /// The control port's one 400: `{"error": msg}`.
@@ -156,6 +157,7 @@ async fn state(State(fake): State<Fake>) -> Response {
         "not_modified": fake.state().not_modified.load(std::sync::atomic::Ordering::Relaxed),
         "feeds": fake.state().feeds.snapshot(),
         "setup_url": fake.setup_url(),
+        "media": fake.state().media.snapshot(),
     }))
     .into_response()
 }
@@ -506,6 +508,7 @@ async fn reset(State(fake): State<Fake>) -> Response {
             fake.state().assignees.clear();
             fake.state().app_tokens.clear();
             fake.state().quotas.clear();
+            fake.state().media.clear();
             fake.state()
                 .not_modified
                 .store(0, std::sync::atomic::Ordering::Relaxed);

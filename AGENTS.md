@@ -71,6 +71,8 @@ CI runs all of these; run them before you commit:
   exists until #113). Both web tests run under `npm run test:lint`.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
+  Exception: `crates/fake-github/src/web_hosts.rs` (`/ext/…`) stands in for the arbitrary web
+  hosts a post's images name, not GitHub.
 
 ## What only real GitHub can show
 

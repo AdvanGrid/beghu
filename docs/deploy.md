@@ -71,6 +71,8 @@ refused either way.
 | `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output. Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app. |
 | `GITHUB_API_URL` | no | Default `https://api.github.com`. Dev and CI point it at Fake GitHub. |
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
+| `GITHUB_ATTACHMENTS_URL` | no | Default `https://private-user-images.githubusercontent.com`: where the attachment URLs GitHub mints into a post's HTML point. The attachment route fetches from nowhere else. Dev and CI point it at Fake GitHub's `/private-user-images`. |
+| `BEGHU_DEV_IMAGE_HOSTS` | no, dev only | Loopback `ip:port`s, comma-separated, that the image proxy may fetch from despite its address guard: Fake GitHub's stand-in for the web's image hosts. beghu refuses to start with it set unless `GITHUB_API_URL` is on this machine. Never set it in production. |
 | `BEGHU_MIRROR_CONNECTIONS` | no | The cap on open mirror connections across all accounts. Default 256. |
 
 Fake GitHub's dev App key is committed to this repo (`crates/fake-github/src/dev-app-key.pem`),

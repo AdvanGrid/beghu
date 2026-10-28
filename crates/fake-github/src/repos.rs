@@ -210,12 +210,20 @@ pub(crate) async fn issue(
         Ok(r) => r,
         Err(r) => return r,
     };
+    let html =
+        crate::attachments::wants_html(&headers).then(|| crate::attachments::origin(&headers));
+    let f = fake.clone();
     let read = fake
         .state()
         .truth
         .read(move |c| {
             if let Some(id) = q::issue_id(c, repo, number)? {
-                return Ok(Found::Issue(issue_json(c, id)?));
+                let mut issue = issue_json(c, id)?;
+                if let Some(origin) = &html {
+                    let md = issue["body"].as_str().unwrap_or_default().to_owned();
+                    issue["body_html"] = json!(crate::attachments::body_html(&f, c, &md, origin)?);
+                }
+                return Ok(Found::Issue(issue));
             }
             if q::deleted_issue(c, repo, number)?.is_some() {
                 return Ok(Found::Deleted);
@@ -639,12 +647,16 @@ async fn repo_comments(
 async fn one_comment(
     State(fake): State<Fake>,
     token: AnyToken,
+    headers: HeaderMap,
     Path((owner, name, id)): Path<(String, String, i64)>,
 ) -> Response {
     let repo = match visible_repo(&fake, token, owner, name).await {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let html =
+        crate::attachments::wants_html(&headers).then(|| crate::attachments::origin(&headers));
+    let f = fake.clone();
     let read = fake
         .state()
         .truth
@@ -653,7 +665,11 @@ async fn one_comment(
                 return Ok(None);
             };
             let r = q::repo(c, repo)?;
-            comment_json(
+            let body_html = match &html {
+                Some(origin) => Some(crate::attachments::body_html(&f, c, &x.body, origin)?),
+                None => None,
+            };
+            let mut v = comment_json(
                 c,
                 &r,
                 CommentRow {
@@ -665,8 +681,11 @@ async fn one_comment(
                     created: x.created_at,
                     updated: x.updated_at,
                 },
-            )
-            .map(Some)
+            )?;
+            if let Some(h) = body_html {
+                v["body_html"] = json!(h);
+            }
+            Ok(Some(v))
         })
         .await;
     match read {

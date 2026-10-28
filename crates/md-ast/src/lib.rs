@@ -9,7 +9,9 @@
 //! 4. The compact AST (`ast.rs`), `[tag, attrs | 0, ...children]` with text as plain strings,
 //!    built with the post-passes: `#n`, `owner/repo#n`, bare issue URLs, `@user` and
 //!    `@org/team` become `ref` nodes; ids and in-page links get the post's prefix; relative URLs
-//!    resolve against the issue's page on GitHub.
+//!    resolve against the issue's page on GitHub; images load through beghu's attachment route
+//!    or its signed image proxy, and a bare attachment URL alone in a paragraph is a `media`
+//!    node (`media.rs`).
 //!
 //! The work is bounded (`bounds.rs`, [`MAX_NODES`], [`MAX_JSON`]): a post too large or too
 //! deeply nested to render, or one whose rendering panics, comes out as its plain text under a
@@ -34,6 +36,7 @@ mod ast;
 mod bounds;
 #[cfg(test)]
 mod gfm_spec;
+mod media;
 mod plain;
 mod refs;
 mod sanitise;
@@ -42,10 +45,11 @@ mod scaling;
 mod tree;
 mod work;
 
+pub use media::{Image, Source, attachment_url, uuid};
 use serde_json::Value;
 
 /// Bumped whenever the same Markdown would render to a different AST: part of a cache key.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// How deep a post may nest, in elements, and still render: deeper, it shows as plain text. (A
 /// browser's HTML parser stops nesting at 512; a GitHub post never needs a tenth of that.)
@@ -73,6 +77,9 @@ pub struct Context<'a> {
     /// Put before every id the post defines and every in-page link to one (footnotes, raw
     /// `id`s), so many posts share one page without their ids meeting.
     pub id_prefix: &'a str,
+    /// Signs an image URL for the image proxy (`/api/img?u=…&sig=…`): the same for every viewer,
+    /// so the AST stays cacheable.
+    pub sign: &'a dyn Fn(&str) -> String,
 }
 
 /// An issue or PR the AST refers to, as written (GitHub's names are case-insensitive).
@@ -97,6 +104,8 @@ pub struct Rendered {
     /// Every issue or PR it refers to, by a `ref` node or a link to its page, each once, in
     /// order of first mention.
     pub items: Vec<ItemRef>,
+    /// Every image and `media` node it shows, each once by `src`, in order.
+    pub images: Vec<Image>,
 }
 
 /// GitHub's dialect, as comrak spells it.
@@ -170,5 +179,6 @@ fn plain_under(md: &str, ctx: &Context, note: &str) -> Rendered {
             Value::Array(pre),
         ],
         items,
+        images: Vec::new(),
     }
 }

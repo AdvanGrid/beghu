@@ -11,14 +11,19 @@
 //! handed out still marks where its page ends, as does any other position no comment holds.
 //!
 //! Bodies and comments go out as the compact Markdown AST (markdown.rs), each response with the
-//! `refs` map for the items its posts refer to. A request reads the posts' Markdown, renders it
-//! once the mirror connection is back in the pool (through the cache), and then reads `refs`.
+//! `refs` map for the items its posts refer to and the `media` map for the images they show. A
+//! request reads the posts' Markdown, renders it once the mirror connection is back in the pool
+//! (through the cache), and then reads `refs` and `media`. Images the mirror has no size for are
+//! measured then (`media/probe.rs`), waiting up to 100 ms; what lands later pushes the issue
+//! again.
 
 use crate::App;
 use crate::api::{CommentOrder, Label, PrStatus, ReviewDecision, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
 use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
+use crate::media::Media;
+use crate::media::probe::{self, Todo};
 use crate::relationships::{self, Related, Relationships};
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
@@ -53,6 +58,8 @@ pub struct IssueDetail {
     pub body_digest: Digest,
     /// The items in the mirror that the body refers to; `comments.refs` has the comments'.
     pub refs: Refs,
+    /// What's known of the images the body shows, by `src`; `comments.media` has the comments'.
+    pub media: Media,
     /// `open` or `closed`.
     pub state: String,
     /// `completed`, `not_planned`, … once closed.
@@ -118,6 +125,8 @@ pub struct CommentPage {
     pub comments: Vec<Comment>,
     /// The items in the mirror that these comments refer to.
     pub refs: Refs,
+    /// What's known of the images these comments show, by `src`.
+    pub media: Media,
     /// Pass as `after` for the next page: a position, `<created_at>.<id>`. A page's is its last
     /// comment's; `through=`'s is the position it went through. `null` when nothing follows.
     pub next: Option<String>,
@@ -313,8 +322,8 @@ pub async fn issue(
     };
     let body_digest = Digest::of(&body.md);
     let (body, comments) =
-        rendered(&app, s.account, Place::from(&item), Some(body), thread).await?;
-    let (body, refs) = body.expect("a body was given, so one is rendered");
+        rendered(&app, s.account, id, Place::from(&item), Some(body), thread).await?;
+    let (body, refs, media) = body.expect("a body was given, so one is rendered");
     let milestone = match (
         item.milestone_number,
         item.milestone_title,
@@ -339,6 +348,7 @@ pub async fn issue(
         body,
         body_digest,
         refs,
+        media,
         state: item.state,
         state_reason: item.state_reason,
         locked: item.locked,
@@ -424,7 +434,7 @@ pub async fn comments_page(
             })
         })
         .await??;
-    let (_, page) = rendered(&app, s.account, place, None, thread).await?;
+    let (_, page) = rendered(&app, s.account, id, place, None, thread).await?;
     Ok(Json(page))
 }
 
@@ -525,15 +535,16 @@ fn thread(c: &Reader, item: i64, order: CommentOrder, span: Span) -> QueryResult
     Ok(RawPage { comments, next })
 }
 
-/// `body` (an issue's, if given) and `page`'s comments rendered, each with the `refs` its posts
-/// need, read from the account's mirror once the rendering is done.
+/// `body` (an issue's, if given) and `page`'s comments on `item` rendered, each with the `refs`
+/// and `media` its posts need, read from the account's mirror once the rendering is done.
 async fn rendered(
     app: &App,
     account: i64,
+    item: i64,
     place: Place,
     body: Option<Post>,
     page: RawPage,
-) -> Result<(Option<(Md, Refs)>, CommentPage), ApiError> {
+) -> Result<(Option<(Md, Refs, Media)>, CommentPage), ApiError> {
     let has_body = body.is_some();
     let posts = body
         .into_iter()
@@ -565,27 +576,75 @@ async fn rendered(
     let refers = body_md
         .iter()
         .chain(&comment_mds)
-        .any(|m| !m.items().is_empty());
-    let (body_refs, comment_refs) = if refers {
-        let ask = (body_md.clone(), comment_mds);
+        .any(|m| !m.items().is_empty() || !m.images().is_empty());
+    let (body_refs, comment_refs, body_media, comment_media) = if refers {
+        let ask = (body_md.clone(), comment_mds.clone());
         app.mirrors()
             .read(account, Caller::Request, move |c| {
                 let (body, comments) = &ask;
+                let comment_images: Vec<_> = comments.iter().flat_map(Md::images).collect();
                 Ok((
                     body.as_ref().map(|b| markdown::refs(c, [b])).transpose()?,
                     markdown::refs(c, comments)?,
+                    body.as_ref()
+                        .map(|b| probe::media_of(c, &b.images().iter().collect::<Vec<_>>()))
+                        .transpose()?,
+                    probe::media_of(c, &comment_images)?,
                 ))
             })
             .await?
     } else {
         // Nothing to look up: no second read.
-        (body_md.as_ref().map(|_| Refs::new()), Refs::new())
+        let none = body_md.as_ref().map(|_| Refs::new());
+        (
+            none,
+            Refs::new(),
+            body_md.as_ref().map(|_| Media::new()),
+            Media::new(),
+        )
     };
+    let (mut body_media, mut comment_media) = (body_media, comment_media);
+    // Images with no size anywhere yet: measured now, for a little while.
+    let mut todo = Vec::new();
+    let mut sizeless = Vec::new();
+    for (md, known) in body_md
+        .iter()
+        .map(|b| (b, body_media.as_ref()))
+        .chain(comment_mds.iter().map(|m| (m, Some(&comment_media))))
+    {
+        for i in md.images().iter().filter(|i| !i.sized) {
+            if !known.is_some_and(|k| k.contains_key(&i.src)) {
+                todo.push(Todo::of(i, None));
+                sizeless.push(i.clone());
+            }
+        }
+    }
+    if !todo.is_empty() {
+        let wait = app.cfg().media.detail_wait;
+        let landed = probe::measure(app, account, Some(item), None, todo, wait).await;
+        for i in sizeless {
+            let Some(f) = landed.get(&probe::hash(&i.source.key())) else {
+                continue;
+            };
+            let in_body = body_md
+                .as_ref()
+                .is_some_and(|b| b.images().iter().any(|b| b.src == i.src));
+            let map = match (&mut body_media, in_body) {
+                (Some(m), true) => m,
+                _ => &mut comment_media,
+            };
+            map.insert(i.src.clone(), f.into());
+        }
+    }
     Ok((
-        body_md.zip(body_refs),
+        body_md
+            .zip(body_refs)
+            .zip(body_media)
+            .map(|((b, r), m)| (b, r, m)),
         CommentPage {
             comments,
             refs: comment_refs,
+            media: comment_media,
             next: page.next,
         },
     ))

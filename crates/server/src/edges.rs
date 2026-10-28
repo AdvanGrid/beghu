@@ -262,6 +262,8 @@ pub(crate) struct Inner {
     jobs: Jobs,
     /// The read-backs waiting or running, by issue and what they read, and by PR.
     pending: Mutex<HashMap<Key, Pending>>,
+    /// The app, set once it's made: a thread read back has its images measured.
+    app: std::sync::OnceLock<crate::WeakApp>,
 }
 
 struct Pending {
@@ -318,7 +320,13 @@ impl Refetcher {
             retries,
             jobs,
             pending: Mutex::default(),
+            app: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Hands the refetcher the app it's part of, once the app is made.
+    pub(crate) fn set_app(&self, app: crate::WeakApp) {
+        let _ = self.0.app.set(app);
     }
 
     /// Reads `what` of `subject` back from GitHub: at once, or after [`REFETCH_AFTER`] (each new
@@ -815,6 +823,24 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
     Ok(())
 }
 
+impl Inner {
+    /// Measures the images in `posts`, written to `account`'s mirror, in the background, as a
+    /// webhook's are; what they find pushes `item` again. Nothing waits for them.
+    pub(crate) fn measure(
+        &self,
+        account: i64,
+        item: i64,
+        posts: Vec<crate::media::probe::Incoming>,
+    ) {
+        let Some(app) = self.app.get().and_then(crate::WeakApp::upgrade) else {
+            return;
+        };
+        self.jobs.spawn(async move {
+            crate::media::probe::ingest(&app, account, posts, Duration::ZERO, Some(item)).await;
+        });
+    }
+}
+
 /// Reads issue `s`'s comment thread with the App's installation token (`GET …/comments`, paged)
 /// and makes it the thread every account syncing its repo holds: GitHub's comments written under
 /// the usual `updated_at` guard, and any comment of the issue the mirror holds that GitHub
@@ -822,7 +848,8 @@ async fn reread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
 /// transaction before it). A transfer moves the old issue's comments onto the new one by their
 /// ids; whether GitHub keeps those ids is unmeasured (docs/research/issue-edge-cases.md), and
 /// this leaves the thread right either way. An issue GitHub no longer shows (transferred again,
-/// deleted) has nothing to read: its own deliveries say what happened.
+/// deleted) has nothing to read: its own deliveries say what happened. The images in a thread
+/// that changed are measured after (`media/probe.rs`), as a webhook's are.
 async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
     let repo = s.repo;
     let targets = targets(inner, repo).await?;
@@ -885,6 +912,7 @@ async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
         let Some(&start) = starts.get(&account) else {
             continue;
         };
+        let posts: Vec<_> = thread.iter().map(CommentData::incoming).collect();
         let thread = thread.clone();
         let written = inner
             .mirrors
@@ -904,7 +932,10 @@ async fn rethread(inner: &Arc<Inner>, s: &Subject) -> Result<(), Failure> {
             .await;
         match written {
             Ok(false) => {}
-            Ok(true) => inner.hub.publish(account, Push::Ids(vec![item].into())),
+            Ok(true) => {
+                inner.hub.publish(account, Push::Ids(vec![item].into()));
+                inner.measure(account, item, posts);
+            }
             // The account lost access and its mirror is deleted: nothing to repair.
             Err(mirror_db::Error::Deleted) => {}
             Err(e) => {
