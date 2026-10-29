@@ -95,6 +95,36 @@ pub fn is_dev_key(key: &KeyPair) -> bool {
     hex == DEV_APP_PUBLIC_KEY_SHA256
 }
 
+/// An App JWT for `app_id` signed with `key` at `now`, good for 9 minutes.
+fn sign_jwt(key: &KeyPair, app_id: &str, now: i64) -> Result<String, ring::error::Unspecified> {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let claims = serde_json::json!({
+        "iat": now - JWT_BACKDATE,
+        "exp": now + JWT_LIFETIME,
+        "iss": app_id,
+    });
+    let msg = format!(
+        "{}.{}",
+        b64.encode(br#"{"alg":"RS256","typ":"JWT"}"#),
+        b64.encode(claims.to_string())
+    );
+    let mut sig = vec![0; key.public().modulus_len()];
+    key.sign(
+        &ring::signature::RSA_PKCS1_SHA256,
+        &ring::rand::SystemRandom::new(),
+        msg.as_bytes(),
+        &mut sig,
+    )?;
+    Ok(format!("{msg}.{}", b64.encode(sig)))
+}
+
+/// An App JWT for `app_id` from its private key's PEM, good for 9 minutes, as beghu signs them:
+/// for the contract check (`crates/contract`), which calls GitHub as the App.
+pub fn app_jwt(app_id: &str, pem: &str) -> Result<String, String> {
+    let key = parse_key(pem)?;
+    sign_jwt(&key, app_id, crate::now()).map_err(|_| "signing the App's JWT failed".to_owned())
+}
+
 /// A token's last failed request and when it failed; none since one succeeded.
 type LastFailure = Option<(Instant, github::Error)>;
 
@@ -139,28 +169,8 @@ impl Installations {
 
     /// The App's JWT, good for 9 minutes.
     pub fn jwt(&self) -> Result<String, github::Error> {
-        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let now = crate::now();
-        let claims = serde_json::json!({
-            "iat": now - JWT_BACKDATE,
-            "exp": now + JWT_LIFETIME,
-            "iss": self.app_id,
-        });
-        let msg = format!(
-            "{}.{}",
-            b64.encode(br#"{"alg":"RS256","typ":"JWT"}"#),
-            b64.encode(claims.to_string())
-        );
-        let mut sig = vec![0; self.key.public().modulus_len()];
-        self.key
-            .sign(
-                &ring::signature::RSA_PKCS1_SHA256,
-                &ring::rand::SystemRandom::new(),
-                msg.as_bytes(),
-                &mut sig,
-            )
-            .map_err(|_| github::Error::Malformed("signing the App's JWT failed".into()))?;
-        Ok(format!("{msg}.{}", b64.encode(sig)))
+        sign_jwt(&self.key, &self.app_id, crate::now())
+            .map_err(|_| github::Error::Malformed("signing the App's JWT failed".into()))
     }
 
     /// A live token for `installation` in `scope`: the one held, or a new one. A caller that

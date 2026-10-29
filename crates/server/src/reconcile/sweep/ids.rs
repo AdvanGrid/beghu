@@ -190,19 +190,19 @@ impl Sweeper {
     }
 }
 
-const SWEEP_COUNTS: &str = "query SweepCounts($ids: [ID!]!) {
+pub(super) const SWEEP_COUNTS: &str = "query SweepCounts($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on Repository { id databaseId issues { totalCount } pullRequests { totalCount } }
   }
 }";
 
-const SWEEP_ISSUE_IDS: &str = "query SweepIssueIds($owner: String!, $name: String!, $after: String) {
+pub(super) const SWEEP_ISSUE_IDS: &str = "query SweepIssueIds($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     issues(first: 100, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { databaseId } }
   }
 }";
 
-const SWEEP_PULL_IDS: &str = "query SweepPullIds($owner: String!, $name: String!, $after: String) {
+pub(super) const SWEEP_PULL_IDS: &str = "query SweepPullIds($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: 100, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { databaseId } }
   }

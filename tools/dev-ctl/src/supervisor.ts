@@ -35,8 +35,9 @@ import {
   remove,
   writeJson,
 } from "./config.ts";
+import { GITHUB_DATA, KEY_FILE, SANDBOX, type DevApp, readDevApp } from "./github.ts";
 
-type Proc = "fake" | "server" | "vite";
+type Proc = "fake" | "server" | "vite" | "smee";
 
 const BINARIES = { fake: join(TARGET, "fake-github"), server: join(TARGET, "beghu") };
 
@@ -190,6 +191,147 @@ export async function supervise(scale: Scale): Promise<void> {
   });
 }
 
+/**
+ * `start --github`: the server against real GitHub through the developer's dev App (`./dev-ctl
+ * github setup`), smee forwarding the App's webhooks from its smee.io channel to the server, and
+ * Vite. No fake, no fixture: the server keeps its own data in .dev/data-github, and writes only
+ * to the sandbox (BEGHU_DEV_WRITABLE_REPOS). The server rebuilds and restarts when its sources
+ * change, as in fixture mode.
+ */
+export async function superviseGitHub(): Promise<void> {
+  const state: State = {
+    pid: process.pid,
+    mode: "github",
+    scale: "1k",
+    fixture: null,
+    phase: "starting",
+    urls: URLS,
+    startedAt: new Date().toISOString(),
+  };
+  const save = () => writeJson(STATE, state);
+  const fail = (error: string): never => {
+    log("dev-ctl", error);
+    state.phase = "failed";
+    state.error = error;
+    save();
+    process.exit(1);
+  };
+  writeJson(PID, process.pid);
+  save();
+  const app = readDevApp();
+  if (!app) return fail("no dev App set up; run ./dev-ctl github setup");
+  for (const [port, env] of [
+    [PORTS.server, "DEV_SERVER_PORT"],
+    [PORTS.app, "DEV_APP_PORT"],
+  ] as const) {
+    if (!(await portFree(port))) return fail(`port ${port} is already in use; free it or set ${env}`);
+  }
+  log("dev-ctl", "building the server");
+  if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+    return fail("the build failed; see the [cargo] lines above");
+  }
+  const names: Proc[] = ["server", "smee", "vite"];
+  const stack = processes(() => "", {
+    started: (name, pid) => {
+      state.children = { ...state.children, [name]: pid };
+      save();
+    },
+    gaveUp: (name, why) => {
+      log("dev-ctl", why);
+      state.phase = "failed";
+      state.error = why;
+      state.failed = name;
+      save();
+    },
+    recovered: (name) => {
+      if (state.failed !== name) return;
+      state.phase = "ready";
+      delete state.error;
+      delete state.failed;
+      save();
+    },
+  }, { command: githubCommands(app), names });
+  const shutdown = async () => {
+    if (!stack.beginStopping()) return;
+    log("dev-ctl", "stopping");
+    await stack.stopAll();
+    remove(STATE);
+    remove(PID);
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  stack.startAll();
+  const deadline = Date.now() + 60_000;
+  for (const [name, url] of [
+    ["server", `${URLS.server}/healthz`],
+    ["vite", `${URLS.app}/`],
+  ] as const) {
+    while (!(await up(url))) {
+      if (Date.now() > deadline || !stack.running(name)) {
+        await stack.stopAll();
+        return fail(`${name} didn't come up; see its lines in the log`);
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  state.phase = "ready";
+  save();
+  log("dev-ctl", `ready against GitHub as ${app.slug}: app ${URLS.app}, webhooks from ${app.smee_url}; writes only to ${SANDBOX}`);
+  watchSources(async () => {
+    log("dev-ctl", "sources changed; rebuilding the server");
+    const before = mtimes().server;
+    if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+      log("dev-ctl", "the build failed; the running server is unchanged");
+      return;
+    }
+    if (mtimes().server !== before) await stack.restart("server");
+  });
+}
+
+function githubCommands(app: DevApp): Commands {
+  return {
+    server: () => [
+      BINARIES.server,
+      [],
+      {
+        PORT: String(PORTS.server),
+        BEGHU_BUILD_ID: "dev",
+        BEGHU_PUBLIC_URL: URLS.app,
+        BEGHU_DATA_DIR: GITHUB_DATA,
+        BEGHU_TOKEN_KEY: DEV_TOKEN_KEY,
+        // GitHub's own URLs: the server's defaults. A setup checked against a Fake GitHub
+        // (its API on this machine) points there instead.
+        ...(app.api === "https://api.github.com" ? {} : { GITHUB_API_URL: app.api, GITHUB_WEB_URL: app.api }),
+        GITHUB_CLIENT_ID: app.client_id,
+        GITHUB_CLIENT_SECRET: app.client_secret,
+        GITHUB_WEBHOOK_SECRET: app.webhook_secret,
+        GITHUB_APP_ID: app.id,
+        GITHUB_APP_SLUG: app.slug,
+        GITHUB_APP_PRIVATE_KEY_FILE: KEY_FILE,
+        BEGHU_DEV_WRITABLE_REPOS: SANDBOX,
+        RUST_LOG: process.env.RUST_LOG ?? "info",
+      },
+    ],
+    // smee-client re-posts each delivery from the channel to the server. It re-serialises the
+    // payload, so a delivery whose JSON GitHub wrote differently (escapes) fails its signature:
+    // the server refuses it, and redelivery and the sweeps catch up.
+    smee: () => [
+      process.execPath,
+      [SMEE, "--url", app.smee_url, "--target", `${URLS.server}/webhook`],
+      {},
+    ],
+    vite: () => [
+      process.execPath,
+      [join(ROOT, "web", "node_modules", "vite", "bin", "vite.js"), "--port", String(PORTS.app)],
+      { BEGHU_SERVER: URLS.server },
+    ],
+  };
+}
+
+/** smee-client's command line, installed with ./dev-ctl's own dependencies. */
+export const SMEE = join(ROOT, "tools", "dev-ctl", "node_modules", "smee-client", "bin", "smee.js");
+
 /** Why the stack can't start because a port it needs is taken, or null when all are free. */
 async function busyPort(): Promise<string | null> {
   const ports: [Proc, number, string][] = [
@@ -238,7 +380,7 @@ async function seedMirrors(scale: Scale, fixture: string): Promise<boolean> {
 }
 
 /** How each process is launched: command, arguments and extra environment. */
-type Commands = Record<Proc, () => [string, string[], NodeJS.ProcessEnv]>;
+type Commands = Partial<Record<Proc, () => [string, string[], NodeJS.ProcessEnv]>>;
 
 function commands(fixture: () => string): Commands {
   return {
@@ -338,9 +480,11 @@ export interface Events {
 export function processes(
   fixture: () => string,
   events: Events,
-  stand: { command?: Commands; log?: typeof log } = {},
+  stand: { command?: Commands; log?: typeof log; names?: Proc[] } = {},
 ) {
   const command = stand.command ?? commands(fixture);
+  /** The processes the stack runs, in start order. */
+  const names = stand.names ?? (["fake", "server", "vite"] as Proc[]);
   const say = stand.log ?? log;
   const children = new Map<Proc, ChildProcess>();
   const restarting = new Set<Proc>();
@@ -351,7 +495,9 @@ export function processes(
 
   const start = (name: Proc) => {
     if (stopping) return;
-    const [cmd, args, env] = command[name]();
+    const launch = command[name];
+    if (!launch) return;
+    const [cmd, args, env] = launch();
     const cwd = name === "vite" ? join(ROOT, "web") : ROOT;
     const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const startedAt = Date.now();
@@ -410,13 +556,13 @@ export function processes(
   return {
     running: (name: Proc) => children.has(name),
     startAll: () => {
-      for (const name of ["fake", "server", "vite"] as Proc[]) start(name);
+      for (const name of names) start(name);
     },
     stopAll: async () => {
       for (const t of pending.values()) clearTimeout(t);
       pending.clear();
       // Until none is left: a child that was spawning as the stop began is stopped too.
-      while (children.size) await Promise.all((["vite", "server", "fake"] as Proc[]).map(stop));
+      while (children.size) await Promise.all([...names].reverse().map(stop));
     },
     /** False when a stop is already under way. */
     beginStopping: () => {

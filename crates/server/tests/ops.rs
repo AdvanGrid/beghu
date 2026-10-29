@@ -1710,3 +1710,89 @@ async fn an_outside_edit_in_the_second_of_a_label_pick_isnt_lost_to_the_picks_re
     }
     panic!("no issue to try");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outside_the_writable_repos_a_write_is_refused_before_github_is_called() {
+    // Dev mode against real GitHub writes only to the sandbox (BEGHU_DEV_WRITABLE_REPOS); here
+    // the fixture's `web` plays it, named as a developer might type it.
+    let s = start_with(|cfg| cfg.github.writable_repos = Some(vec!["ACME/Web".into()])).await;
+    let mut b = s.sign_in("tomsj").await;
+    let (_, page) = s.api(&mut b, "/api/issues").await;
+    let rows = page["rows"].as_array().unwrap();
+    let elsewhere = rows.iter().find(|r| r["repo"] != "web").unwrap();
+    let id = elsewhere["id"].as_i64().unwrap();
+    let (_, before) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    // Any call to GitHub would use this up.
+    s.fail("/repos/*", 500, 1, None).await;
+    for op in [
+        json!({ "kind": "close", "issue": id, "reason": "completed" }),
+        json!({ "kind": "comment", "issue": id, "body": "Not here" }),
+        json!({ "kind": "title_edit", "issue": id, "base": before["title"], "new": "Not here" }),
+    ] {
+        let (status, err) = s.op(&b, &uuid(), op).await;
+        assert_eq!(
+            (status, err["error"].as_str()),
+            (422, Some("refused")),
+            "{err}"
+        );
+        assert!(
+            err["message"].as_str().unwrap().contains("read-only here"),
+            "{err}"
+        );
+    }
+    let (_, me) = s.api(&mut b, "/api/me").await;
+    let api = me["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "api")
+        .unwrap()["id"]
+        .clone();
+    let (status, err) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "create", "repo": api, "title": "Not here", "body": "" }),
+        )
+        .await;
+    assert_eq!(
+        (status, err["error"].as_str()),
+        (422, Some("refused")),
+        "{err}"
+    );
+    // A relationship from the writable repo's issue to one elsewhere changes that one too.
+    let sandbox = rows.iter().find(|r| r["repo"] == "web").unwrap();
+    let other = json!({
+        "id": id, "owner": "acme", "repo": elsewhere["repo"], "number": elsewhere["number"],
+    });
+    for op in [
+        json!({ "kind": "relate_add", "issue": sandbox["id"], "other": other }),
+        json!({ "kind": "block_add", "issue": sandbox["id"], "other": other, "blocking": true }),
+    ] {
+        let (status, err) = s.op(&b, &uuid(), op).await;
+        assert_eq!(
+            (status, err["error"].as_str()),
+            (422, Some("refused")),
+            "{err}"
+        );
+        assert!(
+            err["message"].as_str().unwrap().contains("read-only here"),
+            "{err}"
+        );
+    }
+    assert_eq!(s.fail_rules().await[0]["remaining"], 1);
+    let (_, after) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    assert_eq!(after["state"], before["state"]);
+    assert_eq!(after["comment_total"], before["comment_total"]);
+
+    // The writable repo takes writes as usual.
+    s.fake("DELETE", "/faults", Value::Null).await;
+    let (status, reply) = s
+        .op(
+            &b,
+            &uuid(),
+            json!({ "kind": "comment", "issue": sandbox["id"], "body": "Here is fine" }),
+        )
+        .await;
+    assert_eq!(status, 200, "{reply}");
+}

@@ -166,7 +166,7 @@ impl Sweeper {
 
 /// `IssueEdges` (crates/server/src/edges.rs) for up to 100 issues at once; relates-to's first
 /// page of 100.
-const SWEEP_EDGES: &str = "query SweepEdges($ids: [ID!]!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!) {
+pub(super) const SWEEP_EDGES: &str = "query SweepEdges($ids: [ID!]!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!) {
   nodes(ids: $ids) {
     ... on Issue {
       id databaseId number

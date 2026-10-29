@@ -36,6 +36,7 @@ mod quota;
 mod relationship_writes;
 mod relationships;
 mod repos;
+mod select;
 mod triage;
 mod web_hosts;
 mod webhooks;

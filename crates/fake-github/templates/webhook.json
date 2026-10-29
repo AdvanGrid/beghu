@@ -1,0 +1,5938 @@
+{
+  "webhook.github_app_authorization.revoked": {
+    "request": "webhook github_app_authorization.revoked",
+    "shape": {
+      "action": "string",
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_comment.created": {
+    "request": "webhook issue_comment.created",
+    "shape": {
+      "action": "string",
+      "comment": {
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "node_id": "string",
+        "performed_via_github_app": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_comment.deleted": {
+    "request": "webhook issue_comment.deleted",
+    "shape": {
+      "action": "string",
+      "comment": {
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "node_id": "string",
+        "performed_via_github_app": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_dependencies.blocked_by_added": {
+    "request": "webhook issue_dependencies.blocked_by_added",
+    "shape": {
+      "action": "string",
+      "blocked_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocked_issue_id": "number",
+      "blocking_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocking_issue_id": "number",
+      "blocking_issue_repo": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_dependencies.blocked_by_removed": {
+    "request": "webhook issue_dependencies.blocked_by_removed",
+    "shape": {
+      "action": "string",
+      "blocked_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocked_issue_id": "number",
+      "blocking_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocking_issue_id": "number",
+      "blocking_issue_repo": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_dependencies.blocking_added": {
+    "request": "webhook issue_dependencies.blocking_added",
+    "shape": {
+      "action": "string",
+      "blocked_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocked_issue_id": "number",
+      "blocked_issue_repo": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "blocking_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocking_issue_id": "number",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_dependencies.blocking_removed": {
+    "request": "webhook issue_dependencies.blocking_removed",
+    "shape": {
+      "action": "string",
+      "blocked_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocked_issue_id": "number",
+      "blocked_issue_repo": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "blocking_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "blocking_issue_id": "number",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_relates_to.relates_to_added": {
+    "request": "webhook issue_relates_to.relates_to_added",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "issue_id": "number",
+      "related_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "related_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issue_relates_to.relates_to_removed": {
+    "request": "webhook issue_relates_to.relates_to_removed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "issue_id": "number",
+      "related_issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": "never",
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "related_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.assigned": {
+    "request": "webhook issues.assigned",
+    "shape": {
+      "action": "string",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.closed": {
+    "request": "webhook issues.closed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.deleted": {
+    "request": "webhook issues.deleted",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.demilestoned": {
+    "request": "webhook issues.demilestoned",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.edited": {
+    "request": "webhook issues.edited",
+    "shape": {
+      "action": "string",
+      "changes": {
+        "body?": [
+          {
+            "from": "string"
+          },
+          "null"
+        ],
+        "title?": {
+          "from": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.labeled": {
+    "request": "webhook issues.labeled",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "label": {
+        "color": "string",
+        "default": "boolean",
+        "description": [
+          "string",
+          "null"
+        ],
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "url": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.locked": {
+    "request": "webhook issues.locked",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": [
+          {
+            "due_on": [
+              "string",
+              "null"
+            ],
+            "html_url": "string",
+            "id": "number",
+            "node_id": "string",
+            "number": "number",
+            "state": "string",
+            "title": "string",
+            "updated_at": "string",
+            "url": "string"
+          },
+          "null"
+        ],
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.milestoned": {
+    "request": "webhook issues.milestoned",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": [
+          {
+            "due_on": [
+              "string",
+              "null"
+            ],
+            "html_url": "string",
+            "id": "number",
+            "node_id": "string",
+            "number": "number",
+            "state": "string",
+            "title": "string",
+            "updated_at": "string",
+            "url": "string"
+          },
+          "null"
+        ],
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.opened": {
+    "request": "webhook issues.opened",
+    "shape": {
+      "action": "string",
+      "changes?": {
+        "old_issue": {
+          "active_lock_reason": "never",
+          "assignee": [
+            {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            },
+            "null"
+          ],
+          "assignees": {
+            "[]": {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            }
+          },
+          "author_association": "string",
+          "body": [
+            "string",
+            "null"
+          ],
+          "closed_at": [
+            "string",
+            "null"
+          ],
+          "comments": "number",
+          "created_at": "string",
+          "html_url": "string",
+          "id": "number",
+          "labels": {
+            "[]": {
+              "color": "string",
+              "default": "boolean",
+              "description": [
+                "string",
+                "null"
+              ],
+              "id": "number",
+              "name": "string",
+              "node_id": "string",
+              "url": "string"
+            }
+          },
+          "locked": "boolean",
+          "milestone": [
+            {
+              "due_on": [
+                "string",
+                "null"
+              ],
+              "html_url": "string",
+              "id": "number",
+              "node_id": "string",
+              "number": "number",
+              "state": "string",
+              "title": "string",
+              "updated_at": "string",
+              "url": "string"
+            },
+            "null"
+          ],
+          "node_id": "string",
+          "number": "number",
+          "repository_url": "string",
+          "state": "string",
+          "state_reason": [
+            "string",
+            "null"
+          ],
+          "title": "string",
+          "type": [
+            {
+              "color": "never",
+              "description": "never",
+              "id": "number",
+              "is_enabled": "boolean",
+              "name": "string",
+              "node_id": "string"
+            },
+            "null"
+          ],
+          "updated_at": "string",
+          "url": "string",
+          "user": [
+            {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            },
+            "null"
+          ]
+        },
+        "old_repository": {
+          "archived": "boolean",
+          "disabled": "boolean",
+          "full_name": "string",
+          "has_issues": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "owner": {
+            "login": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "private": "boolean",
+          "url": "string",
+          "visibility": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.reopened": {
+    "request": "webhook issues.reopened",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.transferred": {
+    "request": "webhook issues.transferred",
+    "shape": {
+      "action": "string",
+      "changes": {
+        "new_issue": {
+          "active_lock_reason": "never",
+          "assignee": [
+            {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            },
+            "null"
+          ],
+          "assignees": {
+            "[]": {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            }
+          },
+          "author_association": "string",
+          "body": [
+            "string",
+            "null"
+          ],
+          "closed_at": [
+            "string",
+            "null"
+          ],
+          "comments": "number",
+          "created_at": "string",
+          "html_url": "string",
+          "id": "number",
+          "labels": {
+            "[]": {
+              "color": "string",
+              "default": "boolean",
+              "description": [
+                "string",
+                "null"
+              ],
+              "id": "number",
+              "name": "string",
+              "node_id": "string",
+              "url": "string"
+            }
+          },
+          "locked": "boolean",
+          "milestone": "never",
+          "node_id": "string",
+          "number": "number",
+          "repository_url": "string",
+          "state": "string",
+          "state_reason": [
+            "string",
+            "null"
+          ],
+          "title": "string",
+          "type": [
+            {
+              "color": "never",
+              "description": "never",
+              "id": "number",
+              "is_enabled": "boolean",
+              "name": "string",
+              "node_id": "string"
+            },
+            "null"
+          ],
+          "updated_at": "string",
+          "url": "string",
+          "user": [
+            {
+              "avatar_url": "string",
+              "gravatar_id": "string",
+              "html_url": "string",
+              "id": "number",
+              "login": "string",
+              "node_id": "string",
+              "site_admin": "boolean",
+              "type": [
+                "string",
+                "null"
+              ],
+              "url": "string",
+              "user_view_type": "string"
+            },
+            "null"
+          ]
+        },
+        "new_repository": {
+          "archived": "boolean",
+          "disabled": "boolean",
+          "full_name": "string",
+          "has_issues": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "owner": {
+            "login": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "private": "boolean",
+          "url": "string",
+          "visibility": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": [
+          {
+            "due_on": [
+              "string",
+              "null"
+            ],
+            "html_url": "string",
+            "id": "number",
+            "node_id": "string",
+            "number": "number",
+            "state": "string",
+            "title": "string",
+            "updated_at": "string",
+            "url": "string"
+          },
+          "null"
+        ],
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": [
+          {
+            "color": "never",
+            "description": "never",
+            "id": "number",
+            "is_enabled": "boolean",
+            "name": "string",
+            "node_id": "string"
+          },
+          "null"
+        ],
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.unassigned": {
+    "request": "webhook issues.unassigned",
+    "shape": {
+      "action": "string",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.issues.unlabeled": {
+    "request": "webhook issues.unlabeled",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "issue": {
+        "active_lock_reason": "never",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": "never"
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "label": {
+        "color": "string",
+        "default": "boolean",
+        "description": [
+          "string",
+          "null"
+        ],
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "url": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.label.created": {
+    "request": "webhook label.created",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "label": {
+        "color": "string",
+        "default": "boolean",
+        "description": "never",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "url": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.label.edited": {
+    "request": "webhook label.edited",
+    "shape": {
+      "action": "string",
+      "changes": {
+        "name": {
+          "from": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "label": {
+        "color": "string",
+        "default": "boolean",
+        "description": "never",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "url": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.milestone.closed": {
+    "request": "webhook milestone.closed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.milestone.edited": {
+    "request": "webhook milestone.edited",
+    "shape": {
+      "action": "string",
+      "changes": {
+        "title": {
+          "from": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.milestone.opened": {
+    "request": "webhook milestone.opened",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.pull_request.closed": {
+    "request": "webhook pull_request.closed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "number": "number",
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.pull_request.edited": {
+    "request": "webhook pull_request.edited",
+    "shape": {
+      "action": "string",
+      "changes": {
+        "title": {
+          "from": "string"
+        }
+      },
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "number": "number",
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": "never",
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.pull_request.reopened": {
+    "request": "webhook pull_request.reopened",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "number": "number",
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": "never",
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.pull_request_review.dismissed": {
+    "request": "webhook pull_request_review.dismissed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": "never",
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "review": {
+        "author_association": "string",
+        "body": "never",
+        "commit_id": [
+          "string",
+          "null"
+        ],
+        "html_url": "string",
+        "id": "number",
+        "node_id": "string",
+        "pull_request_url": "string",
+        "state": "string",
+        "submitted_at": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.pull_request_review.submitted": {
+    "request": "webhook pull_request_review.submitted",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": "never",
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "review": {
+        "author_association": "string",
+        "body": "never",
+        "commit_id": [
+          "string",
+          "null"
+        ],
+        "html_url": "string",
+        "id": "number",
+        "node_id": "string",
+        "pull_request_url": "string",
+        "state": "string",
+        "submitted_at": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.repository.archived": {
+    "request": "webhook repository.archived",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.repository.unarchived": {
+    "request": "webhook repository.unarchived",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
+  "webhook.sub_issues.parent_issue_added": {
+    "request": "webhook sub_issues.parent_issue_added",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "parent_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "parent_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      },
+      "sub_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sub_issue_id": "number"
+    },
+    "status": 200
+  },
+  "webhook.sub_issues.parent_issue_removed": {
+    "request": "webhook sub_issues.parent_issue_removed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "parent_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "parent_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      },
+      "sub_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sub_issue_id": "number"
+    },
+    "status": 200
+  },
+  "webhook.sub_issues.sub_issue_added": {
+    "request": "webhook sub_issues.sub_issue_added",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "parent_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "parent_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      },
+      "sub_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sub_issue_id": "number"
+    },
+    "status": 200
+  },
+  "webhook.sub_issues.sub_issue_removed": {
+    "request": "webhook sub_issues.sub_issue_removed",
+    "shape": {
+      "action": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "parent_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": "never",
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "parent_issue_id": "number",
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      },
+      "sub_issue": {
+        "active_lock_reason": "never",
+        "assignee": "never",
+        "assignees": {
+          "[]": "never"
+        },
+        "author_association": "string",
+        "body": [
+          "string",
+          "null"
+        ],
+        "closed_at": [
+          "string",
+          "null"
+        ],
+        "comments": "number",
+        "created_at": "string",
+        "html_url": "string",
+        "id": "number",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "repository_url": "string",
+        "state": "string",
+        "state_reason": [
+          "string",
+          "null"
+        ],
+        "title": "string",
+        "type": "never",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "sub_issue_id": "number"
+    },
+    "status": 200
+  }
+}

@@ -1,0 +1,170 @@
+# The contract check (crates/contract, docs/research/contract-check-shapes.md): keeps Fake GitHub
+# honest by diffing real GitHub's answers with the fake's recorded templates
+# (crates/fake-github/templates/). Drift fails the run and goes to the one "Contract drift"
+# issue on AdvanGrid/beghu-sandbox; webhook events unseen for 14 days go there as coverage gaps.
+#
+# It runs as the private beghu-ci App, whose key is in the `contract` environment (limited to
+# main). It never runs on pull requests: with no trigger for them, nothing from a fork reaches
+# that environment.
+#
+# Setup (once, by an org owner) is in docs/deploy.md, "The contract check".
+name: Contract check
+
+on:
+  schedule:
+    # Nightly: the read run, well inside GitHub's 3-day delivery log.
+    - cron: "17 3 * * *"
+    # Weekly (Mondays): the write run on the sandbox, and the keepalive.
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "Which run: read, write, or both (both before a release)"
+        type: choice
+        options: [read, write, both]
+        default: both
+  push:
+    branches: [main]
+    # The fake's templates and request set, and beghu's GitHub client.
+    paths:
+      - crates/fake-github/templates/**
+      - crates/fake-github/src/**
+      - crates/server/src/github.rs
+      - crates/server/src/installations.rs
+      - crates/server/src/import/shapes.rs
+      - crates/server/src/edges.rs
+      - crates/server/src/pulls.rs
+      - crates/server/src/reconcile/sweep/**
+      - crates/server/src/media/mint.rs
+      - crates/server/src/ops.rs
+      - crates/contract/**
+      - github-app/manifest.json
+      - .github/workflows/contract.yml
+
+permissions:
+  contents: read
+
+# One run at a time: two write runs on the sandbox would undo each other's writes.
+concurrency:
+  group: contract
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      read: ${{ steps.which.outputs.read }}
+      write: ${{ steps.which.outputs.write }}
+    steps:
+      - id: which
+        env:
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+          WANTED: ${{ github.event.inputs.run }}
+        run: |
+          read=false; write=false
+          case "$EVENT" in
+            schedule)
+              if [ "$CRON" = "41 4 * * 1" ]; then write=true; else read=true; fi ;;
+            push) write=true ;;
+            workflow_dispatch)
+              case "$WANTED" in
+                read) read=true ;;
+                write) write=true ;;
+                *) read=true; write=true ;;
+              esac ;;
+          esac
+          echo "read=$read" >> "$GITHUB_OUTPUT"
+          echo "write=$write" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: plan
+    if: needs.plan.outputs.read == 'true' || needs.plan.outputs.write == 'true'
+    runs-on: ubuntu-latest
+    environment: contract
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CONTRACT_SANDBOX: AdvanGrid/beghu-sandbox
+    steps:
+      # Until an org owner sets the contract environment up (docs/deploy.md), the check has no
+      # App to run as: it says so and skips, rather than failing every night.
+      - name: Secrets set?
+        id: ready
+        env:
+          APP_ID: ${{ secrets.CONTRACT_APP_ID }}
+          APP_KEY: ${{ secrets.CONTRACT_APP_KEY }}
+          REPOS: ${{ secrets.CONTRACT_REPOS }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::notice::Contract check skipped: the contract environment's secrets aren't set (docs/deploy.md)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The busy repos may be private: their names stay out of the public log.
+          IFS=',' read -ra repos <<< "$REPOS"
+          for r in "${repos[@]}"; do
+            r="$(echo "$r" | xargs)"
+            [ -n "$r" ] && echo "::add-mask::$r"
+          done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.ready == 'true'
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        if: steps.ready.outputs.ready == 'true'
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: steps.ready.outputs.ready == 'true'
+
+      - name: Build
+        if: steps.ready.outputs.ready == 'true'
+        run: cargo build --locked -p contract
+
+      # Both runs go to the end; the job fails after them if either found drift. The secrets
+      # reach these two steps only.
+      - name: Read run
+        id: read
+        if: steps.ready.outputs.ready == 'true' && needs.plan.outputs.read == 'true'
+        continue-on-error: true
+        env:
+          CONTRACT_APP_ID: ${{ secrets.CONTRACT_APP_ID }}
+          CONTRACT_APP_KEY: ${{ secrets.CONTRACT_APP_KEY }}
+          CONTRACT_CLIENT_ID: ${{ secrets.CONTRACT_CLIENT_ID }}
+          CONTRACT_CLIENT_SECRET: ${{ secrets.CONTRACT_CLIENT_SECRET }}
+          # The machine user's non-expiring token: the user-token half.
+          CONTRACT_USER_TOKEN: ${{ secrets.CONTRACT_USER_TOKEN }}
+          # Busy repos beghu-ci is installed on, comma-separated (AdvanGrid/advangrid,…).
+          CONTRACT_REPOS: ${{ secrets.CONTRACT_REPOS }}
+        run: cargo run --locked -p contract -- read --report
+
+      - name: Write run
+        id: write
+        if: steps.ready.outputs.ready == 'true' && needs.plan.outputs.write == 'true'
+        continue-on-error: true
+        env:
+          CONTRACT_APP_ID: ${{ secrets.CONTRACT_APP_ID }}
+          CONTRACT_APP_KEY: ${{ secrets.CONTRACT_APP_KEY }}
+          # The machine user's token: beghu writes with user tokens.
+          CONTRACT_USER_TOKEN: ${{ secrets.CONTRACT_USER_TOKEN }}
+        run: cargo run --locked -p contract -- write --report
+
+      - name: Drift fails the run
+        if: steps.read.outcome == 'failure' || steps.write.outcome == 'failure'
+        run: |
+          echo "Contract drift, or a run that couldn't finish: see the steps above and the Contract drift issue on $CONTRACT_SANDBOX"
+          exit 1
+
+  keepalive:
+    # GitHub turns a public repo's scheduled workflows off after 60 days without activity:
+    # enabling this one again each week keeps the nightly check from going quiet.
+    if: github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the schedule enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/${{ github.repository }}/actions/workflows/contract.yml/enable"

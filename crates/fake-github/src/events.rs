@@ -149,10 +149,17 @@ async fn feed(
             }
             let rows = q::repo_events(c, repo, per_page, (page - 1) * per_page)?;
             let full = format!("{owner}/{name}");
-            rows.iter()
-                .map(|e| event_json(c, &full, e))
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map(Some)
+            // An issue deleted since takes its events out of the feed (and an event naming one as
+            // its other end goes too), rather than failing the read.
+            let mut items = Vec::new();
+            for e in &rows {
+                match event_json(c, &full, e) {
+                    Ok(v) => items.push(v),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(Some(items))
         })
         .await;
     let items = match read {

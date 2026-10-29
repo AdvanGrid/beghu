@@ -135,3 +135,32 @@ _Avoid_: Relevance, search ranking
 **Preference**:
 A choice a user makes about how beghu looks or behaves for them. A device preference (theme, divider and column widths, tree expand state) stays in the browser where it was set. An account preference (comment order, key bindings) is stored per connected account on the server and follows that account to every browser.
 _Avoid_: Setting, user config
+
+**Contract check**:
+The scheduled check that sends Fake GitHub's request set to real GitHub and compares each answer's fields and types with the fake's recorded templates, so the fake can't drift from GitHub. It has a read run and a write run.
+_Avoid_: API test, conformance test
+
+**Template**:
+The recorded shape of one GitHub answer or webhook payload (its fields, their kinds, and the values beghu relies on), kept with Fake GitHub. The fake may answer only what its template holds, and GitHub must still answer all of it.
+_Avoid_: Fixture, snapshot, schema
+
+**Drift**:
+An answer from GitHub that no longer fits its template: a field gone, or of another kind. Drift fails the contract check and is reported on one issue on the sandbox. Webhook events not seen for 14 days are coverage gaps, not drift.
+_Avoid_: Breakage, mismatch
+
+**Read run**:
+The nightly half of the contract check: reads on busy repos with read-only tokens, plus the webhook payloads read back from the App's delivery log.
+_Avoid_: Nightly check
+
+**Write run**:
+The weekly half of the contract check: each of beghu's writes made on the sandbox and undone in the same run, which then checks the sandbox is as it found it.
+_Avoid_: Write test
+
+**Sandbox**:
+`AdvanGrid/beghu-sandbox`, the one real repo beghu's tooling writes to: the contract check's write run, and dev mode against real GitHub, which refuses writes anywhere else.
+_Avoid_: Test repo, scratch repo
+
+**Machine user**:
+The AdvanGrid bot account whose non-expiring token runs the contract check's user-token half and its writes.
+_Avoid_: Bot user, service account
+

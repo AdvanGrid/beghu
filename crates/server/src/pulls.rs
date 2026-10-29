@@ -48,7 +48,7 @@ pub struct Pull {
 }
 
 /// `PullReadBack`: the PR's own fields and a page of the issues it closes.
-const QUERY: &str = concat!(
+pub(crate) const QUERY: &str = concat!(
     "query PullReadBack($id: ID!, $after: String) {
   node(id: $id) {
     ... on PullRequest {
@@ -263,7 +263,7 @@ fn refused(inner: &Inner, installation: i64, scope: Scope, token: &str, e: CallE
 /// `IssueLinkedPulls`: a page of the PRs that close an issue, wherever they live, open or not.
 /// A PR's GraphQL id isn't the issue-side id the mirror keys items on, so each is named by its
 /// repository and number.
-const LINKED_QUERY: &str = "query IssueLinkedPulls($id: ID!, $after: String) {
+pub(crate) const LINKED_QUERY: &str = "query IssueLinkedPulls($id: ID!, $after: String) {
   node(id: $id) {
     ... on Issue {
       closedByPullRequestsReferences(first: 50, after: $after, includeClosedPrs: true) {

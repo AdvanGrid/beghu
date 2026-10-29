@@ -38,7 +38,8 @@ import {
   running,
   writeJson,
 } from "./config.ts";
-import { supervise, up } from "./supervisor.ts";
+import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
+import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
 
@@ -53,6 +54,30 @@ Commands:
                               The server and the fake rebuild and restart when their
                               sources change; a process that exits on its own is
                               restarted. No-op if already running.
+  start --github              Against real GitHub instead, through your own dev App (see
+                              github setup): the server (its data in .dev/data-github),
+                              smee forwarding the App's webhooks, and Vite. No fake. It
+                              reads the repos you can see and writes only to
+                              AdvanGrid/beghu-sandbox; any other write is refused.
+  github setup [--app-json FILE] [--key PEM] [--app-id ID] [--client-id ID]
+               [--client-secret S] [--webhook-secret S] --smee URL [--repos R,…]
+                              Copy your dev App's credentials into .dev/github/ (never
+                              committed) and check them: the JWT works, the App is
+                              installed on the sandbox, and it mints an installation
+                              token. --app-json takes what github-app/create-app.mjs
+                              wrote (.dev/github-app/<slug>.json, .pem beside it); the
+                              flags override it. --smee is the channel the App's webhook
+                              URL points at. --repos: what contract reads by default.
+  contract read|write [--fake] [--report] [OPTIONS]
+  contract record read|write [--fake] [OPTIONS]
+                              The contract check (crates/contract): diff GitHub's answers
+                              with Fake GitHub's recorded templates. read: the read set on
+                              your dev App's repos and its webhook deliveries; write:
+                              beghu's writes on the sandbox, each undone. record writes the
+                              templates again from the answers. --fake runs against the
+                              running stack's Fake GitHub instead. --report posts to the
+                              "Contract drift" issue on the sandbox. OPTIONS pass through
+                              (cargo run -p contract -- help). Exit 1 on drift.
   stop                        Stop everything.
   status                      Mode, scale, URLs, each process up or down (--json: and its
                               pid, and the dev webhook secret), the fake users signed in,
@@ -229,7 +254,9 @@ const print = (json: boolean, data: unknown, text: string) =>
 // start / stop
 
 async function start(args: string[]): Promise<void> {
-  const { opts, json } = parse(args, ["--scale"]);
+  const { opts, set, json } = parse(args, ["--scale"], ["--github"]);
+  const gh = set.has("--github");
+  if (gh && opts["--scale"]) throw new Usage("--github runs against GitHub: it has no scale");
   const scale = (opts["--scale"] ?? DEFAULT_SCALE) as Scale;
   if (!SCALES.includes(scale)) throw new Usage(`--scale is one of ${SCALES.join(", ")}`);
   const r = running();
@@ -237,12 +264,20 @@ async function start(args: string[]): Promise<void> {
     print(json, { running: true, pid: r.pid }, `already running (pid ${r.pid}); see ./dev-ctl status`);
     return;
   }
-  await startStack(scale, json);
+  if (gh) {
+    if (!readDevApp()) die("no dev App set up yet: run ./dev-ctl github setup (see ./dev-ctl help)");
+    if (!existsSync(SMEE)) {
+      if (!json) console.log("installing ./dev-ctl's dependencies (smee-client)");
+      const npm = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: join(ROOT, "tools", "dev-ctl"), stdio: "inherit" });
+      if (npm.status !== 0) die("npm ci in tools/dev-ctl failed");
+    }
+  }
+  await startStack(gh ? "github" : scale, json);
 }
 
 /** Starts the stack and prints its status, with `extra` merged into the JSON. */
 async function startStack(
-  scale: Scale,
+  scale: Scale | "github",
   json: boolean,
   env: NodeJS.ProcessEnv = {},
   extra: Record<string, unknown> = {},
@@ -264,7 +299,10 @@ async function startStack(
   });
   child.unref();
   closeSync(out);
-  if (!json) console.log(`starting (log: ${rel(LOG)}); the first build and the ${scale} fixture can take minutes`);
+  if (!json) {
+    const what = scale === "github" ? "the first build" : `the first build and the ${scale} fixture`;
+    console.log(`starting (log: ${rel(LOG)}); ${what} can take minutes`);
+  }
 
   const timeout = Number(process.env.START_TIMEOUT ?? 1800) * 1000;
   const deadline = Date.now() + timeout;
@@ -360,6 +398,18 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
   };
   const word = (b: boolean) => (b ? "up" : "DOWN");
   const faults = fake ? describeFaults(fake.faults, fake.webhooks.faults, fake.quota) : [];
+  if (s?.mode === "github") {
+    const dev = readDevApp();
+    const text = [
+      `running (pid ${r.pid}, ${s.phase}): github mode, as the dev App ${dev?.slug ?? "?"}`,
+      ...(s.error ? [`  ${s.error}`] : []),
+      `  app     ${urls().app}  ${word(app)}`,
+      `  server  ${urls().server}  ${word(server)}`,
+      `  smee    ${dev?.smee_url ?? "?"} -> ${urls().server}/webhook`,
+      `writes go only to AdvanGrid/beghu-sandbox`,
+    ].join("\n");
+    return print(json, { ...data, up: { app, server }, dev_app: dev?.slug ?? null, smee: dev?.smee_url ?? null }, text);
+  }
   const text = [
     `running (pid ${r.pid}, ${s?.phase ?? "unknown"}): ${s?.mode ?? "?"} mode, scale ${s?.scale ?? "?"}`,
     ...(s?.error ? [`  ${s.error}`] : []),
@@ -839,6 +889,7 @@ async function reset(args: string[]): Promise<void> {
   const { set, pos, json } = parse(args, [], ["--all", "--fresh"]);
   if (pos.length) throw new Usage("usage: ./dev-ctl reset [--all] [--fresh]");
   const r = running();
+  if (r?.state?.mode === "github") die("reset is for fixture mode: the stack runs against GitHub (./dev-ctl stop first)");
   const scale = r?.state?.scale ?? readJson<Seeded>(SEEDED)?.scale ?? DEFAULT_SCALE;
   if (r && !json) console.log("stopping the stack");
   await stop();
@@ -916,7 +967,7 @@ async function main(): Promise<void> {
   const [cmd = "help", ...args] = process.argv.slice(2);
   switch (cmd) {
     case "__supervise":
-      return supervise(args[0] as Scale);
+      return args[0] === "github" ? superviseGitHub() : supervise(args[0] as Scale);
     case "start":
       return start(args);
     case "stop": {
@@ -938,6 +989,10 @@ async function main(): Promise<void> {
       return deploy(args);
     case "reset":
       return reset(args);
+    case "github":
+      return github(args);
+    case "contract":
+      return contract(args);
     case "perf":
       return perf(args);
     case "help":
@@ -951,6 +1006,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: unknown) => {
-  if (e instanceof Usage) die(`${e.message}\nRun ./dev-ctl help for usage.`, 2);
+  if (e instanceof Usage || e instanceof BadArgs) die(`${e.message}\nRun ./dev-ctl help for usage.`, 2);
   die(e instanceof Error ? (e.stack ?? e.message) : String(e));
 });

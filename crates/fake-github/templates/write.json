@@ -1,0 +1,877 @@
+{
+  "write.add_assignees": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/assignees",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "assignees": {
+        "[]": {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        }
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": "never",
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.add_blocked_by": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.add_blocked_by_again": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by (already)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 422
+  },
+  "write.add_labels": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/labels",
+    "shape": {
+      "[]": {
+        "color": "string",
+        "default": "boolean",
+        "description": [
+          "string",
+          "null"
+        ],
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "url": "string"
+      }
+    },
+    "status": 200
+  },
+  "write.add_relates_to": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/relates_to",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.add_sub_issue": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/sub_issues",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.add_sub_issue_again": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/sub_issues (already one)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 422
+  },
+  "write.create_comment": {
+    "request": "POST /repos/{owner}/{repo}/issues/{number}/comments",
+    "shape": {
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "issue_url": "string",
+      "node_id": "string",
+      "performed_via_github_app": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.create_issue": {
+    "request": "POST /repos/{owner}/{repo}/issues",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "assignees": {
+        "[]": {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        }
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": {
+          "color": "string",
+          "default": "boolean",
+          "description": [
+            "string",
+            "null"
+          ],
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "url": "string"
+        }
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": "never",
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 201
+  },
+  "write.create_issue_invalid": {
+    "request": "POST /repos/{owner}/{repo}/issues (no title)",
+    "shape": {
+      "documentation_url": "string",
+      "errors": {
+        "[]": {
+          "code": "string",
+          "field": "string",
+          "resource": "string"
+        }
+      },
+      "message": "string",
+      "status": "string"
+    },
+    "status": 422
+  },
+  "write.delete_comment": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}",
+    "shape": "null",
+    "status": 204
+  },
+  "write.forbidden": {
+    "pins": {
+      "$.message": "Resource not accessible by integration"
+    },
+    "request": "PATCH /repos/{owner}/{repo}/issues/{number} (read-only token)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 403
+  },
+  "write.prioritize_sub_issue": {
+    "request": "PATCH /repos/{owner}/{repo}/issues/{number}/sub_issues/priority",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
+  "write.remove_assignees": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/assignees",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": "never",
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
+  "write.remove_blocked_by": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by/{issue_id}",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
+  "write.remove_label": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}",
+    "shape": {
+      "[]": "never"
+    },
+    "status": 200
+  },
+  "write.remove_missing_label": {
+    "pins": {
+      "$.message": "Label does not exist"
+    },
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name} (not on the issue)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 404
+  },
+  "write.remove_missing_sub_issue": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/sub_issue (not one)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 404
+  },
+  "write.remove_relates_to": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/relates_to/{issue_id}",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
+  "write.remove_sub_issue": {
+    "request": "DELETE /repos/{owner}/{repo}/issues/{number}/sub_issue",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": "never",
+      "assignees": {
+        "[]": "never"
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": "never",
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": "never"
+      },
+      "locked": "boolean",
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
+  "write.update_issue": {
+    "request": "PATCH /repos/{owner}/{repo}/issues/{number}",
+    "shape": {
+      "active_lock_reason": "never",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "assignees": {
+        "[]": {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        }
+      },
+      "author_association": "string",
+      "body": [
+        "string",
+        "null"
+      ],
+      "closed_at": [
+        "string",
+        "null"
+      ],
+      "comments": "number",
+      "created_at": "string",
+      "html_url": "string",
+      "id": "number",
+      "labels": {
+        "[]": {
+          "color": "string",
+          "default": "boolean",
+          "description": [
+            "string",
+            "null"
+          ],
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "url": "string"
+        }
+      },
+      "locked": "boolean",
+      "milestone": [
+        {
+          "due_on": [
+            "string",
+            "null"
+          ],
+          "html_url": "string",
+          "id": "number",
+          "node_id": "string",
+          "number": "number",
+          "state": "string",
+          "title": "string",
+          "updated_at": "string",
+          "url": "string"
+        },
+        "null"
+      ],
+      "node_id": "string",
+      "number": "number",
+      "repository_url": "string",
+      "state": "string",
+      "state_reason": [
+        "string",
+        "null"
+      ],
+      "title": "string",
+      "type": "never",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  }
+}

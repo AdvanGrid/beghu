@@ -6,6 +6,11 @@
 //!   is `success` (a 2xx or 3xx answer) or `failure`. Each item has GitHub's fields: `id`,
 //!   `guid`, `delivered_at`, `redelivery`, `duration`, `status`, `status_code`, `event`,
 //!   `action`, `installation_id`, `repository_id` and `throttled_at`.
+//! - `GET /app/hook/deliveries/{delivery_id}`: one attempt with GitHub's fields for it besides
+//!   the listing's: `url`, and the `request` (`headers` and `payload`) and `response` (`headers`
+//!   and `payload`, the receiver's body as a string, or null when none came back) as GitHub's
+//!   log keeps them. The contract check reads webhook payloads from here. A delivery past the 3
+//!   days, or never made, is a 404.
 //! - `POST /app/hook/deliveries/{delivery_id}/attempts`: sends that delivery again under its own
 //!   GUID, logged with `redelivery: true`; 202. A delivery past the 3 days, or never made, is a
 //!   404.
@@ -25,6 +30,7 @@ use serde_json::{Value, json};
 pub(crate) fn router() -> Router<Fake> {
     Router::new()
         .route("/app/hook/deliveries", get(list))
+        .route("/app/hook/deliveries/{delivery_id}", get(one))
         .route(
             "/app/hook/deliveries/{delivery_id}/attempts",
             post(redeliver),
@@ -124,6 +130,41 @@ async fn list(State(fake): State<Fake>, headers: HeaderMap, Query(p): Query<Para
         }
     }
     res
+}
+
+/// `GET /app/hook/deliveries/{delivery_id}`.
+async fn one(State(fake): State<Fake>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    if let Err(r) = crate::app::check_jwt(&fake, &headers) {
+        return r;
+    }
+    let found = fake.state().webhooks.log(fake.now(), |all| {
+        all.iter().find(|a| a.id == id).map(|a| {
+            let mut v = item(a);
+            let sent: serde_json::Map<String, Value> = a
+                .headers
+                .iter()
+                .map(|(k, val)| ((*k).to_owned(), json!(val)))
+                .collect();
+            let (got, payload) = match &a.response {
+                Some((content_type, body)) => {
+                    let mut h = serde_json::Map::new();
+                    if let Some(t) = content_type {
+                        h.insert("Content-Type".into(), json!(t));
+                    }
+                    (h, json!(body))
+                }
+                None => (serde_json::Map::new(), Value::Null),
+            };
+            v["url"] = json!(a.url);
+            v["request"] = json!({ "headers": sent, "payload": a.payload });
+            v["response"] = json!({ "headers": got, "payload": payload });
+            v
+        })
+    });
+    match found {
+        Some(v) => axum::Json(v).into_response(),
+        None => api::not_found().await,
+    }
 }
 
 async fn redeliver(State(fake): State<Fake>, headers: HeaderMap, Path(id): Path<i64>) -> Response {

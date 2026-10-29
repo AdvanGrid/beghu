@@ -385,6 +385,7 @@ impl Stack {
                 app_key: fake_github::DEV_APP_KEY.into(),
                 app_slug: Some(fake_github::APP_SLUG.to_owned()),
                 attachments_url: format!("{}/private-user-images", self.fake_api),
+                writable_repos: None,
             },
             web_dir: Some(self.web.clone()),
             mirrors: mirror_db_config(),

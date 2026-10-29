@@ -55,6 +55,7 @@ pub(crate) const SESSION_COOKIE: &str = "fake_gh_user";
 pub(crate) fn router() -> Router<Fake> {
     Router::new()
         .route("/app", get(app))
+        .route("/repos/{owner}/{repo}/installation", get(repo_installation))
         .route(
             "/app/installations/{installation_id}/access_tokens",
             post(access_token),
@@ -244,6 +245,59 @@ async fn app(State(fake): State<Fake>, headers: HeaderMap) -> Response {
         "events": crate::api::EVENTS,
     }))
     .into_response()
+}
+
+/// `GET /repos/{owner}/{repo}/installation`: the App's installation that covers the repo, with
+/// the App's JWT; a repo it isn't installed on (or no such repo) is GitHub's 404.
+async fn repo_installation(
+    State(fake): State<Fake>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = check_jwt(&fake, &headers) {
+        return r;
+    }
+    let found = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let Some(repo) = q::repo_named(c, &owner, &name)? else {
+                return Ok(None);
+            };
+            let Some(id) = q::repo(c, repo)?.installation_id else {
+                return Ok(None);
+            };
+            let Some(i) = q::installation(c, id)? else {
+                return Ok(None);
+            };
+            let by = match i.suspended_at {
+                Some(_) => q::user_row(c, i.account_id)?,
+                None => None,
+            };
+            Ok(Some((i, by)))
+        })
+        .await;
+    match found {
+        Ok(Some((i, by))) => axum::Json(api::installation_json(
+            &fake,
+            &api::Installation {
+                id: i.id,
+                account_id: i.account_id,
+                account_login: &i.account_login,
+                account_type: &i.account_type,
+                created_at: i.created_at,
+                suspended_at: i.suspended_at,
+            },
+            by.as_ref().map(|u| (u.id, u.login.as_str())),
+        ))
+        .into_response(),
+        Ok(None) => api::error_documented(
+            StatusCode::NOT_FOUND,
+            "Not Found",
+            "https://docs.github.com/rest/apps/apps#get-a-repository-installation-for-the-authenticated-app",
+        ),
+        Err(e) => api::internal(e),
+    }
 }
 
 /// `POST /app/installations/{id}/access_tokens`.

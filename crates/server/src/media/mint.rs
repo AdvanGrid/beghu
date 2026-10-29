@@ -120,6 +120,11 @@ pub async fn for_viewer(app: &App, account: i64, uuid: &str) -> Result<Minted, M
     Err(failed.map_or(MintError::NotFound, MintError::Failed))
 }
 
+/// `MintAttachments`: each post's rendered HTML, where GitHub mints its attachments' URLs.
+pub(super) const MINT_ATTACHMENTS: &str = "query MintAttachments($ids: [ID!]!) { nodes(ids: $ids) { __typename \
+    ... on Issue { id bodyHTML } ... on PullRequest { id bodyHTML } \
+    ... on IssueComment { id bodyHTML } } }";
+
 /// Mints the attachments `wanted` names, post by post (`node id → UUIDs`), with
 /// `installation`'s token, [`BATCH`] posts a call: the URLs found, by UUID. A failed call leaves
 /// its posts' attachments out: they're measured when a detail shows them.
@@ -128,9 +133,6 @@ pub async fn for_probes(
     installation: i64,
     wanted: &[(String, Vec<String>)],
 ) -> HashMap<String, Minted> {
-    const QUERY: &str = "query MintAttachments($ids: [ID!]!) { nodes(ids: $ids) { __typename \
-        ... on Issue { id bodyHTML } ... on PullRequest { id bodyHTML } \
-        ... on IssueComment { id bodyHTML } } }";
     let prefix = app.cfg().github.attachments_url.clone();
     let mut out = HashMap::new();
     for batch in wanted.chunks(BATCH) {
@@ -147,7 +149,7 @@ pub async fn for_probes(
             .graphql_data(
                 &token,
                 "MintAttachments",
-                QUERY,
+                MINT_ATTACHMENTS,
                 serde_json::json!({ "ids": ids }),
             )
             .await

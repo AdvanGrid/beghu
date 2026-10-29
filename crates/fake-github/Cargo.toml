@@ -10,6 +10,8 @@ axum = { workspace = true }
 base64 = "0.22"
 dbrt = { workspace = true }
 futures-util = { version = "0.3", default-features = false }
+# The selection set of a GraphQL query, to answer only the fields it asks for (`select.rs`).
+graphql-parser = "0.4"
 fake-db = { workspace = true }
 hmac = "0.12"
 mirror-db = { workspace = true }

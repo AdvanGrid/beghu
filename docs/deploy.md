@@ -73,6 +73,7 @@ refused either way.
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
 | `GITHUB_ATTACHMENTS_URL` | no | Default `https://private-user-images.githubusercontent.com`: where the attachment URLs GitHub mints into a post's HTML point. The attachment route fetches from nowhere else. Dev and CI point it at Fake GitHub's `/private-user-images`. |
 | `BEGHU_DEV_IMAGE_HOSTS` | no, dev only | Loopback `ip:port`s, comma-separated, that the image proxy may fetch from despite its address guard: Fake GitHub's stand-in for the web's image hosts. beghu refuses to start with it set unless `GITHUB_API_URL` is on this machine. Never set it in production. |
+| `BEGHU_DEV_WRITABLE_REPOS` | no, dev only | `owner/name`s, comma-separated: the only repos beghu writes to. Any other write is refused before it reaches GitHub. `./dev-ctl start --github` sets it to `AdvanGrid/beghu-sandbox`. Leave it unset in production. |
 | `BEGHU_MIRROR_CONNECTIONS` | no | The cap on open mirror connections across all accounts. Default 256. |
 
 Fake GitHub's dev App key is committed to this repo (`crates/fake-github/src/dev-app-key.pem`),
@@ -293,3 +294,63 @@ build's assets kept and pruned.
 The cold first load (the shell, the entry chunk and the stylesheet, compressed) is budgeted at
 48 KB on the wire (`docs/research/first-load.md`). In v1 the budget isn't a blocker: the image
 ships whatever the build produces. The perf gates (#117) will enforce it.
+
+## The contract check
+
+`.github/workflows/contract.yml` runs `crates/contract` against real GitHub as a private App,
+`beghu-ci`, to keep Fake GitHub honest (`docs/research/contract-check-shapes.md`). Reads run
+nightly on a few busy repos with read-only installation tokens, and read webhook payloads back
+from the App's delivery log. Writes run weekly, on `workflow_dispatch`, and on pushes to `main`
+that touch the fake's templates or beghu's GitHub client, all on `AdvanGrid/beghu-sandbox`, each
+undone in the same run. Run it by hand (`workflow_dispatch`, `both`) before each release.
+Drift fails the run and is commented on the one "Contract drift" issue on the sandbox. Webhook
+events unseen for 14 days go on the same issue under "Coverage gaps". It never runs on pull
+requests.
+
+Setup, once, by an org owner:
+
+1. Register `beghu-ci` under AdvanGrid from the manifest:
+   `node github-app/create-app.mjs --org AdvanGrid --name beghu-ci --hook-url https://smee.io/<a channel nobody listens to>`.
+   Its webhook must stay active, or GitHub keeps no delivery log to read. In its settings,
+   turn off user-token expiration and turn on device flow.
+2. Install it on the busy repos (`advangrid`, `hermes`, `adv-website`) and on `beghu-sandbox`,
+   but not on `beghu`.
+3. Sign the machine user in to `beghu-ci` once by device flow, and keep its token. The machine
+   user is an org member with Read on one installed repo and Write on the sandbox. The write run
+   writes with its token, as beghu writes with users' tokens. It needs Write because a lower role
+   has some edits silently dropped. The write run assigns only the machine user itself.
+4. On `AdvanGrid/beghu`, make an environment called `contract`, limited to `main`, with these
+   secrets: `CONTRACT_APP_ID`, `CONTRACT_APP_KEY` (the PEM), `CONTRACT_CLIENT_ID`,
+   `CONTRACT_CLIENT_SECRET`, `CONTRACT_USER_TOKEN` (the machine user's token), and
+   `CONTRACT_REPOS` (`AdvanGrid/advangrid,AdvanGrid/hermes,AdvanGrid/adv-website`; only the read
+   run needs it). Until `CONTRACT_APP_ID` and `CONTRACT_APP_KEY` are set, each run skips with a
+   notice instead of failing. The workflow masks the repo names in its log, and reports name
+   them by their place in the list.
+
+The repo is public, and GitHub turns off a public repo's scheduled workflows after 60 days
+without activity. The workflow's weekly `keepalive` job enables it again. If it stops anyway,
+`gh workflow enable contract.yml` starts it again.
+
+When the check reports drift, fix the fake. Then record its templates again from GitHub and
+review the diff: `./dev-ctl contract record read` and `record write`, with a dev App set up
+(see the next section). Then close the drift issue.
+
+## Developing against real GitHub
+
+Fake GitHub can't show some things (AGENTS.md lists them). For those, each developer registers
+their own dev App under AdvanGrid. Run `node github-app/create-app.mjs --org AdvanGrid --name beghu-dev-<you> --hook-url https://smee.io/<your channel> --callback-url http://localhost:5173/auth/callback`,
+then install it on the repos you need and on `beghu-sandbox`. Then:
+
+- `./dev-ctl github setup --smee https://smee.io/<your channel>` copies the credentials
+  create-app wrote into `.dev/github/` and checks them by minting an installation token for the
+  sandbox. It warns when the App lacks a webhook event the manifest asks for.
+- `./dev-ctl start --github` runs the server against GitHub, with its data in
+  `.dev/data-github`, and runs smee-client to forward the App's webhooks. Fake GitHub doesn't
+  run. Every repo you can see is read, but writes go only to `AdvanGrid/beghu-sandbox`
+  (`BEGHU_DEV_WRITABLE_REPOS`). Any other write is refused before it reaches GitHub.
+- `./dev-ctl contract read|write` runs the contract check as your dev App. `--fake` runs it
+  against the running fixture stack's Fake GitHub instead.
+
+smee-client re-serialises each payload before it forwards it. A delivery whose JSON GitHub wrote
+another way (its escapes) then fails its signature check, and the server refuses it. Redelivery
+and the sweeps catch up.

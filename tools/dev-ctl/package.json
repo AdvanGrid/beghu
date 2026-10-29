@@ -2,7 +2,7 @@
   "name": "dev-ctl",
   "private": true,
   "type": "module",
-  "description": "./dev-ctl: runs the beghu dev stack. TypeScript run directly by Node (type stripping); no runtime dependencies.",
+  "description": "./dev-ctl: runs the beghu dev stack. TypeScript run directly by Node (type stripping). Its one runtime dependency, smee-client, is for `start --github` alone.",
   "engines": {
     "node": ">=23.6"
   },
@@ -13,5 +13,8 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "smee-client": "5.0.0"
   }
 }

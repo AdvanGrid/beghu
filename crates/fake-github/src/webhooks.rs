@@ -78,7 +78,16 @@ pub(crate) struct Attempt {
     pub status_code: u16,
     pub event: &'static str,
     pub payload: Value,
+    /// Where it went (the App's webhook URL then).
+    pub url: String,
+    /// The headers it was sent with, as GitHub's delivery log keeps them.
+    pub headers: Vec<(&'static str, String)>,
+    /// What the receiver answered: its `content-type` and body. None when nothing came back.
+    pub response: Option<(Option<String>, String)>,
 }
+
+/// What a delivery log keeps of a receiver's answer: at most this many bytes of it.
+const RESPONSE_KEPT: usize = 2048;
 
 /// Every attempt in the last [`RETENTION`], oldest first.
 #[derive(Default)]
@@ -341,7 +350,26 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
             continue;
         };
         let started = std::time::Instant::now();
-        let attempt = |status: String, status_code: u16| Attempt {
+        let body = serde_json::to_vec(&d.payload).expect("JSON values serialise");
+        let installation = d.payload["installation"]["id"].as_i64().unwrap_or(0);
+        // GitHub's delivery log names the headers as GitHub wrote them.
+        let headers: Vec<(&'static str, String)> = vec![
+            ("Accept", "*/*".into()),
+            ("User-Agent", "GitHub-Hookshot/fake".into()),
+            ("X-GitHub-Delivery", d.guid.clone()),
+            ("X-GitHub-Event", d.event.into()),
+            ("X-GitHub-Hook-ID", "1000001".into()),
+            ("X-GitHub-Hook-Installation-Target-ID", "1000001".into()),
+            (
+                "X-GitHub-Hook-Installation-Target-Type",
+                "integration".into(),
+            ),
+            ("X-Hub-Signature-256", w.signature(&body)),
+            ("content-type", "application/json".into()),
+        ];
+        let attempt = |status: String,
+                       status_code: u16,
+                       response: Option<(Option<String>, String)>| Attempt {
             id: 0,
             guid: d.guid.clone(),
             delivered_at: fake.now(),
@@ -351,39 +379,44 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
             status_code,
             event: d.event,
             payload: d.payload.clone(),
+            url: url.clone(),
+            headers: headers.clone(),
+            response,
         };
         if d.lost {
-            w.record(attempt(TIMED_OUT.into(), 0));
+            w.record(attempt(TIMED_OUT.into(), 0, None));
             continue;
         }
-        let body = serde_json::to_vec(&d.payload).expect("JSON values serialise");
-        let installation = d.payload["installation"]["id"].as_i64().unwrap_or(0);
-        let res = http
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("user-agent", "GitHub-Hookshot/fake")
-            .header("x-github-event", d.event)
-            .header("x-github-delivery", &d.guid)
-            .header("x-github-hook-id", "1000001")
-            .header("x-github-hook-installation-target-id", "1000001")
-            .header("x-github-hook-installation-target-type", "integration")
-            .header("x-hub-signature-256", w.signature(&body))
-            .body(body)
-            .send()
-            .await;
+        let mut req = http.post(&url);
+        for (name, value) in &headers {
+            req = req.header(*name, value);
+        }
+        let res = req.body(body).send().await;
         match res {
-            Ok(r) if r.status().is_success() => {
-                w.record(attempt("OK".into(), r.status().as_u16()));
-            }
             Ok(r) => {
-                eprintln!(
-                    "fake-github: webhook {} {} (installation {installation}) got {}",
-                    d.event,
-                    d.guid,
-                    r.status()
-                );
                 let code = r.status().as_u16();
-                w.record(attempt(format!("Invalid HTTP Response: {code}"), code));
+                let ok = r.status().is_success();
+                let content_type = r
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                let text = r.text().await.unwrap_or_default();
+                let kept: String = text.chars().take(RESPONSE_KEPT).collect();
+                let response = Some((content_type, kept));
+                if ok {
+                    w.record(attempt("OK".into(), code, response));
+                } else {
+                    eprintln!(
+                        "fake-github: webhook {} {} (installation {installation}) got {code}",
+                        d.event, d.guid,
+                    );
+                    w.record(attempt(
+                        format!("Invalid HTTP Response: {code}"),
+                        code,
+                        response,
+                    ));
+                }
             }
             Err(e) => {
                 eprintln!(
@@ -395,7 +428,7 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
                 } else {
                     UNREACHABLE
                 };
-                w.record(attempt(status.into(), 0));
+                w.record(attempt(status.into(), 0, None));
             }
         }
     }

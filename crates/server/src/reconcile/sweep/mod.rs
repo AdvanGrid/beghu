@@ -16,6 +16,14 @@ mod ids;
 mod probes;
 mod relationships;
 
+/// The sweeps' GraphQL documents, by operation name (`crate::GRAPHQL_DOCUMENTS`).
+pub(super) const GRAPHQL: [(&str, &str); 4] = [
+    ("SweepEdges", relationships::SWEEP_EDGES),
+    ("SweepCounts", ids::SWEEP_COUNTS),
+    ("SweepIssueIds", ids::SWEEP_ISSUE_IDS),
+    ("SweepPullIds", ids::SWEEP_PULL_IDS),
+];
+
 use super::{Budget, Error, Touched};
 use crate::App;
 use crate::edges::{self, Kind, ReadBack, Subject};

@@ -267,6 +267,11 @@ pub struct GitHubConfig {
     /// `GITHUB_ATTACHMENTS_URL` (default `https://private-user-images.githubusercontent.com`):
     /// where the attachment URLs GitHub mints point. The attachment route fetches nothing else.
     pub attachments_url: String,
+    /// `BEGHU_DEV_WRITABLE_REPOS` (optional): `owner/name`s, comma-separated, the only repos
+    /// beghu writes to; every other write is refused before it reaches GitHub. Dev mode against
+    /// real GitHub (`./dev-ctl start --github`) sets it to `AdvanGrid/beghu-sandbox`, so a
+    /// developer reads real repos but writes only to the sandbox. Unset, every repo is writable.
+    pub writable_repos: Option<Vec<String>>,
 }
 
 impl Config {
@@ -309,6 +314,7 @@ impl Config {
                     "GITHUB_ATTACHMENTS_URL",
                     "https://private-user-images.githubusercontent.com",
                 ),
+                writable_repos: writable_repos()?,
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
@@ -431,6 +437,28 @@ fn dev_image_hosts(api_url: &str) -> Result<Vec<std::net::SocketAddr>, String> {
             )),
         })
         .collect()
+}
+
+/// `BEGHU_DEV_WRITABLE_REPOS`: `owner/name`s, kept in lower case (GitHub's names aren't case
+/// sensitive). Unset or blank: none named, every repo writable.
+fn writable_repos() -> Result<Option<Vec<String>>, String> {
+    let raw = std::env::var("BEGHU_DEV_WRITABLE_REPOS").unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    raw.split(',')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| match r.split_once('/') {
+            Some((o, n)) if !o.is_empty() && !n.is_empty() && !n.contains('/') => {
+                Ok(r.to_ascii_lowercase())
+            }
+            _ => Err(format!(
+                "BEGHU_DEV_WRITABLE_REPOS takes owner/name repos, comma-separated, got {r:?}"
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 fn required(name: &str) -> Result<String, String> {

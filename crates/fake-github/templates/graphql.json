@@ -1,0 +1,666 @@
+{
+  "graphql.ImportClosingRefs": {
+    "request": "POST /graphql ImportClosingRefs",
+    "shape": {
+      "data": {
+        "node": {
+          "closingIssuesReferences": {
+            "nodes": {
+              "[]": {
+                "__typename": "string",
+                "databaseId": "number",
+                "id": "string",
+                "number": "number",
+                "repository": {
+                  "databaseId": "number",
+                  "id": "string",
+                  "isPrivate": "boolean",
+                  "name": "string",
+                  "owner": {
+                    "login": "string"
+                  }
+                },
+                "state": "string",
+                "title": "string"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            }
+          },
+          "id": "string"
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportComments": {
+    "request": "POST /graphql ImportComments",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "comments": {
+              "nodes": {
+                "[]": {
+                  "author": [
+                    {
+                      "avatarUrl": "string",
+                      "databaseId": "number",
+                      "login": "string"
+                    },
+                    "null"
+                  ],
+                  "body": [
+                    "string",
+                    "null"
+                  ],
+                  "createdAt": "string",
+                  "databaseId": "number",
+                  "id": "string",
+                  "updatedAt": "string"
+                }
+              },
+              "pageInfo": {
+                "endCursor": [
+                  "string",
+                  "null"
+                ],
+                "hasNextPage": "boolean"
+              }
+            },
+            "id": "string"
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportIssues": {
+    "request": "POST /graphql ImportIssues",
+    "shape": {
+      "data": {
+        "repository": {
+          "issues": {
+            "nodes": {
+              "[]": {
+                "assignees": {
+                  "nodes": {
+                    "[]": {
+                      "avatarUrl": "string",
+                      "databaseId": "number",
+                      "login": "string"
+                    }
+                  }
+                },
+                "author": [
+                  {
+                    "avatarUrl": "string",
+                    "databaseId": "number",
+                    "login": "string"
+                  },
+                  "null"
+                ],
+                "body": [
+                  "string",
+                  "null"
+                ],
+                "closedAt": "never",
+                "comments": {
+                  "totalCount": "number"
+                },
+                "createdAt": "string",
+                "databaseId": "number",
+                "id": "string",
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": "number",
+                  "totalBlocking": "number"
+                },
+                "issueType": [
+                  {
+                    "name": "string"
+                  },
+                  "null"
+                ],
+                "labels": {
+                  "nodes": {
+                    "[]": {
+                      "name": "string"
+                    }
+                  },
+                  "pageInfo": {
+                    "endCursor": [
+                      "string",
+                      "null"
+                    ],
+                    "hasNextPage": "boolean"
+                  }
+                },
+                "locked": "boolean",
+                "milestone": [
+                  {
+                    "number": "number"
+                  },
+                  "null"
+                ],
+                "number": "number",
+                "parent": [
+                  {
+                    "__typename": "string",
+                    "databaseId": "number",
+                    "id": "string",
+                    "number": "number",
+                    "repository": {
+                      "databaseId": "number",
+                      "id": "string",
+                      "isPrivate": "boolean",
+                      "name": "string",
+                      "owner": {
+                        "login": "string"
+                      }
+                    },
+                    "state": "string",
+                    "title": "string"
+                  },
+                  "null"
+                ],
+                "relatesTo": {
+                  "nodes": {
+                    "[]": {
+                      "__typename": "string",
+                      "databaseId": "number",
+                      "id": "string",
+                      "number": "number",
+                      "repository": {
+                        "databaseId": "number",
+                        "id": "string",
+                        "isPrivate": "boolean",
+                        "name": "string",
+                        "owner": {
+                          "login": "string"
+                        }
+                      },
+                      "state": "string",
+                      "title": "string"
+                    }
+                  },
+                  "pageInfo": {
+                    "endCursor": [
+                      "string",
+                      "null"
+                    ],
+                    "hasNextPage": "boolean"
+                  },
+                  "totalCount": "number"
+                },
+                "state": "string",
+                "stateReason": "never",
+                "subIssuesSummary": {
+                  "total": "number"
+                },
+                "title": "string",
+                "updatedAt": "string"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportLabels": {
+    "request": "POST /graphql ImportLabels",
+    "shape": {
+      "data": {
+        "node": {
+          "id": "string",
+          "labels": {
+            "nodes": {
+              "[]": {
+                "name": "string"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportMoreComments": {
+    "request": "POST /graphql ImportMoreComments",
+    "shape": {
+      "data": {
+        "node": {
+          "comments": {
+            "nodes": {
+              "[]": "never"
+            },
+            "pageInfo": {
+              "endCursor": "never",
+              "hasNextPage": "boolean"
+            }
+          },
+          "id": "string"
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportPullDetails": {
+    "request": "POST /graphql ImportPullDetails",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "baseRefName": "string",
+            "closingIssuesReferences": {
+              "nodes": {
+                "[]": {
+                  "__typename": "string",
+                  "databaseId": "number",
+                  "id": "string",
+                  "number": "number",
+                  "repository": {
+                    "databaseId": "number",
+                    "id": "string",
+                    "isPrivate": "boolean",
+                    "name": "string",
+                    "owner": {
+                      "login": "string"
+                    }
+                  },
+                  "state": "string",
+                  "title": "string"
+                }
+              },
+              "pageInfo": {
+                "endCursor": [
+                  "string",
+                  "null"
+                ],
+                "hasNextPage": "boolean"
+              }
+            },
+            "databaseId": "number",
+            "headRefName": "string",
+            "id": "string",
+            "isDraft": "boolean",
+            "mergedAt": [
+              "string",
+              "null"
+            ],
+            "reviewDecision": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportRelatesTo": {
+    "request": "POST /graphql ImportRelatesTo",
+    "shape": {
+      "data": {
+        "node": {
+          "id": "string",
+          "relatesTo": {
+            "nodes": {
+              "[]": "never"
+            },
+            "pageInfo": {
+              "endCursor": "never",
+              "hasNextPage": "boolean"
+            },
+            "totalCount": "number"
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.ImportRelationships": {
+    "request": "POST /graphql ImportRelationships",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "blockedBy": {
+              "nodes": {
+                "[]": "never"
+              }
+            },
+            "blocking": {
+              "nodes": {
+                "[]": {
+                  "__typename": "string",
+                  "databaseId": "number",
+                  "id": "string",
+                  "number": "number",
+                  "repository": {
+                    "databaseId": "number",
+                    "id": "string",
+                    "isPrivate": "boolean",
+                    "name": "string",
+                    "owner": {
+                      "login": "string"
+                    }
+                  },
+                  "state": "string",
+                  "title": "string"
+                }
+              }
+            },
+            "id": "string",
+            "subIssues": {
+              "nodes": {
+                "[]": "never"
+              }
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.IssueEdges": {
+    "request": "POST /graphql IssueEdges",
+    "shape": {
+      "data": {
+        "node": {
+          "blockedBy": {
+            "nodes": {
+              "[]": "never"
+            }
+          },
+          "blocking": {
+            "nodes": {
+              "[]": "never"
+            }
+          },
+          "databaseId": "number",
+          "parent": "never",
+          "relatesTo": {
+            "nodes": {
+              "[]": "never"
+            },
+            "pageInfo": {
+              "endCursor": "never",
+              "hasNextPage": "boolean"
+            }
+          },
+          "subIssues": {
+            "nodes": {
+              "[]": "never"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.IssueLinkedPulls": {
+    "request": "POST /graphql IssueLinkedPulls",
+    "shape": {
+      "data": {
+        "node": {
+          "closedByPullRequestsReferences": {
+            "nodes": {
+              "[]": "never"
+            },
+            "pageInfo": {
+              "endCursor": "never",
+              "hasNextPage": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.MintAttachments": {
+    "request": "POST /graphql MintAttachments",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "__typename": "string",
+            "bodyHTML": "string",
+            "id": "string"
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.PullReadBack": {
+    "request": "POST /graphql PullReadBack",
+    "shape": {
+      "data": {
+        "node": {
+          "baseRefName": "string",
+          "closingIssuesReferences": {
+            "nodes": {
+              "[]": {
+                "databaseId": "number",
+                "id": "string",
+                "number": "number",
+                "repository": {
+                  "databaseId": "number",
+                  "id": "string",
+                  "isPrivate": "boolean",
+                  "name": "string",
+                  "owner": {
+                    "login": "string"
+                  }
+                },
+                "state": "string",
+                "title": "string"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            }
+          },
+          "databaseId": "number",
+          "headRefName": "string",
+          "id": "string",
+          "isDraft": "boolean",
+          "mergedAt": [
+            "string",
+            "null"
+          ],
+          "reviewDecision": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.SweepCounts": {
+    "request": "POST /graphql SweepCounts",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "databaseId": "number",
+            "id": "string",
+            "issues": {
+              "totalCount": "number"
+            },
+            "pullRequests": {
+              "totalCount": "number"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.SweepEdges": {
+    "request": "POST /graphql SweepEdges",
+    "shape": {
+      "data": {
+        "nodes": {
+          "[]": {
+            "blockedBy": {
+              "nodes": {
+                "[]": "never"
+              }
+            },
+            "blocking": {
+              "nodes": {
+                "[]": {
+                  "databaseId": "number",
+                  "id": "string",
+                  "number": "number",
+                  "repository": {
+                    "databaseId": "number",
+                    "id": "string",
+                    "isPrivate": "boolean",
+                    "name": "string",
+                    "owner": {
+                      "login": "string"
+                    }
+                  },
+                  "state": "string",
+                  "title": "string"
+                }
+              }
+            },
+            "databaseId": "number",
+            "id": "string",
+            "number": "number",
+            "parent": [
+              {
+                "databaseId": "number",
+                "id": "string",
+                "number": "number",
+                "repository": {
+                  "databaseId": "number",
+                  "id": "string",
+                  "isPrivate": "boolean",
+                  "name": "string",
+                  "owner": {
+                    "login": "string"
+                  }
+                },
+                "state": "string",
+                "title": "string"
+              },
+              "null"
+            ],
+            "relatesTo": {
+              "nodes": {
+                "[]": {
+                  "databaseId": "number",
+                  "id": "string",
+                  "number": "number",
+                  "repository": {
+                    "databaseId": "number",
+                    "id": "string",
+                    "isPrivate": "boolean",
+                    "name": "string",
+                    "owner": {
+                      "login": "string"
+                    }
+                  },
+                  "state": "string",
+                  "title": "string"
+                }
+              },
+              "pageInfo": {
+                "endCursor": [
+                  "string",
+                  "null"
+                ],
+                "hasNextPage": "boolean"
+              }
+            },
+            "subIssues": {
+              "nodes": {
+                "[]": "never"
+              }
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.SweepIssueIds": {
+    "request": "POST /graphql SweepIssueIds",
+    "shape": {
+      "data": {
+        "repository": {
+          "issues": {
+            "nodes": {
+              "[]": {
+                "databaseId": "number"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            },
+            "totalCount": "number"
+          }
+        }
+      }
+    },
+    "status": 200
+  },
+  "graphql.SweepPullIds": {
+    "request": "POST /graphql SweepPullIds",
+    "shape": {
+      "data": {
+        "repository": {
+          "pullRequests": {
+            "nodes": {
+              "[]": {
+                "databaseId": "number"
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            },
+            "totalCount": "number"
+          }
+        }
+      }
+    },
+    "status": 200
+  }
+}

@@ -57,7 +57,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/repos/{owner}/{repo}/issues/comments", get(repo_comments))
         .route(
             "/repos/{owner}/{repo}/issues/comments/{comment_id}",
-            get(one_comment),
+            get(one_comment).delete(crate::writes::delete_comment),
         )
         .route(
             "/repos/{owner}/{repo}/issues/{number}/comments",
@@ -504,18 +504,18 @@ async fn issues(
 }
 
 /// A comment, as either list reads it.
-struct CommentRow<'a> {
-    number: i64,
-    id: i64,
-    node_id: &'a str,
-    author: Option<i64>,
-    body: &'a str,
-    created: i64,
-    updated: i64,
+pub(crate) struct CommentRow<'a> {
+    pub number: i64,
+    pub id: i64,
+    pub node_id: &'a str,
+    pub author: Option<i64>,
+    pub body: &'a str,
+    pub created: i64,
+    pub updated: i64,
 }
 
 /// A comment as GitHub's REST API serialises it.
-fn comment_json(
+pub(crate) fn comment_json(
     c: &rusqlite::Connection,
     r: &q::RepoRow,
     x: CommentRow,

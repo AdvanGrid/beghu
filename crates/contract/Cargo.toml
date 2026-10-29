@@ -1,0 +1,23 @@
+[package]
+name = "contract"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "The contract check: sends Fake GitHub's request set to GitHub (or to the fake) and diffs the answers' shapes with the fake's recorded templates."
+
+[dependencies]
+# beghu's own GraphQL documents and its App JWT signing.
+beghu = { path = "../server" }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = "0.7"
+tokio = { workspace = true }
+
+[dev-dependencies]
+fake-github = { path = "../fake-github" }
+fixture = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

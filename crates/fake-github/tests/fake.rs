@@ -1557,7 +1557,7 @@ async fn graphql_holds_githubs_limits_on_page_size_and_node_ids() {
 
     // A page within the limits, and an id nobody has: null, with GitHub's NOT_FOUND beside it.
     let body: Value = ask(
-        "query ImportIssues($owner: String!, $name: String!, $states: [IssueState!]!, $after: String) { repository(owner: $owner, name: $name) { issues(first: 100) { nodes { id } } } }",
+        "query ImportIssues($owner: String!, $name: String!, $states: [IssueState!]!, $after: String) { repository(owner: $owner, name: $name) { issues(first: 100) { pageInfo { hasNextPage } nodes { id } } } }",
         json!({ "owner": "acme", "name": "web", "states": ["OPEN"] }),
     )
     .await
@@ -2451,7 +2451,26 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
-const EDGES: &str = "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!) { node(id: $id) { ... on Issue { databaseId } } }";
+/// beghu's `IssueEdges` (crates/server/src/edges.rs): the fake answers only what it selects.
+const EDGES: &str = "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!, $relatesAfter: String) {
+  node(id: $id) {
+    ... on Issue {
+      databaseId
+      parent @include(if: $sub) { ...End }
+      subIssues(first: 100) @include(if: $sub) { nodes { ...End } }
+      blockedBy(first: 50) @include(if: $blocks) { nodes { ...End } }
+      blocking(first: 50) @include(if: $blocks) { nodes { ...End } }
+      relatesTo(first: 100, after: $relatesAfter) @include(if: $relates) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ...End }
+      }
+    }
+  }
+}
+fragment End on Issue {
+  id databaseId number title state
+  repository { databaseId id name owner { login } isPrivate }
+}";
 
 impl Fake {
     async fn installation_token(&self, jwt: &str) -> reqwest::Response {
@@ -4427,6 +4446,223 @@ async fn renaming_a_milestone_sends_milestone_edited_and_bumps_no_issue() {
     assert_eq!(p["milestone"]["title"], "Renamed milestone");
     assert_eq!(p["changes"]["title"]["from"], before["title"]);
     assert!(p["milestone"]["updated_at"].is_string());
+}
+
+// --- what the contract check reads and undoes (#118) ------------------------------------------
+
+#[tokio::test]
+async fn one_delivery_carries_the_request_github_sent_and_the_answer_it_got() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    fake.edit(json!({ "repo": "web", "number": 1, "title": "read back" }))
+        .await;
+    let got = received_for(&mut rx, Duration::from_millis(1800)).await;
+    assert_eq!(got.len(), 1);
+    let (items, _) = fake.deliveries("").await;
+    let res = fake
+        .http
+        .get(format!(
+            "{}/app/hook/deliveries/{}",
+            fake.api, items[0]["id"]
+        ))
+        .bearer_auth(dev_jwt())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let one: Value = res.json().await.unwrap();
+    // The listing's fields, and the request and response as GitHub's log keeps them.
+    for (k, v) in items[0].as_object().unwrap() {
+        assert_eq!(&one[k], v, "{k}");
+    }
+    assert!(one["url"].as_str().unwrap().ends_with("/webhook"));
+    assert_eq!(one["request"]["payload"], got[0].payload());
+    let sent = &one["request"]["headers"];
+    assert_eq!(sent["X-GitHub-Delivery"], got[0].guid.as_str());
+    assert_eq!(sent["X-GitHub-Event"], "issues");
+    assert_eq!(sent["X-Hub-Signature-256"], got[0].signature.as_str());
+    assert!(one["response"]["headers"].is_object());
+    assert!(one["response"]["payload"].is_string());
+
+    // One it never made, or without the App's JWT, nothing.
+    let res = fake
+        .http
+        .get(format!("{}/app/hook/deliveries/1", fake.api))
+        .bearer_auth(dev_jwt())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = fake
+        .http
+        .get(format!(
+            "{}/app/hook/deliveries/{}",
+            fake.api, items[0]["id"]
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn the_app_finds_the_installation_that_covers_a_repo() {
+    let fake = start().await;
+    let get = |path: &str, jwt: Option<String>| {
+        let req = fake.http.get(format!("{}{path}", fake.api));
+        match jwt {
+            Some(j) => req.bearer_auth(j).send(),
+            None => req.send(),
+        }
+    };
+    let res = get("/repos/acme/web/installation", Some(dev_jwt()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let i: Value = res.json().await.unwrap();
+    assert_eq!(i["id"], 41000001);
+    assert_eq!(i["account"]["login"], "acme");
+    assert_eq!(i["app_id"], 1000001);
+    // The same installation as a user sees it in their list.
+    let user = fake.sign_in("tomsj").await["access_token"].clone();
+    let listed: Value = fake
+        .get("/user/installations", &user)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let same = listed["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == 41000001)
+        .unwrap();
+    assert_eq!(&i, same);
+
+    let res = get("/repos/acme/nope/installation", Some(dev_jwt()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = get("/repos/acme/web/installation", None).await.unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn a_deleted_comment_is_gone_and_sends_issue_comment_deleted() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let ilze = &fake.sign_in("ilze-k").await["access_token"];
+    let (_, c) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            ilze,
+            json!({ "body": "To be deleted." }),
+        )
+        .await;
+    async fn count(fake: &Fake, token: &Value) -> i64 {
+        let issue: Value = fake
+            .get("/repos/acme/web/issues/1", token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        issue["comments"].as_i64().unwrap()
+    }
+    let before = count(&fake, ilze).await;
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    let path = format!("/repos/acme/web/issues/comments/{}", c["id"]);
+
+    // Someone else below Write can't; its author can.
+    let octo = &fake.sign_in("octo-ext").await["access_token"];
+    let (status, _) = fake
+        .rest(reqwest::Method::DELETE, &path, octo, Value::Null)
+        .await;
+    assert_eq!(status, 403);
+    let (status, _) = fake
+        .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(fake.get(&path, ilze).await.status(), 404);
+    assert_eq!(count(&fake, ilze).await, before - 1);
+
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "issue_comment");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "deleted");
+    assert_eq!(p["comment"], c);
+    assert_eq!(p["issue"]["number"], 1);
+    assert_eq!(p["sender"]["login"], "ilze-k");
+
+    // Gone is gone.
+    let (status, _) = fake
+        .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_installation_token_writing_or_asking_for_the_user_is_not_accessible_by_integration() {
+    let fake = start().await;
+    let res = fake
+        .http
+        .post(format!(
+            "{}/app/installations/41000001/access_tokens",
+            fake.api
+        ))
+        .bearer_auth(dev_jwt())
+        .json(&json!({ "permissions": { "issues": "read" } }))
+        .send()
+        .await
+        .unwrap();
+    let token = res.json::<Value>().await.unwrap()["token"].clone();
+    let res = fake
+        .http
+        .patch(format!("{}/repos/acme/web/issues/1", fake.api))
+        .bearer_auth(token.as_str().unwrap())
+        .json(&json!({ "title": "never" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    assert!(res.headers().contains_key("x-accepted-github-permissions"));
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["message"], "Resource not accessible by integration");
+    assert_eq!(fake.get("/user", &token).await.status(), 403);
+    // The issue is as it was.
+    let issue: Value = fake
+        .get("/repos/acme/web/issues/1", &token)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(issue["title"], "never");
+}
+
+#[tokio::test]
+async fn an_issues_feed_still_reads_after_an_issue_with_events_is_deleted() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    fake.edit(json!({ "repo": "web", "number": 1, "state": "closed" }))
+        .await;
+    fake.edit(json!({ "repo": "web", "number": 1, "delete": true }))
+        .await;
+    fake.edit(json!({ "repo": "web", "number": 2, "state": "closed" }))
+        .await;
+    let res = fake
+        .get("/repos/acme/web/issues/events?per_page=100", &token)
+        .await;
+    assert_eq!(res.status(), 200);
+    let events: Value = res.json().await.unwrap();
+    let numbers: Vec<i64> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["issue"]["number"].as_i64())
+        .collect();
+    assert!(numbers.contains(&2), "{numbers:?}");
+    assert!(!numbers.contains(&1), "{numbers:?}");
 }
 
 /// The ids of `node_id`'s sub-issues, in GitHub's order, as `token` sees them.

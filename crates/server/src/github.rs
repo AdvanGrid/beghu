@@ -259,6 +259,8 @@ pub struct GitHub {
     client_secret: String,
     /// A write's own timeout (`github_write_timeout`).
     write_timeout: Duration,
+    /// The only repos written to, in lower case (`BEGHU_DEV_WRITABLE_REPOS`); none named, all.
+    writable: Option<Arc<[String]>>,
     health: Arc<Health>,
 }
 
@@ -487,6 +489,12 @@ impl GitHub {
             client_id: cfg.client_id.clone(),
             client_secret: cfg.client_secret.clone(),
             write_timeout,
+            writable: cfg.writable_repos.as_ref().map(|r| {
+                r.iter()
+                    .map(|x| x.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .into()
+            }),
             health: Arc::new(Health {
                 failures: AtomicU32::new(0),
                 poller_failures: AtomicU32::new(0),
@@ -494,6 +502,20 @@ impl GitHub {
                 probe_every,
             }),
         }
+    }
+
+    /// Whether beghu may write to `owner/repo`: every repo, unless `BEGHU_DEV_WRITABLE_REPOS`
+    /// names the only ones (dev mode against real GitHub writes only to the sandbox).
+    pub fn writes_to(&self, owner: &str, repo: &str) -> bool {
+        self.writable.as_ref().is_none_or(|only| {
+            let full = format!("{owner}/{repo}").to_ascii_lowercase();
+            only.contains(&full)
+        })
+    }
+
+    /// The repos beghu may write to, when not all of them.
+    pub fn writable_repos(&self) -> Option<&[String]> {
+        self.writable.as_deref()
     }
 
     /// True while GitHub is down.
@@ -777,6 +799,20 @@ impl GitHub {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<(serde_json::Value, Option<String>), Error> {
+        // Whatever path a write takes, it never reaches a repo outside the writable ones: refused
+        // here as GitHub would refuse a write it doesn't allow, never sent.
+        if let ["repos", owner, repo, ..] = path
+            .trim_start_matches('/')
+            .split(['/', '?'])
+            .collect::<Vec<_>>()
+            .as_slice()
+            && !self.writes_to(owner, repo)
+        {
+            eprintln!(
+                "github: not writing to {owner}/{repo}: BEGHU_DEV_WRITABLE_REPOS leaves it out"
+            );
+            return Err(Error::Status(403));
+        }
         let mut req = self
             .http
             .request(method, format!("{}{path}", self.api))

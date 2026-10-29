@@ -123,6 +123,15 @@ VALUES (:id, :node_id, :item_id, :author_id, :body, :at, :at, 0);
 UPDATE items SET comments_count = comments_count + 1, last_commented_at = :at, updated_at = :at
 WHERE id = :item_id;
 
+-- A comment deleted (`DELETE /repos/{owner}/{repo}/issues/comments/{id}`).
+-- name: delete_comment :exec
+-- param: id i64
+DELETE FROM comments WHERE id = :id;
+
+-- name: uncount_comment :exec
+-- param: item_id i64
+UPDATE items SET comments_count = max(comments_count - 1, 0) WHERE id = :item_id;
+
 -- name: add_issue_assignee :exec
 -- param: item_id i64
 -- param: user_id i64

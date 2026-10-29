@@ -15,6 +15,9 @@
 mod fetch;
 mod guard;
 mod mint;
+
+/// `MintAttachments`, the document the attachment mint sends (`crate::GRAPHQL_DOCUMENTS`).
+pub(crate) const MINT_ATTACHMENTS: &str = mint::MINT_ATTACHMENTS;
 pub mod probe;
 mod routes;
 mod video;

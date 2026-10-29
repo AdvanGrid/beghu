@@ -44,6 +44,30 @@ pub use config::{
     default_backup_every, default_dormant_after, default_drain_for, default_read_back_retries,
 };
 
+pub use installations::app_jwt;
+
+/// The GraphQL documents beghu sends GitHub, by operation name. The contract check
+/// (`crates/contract`) sends each to GitHub and to Fake GitHub and diffs the answers' shapes with
+/// Fake GitHub's recorded templates, so a query changed here is checked as it now is.
+pub const GRAPHQL_DOCUMENTS: [(&str, &str); 16] = [
+    ("ImportIssues", import::shapes::IMPORT_ISSUES),
+    ("ImportRelationships", import::shapes::IMPORT_RELATIONSHIPS),
+    ("ImportRelatesTo", import::shapes::IMPORT_RELATES_TO),
+    ("ImportPullDetails", import::shapes::IMPORT_PULL_DETAILS),
+    ("ImportLabels", import::shapes::IMPORT_LABELS),
+    ("ImportClosingRefs", import::shapes::IMPORT_CLOSING_REFS),
+    ("ImportComments", import::shapes::IMPORT_COMMENTS),
+    ("ImportMoreComments", import::shapes::IMPORT_MORE_COMMENTS),
+    ("IssueEdges", edges::QUERY),
+    ("PullReadBack", pulls::QUERY),
+    ("IssueLinkedPulls", pulls::LINKED_QUERY),
+    ("SweepEdges", reconcile::GRAPHQL[0].1),
+    ("SweepCounts", reconcile::GRAPHQL[1].1),
+    ("SweepIssueIds", reconcile::GRAPHQL[2].1),
+    ("SweepPullIds", reconcile::GRAPHQL[3].1),
+    ("MintAttachments", media::MINT_ATTACHMENTS),
+];
+
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};

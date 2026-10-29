@@ -1297,6 +1297,7 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         .filter(|r| r.synced)
         .ok_or_else(|| Failure::Refused("This repo isn't synced".into()))?;
     let name = &target.name;
+    read_only_here(app, &target.owner, name)?;
     if target.archived {
         return Err(Failure::Refused(format!(
             "{name} is archived, so it's read-only"
@@ -1467,8 +1468,8 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
     })
 }
 
-/// Issue `id` as a write's target: in the mirror, in a synced repo, an issue (not a PR), and
-/// GitHub not down.
+/// Issue `id` as a write's target: in the mirror, in a synced repo, an issue (not a PR), in a
+/// repo this server writes to, and GitHub not down.
 pub(crate) async fn writable(app: &App, account: i64, id: i64) -> Result<q::OpTargetRow, Failure> {
     let target = app
         .mirrors()
@@ -1486,12 +1487,25 @@ pub(crate) async fn writable(app: &App, account: i64, id: i64) -> Result<q::OpTa
             "beghu doesn't write to pull requests; open it on GitHub".into(),
         ));
     }
+    read_only_here(app, &target.owner, &target.repo)?;
     if app.github().is_down() {
         return Err(Failure::GitHubDown(
             "GitHub is unreachable; try again once it's back".into(),
         ));
     }
     Ok(target)
+}
+
+/// Refuses a write to a repo this server doesn't write to: dev mode against real GitHub writes
+/// only to the sandbox (`BEGHU_DEV_WRITABLE_REPOS`).
+pub(crate) fn read_only_here(app: &App, owner: &str, repo: &str) -> Result<(), Failure> {
+    if app.github().writes_to(owner, repo) {
+        return Ok(());
+    }
+    let only = app.github().writable_repos().unwrap_or_default().join(", ");
+    Err(Failure::Refused(format!(
+        "This beghu writes only to {only}; {owner}/{repo} is read-only here"
+    )))
 }
 
 /// The reply to a write that changed the issue itself: with `body`, a body edit's body as GitHub

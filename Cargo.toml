@@ -8,6 +8,7 @@ members = [
   "crates/fake-db",
   "crates/fake-github",
   "crates/server",
+  "crates/contract",
   "crates/md-ast",
   "perf/fixture",
 ]

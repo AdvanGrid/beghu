@@ -66,6 +66,9 @@ mod schedule;
 mod status;
 mod sweep;
 
+/// Reconciliation's GraphQL documents, by operation name (`crate::GRAPHQL_DOCUMENTS`).
+pub(crate) const GRAPHQL: [(&str, &str); 4] = sweep::GRAPHQL;
+
 pub use resync::resync;
 pub use status::{SyncStatus, status};
 pub(crate) use sweep::SECONDARY_WAIT;

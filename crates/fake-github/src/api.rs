@@ -54,13 +54,36 @@ pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
 }
 
 /// The user id behind the request's `Authorization: Bearer|token <ghu_…>`. Extracting it answers
-/// GitHub's 401 when there's no live access token.
+/// GitHub's 401 when there's no live access token, and a live installation token GitHub's 403
+/// "Resource not accessible by integration": what GitHub answers a token narrowed to `issues:
+/// read` that writes, and any installation token at a user-only endpoint (`/user`). The fake
+/// doesn't model an App writing as itself (beghu writes with user tokens only), so it answers an
+/// installation token with `issues: write` the same.
 pub(crate) struct TokenUser(pub i64);
 
 impl FromRequestParts<Fake> for TokenUser {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, fake: &Fake) -> Result<Self, Response> {
+        if let Some(token) = bearer(&parts.headers).filter(|t| t.starts_with("ghs_")) {
+            let now = fake.now();
+            let live = fake
+                .state()
+                .truth
+                .read(move |c| q::installation_token(c, &token, now))
+                .await
+                .map_err(internal)?
+                .is_some();
+            if live {
+                return Err(match parts.method {
+                    axum::http::Method::GET => error(
+                        StatusCode::FORBIDDEN,
+                        "Resource not accessible by integration",
+                    ),
+                    _ => crate::writes::not_accessible(),
+                });
+            }
+        }
         authenticate(fake, &parts.headers).await.map(TokenUser)
     }
 }
@@ -281,34 +304,18 @@ async fn installations(
         .skip(((page - 1) * per_page) as usize)
         .take(per_page as usize)
         .map(|(i, by)| {
-            json!({
-                "id": i.id,
-                "client_id": fake.state().cfg.client_id,
-                "account": {
-                    "login": i.account_login,
-                    "id": i.account_id,
-                    "node_id": format!("O_kg{}", i.account_id),
-                    "type": i.account_type,
-                    "html_url": format!("https://github.com/{}", i.account_login),
+            installation_json(
+                &fake,
+                &Installation {
+                    id: i.id,
+                    account_id: i.account_id,
+                    account_login: &i.account_login,
+                    account_type: &i.account_type,
+                    created_at: i.created_at,
+                    suspended_at: i.suspended_at,
                 },
-                "repository_selection": "all",
-                "access_tokens_url": format!("https://api.github.com/app/installations/{}/access_tokens", i.id),
-                "repositories_url": "https://api.github.com/installation/repositories",
-                "html_url": format!("https://github.com/organizations/{}/settings/installations/{}", i.account_login, i.id),
-                "app_id": 1_000_001,
-                "app_slug": "beghu-dev",
-                "target_id": i.account_id,
-                "target_type": i.account_type,
-                "permissions": crate::app::permissions(),
-                "events": EVENTS,
-                "created_at": rfc3339(i.created_at),
-                "updated_at": rfc3339(i.suspended_at.unwrap_or(i.created_at)),
-                "single_file_name": null,
-                "has_multiple_single_files": false,
-                "single_file_paths": [],
-                "suspended_by": by.as_ref().map(|u| json!({ "login": u.login, "id": u.id, "type": "User" })),
-                "suspended_at": i.suspended_at.map(rfc3339),
-            })
+                by.as_ref().map(|u| (u.id, u.login.as_str())),
+            )
         })
         .collect();
     let mut res =
@@ -322,6 +329,49 @@ async fn installations(
         total,
     );
     res
+}
+
+/// An installation of the App, as GitHub describes one.
+pub(crate) struct Installation<'a> {
+    pub id: i64,
+    pub account_id: i64,
+    pub account_login: &'a str,
+    pub account_type: &'a str,
+    pub created_at: i64,
+    pub suspended_at: Option<i64>,
+}
+
+/// An installation in GitHub's shape (`/user/installations`, `/repos/{owner}/{repo}/installation`),
+/// with who suspended it, if it is.
+pub(crate) fn installation_json(fake: &Fake, i: &Installation, by: Option<(i64, &str)>) -> Value {
+    json!({
+        "id": i.id,
+        "client_id": fake.state().cfg.client_id,
+        "account": {
+            "login": i.account_login,
+            "id": i.account_id,
+            "node_id": format!("O_kg{}", i.account_id),
+            "type": i.account_type,
+            "html_url": format!("https://github.com/{}", i.account_login),
+        },
+        "repository_selection": "all",
+        "access_tokens_url": format!("https://api.github.com/app/installations/{}/access_tokens", i.id),
+        "repositories_url": "https://api.github.com/installation/repositories",
+        "html_url": format!("https://github.com/organizations/{}/settings/installations/{}", i.account_login, i.id),
+        "app_id": 1_000_001,
+        "app_slug": "beghu-dev",
+        "target_id": i.account_id,
+        "target_type": i.account_type,
+        "permissions": crate::app::permissions(),
+        "events": EVENTS,
+        "created_at": rfc3339(i.created_at),
+        "updated_at": rfc3339(i.suspended_at.unwrap_or(i.created_at)),
+        "single_file_name": null,
+        "has_multiple_single_files": false,
+        "single_file_paths": [],
+        "suspended_by": by.map(|(id, login)| json!({ "login": login, "id": id, "type": "User" })),
+        "suspended_at": i.suspended_at.map(rfc3339),
+    })
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,149 @@
+{
+  "user.get": {
+    "request": "GET /user",
+    "shape": {
+      "avatar_url": "string",
+      "html_url": "string",
+      "id": "number",
+      "login": "string",
+      "name": [
+        "string",
+        "null"
+      ],
+      "node_id": "string",
+      "site_admin": "boolean",
+      "type": [
+        "string",
+        "null"
+      ],
+      "url": "string",
+      "user_view_type": "string"
+    },
+    "status": 200
+  },
+  "user.installation_repos": {
+    "request": "GET /user/installations/{installation_id}/repositories",
+    "shape": {
+      "repositories": {
+        "[]": {
+          "archived": "boolean",
+          "disabled": "boolean",
+          "full_name": "string",
+          "has_issues": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "owner": {
+            "login": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissions": {
+            "admin": "boolean",
+            "maintain": "boolean",
+            "pull": "boolean",
+            "push": "boolean",
+            "triage": "boolean"
+          },
+          "private": "boolean",
+          "url": "string",
+          "visibility": "string"
+        }
+      },
+      "repository_selection": "string",
+      "total_count": "number"
+    },
+    "status": 200
+  },
+  "user.installations": {
+    "request": "GET /user/installations",
+    "shape": {
+      "installations": {
+        "[]": {
+          "access_tokens_url": "string",
+          "account": {
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "app_id": "number",
+          "app_slug": "string",
+          "client_id": "string",
+          "created_at": "string",
+          "events": {
+            "[]": "string"
+          },
+          "has_multiple_single_files": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "permissions": {
+            "issues": "string",
+            "metadata": "string",
+            "pull_requests": "string"
+          },
+          "repositories_url": "string",
+          "repository_selection": "string",
+          "single_file_name": "never",
+          "single_file_paths": {
+            "[]": "never"
+          },
+          "suspended_at": "never",
+          "suspended_by": "never",
+          "target_id": "number",
+          "target_type": "string",
+          "updated_at": "string"
+        }
+      },
+      "total_count": "number"
+    },
+    "status": 200
+  },
+  "user.repo": {
+    "request": "GET /repos/{owner}/{repo}",
+    "shape": {
+      "archived": "boolean",
+      "disabled": "boolean",
+      "full_name": "string",
+      "has_issues": "boolean",
+      "html_url": "string",
+      "id": "number",
+      "name": "string",
+      "node_id": "string",
+      "owner": {
+        "login": "string",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "permissions": {
+        "admin": "boolean",
+        "maintain": "boolean",
+        "pull": "boolean",
+        "push": "boolean",
+        "triage": "boolean"
+      },
+      "private": "boolean",
+      "url": "string",
+      "visibility": "string"
+    },
+    "status": 200
+  },
+  "user.repo_not_found": {
+    "request": "GET /repos/{owner}/{repo} (out of sight)",
+    "shape": {
+      "documentation_url": "string",
+      "message": "string",
+      "status": "string"
+    },
+    "status": 404
+  }
+}

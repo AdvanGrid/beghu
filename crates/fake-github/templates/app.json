@@ -1,0 +1,165 @@
+{
+  "app.access_token": {
+    "request": "POST /app/installations/{installation_id}/access_tokens",
+    "shape": {
+      "expires_at": "string",
+      "permissions": {
+        "issues": "string",
+        "metadata?": "string",
+        "pull_requests?": "string"
+      },
+      "repository_selection": "string",
+      "token": "string"
+    },
+    "status": 201
+  },
+  "app.get": {
+    "request": "GET /app",
+    "shape": {
+      "client_id": "string",
+      "created_at": "string",
+      "description": [
+        "string",
+        "null"
+      ],
+      "events": {
+        "[]": "string"
+      },
+      "external_url": "string",
+      "html_url": "string",
+      "id": "number",
+      "name": "string",
+      "node_id": "string",
+      "owner": {
+        "id": "number",
+        "login": "string",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "permissions": {
+        "issues": "string",
+        "metadata": "string",
+        "pull_requests": "string"
+      },
+      "slug": "string",
+      "updated_at": "string"
+    },
+    "status": 200
+  },
+  "app.hook_deliveries": {
+    "request": "GET /app/hook/deliveries",
+    "shape": {
+      "[]": {
+        "action": "string",
+        "delivered_at": "string",
+        "duration": "number",
+        "event": "string",
+        "guid": "string",
+        "id": "number",
+        "installation_id": [
+          "number",
+          "null"
+        ],
+        "redelivery": "boolean",
+        "repository_id": [
+          "number",
+          "null"
+        ],
+        "status": "string",
+        "status_code": "number",
+        "throttled_at": "never"
+      }
+    },
+    "status": 200
+  },
+  "app.hook_delivery": {
+    "request": "GET /app/hook/deliveries/{delivery_id}",
+    "shape": {
+      "action": "string",
+      "delivered_at": "string",
+      "duration": "number",
+      "event": "string",
+      "guid": "string",
+      "id": "number",
+      "installation_id": [
+        "number",
+        "null"
+      ],
+      "redelivery": "boolean",
+      "repository_id": [
+        "number",
+        "null"
+      ],
+      "request": {
+        "headers": {
+          "Accept": "string",
+          "User-Agent": "string",
+          "X-GitHub-Delivery": "string",
+          "X-GitHub-Event": "string",
+          "X-GitHub-Hook-ID": "string",
+          "X-GitHub-Hook-Installation-Target-ID": "string",
+          "X-GitHub-Hook-Installation-Target-Type": "string",
+          "X-Hub-Signature-256": "string",
+          "content-type": "string"
+        }
+      },
+      "response": {
+        "headers": "any",
+        "payload": [
+          "string",
+          "null"
+        ]
+      },
+      "status": "string",
+      "status_code": "number",
+      "throttled_at": "never",
+      "url": "string"
+    },
+    "status": 200
+  },
+  "app.repo_installation": {
+    "request": "GET /repos/{owner}/{repo}/installation",
+    "shape": {
+      "access_tokens_url": "string",
+      "account": {
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_id": "number",
+      "app_slug": "string",
+      "client_id": "string",
+      "created_at": "string",
+      "events": {
+        "[]": "string"
+      },
+      "has_multiple_single_files": "boolean",
+      "html_url": "string",
+      "id": "number",
+      "permissions": {
+        "issues": "string",
+        "metadata": "string",
+        "pull_requests": "string"
+      },
+      "repositories_url": "string",
+      "repository_selection": "string",
+      "single_file_name": "never",
+      "single_file_paths": {
+        "[]": "never"
+      },
+      "suspended_at": "never",
+      "suspended_by": "never",
+      "target_id": "number",
+      "target_type": "string",
+      "updated_at": "string"
+    },
+    "status": 200
+  }
+}

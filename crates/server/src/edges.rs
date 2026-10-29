@@ -558,7 +558,7 @@ pub(crate) use end_fragment;
 /// `IssueEdges`: an issue's relationships of the kinds asked for, each end with its repository.
 /// GitHub caps sub-issues at 100 and dependencies at 50 of each kind, so one page holds them;
 /// relates-to has no documented cap and is paged, `$relatesAfter` naming the page before.
-const QUERY: &str = concat!(
+pub(crate) const QUERY: &str = concat!(
     "query IssueEdges($id: ID!, $sub: Boolean!, $blocks: Boolean!, $relates: Boolean!, $relatesAfter: String) {
   node(id: $id) {
     ... on Issue {

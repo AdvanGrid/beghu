@@ -1,0 +1,26 @@
+{
+  "oauth.bad_code": {
+    "pins": {
+      "$.error": "bad_verification_code"
+    },
+    "request": "POST /login/oauth/access_token (bad code)",
+    "shape": {
+      "error": "string",
+      "error_description": "string",
+      "error_uri": "string"
+    },
+    "status": 200
+  },
+  "oauth.bad_refresh": {
+    "pins": {
+      "$.error": "bad_refresh_token"
+    },
+    "request": "POST /login/oauth/access_token (bad refresh token)",
+    "shape": {
+      "error": "string",
+      "error_description": "string",
+      "error_uri": "string"
+    },
+    "status": 200
+  }
+}

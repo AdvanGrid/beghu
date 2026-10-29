@@ -81,12 +81,13 @@ export type Seeded = { scale: Scale; fixture?: string; fresh?: boolean };
 /** The build the server runs after `deploy`, and the web build it serves (BEGHU_WEB_DIR). */
 export type Deployed = { build: string; web: string };
 
-export const PROCS = ["dev-ctl", "cargo", "fixture", "fake", "server", "vite"] as const;
+export const PROCS = ["dev-ctl", "cargo", "fixture", "fake", "server", "vite", "smee"] as const;
 
 /** What a running stack records about itself for `status`, `reset` and friends. */
 export interface State {
   pid: number;
-  mode: "fixture";
+  /** `github`: against real GitHub through the developer's dev App (`start --github`). */
+  mode: "fixture" | "github";
   scale: Scale;
   fixture: string | null;
   phase: "starting" | "ready" | "failed";
@@ -96,7 +97,7 @@ export interface State {
   /** The process given up on, when that's why the phase is `failed`. */
   failed?: string;
   /** The pid of each process as last started. */
-  children?: Partial<Record<"fake" | "server" | "vite", number>>;
+  children?: Partial<Record<"fake" | "server" | "vite" | "smee", number>>;
   startedAt: string;
 }
 

@@ -11,6 +11,10 @@
 //!   milestone?}`: 200 with the issue as stored afterwards. `milestone` is the milestone's number
 //!   in the repo, or `null` for none; a number the repo doesn't have is a 422. A number
 //!   transferred since is a 301 to the new issue, as GitHub documents (and as its `GET` answers).
+//! - `DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`: 204, and `issue_comment`
+//!   `deleted` follows, carrying the comment as it was. Its author may delete it, and so may Write
+//!   and up; anyone else gets 403. beghu deletes no comments: the contract check's write run
+//!   deletes the one it posted.
 //! - `GET /rate_limit`: 200 with the caller's quotas (it needs no token, as on GitHub).
 //!
 //! A write goes through the same change as an outside edit (`edits.rs`), so it sends the same
@@ -228,6 +232,82 @@ async fn create_comment(
         },
     )
     .await
+}
+
+/// `DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+pub(crate) async fn delete_comment(
+    State(fake): State<Fake>,
+    TokenUser(user): TokenUser,
+    Path((owner, name, id)): Path<(String, String, i64)>,
+) -> Response {
+    let done = fake
+        .state()
+        .truth
+        .write(move |tx| {
+            let not_found = || error(StatusCode::NOT_FOUND, "Not Found");
+            let Some(repo) = q::repo_by_full_name(tx, &owner, &name)? else {
+                return Ok(Err(not_found()));
+            };
+            let repo = q::repo(tx, repo)?;
+            let role = q::permission(tx, user, repo.id)?
+                .as_deref()
+                .and_then(Role::from_name);
+            if role.is_none() && repo.private {
+                return Ok(Err(not_found()));
+            }
+            let Some(x) = q::repo_comment(tx, repo.id, id)? else {
+                return Ok(Err(not_found()));
+            };
+            if repo.archived {
+                return Ok(Err(error(
+                    StatusCode::FORBIDDEN,
+                    "Repository was archived so is read-only.",
+                )));
+            }
+            if x.author_id != Some(user) && role.is_none_or(|r| r < Role::Write) {
+                return Ok(Err(not_accessible()));
+            }
+            let Some(item) = q::issue_id(tx, repo.id, x.number)? else {
+                return Ok(Err(not_found()));
+            };
+            let mut comment = crate::repos::comment_json(
+                tx,
+                &repo,
+                crate::repos::CommentRow {
+                    number: x.number,
+                    id: x.id,
+                    node_id: &x.node_id,
+                    author: x.author_id,
+                    body: &x.body,
+                    created: x.created_at,
+                    updated: x.updated_at,
+                },
+            )?;
+            // As `issue_comment` `created` carries it (`edits.rs`).
+            comment["performed_via_github_app"] = Value::Null;
+            let Some(sender) = q::user_row(tx, user)? else {
+                return Ok(Err(error(StatusCode::UNAUTHORIZED, "Bad credentials")));
+            };
+            q::delete_comment(tx, id)?;
+            q::uncount_comment(tx, item)?;
+            let mut p = crate::webhooks::envelope(
+                &repo,
+                &crate::webhooks::user_json(sender.id, &sender.login, sender.avatar_url.as_deref()),
+            );
+            p["action"] = json!("deleted");
+            p["issue"] = crate::webhooks::issue_json(tx, item)?;
+            p["comment"] = comment;
+            Ok(Ok(crate::webhooks::Delivery::new("issue_comment", p)))
+        })
+        .await;
+    match done {
+        Ok(Ok(delivery)) => {
+            fake.state().webhooks.send(vec![delivery]);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(res)) => res,
+        Err(e) => internal(e),
+    }
 }
 
 /// The fields of a new issue the fake models.

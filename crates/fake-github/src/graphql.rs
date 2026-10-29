@@ -609,25 +609,13 @@ fn issue_node(c: &rusqlite::Connection, token: Token, id: i64) -> rusqlite::Resu
     }))
 }
 
-/// `issueDependenciesSummary`, as GitHub's schema describes it: `blockedBy` and `blocking` count
-/// the open issues at the other end, `totalBlockedBy` and `totalBlocking` open and closed alike.
-/// The fake answers every field; the query decides which it reads.
+/// `issueDependenciesSummary { totalBlockedBy totalBlocking }`, the fields beghu's queries select:
+/// open and closed issues at the other end alike. (GitHub's `blockedBy` and `blocking` count the
+/// open ones only; GitHub answers only the fields a query selects, so the fake leaves them out.)
 fn dependencies_summary(c: &rusqlite::Connection, id: i64) -> rusqlite::Result<Value> {
-    let open = |ids: &[i64]| -> rusqlite::Result<usize> {
-        let mut n = 0;
-        for other in ids {
-            if q::target(c, *other)?.state == "open" {
-                n += 1;
-            }
-        }
-        Ok(n)
-    };
-    let (by, blocking) = (q::blocked_by(c, id)?, q::blocking(c, id)?);
     Ok(json!({
-        "blockedBy": open(&by)?,
-        "blocking": open(&blocking)?,
-        "totalBlockedBy": by.len(),
-        "totalBlocking": blocking.len(),
+        "totalBlockedBy": q::blocked_by(c, id)?.len(),
+        "totalBlocking": q::blocking(c, id)?.len(),
     }))
 }
 
@@ -1016,6 +1004,14 @@ async fn graphql(
     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     calls.count(&op);
     let vars = req.variables.clone();
+    let fields = crate::select::selection(&req.query);
+    // GitHub answers only the fields the query selects.
+    let only_selected = |mut answer: Value| {
+        if let Some(f) = &fields {
+            crate::select::project(&mut answer["data"], f);
+        }
+        answer
+    };
     if op == "MintAttachments" {
         let (f, origin) = (fake.clone(), crate::attachments::origin(&headers));
         let ids: Vec<String> = serde_json::from_value(vars["ids"].clone()).unwrap_or_default();
@@ -1025,7 +1021,7 @@ async fn graphql(
             .read(move |c| crate::attachments::mint_nodes(&f, c, token, &ids, &origin))
             .await;
         let mut res = match done {
-            Ok(answer) => axum::Json(answer).into_response(),
+            Ok(answer) => axum::Json(only_selected(answer)).into_response(),
             Err(e) => api::internal(e),
         };
         res.extensions_mut().insert(cost);
@@ -1038,7 +1034,7 @@ async fn graphql(
             .read(move |c| crate::issue_edges::issue_edges(c, token, &vars))
             .await;
         let mut res = match done {
-            Ok(answer) => axum::Json(answer).into_response(),
+            Ok(answer) => axum::Json(only_selected(answer)).into_response(),
             Err(e) => api::internal(e),
         };
         res.extensions_mut().insert(cost);
@@ -1052,9 +1048,11 @@ async fn graphql(
         .await;
     let mut res = match answer {
         Ok(Ok((data, errs))) if errs.is_empty() => {
-            axum::Json(json!({ "data": data })).into_response()
+            axum::Json(only_selected(json!({ "data": data }))).into_response()
         }
-        Ok(Ok((data, errs))) => axum::Json(json!({ "data": data, "errors": errs })).into_response(),
+        Ok(Ok((data, errs))) => {
+            axum::Json(only_selected(json!({ "data": data, "errors": errs }))).into_response()
+        }
         Ok(Err(why)) => errors(vec![json!({ "message": why, "locations": [] })]),
         Err(e) => api::internal(e),
     };

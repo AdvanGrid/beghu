@@ -319,6 +319,56 @@ async fn resolve(app: &App, account: i64, end: &RelatedEnd) -> Result<Side, Fail
     }
 }
 
+/// Refuses a relationship write that would change an issue in a repo this server doesn't write
+/// to (`BEGHU_DEV_WRITABLE_REPOS`): either end, and a moved sub-issue's old parent, which loses
+/// it.
+async fn writes_to_every_end(app: &App, account: i64, plan: &Plan) -> Result<(), Failure> {
+    let mut ends: Vec<(String, String)> = Vec::new();
+    let mut side = |s: &Side| ends.push((s.owner.clone(), s.repo.clone()));
+    match plan {
+        Plan::Sub {
+            parent,
+            child,
+            replace,
+            ..
+        } => {
+            side(parent);
+            side(child);
+            if *replace {
+                let child = child.id;
+                let old = app
+                    .mirrors()
+                    .read(account, Caller::Request, move |c| {
+                        Ok(match q::parent_of(c, child)? {
+                            Some(p) => q::op_target(c, p.id)?,
+                            None => None,
+                        })
+                    })
+                    .await
+                    .map_err(Failure::from)?;
+                if let Some(o) = old {
+                    ends.push((o.owner, o.repo));
+                }
+            }
+        }
+        Plan::Reorder { parent, .. } => side(parent),
+        Plan::Blocks {
+            blocker, blocked, ..
+        } => {
+            side(blocker);
+            side(blocked);
+        }
+        Plan::Relates { this, other, .. } => {
+            side(this);
+            side(other);
+        }
+    }
+    for (owner, repo) in &ends {
+        ops::read_only_here(app, owner, repo)?;
+    }
+    Ok(())
+}
+
 /// What a relationship op does, with both ends resolved.
 enum Plan {
     Sub {
@@ -356,6 +406,7 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
     };
     let this = Side::of(&ops::writable(app, account, issue).await?);
     let plan = plan(app, account, op, this).await?;
+    writes_to_every_end(app, account, &plan).await?;
     let (method, path, body) = match &plan {
         Plan::Sub {
             parent,
