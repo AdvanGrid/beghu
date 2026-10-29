@@ -11,6 +11,8 @@ pub mod migrations;
 pub mod mirrors;
 pub mod plan;
 pub mod pool;
+pub mod scans;
+pub mod stats;
 
 pub use db::Db;
 pub use gate::{Caller, Status};

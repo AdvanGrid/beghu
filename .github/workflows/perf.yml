@@ -1,0 +1,165 @@
+name: Perf
+
+# The perf gates (perf/harness, limits in perf-budgets.toml): three suites in parallel against
+# release builds at 50k, unthrottled, on loopback, each timing the median of 10 with one
+# confirming re-run. `perf` is the check to require: it always runs, and passes when no PR
+# change could move a gate. It posts the table as a PR comment.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      perf: ${{ steps.filter.outputs.perf }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            perf:
+              - Cargo.toml
+              - Cargo.lock
+              - .cargo/**
+              - crates/**
+              - perf/**
+              - perf-budgets.toml
+              - web/src/**
+              - web/index.html
+              - web/theme.js
+              - web/*.svg
+              - web/package.json
+              - web/package-lock.json
+              - web/vite.config.*
+              - web/markdown-parsers.ts
+              - .github/workflows/perf.yml
+
+  suite:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.perf == 'true'
+    runs-on: ubuntu-latest
+    # The spec's target is 3–5 min; past 15 a suite has failed.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [server, load, browser]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # One release cache for the three suites.
+          shared-key: perf-release
+          save-if: ${{ matrix.suite == 'server' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            perf/harness/package-lock.json
+
+      - name: Install
+        run: |
+          npm --prefix web ci
+          npm --prefix perf/harness ci
+
+      # The fixture is named by its generator's hash, so a stale cache only costs a regeneration.
+      # The key hashes what perf/fixture/build.rs hashes: keep the two lists in step.
+      - name: Fixture cache
+        uses: actions/cache@v4
+        with:
+          path: perf/data
+          key: perf-fixture-50k-${{ hashFiles('perf/fixture/**', 'crates/mirror-db/migrations/**', 'crates/mirror-db/queries/**', 'crates/mirror-db/src/lib.rs', 'crates/dbrt/src/stats.rs') }}
+          restore-keys: perf-fixture-50k-
+
+      - name: Build (release server and Fake GitHub, production web build)
+        run: |
+          cargo build --release --locked -p beghu -p fake-github -p fixture &
+          (cd web && npx vite build --logLevel warn --outDir "$RUNNER_TEMP/web") &
+          wait -n && wait -n
+
+      - name: Install Chromium
+        if: matrix.suite == 'browser'
+        run: npx playwright-core install --with-deps chromium
+        working-directory: perf/harness
+
+      - name: Run the ${{ matrix.suite }} suite
+        run: >
+          node perf/harness/src/main.ts run ${{ matrix.suite }}
+          --bin target/release --web "$RUNNER_TEMP/web" --data "$RUNNER_TEMP/perf-data"
+          --out perf-results/${{ matrix.suite }}.json
+          --commit ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ matrix.suite }}
+          path: perf-results/
+          if-no-files-found: ignore
+
+  perf:
+    # The check to require: always runs, and fails if a suite failed or a gate is over its limit.
+    needs: [changes, suite]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Nothing to measure
+        if: needs.suite.result == 'skipped' && needs.changes.result == 'success'
+        run: echo "No change here can move a perf gate."
+
+      - uses: actions/checkout@v4
+        if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
+      - uses: actions/setup-node@v4
+        if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: perf/harness/package-lock.json
+      - uses: actions/download-artifact@v4
+        if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
+        with:
+          pattern: perf-*
+          path: perf-results
+          merge-multiple: true
+
+      - name: Gates
+        id: gates
+        if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
+        run: |
+          npm --prefix perf/harness ci
+          set +e
+          node perf/harness/src/main.ts report perf-results/*.json --md perf-comment.md --title "Perf gates" --expect server,load,browser
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          cat perf-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Forks' PRs get a read-only token: their table is in the run's summary instead.
+      - name: PR comment
+        # A comment that can't be posted mustn't keep the verdict from running.
+        continue-on-error: true
+        if: steps.gates.outcome == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file perf-comment.md --edit-last --create-if-none
+
+      - name: Verdict
+        if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
+        run: |
+          if [ "${{ needs.changes.result }}" != success ]; then echo "the path filter failed"; exit 1; fi
+          if [ "${{ needs.suite.result }}" != success ]; then echo "a suite failed or was cancelled: see its job"; exit 1; fi
+          exit "${{ steps.gates.outputs.code }}"

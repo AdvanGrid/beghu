@@ -1,0 +1,21 @@
+{
+  "name": "beghu-perf",
+  "private": true,
+  "type": "module",
+  "description": "The perf harness: the gates in perf-budgets.toml, run by CI and by ./dev-ctl perf. TypeScript run directly by Node (type stripping).",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/"
+  },
+  "dependencies": {
+    "playwright-core": "1.64.1",
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

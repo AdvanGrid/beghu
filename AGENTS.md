@@ -19,6 +19,13 @@ CI runs all of these; run them before you commit:
 - `cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::disallowed_methods`
 - `cargo test --workspace --locked`
 - `npm --prefix tools/dev-ctl ci && npm --prefix tools/dev-ctl run typecheck` after changing `./dev-ctl`
+- `npm --prefix perf/harness ci && npm --prefix perf/harness run typecheck && npm --prefix perf/harness test`
+  after changing the perf harness
+- `./dev-ctl perf` after changing the server or the web app (about a minute once main is built,
+  longer on a busy host:
+  this tree against local `main`, failing at more than 10% slower), and `./dev-ctl perf --full`
+  (CI's three suites at their absolute limits) before a PR. CI's `perf` check runs the suites on
+  every PR that touches them and comments the table
 - In `web/`: `npm ci`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
   `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules'
   and the highlight.js output reader's Node tests) and
@@ -71,6 +78,11 @@ CI runs all of these; run them before you commit:
   layout's letters, and the areas of touchpoints no view offers yet. Rebinding itself (swaps,
   refusals, sequences, other tabs) goes through the setup page (`web/e2e/prefs.spec.ts`). Both
   web tests run under `npm run test:lint`.
+- **Perf budgets are owner-reviewed.** `perf-budgets.toml` holds every gate's limit with a reason
+  (CODEOWNERS). A new gate gets its budget in the same change, calibrated from a measured run
+  (+15% for timings, +5% for bytes, exact for counts); a limit never moves just to pass a PR.
+  `BEGHU_SCAN_STEPS=1` makes each API answer report its own full-scan steps
+  (`x-beghu-scan-steps`) and log the statements, for the "no full scans" gates.
 - **Fake GitHub models GitHub, it doesn't invent.** Response shapes follow GitHub's; when the fake
   learns an endpoint, match GitHub's documented or recorded shape and status codes.
   Exception: `crates/fake-github/src/web_hosts.rs` (`/ext/…`) stands in for the arbitrary web

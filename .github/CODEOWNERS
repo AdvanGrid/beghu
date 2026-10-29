@@ -1,0 +1,6 @@
+# The perf gates change only with the owner's review (spec #86, "Perf gates on every PR"): a
+# limit moves when a regression is accepted on purpose, never to get a PR through, and the
+# harness and workflow that measure against the limits are held the same way.
+/perf-budgets.toml @tomsjansons
+/perf/harness/src/ @tomsjansons
+/.github/workflows/perf.yml @tomsjansons

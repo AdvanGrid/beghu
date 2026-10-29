@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -155,6 +156,24 @@ Commands:
                               --fresh deletes the mirrors instead, so every account imports
                               its synced repos through the fake on its next use (with --all,
                               each picks its repos again after signing in).
+  perf [--full] [--fresh] [--build-only] [GLOB...]
+                              Whether this tree is slower than local main: about a minute
+                              once both are built (minutes when main has moved).
+                              Release builds of each (main in a worktree under the git
+                              common dir's beghu-perf/, shared by every worktree and
+                              cached by commit) run side by side at 50k, sampled in
+                              turn. A timing more than 10% slower than main fails;
+                              bytes and counts are held to perf-budgets.toml. --full
+                              runs CI's three suites against this tree at their
+                              absolute limits instead (minutes). GLOBs pick gates
+                              ('server.*', '*.scan'). --fresh seeds the data again;
+                              --build-only stops once both are built and seeded.
+                              Writes .dev/perf/last.json and last.md; exit 1 if a gate
+                              fails. One run per host at a time (a flock on
+                              $TMPDIR/beghu-perf.lock). Independent of the dev stack.
+                              To reclaim its disk (several GB): rm -rf .dev/perf
+                              "$(git rev-parse --git-common-dir)/beghu-perf" &&
+                              git worktree prune
   help                        This help.
 
 ENDPOINT is * (everything) or a path with an optional method: "/user", "GET /user",
@@ -862,6 +881,34 @@ async function reset(args: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// perf
+
+/**
+ * Runs the perf harness's local mode (perf/harness/src/local.ts), installing it (and Chromium for
+ * it) the first time. Under a host-wide lock (`flock`, where there is one): two runs, from any
+ * worktree, would share main's build and skew each other's timings. PERF_LOCK names another lock
+ * file; PERF_NO_LOCK=1 runs without one.
+ */
+function perf(args: string[]): void {
+  const harness = join(ROOT, "perf", "harness");
+  if (!existsSync(join(harness, "node_modules", "playwright-core"))) {
+    console.log("installing the perf harness and its Chromium");
+    const npm = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: harness, stdio: "inherit" });
+    if (npm.status !== 0) die("npm ci in perf/harness failed");
+    const chromium = spawnSync("npx", ["playwright-core", "install", "chromium"], { cwd: harness, stdio: "inherit" });
+    if (chromium.status !== 0) die("installing Chromium for the perf harness failed");
+  }
+  const run = [process.execPath, join(harness, "src", "main.ts"), "local", ...args];
+  const lock = process.env.PERF_LOCK ?? join(tmpdir(), "beghu-perf.lock");
+  const locked = process.env.PERF_NO_LOCK !== "1" && spawnSync("flock", ["--version"], { stdio: "ignore" }).status === 0;
+  if (locked) console.log(`waiting for ${lock} (another ./dev-ctl perf on this host holds it)`);
+  const r = locked
+    ? spawnSync("flock", [lock, ...run], { cwd: ROOT, stdio: "inherit" })
+    : spawnSync(run[0]!, run.slice(1), { cwd: ROOT, stdio: "inherit" });
+  process.exit(r.status ?? 1);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -891,6 +938,8 @@ async function main(): Promise<void> {
       return deploy(args);
     case "reset":
       return reset(args);
+    case "perf":
+      return perf(args);
     case "help":
     case "-h":
     case "--help":

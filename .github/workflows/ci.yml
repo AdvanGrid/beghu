@@ -74,6 +74,29 @@ jobs:
         run: npx tsc --noEmit
         working-directory: tools/dev-ctl
 
+  perf-harness:
+    # The perf harness's own checks; the gates themselves run in perf.yml.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: perf/harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: perf/harness/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
   web:
     runs-on: ubuntu-latest
     defaults:

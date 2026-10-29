@@ -416,6 +416,7 @@ impl Stack {
             accounts_check_every: beghu::default_accounts_check_every(),
             dormant_after: beghu::default_dormant_after(),
             activity_every: beghu::default_activity_every(),
+            scan_steps: false,
             // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
             // tests about other things: a test about them sets its own schedule
             // (tests/reconcile.rs, tests/prs.rs). Redelivery still runs once at each start, and

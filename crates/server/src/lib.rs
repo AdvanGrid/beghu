@@ -503,6 +503,7 @@ pub fn router(app: App) -> Router {
             auth::require_same_origin,
         ))
         .layer(middleware::from_fn_with_state(app.clone(), api_headers))
+        .layer(middleware::from_fn_with_state(app.clone(), scan_steps))
         .layer(compression());
     // The shell answers only the SPA's own routes (web/src/router.tsx); any other path is a
     // plain 404 from the router's default fallback.
@@ -587,6 +588,30 @@ async fn api_headers(State(app): State<App>, req: Request, next: Next) -> Respon
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if let Ok(v) = HeaderValue::from_str(&app.cfg().build_id) {
         h.insert("x-beghu-build", v);
+    }
+    res
+}
+
+/// With `BEGHU_SCAN_STEPS` on, an API answer says how many rows its statements stepped through
+/// with no index to seek on, all told (`x-beghu-scan-steps`), and the log names each statement
+/// that stepped so: the perf gates' "no full scans" (perf/harness). Off, it adds nothing.
+async fn scan_steps(State(app): State<App>, req: Request, next: Next) -> Response {
+    if !app.cfg().scan_steps {
+        return next.run(req).await;
+    }
+    // The path as the browser sent it, `/api` included (the API router is nested).
+    let uri = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map_or_else(|| req.uri().clone(), |o| o.0.clone());
+    let what = format!("{} {uri}", req.method());
+    let (mut res, scans) = dbrt::scans::counted(next.run(req)).await;
+    let total: u64 = scans.iter().map(|s| s.steps).sum();
+    res.headers_mut()
+        .insert("x-beghu-scan-steps", HeaderValue::from(total));
+    for s in &scans {
+        let sql = s.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        eprintln!("scan steps: {} in {what}: {sql}", s.steps);
     }
     res
 }

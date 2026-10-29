@@ -1,6 +1,7 @@
 //! Hashes everything that decides a fixture's bytes: this crate's source, mirror-db's
-//! migrations and queries, and the planner's statistics (dbrt's `PRAGMA optimize` mask in its
-//! pool, and the indexes mirror-db's lib has sampled in full). The hash names cached fixture
+//! migrations and queries, and the planner's statistics (dbrt's `PRAGMA optimize` mask in
+//! `dbrt/src/stats.rs`, and the indexes mirror-db's lib has sampled in full). Keep the list in
+//! step with the fixture cache key in `.github/workflows/perf.yml`. The hash names cached fixture
 //! files, so changing any of them regenerates the fixture.
 
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ fn main() {
         mirror.join("migrations"),
         mirror.join("queries"),
         mirror.join("src/lib.rs"),
-        here.join("../../crates/dbrt/src/pool.rs"),
+        here.join("../../crates/dbrt/src/stats.rs"),
     ];
     let mut files = Vec::new();
     for p in &inputs {

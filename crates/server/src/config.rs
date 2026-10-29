@@ -84,6 +84,10 @@ pub struct Config {
     pub activity_every: Duration,
     /// The attachment route and the image proxy (`media/`).
     pub media: MediaConfig,
+    /// `BEGHU_SCAN_STEPS=1`: every API answer reports its statements' full-scan steps, all
+    /// told (`x-beghu-scan-steps`), and the log names the statements, for the perf harness. Off
+    /// by default.
+    pub scan_steps: bool,
 }
 
 /// The attachment route's and the image proxy's limits (spec, "Markdown and media"), and where
@@ -331,6 +335,7 @@ impl Config {
                 dev_image_hosts,
                 ..MediaConfig::default()
             },
+            scan_steps: flag("BEGHU_SCAN_STEPS")?,
         })
     }
 
@@ -432,6 +437,15 @@ fn required(name: &str) -> Result<String, String> {
     match std::env::var(name) {
         Ok(v) if !v.trim().is_empty() => Ok(v),
         _ => Err(format!("{name} is required")),
+    }
+}
+
+/// An on/off switch: unset, empty or `0` is off, `1` is on; anything else refuses startup.
+fn flag(name: &str) -> Result<bool, String> {
+    match std::env::var(name).as_deref().map(str::trim) {
+        Err(_) | Ok("") | Ok("0") => Ok(false),
+        Ok("1") => Ok(true),
+        Ok(v) => Err(format!("{name} must be 1 or 0, got {v:?}")),
     }
 }
 

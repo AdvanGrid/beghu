@@ -1,0 +1,297 @@
+# The perf gates' limits: owner-reviewed (CODEOWNERS), with no override label. Every gate a suite
+# measures needs a section here, with the value it was calibrated from and a reason.
+#
+# Calibrated from the first build that has every gate (spec #86, "Perf gates on every PR"):
+# timings +15% over the measured median of 10, bytes +5% (and never past the 14 KB a response
+# or push may weigh), counts exactly. This first calibration ran on the dev host (32 cores, at
+# load 50 to 110 from other work), not on CI's runner: recalibrate the timings from the first
+# CI run's perf-* artifacts before relying on them, and review the counts flagged "for the
+# owner" in their reasons. Timings are CI's to hold (ubuntu-latest, loopback,
+# unthrottled, the 50k fixture); `./dev-ctl perf` compares timings with local main instead.
+# To recalibrate from a run's results (CI's perf-* artifacts, or .dev/perf/*.json):
+#   node perf/harness/src/main.ts calibrate perf-results/*.json
+# then review the diff and each reason. A limit moves only when a slower result is accepted on
+# purpose, never to get a PR through.
+
+[meta]
+scale = "50k"
+
+# ./dev-ctl perf: a timing fails when this tree's median is more than `slower_than` slower than
+# local main's and slower by more than `floor_ms`. floor_ms is loopback noise: a sub-10 ms
+# answer moves by more than 10% (well over 0.5 ms) between two runs on an idle machine, and a
+# 1 ms floor keeps those from failing while a real 10% on anything over 10 ms still does.
+[local]
+slower_than = 0.10
+floor_ms = 1.0
+
+# ---- server: one user, each endpoint in turn, median of 10 (perf/harness/src/server.ts) ----
+
+[gates."server.list.ms"]
+max = 8.2
+measured = 7.11
+reason = "The default view (is:open, newest update first): the first page every load fetches: its answer time, median of 10."
+
+[gates."server.list.kb"]
+max = 5.2
+measured = 4.95
+reason = "The default view (is:open, newest update first): the first page every load fetches: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.list.scan"]
+max = 0
+measured = 0
+reason = "The default view (is:open, newest update first): the first page every load fetches: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.list-label.ms"]
+max = 74.8
+measured = 65
+reason = "A label filter (is:open label:bug), the commonest filter-bar click: its answer time, median of 10."
+
+[gates."server.list-label.kb"]
+max = 5.3
+measured = 4.97
+reason = "A label filter (is:open label:bug), the commonest filter-bar click: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.list-label.scan"]
+max = 0
+measured = 0
+reason = "A label filter (is:open label:bug), the commonest filter-bar click: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.list-assignee.ms"]
+max = 31.7
+measured = 27.49
+reason = "An assignee filter (is:open assignee:ilze-k): its answer time, median of 10."
+
+[gates."server.list-assignee.kb"]
+max = 5.3
+measured = 5.04
+reason = "An assignee filter (is:open assignee:ilze-k): its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.list-assignee.scan"]
+max = 0
+measured = 0
+reason = "An assignee filter (is:open assignee:ilze-k): rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.list-closed.ms"]
+max = 7.4
+measured = 6.36
+reason = "The closed issues, the other state preset: its answer time, median of 10."
+
+[gates."server.list-closed.kb"]
+max = 5.7
+measured = 5.42
+reason = "The closed issues, the other state preset: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.list-closed.scan"]
+max = 0
+measured = 0
+reason = "The closed issues, the other state preset: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.list-sort.ms"]
+max = 7.4
+measured = 6.36
+reason = "Another sort (is:open sort:comments): its answer time, median of 10."
+
+[gates."server.list-sort.kb"]
+max = 5.5
+measured = 5.21
+reason = "Another sort (is:open sort:comments): its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.list-sort.scan"]
+max = 0
+measured = 0
+reason = "Another sort (is:open sort:comments): rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.search.ms"]
+max = 19
+measured = 16.44
+reason = "Free-text search (is:open dark m) through FTS5: its answer time, median of 10."
+
+[gates."server.search.kb"]
+max = 4.9
+measured = 4.63
+reason = "Free-text search (is:open dark m) through FTS5: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.search.scan"]
+max = 0
+measured = 0
+reason = "Free-text search (is:open dark m) through FTS5: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.facets.ms"]
+max = 129.8
+measured = 112.81
+reason = "The filter bar's suggestions, fetched on every load and push: its answer time, median of 10."
+
+[gates."server.facets.kb"]
+max = 0.6
+measured = 0.5
+reason = "The filter bar's suggestions, fetched on every load and push: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.facets.scan"]
+max = 37693
+measured = 37693
+spec = 0
+reason = "The filter bar's suggestions: rows their statements stepped through with no index to seek on, all told. Calibrated as measured, so any scan added to the answer still fails; the spec asks for none (over spec warns). Most of it is the issue-type facet (facet_types: SELECT MIN(i.issue_type) … GROUP BY i.issue_type COLLATE NOCASE), which walks the items_issue_type index from end to end to group it: the index exists, but a GROUP BY over it is a full index scan, every typed item at 50k. count_types (a facet's counts for types) does the same under the view. For the owner, a follow-up: a table of distinct issue types kept by the writes, or a skip-scan (a recursive CTE stepping from one type to the next through the index)."
+
+[gates."server.facet-counts.ms"]
+max = 116.7
+measured = 101.4
+reason = "A facet's counts under the view (label counts under is:open), fetched while a suggestion list stays open: its answer time, median of 10."
+
+[gates."server.facet-counts.kb"]
+max = 0.2
+measured = 0.18
+reason = "A facet's counts under the view (label counts under is:open), fetched while a suggestion list stays open: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.facet-counts.scan"]
+max = 0
+measured = 0
+reason = "A facet's counts under the view (label counts under is:open), fetched while a suggestion list stays open: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.detail.ms"]
+max = 4.3
+measured = 3.68
+reason = "An issue's detail with its first 30 comments, the open-issue fetch: its answer time, median of 10."
+
+[gates."server.detail.kb"]
+max = 4.3
+measured = 4.04
+reason = "An issue's detail with its first 30 comments, the open-issue fetch: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.detail.scan"]
+max = 0
+measured = 0
+reason = "An issue's detail with its first 30 comments, the open-issue fetch: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.next-page.ms"]
+max = 8.6
+measured = 7.46
+reason = "The second page of the default view, through its cursor: its answer time, median of 10."
+
+[gates."server.next-page.kb"]
+max = 5.1
+measured = 4.77
+reason = "The second page of the default view, through its cursor: its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.next-page.scan"]
+max = 0
+measured = 0
+reason = "The second page of the default view, through its cursor: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
+
+[gates."server.write.ms"]
+max = 12
+measured = 10.4
+reason = "A write (label_add, then label_remove) through Fake GitHub to the mirror: POST /api/ops answers once both have it."
+
+[gates."server.push.kb"]
+max = 0.1
+measured = 0.04
+reason = "The ids push a write sends on the stream: bytes as framed, far under 14 KB."
+
+# ---- load: 20 users for 30 s (perf/harness/src/load.ts) ----
+
+[gates."load.p95.ms"]
+max = 166.5
+measured = 144.78
+reason = "P95 of every request 20 concurrent users (tomsj and ilze-k, two mirrors) make in 30 s: cold loads, views, search keystrokes, details, next pages, counts."
+
+[gates."load.errors"]
+max = 0
+measured = 0
+reason = "Requests that failed under the load: none."
+
+# ---- browser: full Chromium against the production build, input event to frame (perf/harness/src/browser.ts) ----
+
+[gates."browser.cold.ms"]
+max = 342.1
+measured = 297.4
+reason = "A load in an empty context, from navigation start to the frame with the default view's first 20 rows."
+
+[gates."browser.warm.ms"]
+max = 305
+measured = 265.2
+reason = "A new tab in a warm context (cached shell and assets), to the same frame."
+
+[gates."browser.filter.ms"]
+max = 100.9
+measured = 87.7
+reason = "A preset click (Assigned to me, then Open) to the frame with the right rows: the slower of the two."
+
+[gates."browser.search-key.ms"]
+max = 73
+measured = 63.4
+reason = "One keystroke in the filter box (dar to dark) to the frame with the right rows."
+
+[gates."browser.open-issue.ms"]
+max = 211.3
+measured = 183.7
+reason = "A click on a row to the frame with its detail and first comments."
+
+[gates."browser.next-page.ms"]
+max = 110
+measured = 95.6
+reason = "A wheel to the end of the first page to the frame whose list holds the next page."
+
+[gates."browser.live.ms"]
+max = 52.9
+measured = 46
+reason = "An outside edit's webhook reaching beghu to the frame showing the new title in its row (Fake GitHub's own ~1 s delivery delay is outside it)."
+
+[gates."browser.write.ms"]
+max = 31.8
+measured = 27.6
+reason = "A click on Comment to the frame showing the comment (pending): writes show at once."
+
+[gates."browser.cold.depth"]
+max = 3
+measured = 3
+spec = 2
+reason = "Request depth of a cold load: the longest chain of round trips begun before the list was ready. Calibrated as measured, one over the spec's 2 (over spec warns; a deeper load fails): the entry requests the Hints chunk, a dynamic import, before the list is ready (/ → index.js → Hints.js). For the owner: a modulepreload of that chunk in the shell, or a static import, brings it to 2."
+
+[gates."browser.warm.depth"]
+max = 1
+measured = 1
+reason = "Request depth of a warm load: the shell and assets come from cache, the data preload is one round trip (spec: 1)."
+
+[gates."browser.first-load.html.kb"]
+max = 1.3
+measured = 1.2
+reason = "The shell (HTML) gzip: within the 14 KB first flight."
+
+[gates."browser.first-load.kb"]
+max = 48
+measured = 86.05
+report_only = true
+reason = "Everything a cold load fetches (shell, JS, CSS, data, the reset refetch), gzip. Report-only during v1: the spec's 48 KB is the owner's to hold once v1 is complete (Solid Router and virtual-core are in on purpose), so over it warns and fails nothing."
+
+[gates."browser.load.list-fetches"]
+max = 2
+measured = 2
+reason = "Fetches of the list's first page per load: the load's own and the stream open's reset refetch, measured with no exemption (spec: each page load fetches twice)."
+
+[gates."browser.filter.round-trips"]
+max = 1
+measured = 1
+reason = "List requests per filter click (spec: 1)."
+
+[gates."browser.open-issue.round-trips"]
+max = 2
+measured = 2
+spec = 1
+reason = "Requests for the issue when its row is clicked: its detail and anything of its own. Calibrated as measured, one over the spec's 1 (over spec warns; another request fails): after the detail the panel fetches a second comments page (comments?order=newest&after=…). For the owner: whether that page belongs in the detail answer."
+
+[gates."browser.live.refetch-batches"]
+max = 1
+measured = 1
+reason = "Bursts of refetches after a push (spec: one batch: list, facets and open detail in parallel)."
+
+[gates."browser.scroll.rows"]
+max = 32
+measured = 32
+reason = "The most rows rendered while wheeling 18 000 px down the list: the window (a 1280 x 800 viewport's rows) plus the virtualizer's overscan, never more."
+
+[gates."browser.scroll.long-tasks"]
+max = 6
+measured = 6
+report_only = true
+spec = 0
+reason = "Long tasks over 100 ms while wheeling 18 000 px down the list, the median over the samples. Report-only until a CI run calibrates it: the only measurement so far (6, of 104 to 289 ms) is from a dev host at load 50 to 110 on 32 cores, where Chromium's main thread is starved, not from the app. The spec asks for none: set max from CI's first run (perf/harness/src/main.ts calibrate) and drop report_only."
