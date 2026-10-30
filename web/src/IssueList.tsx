@@ -17,6 +17,7 @@ import { coalesced, onPush } from "./live";
 import { overlay } from "./overlay";
 import { queryOf, sortOf, type SortKey } from "./query";
 import { ChunkFailed } from "./router";
+import { createSlots, refocus, sortSlots } from "./recycle";
 import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { slots } from "./layout.stylex";
@@ -376,11 +377,19 @@ function Rows(props: {
     size: ROW_HEIGHT,
     overscan: OVERSCAN,
   });
-  const visible = createMemo(() => {
+  // The window's rows on a fixed pool of row nodes (recycle.ts), widened to the pool's size.
+  const pool = createSlots(() => {
     const items = v.items();
-    const first = items[0]?.index ?? 0;
-    return { first, rows: rows().slice(first, first + items.length) };
+    return { first: items[0]?.index ?? 0, count: items.length, total: rows().length };
   });
+  const visible = createMemo(() => {
+    const { first, slots } = pool();
+    return { first, rows: rows().slice(first, first + slots.length) };
+  });
+  /** Each slot's row node, by slot. */
+  const nodes: (HTMLElement | undefined)[] = [];
+  /** The issue whose row has the DOM's focus (or something in it), as the rows last took it. */
+  let focusedId: string | undefined;
 
   // The selection is the open issue, and the keys move it (keys.ts): the next or previous row,
   // or the first or last. The row is scrolled into view and opened; if the list had the focus,
@@ -459,12 +468,15 @@ function Rows(props: {
     if (scroller.contains(document.activeElement)) setFocusing(r.id);
     if (going === undefined && r.id !== props.openId) go(r.id);
   };
-  // A row that moves (its own issue edited elsewhere) or leaves the window loses the DOM's focus,
-  // which falls to the page. If the list had it, it goes back to the selected row, or the row in
+  // A row that leaves the window loses the DOM's focus, which falls to the page (its node, given to
+  // another issue, lets it go: recycle.ts); a row that moves takes it to its new node. If the list had it, it goes back to the selected row, or the row in
   // the tab order if that one isn't shown. The list had the focus if it was the last to take it
   // and no press elsewhere came since (a press on the page's plain parts puts it there too).
   let hadFocus = false;
-  const onFocusIn = () => (hadFocus = true);
+  const onFocusIn = (e: FocusEvent) => {
+    hadFocus = true;
+    focusedId = (e.target as HTMLElement).closest<HTMLElement>('[data-perf="row"]')?.dataset.id;
+  };
   const away = (e: Event) => {
     if (!scroller.contains(e.target as Node)) hadFocus = false;
   };
@@ -478,11 +490,18 @@ function Rows(props: {
     // A fresh object on every change of the window's rows, with the row the focus would go to.
     // Otherwise, the row that took the place of a selected issue that left, while the list checks
     // it, or the first row inside the window (not one the window keeps past its edge).
+    // The rows' order is read too: a held change moves issues between row nodes.
     () => {
-      visible();
-      return { back: selectedShown() ? selected() : undefined, sel: selected() };
+      rows();
+      return { pool: pool(), back: selectedShown() ? selected() : undefined, sel: selected() };
     },
-    ({ back, sel }) => {
+    ({ pool, back, sel }) => {
+      // The DOM's order back to the rows', a slide that a node's new issue ends, and the focus
+      // back on its issue's node (recycle.ts).
+      const was = document.activeElement;
+      sortSlots(nodes.slice(0, pool.slots.length), pool.first);
+      held.settle();
+      refocus(scroller, focusedId, was);
       if (!hadFocus || (document.activeElement !== document.body && document.activeElement !== null)) return;
       const id = back ?? untrack(() => anchored(sel)?.taker ?? rows()[firstInView()]?.id);
       if (id === undefined) return;
@@ -552,30 +571,39 @@ function Rows(props: {
               </div>
             )}
           </For>
-          {/* Each row sits at its own place: a row that stays in the window keeps its DOM node,
-              and so the focus, through a refetch that replaces its data (rows are keyed by
-              issue, not by object), and the window moving never moves it, so nothing but the
-              rows that came in is painted again. */}
-          <For each={visible().rows} keyed={(r) => r.id}>
-            {(r, i) => (
-              <Row
-                r={r()}
-                y={(visible().first + i()) * ROW_HEIGHT}
-                readStart={props.readStart}
-                search={props.search}
-                current={props.openId === r().id}
-                selected={selected() === r().id}
-                tabbable={selectedShown() ? selected() === r().id : i() === 0}
-                pos={visible().first + i() + 1}
-                of={props.more ? -1 : rows().length}
-                leaving={held.cue()?.leaving.has(r().id) ?? false}
-                takeFocus={focusing() === r().id}
-                onFocusTaken={() => setFocusing(undefined)}
-                time={props.time}
-                cols={props.cols}
-                card={props.card}
-              />
-            )}
+          {/* Each row sits at its own place, on a slot of the pool (recycle.ts): the window
+              moving gives the slots that left it the rows that came in, and creates or disposes
+              no node. A row that stays in the window keeps its node and its place, so nothing but
+              the rows that came in is painted again. */}
+          <For each={pool().slots} keyed={false}>
+            {(at, k) => {
+              // A slot's row: the one at its index. (Kept while a smaller list drops the slot.)
+              const r = createMemo<IssueRow>((prev) => rows()[at()] ?? prev!);
+              let mine: HTMLElement | undefined;
+              onCleanup(() => {
+                if (nodes[k] === mine) nodes[k] = undefined;
+              });
+              return (
+                <Row
+                  node={(el) => (nodes[k] = mine = el)}
+                  r={r()}
+                  y={at() * ROW_HEIGHT}
+                  readStart={props.readStart}
+                  search={props.search}
+                  current={props.openId === r().id}
+                  selected={selected() === r().id}
+                  tabbable={selectedShown() ? selected() === r().id : at() === pool().first}
+                  pos={at() + 1}
+                  of={props.more ? -1 : rows().length}
+                  leaving={held.cue()?.leaving.has(r().id) ?? false}
+                  takeFocus={focusing() === r().id}
+                  onFocusTaken={() => setFocusing(undefined)}
+                  time={props.time}
+                  cols={props.cols}
+                  card={props.card}
+                />
+              );
+            }}
           </For>
         </div>
       </Show>
@@ -616,6 +644,8 @@ export function Row(props: {
   card: Card;
   /** In Tree mode: its place in the tree. */
   tree?: TreeLook;
+  /** Hears the row's node as it's made. */
+  node?: (el: HTMLAnchorElement) => void;
 }) {
   // A memo: every part of the row reads it, and with a write pending each read would apply the
   // write again, into a new object.
@@ -642,7 +672,10 @@ export function Row(props: {
   // pattern), and still a plain link the router opens on click.
   return (
     <a
-      ref={el}
+      ref={(a) => {
+        el = a;
+        props.node?.(a);
+      }}
       href={`/issues/${r().id}${props.search}`}
       noscroll
       role={props.tree ? "treeitem" : "option"}
@@ -658,7 +691,8 @@ export function Row(props: {
       data-blocked={blocked() ? "" : undefined}
       data-cue={props.leaving ? "leave" : undefined}
       aria-current={props.current ? "page" : undefined}
-      onPointerEnter={r().pr ? preloadPull : undefined}
+      // A handler is bound once, and a row node shows other issues over its life (recycle.ts).
+      onPointerEnter={() => r().pr && preloadPull()}
       {...stylex.attrs(s.row, s.link, s.at(y()), props.selected && s.current, blocked() && s.blocked, props.leaving && cueStyles.leave, props.tree?.context && s.context)}
     >
       {props.tree?.lead}

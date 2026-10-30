@@ -35,6 +35,7 @@ import { coalesced, onPush, writesPaused } from "./live";
 import { overlay, type SubMove } from "./overlay";
 import { queryOf, sortOf, takeModeSwitch, type SortKey } from "./query";
 import { endOf, refOf } from "./related";
+import { createSlots, refocus, sortSlots } from "./recycle";
 import { createVirtualizer } from "./virtual";
 import { StillImporting } from "./WhileImporting";
 import { colors, fonts } from "./tokens.stylex";
@@ -462,11 +463,19 @@ function Nodes(props: {
     size: ROW_HEIGHT,
     overscan: OVERSCAN,
   });
-  const visible = createMemo(() => {
+  // The window's rows on a fixed pool of row nodes, as the list's (recycle.ts).
+  const pool = createSlots(() => {
     const items = v.items();
-    const first = items[0]?.index ?? 0;
-    return { first, nodes: nodes().slice(first, first + items.length) };
+    return { first: items[0]?.index ?? 0, count: items.length, total: nodes().length };
   });
+  const visible = createMemo(() => {
+    const { first, slots } = pool();
+    return { first, nodes: nodes().slice(first, first + slots.length) };
+  });
+  /** Each slot's row node, by slot. */
+  const rowNodes: (HTMLElement | undefined)[] = [];
+  /** The issue whose row has the DOM's focus (or something in it), as the rows last took it. */
+  let focusedId: string | undefined;
   /** Each node's place among its siblings (from 1), and how many there are (-1 for roots while more load). */
   const places = createMemo(() => {
     const seen = new Map<number | null, number>();
@@ -526,7 +535,10 @@ function Nodes(props: {
     if (going === undefined && n.row.id !== props.openId) go(n.row.id);
   };
   let hadFocus = false;
-  const onFocusIn = () => (hadFocus = true);
+  const onFocusIn = (e: FocusEvent) => {
+    hadFocus = true;
+    focusedId = (e.target as HTMLElement).closest<HTMLElement>('[data-perf="row"]')?.dataset.id;
+  };
   const away = (e: Event) => {
     if (!scroller.contains(e.target as Node)) hadFocus = false;
   };
@@ -537,11 +549,19 @@ function Nodes(props: {
     document.removeEventListener("pointerdown", away, true);
   });
   createEffect(
+    // The nodes' order is read too: a held change moves issues between row nodes.
     () => {
-      const { nodes } = visible();
-      return { back: selectedShown() ? selected() : nodes[0]?.row.id };
+      nodes();
+      const { nodes: shown } = visible();
+      return { pool: pool(), back: selectedShown() ? selected() : shown[0]?.row.id };
     },
-    ({ back }) => {
+    ({ pool, back }) => {
+      // The DOM's order back to the rows', a slide that a node's new issue ends, and the focus
+      // back on its issue's node (recycle.ts).
+      const was = document.activeElement;
+      sortSlots(rowNodes.slice(0, pool.slots.length), pool.first);
+      held.settle();
+      refocus(scroller, focusedId, was);
       if (!hadFocus || back === undefined || (document.activeElement !== document.body && document.activeElement !== null)) return;
       scroller.querySelector<HTMLElement>(`[data-perf="row"][data-id="${back}"]`)?.focus({ preventScroll: true });
     },
@@ -778,9 +798,11 @@ function Nodes(props: {
               </div>
             )}
           </For>
-          {/* Each row at its own place, as the list's. */}
-          <For each={visible().nodes} keyed={(n) => n.row.id}>
-            {(n, i) => {
+          {/* Each row at its own place, on a slot of the pool, as the list's. */}
+          <For each={pool().slots} keyed={false}>
+            {(at, k) => {
+              // A slot's node: the one at its index. (Kept while a smaller tree drops the slot.)
+              const n = createMemo<TreeNode>((prev) => nodes()[at()] ?? prev!);
               // Its place in the tree, built once: read through getters, so it follows the node,
               // and its lead (indent, grip, chevron) is one component for the row's life. (A
               // fresh object literal here would build a new lead on every read of it.)
@@ -811,16 +833,21 @@ function Nodes(props: {
                   />
                 ),
               };
+              let mine: HTMLElement | undefined;
+              onCleanup(() => {
+                if (rowNodes[k] === mine) rowNodes[k] = undefined;
+              });
               return (
                 <Row
+                  node={(el) => (rowNodes[k] = mine = el)}
                   r={n().row}
-                  y={(visible().first + i()) * ROW_HEIGHT}
+                  y={at() * ROW_HEIGHT}
                   readStart={props.readStart}
                   search={props.search}
                   current={props.openId === n().row.id}
                   selected={selected() === n().row.id}
-                  tabbable={selectedShown() ? selected() === n().row.id : i() === 0}
-                  pos={places().get(n().row.id)?.pos ?? visible().first + i() + 1}
+                  tabbable={selectedShown() ? selected() === n().row.id : at() === pool().first}
+                  pos={places().get(n().row.id)?.pos ?? at() + 1}
                   of={places().get(n().row.id)?.of ?? -1}
                   leaving={held.cue()?.leaving.has(n().row.id) ?? false}
                   takeFocus={focusing() === n().row.id}

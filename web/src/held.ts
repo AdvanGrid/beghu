@@ -404,6 +404,29 @@ export function createHeld<R extends { id: number }>(opts: {
     return out;
   });
 
+  // The slides running, by row node and the issue it slid for: a row node the window gives to
+  // another issue mid-slide (recycle.ts) stops sliding (`settle`).
+  const sliding = new Map<HTMLElement, { id: string; anim: Animation }>();
+  const slide = (row: HTMLElement, keyframes: Keyframe[]) => {
+    sliding.get(row)?.anim.cancel();
+    const anim = row.animate(keyframes, { duration: SLIDE_MS, easing: EASE });
+    const entry = { id: row.dataset.id!, anim };
+    sliding.set(row, entry);
+    const done = () => {
+      if (sliding.get(row) === entry) sliding.delete(row);
+    };
+    anim.finished.then(done, done);
+  };
+  /** Stops the slide of any row node that now shows another issue than the one it slid for. */
+  const settle = () => {
+    if (sliding.size === 0) return;
+    for (const [row, { id, anim }] of sliding) {
+      if (row.dataset.id === id) continue;
+      anim.cancel();
+      sliding.delete(row);
+    }
+  };
+
   const timer = createCueTimer(reduced);
   const cancelCue = () => {
     timer.stop();
@@ -478,13 +501,13 @@ export function createHeld<R extends { id: number }>(opts: {
         if (to === undefined) continue;
         const from = was.get(id);
         if (from === undefined) {
-          row.animate([{ opacity: 0 }, { opacity: 1 }], { duration: SLIDE_MS, easing: EASE });
+          slide(row, [{ opacity: 0 }, { opacity: 1 }]);
           continue;
         }
         const dy = from * opts.pitch - before.top - (to * opts.pitch - after);
         if (dy === 0) continue;
         const clamped = Math.max(-before.height, Math.min(dy, before.height));
-        row.animate([{ transform: `translateY(${clamped}px)` }, { transform: "none" }], { duration: SLIDE_MS, easing: EASE });
+        slide(row, [{ transform: `translateY(${clamped}px)` }, { transform: "none" }]);
       }
     });
   };
@@ -574,5 +597,5 @@ export function createHeld<R extends { id: number }>(opts: {
     return () => el.removeEventListener("scroll", scrolled);
   });
 
-  return { rows, cue, ghosts, fade };
+  return { rows, cue, ghosts, fade, settle };
 }
