@@ -188,7 +188,8 @@ export function IssueList(props: { search: string; openId?: number }) {
     onPush((p) => {
       // Back restored the page: its refetched order applies at once (held.ts).
       if (p.kind === "reset" && p.restored) applyNextAtOnce();
-      if (p.kind !== "defs") void refetch();
+      // What the account may do changes no row.
+      if (p.kind === "ids" || p.kind === "reset") void refetch();
     }),
   );
 

@@ -4,7 +4,7 @@
 // `showBinding` too.
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
-import { area, available, keysIn, MAC, touch, type Action, type Area } from "./keys";
+import { area, available, deniedWhy, keysIn, MAC, touch, type Action, type Area } from "./keys";
 import { writesPaused } from "./live";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -42,6 +42,11 @@ const WRITES: ReadonlySet<Action> = new Set(["closeReopen", "send", "saveEdit"])
 /** Why a write key does nothing now, if it doesn't. */
 function paused(action: Action): string | undefined {
   return WRITES.has(action) && writesPaused() ? "Writes are paused" : undefined;
+}
+
+/** Why a key does nothing now: the account's role doesn't allow it here, or writes are paused. */
+function off(action: Action): string | undefined {
+  return deniedWhy(action) ?? paused(action);
 }
 
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
@@ -119,7 +124,7 @@ function keysOf(action: Action, where: Area): string[] {
  */
 export function Hints() {
   const offered = (where: Area, actions: Action[]): Syntax[] =>
-    actions.filter((x) => available(x) && keysOf(x, where).length > 0).map((x) => ({ syntax: keysOf(x, where).join(" "), does: LABEL[x], off: paused(x) }));
+    actions.filter((x) => available(x) && keysOf(x, where).length > 0).map((x) => ({ syntax: keysOf(x, where).join(" "), does: LABEL[x], off: off(x) }));
   const quick = (): Syntax[] => {
     const a = area();
     if (a === "filter") return SEARCH;
@@ -193,10 +198,12 @@ function Help() {
                   <For each={sec.actions}>
                     {(a) => {
                       const keys = () => keysOf(a, sec.areas[0]!);
-                      // Dimmed: nothing offers it (not built yet, or a PR's write keys), no key runs
-                      // it where the focus was, or it writes and writes are paused.
+                      // Dimmed: nothing offers it (not built yet, or a PR's write keys), the role
+                      // doesn't allow it here, no key runs it where the focus was, or it writes
+                      // and writes are paused.
+                      const denied = () => deniedWhy(a);
                       const why = () =>
-                        !available(a) ? "Nothing here offers this" : keysIn(a, from).length === 0 ? "Not with the focus where it was" : paused(a);
+                        !available(a) ? "Nothing here offers this" : (denied() ?? (keysIn(a, from).length === 0 ? "Not with the focus where it was" : paused(a)));
                       const off = () => why() !== undefined;
                       return (
                         <tr aria-disabled={off() ? "true" : undefined} title={why()} {...stylex.attrs(off() && s.off)}>
@@ -208,7 +215,10 @@ function Help() {
                               </span>
                             </Show>
                             <Show when={off()}>
-                              <span {...stylex.attrs(s.unbound)}> · {why() === paused(a) ? "paused" : "not here"}</span>
+                              <span {...stylex.attrs(s.unbound)} data-perf="key-off">
+                                {" "}
+                                · {denied() ?? (why() === paused(a) ? "paused" : "not here")}
+                              </span>
                             </Show>
                           </td>
                         </tr>

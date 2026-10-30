@@ -108,7 +108,7 @@ Commands:
             [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N]
             [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N]
             [--prioritize-sub-issue R#N] [--link-issue R#N] [--unlink-issue R#N]
-            [--review approve|request_changes|comment|dismiss] [--delete]
+            [--review approve|request_changes|comment|dismiss] [--lock|--unlock] [--delete]
                               An outside edit on "GitHub" (as an agent with gh would make
                               it); its webhooks reach the server about a second later.
                               On a PR, --link-issue/--unlink-issue link an issue in the
@@ -119,6 +119,8 @@ Commands:
                               be in an unsynced repo (partner-sdk#100), or #N in REPO.
                               --prioritize-sub-issue moves that sub-issue to the top, which
                               GitHub does without a webhook (sweeps find it).
+                              --lock/--unlock lock or unlock the conversation (issues
+                              locked/unlocked): below Write, no one can comment on it.
   fake upload image|video [--width W] [--height H] [--as USER]
                               Upload an attachment as GitHub's editor would (an image is a
                               PNG of that size, 640 × 360 by default; a video a short WebM)
@@ -139,6 +141,11 @@ Commands:
   fake convert REPO#N [--as USER]
                               Someone converts the issue to a discussion: it stays,
                               closed and locked (issues locked, then closed).
+  fake role USER REPO read|triage|write|maintain|admin|none
+                              An admin gives USER that role on REPO on "GitHub" (none: no
+                              access). GitHub sends beghu no webhook: beghu learns it at its
+                              next re-read (every 15 min while USER has a tab open, or at
+                              once when GitHub refuses one of USER's writes).
   fake archive REPO | fake unarchive REPO
                               An admin archives REPO, or unarchives it (repository
                               archived/unarchived).
@@ -525,8 +532,9 @@ async function control(method: string, path: string, body?: unknown): Promise<un
 /** `./dev-ctl fake edit REPO#N …`: the control port's `POST /edit` body. */
 function editBody(target: string | undefined, opts: Record<string, string>, set: Set<string>): Record<string, unknown> {
   const m = target === undefined ? null : /^([\w.\/-]+)#(\d+)$/.exec(target);
-  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N] [--prioritize-sub-issue R#N] [--link-issue R#N] [--unlink-issue R#N] [--review KIND] [--delete]");
+  if (!m) throw new Usage("usage: ./dev-ctl fake edit REPO#N [--title T] [--body B] [--close] [--reopen] [--label L,…] [--unlabel L,…] [--comment TEXT] [--as USER] [--add-sub-issue R#N] [--remove-sub-issue R#N] [--add-blocked-by R#N] [--remove-blocked-by R#N] [--relate R#N] [--unrelate R#N] [--prioritize-sub-issue R#N] [--link-issue R#N] [--unlink-issue R#N] [--review KIND] [--lock|--unlock] [--delete]");
   if (set.has("--close") && set.has("--reopen")) throw new Usage("--close and --reopen don't go together");
+  if (set.has("--lock") && set.has("--unlock")) throw new Usage("--lock and --unlock don't go together");
   const list = (v: string | undefined) => (v === undefined ? [] : v.split(",").map((l) => l.trim()).filter(Boolean));
   const body: Record<string, unknown> = { repo: m[1], number: Number(m[2]) };
   if (opts["--as"]) body.as = opts["--as"];
@@ -547,6 +555,8 @@ function editBody(target: string | undefined, opts: Record<string, string>, set:
   if (opts["--label"]) body.add_labels = list(opts["--label"]);
   if (opts["--unlabel"]) body.remove_labels = list(opts["--unlabel"]);
   if (opts["--comment"] !== undefined) body.comment = opts["--comment"];
+  if (set.has("--lock")) body.locked = true;
+  if (set.has("--unlock")) body.locked = false;
   const links: [string, string][] = [
     ["--add-sub-issue", "add_sub_issue"],
     ["--remove-sub-issue", "remove_sub_issue"],
@@ -603,7 +613,7 @@ async function fake(args: string[]): Promise<void> {
       "--review",
       "--only",
     ],
-    ["--close", "--reopen", "--delete"],
+    ["--close", "--reopen", "--delete", "--lock", "--unlock"],
   );
   const done = (text: string) => print(json, { ok: true }, text);
   switch (sub) {
@@ -720,6 +730,15 @@ async function fake(args: string[]): Promise<void> {
       const out = (await control("POST", `/${sub}`, body)) as { issue: { id: number; number: number }; deliveries: number };
       const what = sub === "transfer" ? `transferred to ${to}#${out.issue.number} (id ${out.issue.id})` : "converted to a discussion";
       return print(json, out, `${target} ${what}: ${out.deliveries} webhook(s) on the way`);
+    }
+    case "role": {
+      const [user, repo, role] = pos;
+      const roles = ["read", "triage", "write", "maintain", "admin", "none"];
+      if (!user || !repo || !role || !roles.includes(role)) {
+        throw new Usage("usage: ./dev-ctl fake role USER REPO read|triage|write|maintain|admin|none");
+      }
+      await control("PUT", "/permissions", { login: user, repo, role: role === "none" ? null : role });
+      return done(role === "none" ? `${user} has no access to ${repo}` : `${user} has ${role} on ${repo}`);
     }
     case "archive":
     case "unarchive": {

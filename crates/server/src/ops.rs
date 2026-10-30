@@ -29,8 +29,9 @@
 //!   only). GitHub drops any of the three it won't apply without saying so: the reply names
 //!   each as the write that would apply it on the new issue, for the tab to show as failed there.
 //!   New issues take turns per repo, as ops on one issue do.
-//! - A refusal, or a close or reopen GitHub didn't apply, re-reads the account's role on that
-//!   repo at once and says why in its terms.
+//! - A refusal, or a field GitHub answered unchanged, re-reads the account's role on that repo at
+//!   once and says why in its terms (`roles.rs`, the rule module). The role stored isn't asked
+//!   first: GitHub decides, so a role that changed since it was read never holds a write back.
 //! - Only issues take writes: a PR, a stub or an issue outside the synced repos is refused.
 //! - A label is added only by a name the mirror's repo has (GitHub would create one it lacks).
 //! - While GitHub is down (see `github.rs`) a write fails at once, without a call.
@@ -61,11 +62,12 @@ use crate::auth::Session;
 use crate::detail::Comment;
 use crate::edges::{ReadBack, Subject};
 use crate::error::ApiError;
-use crate::github::{Access, Role, Shown};
+use crate::github::Shown;
 use crate::live::Push;
 use crate::markdown::{self, Digest, Md, Place, Post, PostKind, Refs};
 use crate::relationship_writes::RelatedEnd;
-use crate::{App, github, repos, tokens, webhook};
+use crate::roles::{self, At, Can, IssueFacts, RepoAccess};
+use crate::{App, github, tokens, webhook};
 use axum::Json;
 use axum::extract::{Extension, State};
 use mirror_db::{Caller, q};
@@ -82,8 +84,6 @@ use ts_rs::TS;
 const REMEMBER: Duration = Duration::from_secs(10 * 60);
 /// How many ops per account are remembered at most.
 const MAX_REMEMBERED: usize = 500;
-/// How long a refused write waits for the repo's role to be re-read, to say why in its terms.
-const REREAD_WAIT: Duration = Duration::from_secs(2);
 /// The longest rate limit waited out without failing the write.
 const QUIET_WAIT: Duration = Duration::from_secs(10);
 /// How many rate limits in a row one write waits out before failing.
@@ -1099,12 +1099,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
         ),
         Op::BodyEdit { new, .. } => (reqwest::Method::PATCH, issue_path, json!({ "body": new })),
     };
-    let on = IssueRepo {
-        repo_id: target.repo_id,
-        owner: target.owner.clone(),
-        repo: target.repo.clone(),
-        own: target.author_id == Some(account),
-    };
+    let on = At::of(&target, account);
     if op.is_comment() {
         let after = app
             .mirrors()
@@ -1130,7 +1125,9 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
     };
     let answer = match answer {
         Err(Failure::Forbidden) => {
-            return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+            return Err(Failure::Refused(
+                roles::refused_why(app, account, &on, None, op).await,
+            ));
         }
         // The label isn't on the issue: what the removal asked for.
         Err(Failure::NoSuchLabel) => serde_json::json!([]),
@@ -1202,7 +1199,9 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             let has = labels.iter().find(|l| l.name.eq_ignore_ascii_case(label));
             let add = matches!(op, Op::LabelAdd { .. });
             if add != has.is_some() {
-                return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+                return Err(Failure::Refused(
+                    roles::refused_why(app, account, &on, None, op).await,
+                ));
             }
             let (label, has) = (label.clone(), has.cloned());
             store(app, account, &target, move |tx, seq| match has {
@@ -1265,7 +1264,9 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
             })
             .await;
             if !applied {
-                return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+                return Err(Failure::Refused(
+                    roles::refused_why(app, account, &on, None, op).await,
+                ));
             }
             Ok(edited(app, account, &target, body).await)
         }
@@ -1298,24 +1299,64 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         .ok_or_else(|| Failure::Refused("This repo isn't synced".into()))?;
     let name = &target.name;
     read_only_here(app, &target.owner, name)?;
-    if target.archived {
-        return Err(Failure::Refused(format!(
-            "{name} is archived, so it's read-only"
-        )));
+    // The rules: an archived repo takes no new issue; Read opens one with a title and a body
+    // only, and a parent takes Triage on both repos. A role not read yet is GitHub's to judge.
+    let access = RepoAccess::from(&target);
+    let own = IssueFacts {
+        own: true,
+        locked: false,
+    };
+    let on = At {
+        repo_id: repo,
+        owner: target.owner.clone(),
+        repo: target.name.clone(),
+        issue: own,
+    };
+    // A refusal from the stored role re-reads it in the background: it may have changed on GitHub
+    // since, and the next attempt then has GitHub's.
+    let refused = |why: String, sides: &[&At]| {
+        roles::reread_later(app, account, sides);
+        Err(Failure::Refused(why))
+    };
+    if let Some(why) = roles::why_not(&access, own, Can::Create) {
+        return refused(why, &[&on]);
     }
-    // Read opens issues with a title and a body only; a role not read yet is GitHub's to judge.
-    let role = target.role.as_deref().and_then(Role::parse);
-    let extras = !labels.is_empty() || !assignees.is_empty() || milestone.is_some();
-    if let Some(role) = role.filter(|r| (extras || parent.is_some()) && *r < Role::Triage) {
+    let sets = [
+        (!labels.is_empty(), Can::Labels),
+        (!assignees.is_empty(), Can::Assignees),
+        (milestone.is_some(), Can::Milestone),
+        (parent.is_some(), Can::Relationships),
+    ];
+    let fields_denied = sets
+        .iter()
+        .any(|&(asked, c)| asked && roles::why_not(&access, own, c).is_some());
+    if let (true, Some(role)) = (fields_denied, access.role) {
         let what = if parent.is_some() {
             "labels, assignees, a milestone or a parent"
         } else {
             "labels, assignees or a milestone"
         };
-        return Err(Failure::Refused(format!(
-            "you have {} on {name}, which can't set {what}",
-            role.name()
-        )));
+        let why = format!("you have {} on {name}, which can't set {what}", role.name());
+        return refused(why, &[&on]);
+    }
+    // A parent takes Triage on its repo too: the check every relationship goes through.
+    if let Some(parent) = *parent {
+        let (why, parent_at) = app
+            .mirrors()
+            .read(account, Caller::Request, move |c| {
+                let Some(p) = q::op_target(c, parent)? else {
+                    return Ok((None, None));
+                };
+                let why = roles::relationship_refusal(c, repo, Some(p.repo_id))?;
+                // Only a repo with a role stored has one to re-read.
+                Ok((why, p.role.is_some().then(|| At::of(&p, account))))
+            })
+            .await
+            .map_err(Failure::from)?;
+        if let Some(why) = why {
+            let sides: Vec<&At> = std::iter::once(&on).chain(parent_at.as_ref()).collect();
+            return refused(why, &sides);
+        }
     }
     if app.github().is_down() {
         return Err(Failure::GitHubDown(
@@ -1351,12 +1392,6 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
     if let Some(m) = milestone {
         ask["milestone"] = json!(m);
     }
-    let on = IssueRepo {
-        repo_id: repo,
-        owner: target.owner.clone(),
-        repo: target.name.clone(),
-        own: true,
-    };
     let path = format!("/repos/{}/{name}/issues", target.owner);
     let answer = match call(
         app,
@@ -1370,7 +1405,9 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
     .await
     {
         Err(Failure::Forbidden) => {
-            return Err(Failure::Refused(refused_why(app, account, &on, op).await));
+            return Err(Failure::Refused(
+                roles::refused_why(app, account, &on, None, op).await,
+            ));
         }
         // 404: out of sight now; 410: the repo has issues turned off.
         Err(Failure::Gone) => {
@@ -1426,6 +1463,9 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         repo: target.name.clone(),
         number: issue.number(),
         author_id: Some(account),
+        role: target.role.clone(),
+        archived: target.archived,
+        locked: false,
     };
     store(app, account, &made, move |tx, seq| {
         webhook::write_issue(tx, repo, &issue, seq)
@@ -1434,7 +1474,7 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
     let mut left = Vec::new();
     if let Some(first) = unapplied.first() {
         left.push(Unapplied {
-            why: refused_why(app, account, &on, first).await,
+            why: roles::refused_why(app, account, &on, None, first).await,
             ops: unapplied,
         });
     }
@@ -1758,115 +1798,6 @@ where
             e => return Err(Failure::Internal(e.to_string())),
         }
     }
-}
-
-/// The repo an op's issue is in, and whether the account opened the issue.
-#[derive(Clone)]
-pub(crate) struct IssueRepo {
-    pub(crate) repo_id: i64,
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) own: bool,
-}
-
-/// Whether `role` allows `op` on an issue the account opened (`own`) or not: anyone can
-/// comment; Triage and up close and reopen any issue, Read only its own; labels, assignees and
-/// the milestone take Triage, even on the account's own issue.
-///
-/// The roles rule module (#106) takes this over, with the archived and locked flags.
-fn allows(role: Role, op: &Op, own: bool) -> bool {
-    match op {
-        Op::Comment { .. } => true,
-        // Anyone who sees the repo opens an issue; its labels, assignees and milestone are each
-        // their own write's question.
-        Op::Create { .. } => true,
-        Op::Close { .. } | Op::Reopen { .. } => own || role >= Role::Triage,
-        Op::LabelAdd { .. }
-        | Op::LabelRemove { .. }
-        | Op::AssigneeAdd { .. }
-        | Op::AssigneeRemove { .. }
-        | Op::MilestoneSet { .. } => role >= Role::Triage,
-        Op::TitleEdit { .. } | Op::BodyEdit { .. } => own || role >= Role::Write,
-        // Authorship gives no relationship rights (verified live).
-        Op::SubAdd { .. }
-        | Op::SubRemove { .. }
-        | Op::SubReorder { .. }
-        | Op::BlockAdd { .. }
-        | Op::BlockRemove { .. }
-        | Op::RelateAdd { .. }
-        | Op::RelateRemove { .. } => role >= Role::Triage,
-    }
-}
-
-/// Why GitHub refused `op`, or answered it without applying it, in terms of the account's role
-/// on the repo, re-read from GitHub at once and stored for the next write and the next
-/// `/api/me`. Only the wait for it is bounded (by [`REREAD_WAIT`]): a slower re-read is still
-/// stored when it comes. Just the reason: the tab says what couldn't be done.
-pub(crate) async fn refused_why(app: &App, account: i64, at: &IssueRepo, op: &Op) -> String {
-    // The repo by its bare name, as the user knows it.
-    let repo = &at.repo;
-    let reread = {
-        let at = at.clone();
-        app.spawn(move |app| async move { reread_role(&app, account, &at).await })
-    };
-    let unknown = || format!("your role on {repo} may not allow it");
-    match tokio::time::timeout(REREAD_WAIT, reread).await {
-        Ok(Ok(Some(Ok(Access::Role(role))))) if allows(role, op, at.own) => {
-            "GitHub didn't apply this change".into()
-        }
-        Ok(Ok(Some(Ok(Access::Role(role))))) => match op {
-            Op::Close { .. } | Op::Reopen { .. } => format!(
-                "you have {} on {repo}, which closes or reopens only issues you opened",
-                role.name()
-            ),
-            Op::TitleEdit { .. } | Op::BodyEdit { .. } => format!(
-                "you have {} on {repo}, which edits only issues you opened",
-                role.name()
-            ),
-            _ => format!("you have {} on {repo}", role.name()),
-        },
-        Ok(Ok(Some(Ok(Access::None)))) => format!("you no longer have access to {repo}"),
-        Ok(Ok(Some(Ok(Access::Unknown)))) | Ok(Ok(None)) => unknown(),
-        Ok(Ok(Some(Err(e)))) => {
-            eprintln!("ops: account {account}: re-reading the role on {repo}: {e}");
-            unknown()
-        }
-        Ok(Err(e)) => {
-            eprintln!("ops: account {account}: re-reading the role on {repo} panicked: {e}");
-            unknown()
-        }
-        Err(_) => unknown(),
-    }
-}
-
-/// The account's access to `at`'s repo, from GitHub now; a known role is written to the
-/// mirror. With no access, a full re-read of its repos follows, to stop syncing the repo.
-async fn reread_role(app: &App, account: i64, at: &IssueRepo) -> Result<Access, String> {
-    let gh = app.github().clone();
-    let access = app
-        .tokens()
-        .with_token(account, |token| {
-            let gh = gh.clone();
-            async move { gh.repo_access(&token, &at.owner, &at.repo).await }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    match access {
-        Access::None => {
-            app.spawn(move |app| async move { repos::refresh_roles_now(&app, account).await });
-        }
-        Access::Unknown => {}
-        Access::Role(role) => {
-            let id = at.repo_id;
-            app.mirrors()
-                .write(account, Caller::Request, move |tx, _| {
-                    q::set_repo_role(tx, id, role.as_str())
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(access)
 }
 
 /// `s` as one segment of a URL path: everything but unreserved characters percent-encoded, so a

@@ -20,7 +20,7 @@ comment_order: CommentOrder,
  */
 keymap: { [key in KeyAction]?: string }, 
 /**
- * The synced repos and the account's role on each.
+ * The synced repos, the account's role on each, and what it may do there.
  */
 repos: Array<Repo>, 
 /**

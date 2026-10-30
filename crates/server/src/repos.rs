@@ -222,22 +222,27 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
                     q::forget_visible_repo(tx, r.id)?;
                 }
             }
-            let key = |r: &q::VisibleReposRow| {
-                (
-                    r.id,
-                    r.installation_id,
-                    r.role.clone(),
-                    r.archived,
-                    r.name.clone(),
-                )
+            // What the repos are, and apart from that what the account may do in them.
+            let after = q::visible_repos(tx)?;
+            let differ = |key: &dyn Fn(&q::VisibleReposRow) -> String| {
+                let mut was: Vec<_> = before.iter().map(key).collect();
+                let mut now: Vec<_> = after.iter().map(key).collect();
+                was.sort();
+                now.sort();
+                was != now
             };
-            let mut was: Vec<_> = before.iter().map(key).collect();
-            let mut now: Vec<_> = q::visible_repos(tx)?.iter().map(key).collect();
-            was.sort();
-            now.sort();
-            Ok(was != now)
+            let repos = differ(&|r| format!("{} {:?} {}", r.id, r.installation_id, r.name));
+            // A repo that stays visible with another role or archived flag; one that comes or
+            // goes is the reset's.
+            let roles = after.iter().any(|now| {
+                before.iter().any(|was| {
+                    was.id == now.id && (was.role != now.role || was.archived != now.archived)
+                })
+            });
+            Ok((repos, roles))
         })
         .await?;
+    let (changed, roles_changed) = changed;
 
     app.control()
         .write(move |tx| {
@@ -250,10 +255,14 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
             Ok(())
         })
         .await?;
-    // The picker (and the roles every view uses) refetch: one reset, the unsync's if it pushed one.
+    // The picker refetches: one reset, the unsync's if it pushed one.
     let pushed = reconcile(app, account).await?;
     if changed && !pushed {
         app.hub().publish(account, Push::Reset);
+    }
+    // A role or an archived flag changed: the tabs read `/api/me` and the open detail again.
+    if roles_changed {
+        app.hub().publish(account, Push::Roles);
     }
     Ok(())
 }
@@ -426,6 +435,23 @@ async fn finish_unsync(app: &App, account: i64, repo: i64) -> Result<(), ApiErro
         })
         .await?;
     Ok(())
+}
+
+/// While an account has a live session (a tab's stream open), its repos and roles are re-read
+/// every `repo_refresh_every`, whether or not the tab asks `/api/me`: a role changed on GitHub
+/// sends no webhook, and reaches the tabs as a `roles` push. Looks every minute (or every
+/// `repo_refresh_every`, if that's sooner, and at most every second); never waits on a re-read.
+pub async fn keep_live_roles_fresh(app: App) {
+    let tick = app
+        .cfg()
+        .repo_refresh_every
+        .clamp(Duration::from_secs(1), Duration::from_secs(60));
+    loop {
+        tokio::time::sleep(tick).await;
+        for account in app.hub().live_accounts() {
+            drop(app.roles().join_or_start(&app, account, Want::Due));
+        }
+    }
 }
 
 /// At sign-in: starts a fresh re-read of the roles and waits up to 2 s for it, so the first

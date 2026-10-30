@@ -6,7 +6,9 @@
 //!   assignees are names and logins, the milestone a number. `issues` `opened` follows, carrying
 //!   the issue with all three. (Whether GitHub also sends `labeled`, `assigned` and `milestoned`
 //!   for a new issue's own fields is unrecorded: the fake sends `opened` alone.)
-//! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment.
+//! - `POST /repos/{owner}/{repo}/issues/{number}/comments {body}`: 201 with the comment. A locked
+//!   issue takes comments only from Write and up: below it, 403 (GitHub's docs: "collaborators
+//!   with write access" can still comment on a locked conversation).
 //! - `PATCH /repos/{owner}/{repo}/issues/{number} {state?, state_reason?, title?, body?,
 //!   milestone?}`: 200 with the issue as stored afterwards. `milestone` is the milestone's number
 //!   in the repo, or `null` for none; a number the repo doesn't have is a 422. A number
@@ -72,6 +74,15 @@ pub(crate) fn not_accessible() -> Response {
         HeaderValue::from_static("issues=write; pull_requests=write"),
     );
     res
+}
+
+/// GitHub's 403 for a comment on a locked issue from below Write. The message is as users report
+/// it (GitHub's REST docs list only the status); unmeasured against a user access token.
+fn locked() -> Response {
+    error(
+        StatusCode::FORBIDDEN,
+        "Unable to create comment because issue is locked.",
+    )
 }
 
 pub(crate) fn unprocessable(message: &str) -> Response {
@@ -216,7 +227,11 @@ async fn create_comment(
         user,
         path,
         OnMoved::NotFound,
-        move |_, _| {
+        move |tx, t| {
+            // A locked conversation takes comments only from Write and up.
+            if q::issue(tx, t.issue)?.locked && t.role < Some(Role::Write) {
+                return Ok(Err(locked()));
+            }
             Ok(Ok(Change {
                 comment: Some(text),
                 ..Change::default()

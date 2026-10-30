@@ -22,13 +22,17 @@
 // again (api.ts, `prefsChanged`): a new keymap takes effect, and a new comment order with the
 // next issue opened.
 //
+// A `roles` event (what the account may do changed: a role re-read from GitHub, a repo archived)
+// reads `/api/me` again (`rolesChanged`), and pushes `roles`, on which the open detail refetches
+// its `can` set and role line. Nothing typed is lost: drafts and editors live outside the reads.
+//
 // `status` events say what the status slot shows besides: `importing()` is the account's import
 // while one runs, and `sync()` its sync state while it's degraded or resyncing. Every `reset`
 // (each stream open sends one) clears both and is followed by the current status, `null`s
 // included, so a tab that was reconnecting when an import or a resync ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
-import { forgetRemembered, prefsChanged } from "./api";
+import { forgetRemembered, prefsChanged, rolesChanged } from "./api";
 import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
 import { noteBuild } from "./build";
 import type { ImportStatus } from "./bindings/ImportStatus";
@@ -42,9 +46,9 @@ import type { SyncStatus } from "./bindings/SyncStatus";
 /**
  * A push. A `reset` with `restored` is the first of a stream opened again as the back-forward
  * cache restored the page: the user came back to it (Back), rather than the world changing under
- * them.
+ * them. `roles`: what the account may do changed.
  */
-export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset"; restored?: true };
+export type Push = { kind: "ids"; ids: number[] } | { kind: "defs" } | { kind: "reset"; restored?: true } | { kind: "roles" };
 
 const RETRY_MS = 1000;
 const RECONNECTING_AFTER_MS = 3000;
@@ -102,10 +106,9 @@ function emit(p: Push): void {
   // Anything cached may be stale now: the next read of it fetches. After a reset, so may the
   // detail a hover remembered, whether or not the panel's code has loaded.
   query.clear();
-  if (p.kind === "reset") {
-    lastReset = performance.now();
-    forgetRemembered();
-  }
+  if (p.kind === "reset") lastReset = performance.now();
+  // A detail a hover remembered may offer what the account can no longer do, too.
+  if (p.kind === "reset" || p.kind === "roles") forgetRemembered();
   for (const fn of [...listeners]) fn(p);
 }
 
@@ -163,6 +166,10 @@ export function connectLive(): () => void {
     es.addEventListener("defs", () => emit({ kind: "defs" }));
     // A failed read leaves the preferences as they were; the next push or load reads them again.
     es.addEventListener("prefs", () => void prefsChanged().catch(() => {}));
+    es.addEventListener("roles", () => {
+      void rolesChanged().catch(() => {});
+      emit({ kind: "roles" });
+    });
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;
       emit({ kind: "ids", ids });

@@ -310,13 +310,15 @@ test("another tab of the same account never flickers while the first picks quick
 });
 
 test("a refused pick reverts in one frame with its marker on the row, and nothing moves", async ({ page }) => {
-  // Read on `cli`: GitHub refuses her labels, even on her own issues.
-  await signIn(page, "ilze-k");
-  const issue = await claim(page, "cli");
+  // GitHub refuses the label (a 403); the role, re-read, allows it, so that's the reason. A Read
+  // repo offers no picker at all (roles.spec.ts).
+  await signIn(page);
+  const issue = await claim(page);
   try {
     await open(page, issue.id);
     const name = ["p0", "p1", "p2", "ux"].find((n) => !issue.labels.some((l) => l.name === n))!;
     await fake("/faults/latency", { endpoint: LABELS(issue), ms: 800, count: 1 });
+    await fake("/faults/fail", { endpoint: LABELS(issue), status: 403, count: 1 });
     await opener(page, "labels").click();
     await expect(option(page, name)).toBeVisible();
     // Per frame from the pick on: whether the label shows, whether the marker does, and where the
@@ -337,11 +339,11 @@ test("a refused pick reverts in one frame with its marker on the row, and nothin
     await option(page, name).click();
     await page.keyboard.press("Escape");
     const marker = propRow(page, "labels").locator('[data-perf="pick-failed"]');
-    await expect(marker).toContainText(`Couldn't add ${name} — you have Read on cli`);
+    await expect(marker).toContainText(`Couldn't add ${name} — GitHub didn't apply this change`);
     await expect(marker.getByRole("button", { name: "Retry" })).toBeVisible();
     await expect(marker.getByRole("button", { name: "Dismiss" })).toBeVisible();
     // The row's opener is described by its marker, so a screen reader hears the failure there.
-    await expect(opener(page, "labels")).toHaveAccessibleDescription(new RegExp(`Couldn't add ${name} — you have Read on cli`));
+    await expect(opener(page, "labels")).toHaveAccessibleDescription(new RegExp(`Couldn't add ${name} — GitHub didn't apply this change`));
 
     const frames = await page.evaluate(() => (window as unknown as { frames: { chip: boolean; marker: boolean; below: number }[] }).frames);
     expect(frames[0]!.chip).toBe(true);
@@ -460,19 +462,20 @@ test("a label renamed on GitHub updates the open picker, the detail and the list
 
 test("a refused removal comes back with its marker in the row's slot, and nothing moves", async ({ page }) => {
   await narrowPanel(page);
-  // Read on `cli`: GitHub refuses her labels.
-  await signIn(page, "ilze-k");
-  const issue = await withLabels(page, await claim(page, "cli"), 2);
+  // GitHub refuses the removal (a 403); the role, re-read, allows it.
+  await signIn(page);
+  const issue = await withLabels(page, await claim(page), 2);
   try {
     await open(page, issue.id);
     const name = issue.labels[0]!.name;
+    await fake("/faults/fail", { endpoint: UNLABEL(issue), status: 403, count: 1 });
     const below = () => box(page, "dl").then((b) => b.top + b.height);
     const before = await below();
     await opener(page, "labels").click();
     await option(page, name).click();
     await page.keyboard.press("Escape");
     const marker = propRow(page, "labels").locator('[data-perf="pick-failed"]');
-    await expect(marker).toContainText(`Couldn't remove ${name} — you have Read on cli`);
+    await expect(marker).toContainText(`Couldn't remove ${name} — GitHub didn't apply this change`);
     await expect(labelsShown(page).filter({ hasText: new RegExp(`^${name}$`) })).toHaveCount(1);
     expect(await below()).toBe(before);
     await marker.getByRole("button", { name: "Dismiss" }).click();
@@ -486,11 +489,13 @@ test("a refused removal comes back with its marker in the row's slot, and nothin
 
 test("on a full labels row a refused pick's marker keeps to one line, with +N for an earlier one", async ({ page }) => {
   await narrowPanel(page);
-  await signIn(page, "ilze-k");
-  const issue = await withLabels(page, await claim(page, "cli"), 3);
+  // GitHub refuses both picks (403s).
+  await signIn(page);
+  const issue = await withLabels(page, await claim(page), 3);
   try {
     await open(page, issue.id);
     const off = ["p0", "p1", "p2", "ux", "question"].filter((n) => !issue.labels.some((l) => l.name === n));
+    await fake("/faults/fail", { endpoint: LABELS(issue), status: 403, count: 2 });
     const row = () => box(page, 'dd[data-perf="labels"]');
     const before = await row();
     const milestone = await box(page, 'dd[data-perf="milestone"]');

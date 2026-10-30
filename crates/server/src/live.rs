@@ -75,6 +75,9 @@ pub enum Push {
     Sync,
     /// The account's preferences changed (prefs.rs): its tabs read `/api/me` again.
     Prefs,
+    /// What the account may do changed (a role or a repo's archived flag, roles.rs): its tabs
+    /// read `/api/me` and the open detail again.
+    Roles,
 }
 
 impl Push {
@@ -206,6 +209,16 @@ impl Hub {
             .contains_key(&account)
     }
 
+    /// The accounts with a stream open: those with a live session.
+    pub fn live_accounts(&self) -> Vec<i64> {
+        self.accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect()
+    }
+
     /// Sends `push` to `account`'s streams; with none open, it goes nowhere.
     pub fn publish(&self, account: i64, push: Push) {
         let all = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
@@ -295,6 +308,7 @@ fn event(push: &Push) -> Event {
         Push::Reset => Event::default().event("reset").data("{}"),
         Push::Defs => Event::default().event("defs").data("{}"),
         Push::Prefs => Event::default().event("prefs").data("{}"),
+        Push::Roles => Event::default().event("roles").data("{}"),
         // Sent through `status_event`, which reads the sync state.
         Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
         Push::Switched(sw) => Event::default()

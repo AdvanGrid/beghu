@@ -6,7 +6,7 @@
 //! { "repo": "acme/web" | "web", "number": 12, "as": "tomsj",
 //!   "title": "…", "body": "…", "state": "open" | "closed", "state_reason": "not_planned",
 //!   "add_labels": ["bug"], "remove_labels": ["triage"], "comment": "…",
-//!   "type": "Bug" | null }
+//!   "type": "Bug" | null, "locked": true }
 //! ```
 //!
 //! Relationship changes name the other issue (`repo#n`, `owner/repo#n` or `#n`), which may be in
@@ -24,6 +24,9 @@
 //! with the issue as it was; its number answers 410 from then on. (Whether GitHub also sends
 //! relationship deliveries for the links that go is unrecorded: the fake sends none.) A PR can't
 //! be deleted, on GitHub or here: it's refused.
+//!
+//! `locked` locks the conversation (`issues` `locked`) or unlocks it (`unlocked`), as someone
+//! with Write or up does in the issue's sidebar.
 //!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
@@ -74,6 +77,8 @@ pub(crate) struct Edit {
     /// Absent: unchanged. `null`: untyped. A name: that type.
     #[serde(rename = "type", default, deserialize_with = "present")]
     issue_type: Option<Option<String>>,
+    /// The conversation locked (`true`) or unlocked (`false`).
+    locked: Option<bool>,
     /// Sub-issue, dependency and relates-to changes (see `relationships.rs`).
     #[serde(flatten)]
     relationships: relationships::Asks,
@@ -246,6 +251,7 @@ fn apply(
         state_reason: e.state_reason.clone(),
         comment: e.comment.clone(),
         issue_type: e.issue_type.clone(),
+        locked: e.locked,
         ..Change::default()
     };
     for (names, into) in [
@@ -325,6 +331,9 @@ pub(crate) struct Change {
     pub comment: Option<String>,
     /// Absent: unchanged. `Some(None)`: untyped. A name: that type.
     pub issue_type: Option<Option<String>>,
+    /// Absent: unchanged. Locking a locked issue (or unlocking an unlocked one) changes nothing
+    /// and sends nothing.
+    pub locked: Option<bool>,
 }
 
 /// What a change did: the issue afterwards, the comment it added, and the webhooks GitHub sends
@@ -451,6 +460,13 @@ impl Change {
             }
             _ => None,
         };
+        let locked = match self.locked {
+            Some(l) if l != before.locked => {
+                q::set_issue_locked(tx, id, l, at)?;
+                Some(l)
+            }
+            _ => None,
+        };
         let comment = match &self.comment {
             Some(text) => {
                 let cid = q::next_comment_id(tx)?;
@@ -563,6 +579,10 @@ impl Change {
                 action,
                 json!({ "milestone": milestone }),
             ));
+        }
+        if let Some(l) = locked {
+            let action = if l { "locked" } else { "unlocked" };
+            out.push(delivery("issues", action, json!({})));
         }
         if let Some(c) = &comment {
             out.push(delivery(

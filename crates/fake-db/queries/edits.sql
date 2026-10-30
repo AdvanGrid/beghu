@@ -223,3 +223,10 @@ INSERT INTO items (id, node_id, repo_id, number, kind, is_stub, title, body, sta
                    comments_count, issue_type, seq)
 VALUES (:id, :node_id, :repo_id, :number, 'issue', 0, :title, :body, 'open', NULL,
         0, :author_id, :at, :at, NULL, NULL, 0, NULL, 0);
+
+-- An issue's conversation locked or unlocked, as someone with Write or up does in its sidebar.
+-- name: set_issue_locked :exec
+-- param: id i64
+-- param: locked bool
+-- param: at i64
+UPDATE items SET locked = :locked, updated_at = :at WHERE id = :id;

@@ -55,7 +55,8 @@
 //! answers with; then the new issue's thread is read back from GitHub (`edges.rs`), since whether
 //! GitHub keeps the comments' ids is unmeasured. The other one then finds it done. A conversion to a discussion is just
 //! `issues.locked` and `issues.closed`. `repository` `archived` and `unarchived` set the repo's
-//! flag. Payloads are parsed leniently: GitHub keeps adding fields, and unknown ones are ignored.
+//! flag and push `roles` (what the account may do there changed). Payloads are parsed
+//! leniently: GitHub keeps adding fields, and unknown ones are ignored.
 
 use crate::App;
 use crate::edges::{self, Edge, Kind, ReadBack, Refetcher, Subject};
@@ -816,7 +817,7 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
                 ids,
                 defined,
                 reread,
-                repo,
+                archived,
                 rethread,
             },
             hidden,
@@ -827,7 +828,11 @@ async fn apply(sinks: &Sinks, account: i64, job: &Arc<Job>) {
             if rethread {
                 job.rethread.store(true, Ordering::Release);
             }
-            let push = if repo || ids.len() > MAX_IDS {
+            // A repo archived or unarchived changes only what the account may do there.
+            if archived {
+                sinks.hub.publish(account, Push::Roles);
+            }
+            let push = if ids.len() > MAX_IDS {
                 Some(Push::Reset)
             } else if !ids.is_empty() {
                 Some(Push::Ids(ids.into()))
@@ -1285,9 +1290,9 @@ struct Written {
     /// The delivery's issue disagrees with the mirror in a way `updated_at` can't settle: it's
     /// to be read again from GitHub.
     reread: bool,
-    /// A repo itself changed (archived, or no longer): what `/api/me` says of it, and what every
-    /// view may offer.
-    repo: bool,
+    /// The repo's archived flag changed: no row reads differently, only what the account may do
+    /// there, which its tabs read again from `/api/me` and the open detail (a `roles` push).
+    archived: bool,
     /// A transfer brought an issue into a synced repo with the thread it had (or none): its
     /// comments are to be read again from GitHub ([`ReadBack::Comments`]).
     rethread: bool,
@@ -1299,7 +1304,7 @@ impl From<Vec<i64>> for Written {
             ids,
             defined: false,
             reread: false,
-            repo: false,
+            archived: false,
             rethread: false,
         }
     }
@@ -1630,7 +1635,7 @@ impl RepoChange {
                 }
             }
             Change::Archived(archived) => Written {
-                repo: q::set_repo_archived(tx, repo, *archived)? > 0,
+                archived: q::set_repo_archived(tx, repo, *archived)? > 0,
                 ..Vec::new().into()
             },
             Change::Relationship(r) => {

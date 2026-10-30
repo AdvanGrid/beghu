@@ -27,7 +27,8 @@ let holding = () => false;
 // that read is in flight (an install's webhook, just after the setup URL sent the browser here)
 // still reads the repos again.
 onPush((p) => {
-  if (p.kind === "reset" && !holding()) setResets((n) => n + 1);
+  // A reset, or a role or archived flag that changed (`roles`): the picker shows both.
+  if ((p.kind === "reset" || p.kind === "roles") && !holding()) setResets((n) => n + 1);
 });
 
 /** Syncs exactly `repos` (ids): the ones added start importing, the ones left out leave. */

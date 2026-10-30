@@ -328,7 +328,7 @@ test("on a Read repo, labels, assignees and milestone are disabled in place, kep
   for (const prop of ["labels", "assignees", "milestone"]) await expect(opener(page, prop)).toBeDisabled();
   await expect(propRow(page, "labels")).toHaveAttribute("data-unsent", "true");
   await expect(propRow(page, "labels")).toContainText(label);
-  await expect(page.locator('[data-perf="create-role"]')).toHaveText("You have Read on cli: labels, assignees and milestone won't be sent.");
+  await expect(page.locator('[data-perf="create-role"]')).toHaveText("Won't be sent: labels, assignees and milestone (you have Read on cli).");
   // Nothing moved.
   expect(await where()).toBe(before);
   // The key for a row does nothing there.

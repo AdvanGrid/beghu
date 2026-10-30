@@ -32,7 +32,7 @@ pub struct Me {
     pub comment_order: CommentOrder,
     /// The account's own key bindings, by action (prefs.rs); an action left out has the preset's.
     pub keymap: crate::prefs::Keymap,
-    /// The synced repos and the account's role on each.
+    /// The synced repos, the account's role on each, and what it may do there.
     pub repos: Vec<Repo>,
     /// The import running, if any: the status slot's "Importing… n of m repos".
     pub import: Option<crate::import::ImportStatus>,
@@ -96,7 +96,10 @@ pub struct Repo {
     pub private: bool,
     /// GitHub's role: `read`, `triage`, `write`, `maintain` or `admin`. `null` until read.
     pub role: Option<String>,
+    /// Read-only for everyone, and left out of the create form.
     pub archived: bool,
+    /// What the roles rule module allows here (roles.rs): the tab only looks these up.
+    pub can: crate::roles::RepoCan,
 }
 
 pub async fn me(
@@ -139,6 +142,7 @@ pub async fn me(
         repos: repos
             .into_iter()
             .map(|r| Repo {
+                can: crate::roles::repo_can(&crate::roles::RepoAccess::from(&r)),
                 id: r.id,
                 owner: r.owner,
                 name: r.name,

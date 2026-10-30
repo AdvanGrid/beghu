@@ -43,12 +43,17 @@
 // The lightbox offers `imageClose` while it's open; it's marked `data-keys="lightbox"`, an area
 // where nothing else runs, so j/k and the list's keys don't drive the list behind it.
 //
+// A view may offer a touchpoint the account's role doesn't allow (roles.rs on the server decides;
+// the detail carries the reasons): `touch` takes the reason, and while there is one the key does
+// nothing but refuse, through `refusedKey()`, which the detail's role line shows and announces
+// (`role="status"`). The hint bar and the `?` overlay dim it, with the reason (`deniedWhy`).
+//
 // Some touchpoints have no caller yet, pending their tickets: `toggleMode` for tree mode (#108).
 // The `?` overlay shows it dimmed until then.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
-import { createSignal, getOwner, onCleanup } from "solid-js";
+import { createEffect, createSignal, getOwner, onCleanup } from "solid-js";
 import type { KeyAction } from "./bindings/KeyAction";
 
 /** The touchpoints the app offers to the keys module: the server's key actions (prefs.rs). */
@@ -393,19 +398,32 @@ export function setKeymap(given: Overrides): Refused[] {
   return refused;
 }
 
+/** One offer of a touchpoint: what its key runs, or why it's refused (reactive; undefined: allowed). */
+type Offer = { run: () => void; seq: number; why: () => string | undefined };
+
 /** The touchpoints on offer: each action's handlers, the latest last. */
-const handlers = new Map<Action, { run: () => void; seq: number }[]>();
+const handlers = new Map<Action, Offer[]>();
 let seq = 0;
 const [offered, setOffered] = createSignal(0);
 /** Tells the hint bar and the overlay the offers changed: after the current update, never inside it. */
 const changed = () => queueMicrotask(() => setOffered((n) => n + 1));
 
 /**
- * Offers `action`: its key runs `run`. The latest offer of an action wins until it's withdrawn,
- * which happens with the calling component (or by calling the result).
+ * Offers `action`: its key runs `run`, unless `why` gives a reason the account's role doesn't
+ * allow it now: then the key refuses (`refusedKey`). The latest offer of an action wins until it's
+ * withdrawn, which happens with the calling component (or by calling the result).
  */
-export function touch(action: Action, run: () => void): () => void {
-  const entry = { run, seq: ++seq };
+export function touch(action: Action, run: () => void, why?: () => string | undefined): () => void {
+  // The reason is read in the offering view's own context and kept in a signal of its own, which
+  // is all anyone else (the hint bar) reads: a view whose read failed shows that failure in its
+  // own boundary, and it never reaches theirs.
+  let reason: () => string | undefined = why ?? (() => undefined);
+  if (why && getOwner()) {
+    const [kept, keep] = createSignal<string | undefined>(undefined);
+    createEffect(why, (w) => void keep(w));
+    reason = kept;
+  }
+  const entry: Offer = { run, seq: ++seq, why: reason };
   const list = handlers.get(action) ?? [];
   list.push(entry);
   handlers.set(action, list);
@@ -427,9 +445,25 @@ export function available(action: Action): boolean {
   return (handlers.get(action)?.length ?? 0) > 0;
 }
 
-/** Runs `action`'s touchpoint: the latest offer of it. */
+/** Why `action`'s latest offer is refused now, if it is. Reactive. */
+export function deniedWhy(action: Action): string | undefined {
+  offered();
+  return handlers.get(action)?.at(-1)?.why();
+}
+
+/** A key the role refused: which action, why, and a count that tells one refusal from the next. */
+export type Refusal = { action: Action; why: string; n: number };
+const [refusedKey, setRefusedKey] = createSignal<Refusal>();
+/** The last key the role refused. Reactive. */
+export { refusedKey };
+
+/** Runs `action`'s touchpoint: the latest offer of it, or its refusal. */
 function trigger(action: Action): void {
-  handlers.get(action)?.at(-1)?.run();
+  const offer = handlers.get(action)?.at(-1);
+  if (!offer) return;
+  const why = offer.why();
+  if (why === undefined) offer.run();
+  else setRefusedKey((r) => ({ action, why, n: (r?.n ?? 0) + 1 }));
 }
 
 /** Whether `el` takes typing: there, single keys type. */

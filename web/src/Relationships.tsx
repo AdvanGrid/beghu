@@ -15,7 +15,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createSignal, Errored, flush, For, lazy, Loading, onSettled, Show } from "solid-js";
 import { Dynamic } from "@solidjs/web";
 import type { IssueOp as Op } from "./api";
-import { Avatar, issueState, PrIcon, ProgressRing, StateIcon } from "./bits";
+import { Avatar, hide, issueState, PrIcon, ProgressRing, StateIcon, withheld } from "./bits";
 import type { RelationshipKind } from "./bindings/RelationshipKind";
 import { ChunkFailure } from "./chunks";
 import { touch } from "./keys";
@@ -105,8 +105,11 @@ function RemoveButton(props: { what: string; shown: boolean; onClick: () => void
   );
 }
 
-/** A small text button that opens a picker: `+ Blocked by`, `+ Set parent`. */
-function AddButton(props: { label: string; kind: RelationshipKind; open: boolean; setOpen: (open: boolean) => void; ref?: (el: HTMLButtonElement) => void }) {
+/**
+ * A small text button that opens a picker: `+ Blocked by`, `+ Set parent`. `gone`: the role
+ * leaves it out, and it keeps its room, hidden (bits.tsx, `withheld`).
+ */
+function AddButton(props: { label: string; kind: RelationshipKind; open: boolean; setOpen: (open: boolean) => void; ref?: (el: HTMLButtonElement) => void; gone?: boolean }) {
   return (
     <button
       ref={props.ref}
@@ -114,8 +117,9 @@ function AddButton(props: { label: string; kind: RelationshipKind; open: boolean
       aria-haspopup="dialog"
       aria-expanded={props.open ? "true" : "false"}
       data-perf={`add-${props.kind}`}
-      disabled={writesPaused()}
-      {...stylex.attrs(s.add)}
+      {...withheld(props.gone === true)}
+      disabled={writesPaused() || props.gone === true}
+      {...stylex.attrs(s.add, props.gone === true && hide.withheld)}
       onClick={() => props.setOpen(!props.open)}
     >
       + {props.label}
@@ -155,10 +159,10 @@ export function ParentCrumb(props: { d: ShownDetail; search: string; write: bool
     <Show
       when={props.d.relationships.parent}
       fallback={
-        <Show when={props.write}>
+        <Show when={props.d.kind === "issue"}>
           <div {...stylex.attrs(s.crumb, s.anchor)}>
-            <AddButton label="Set parent" kind="parent" open={picking()} setOpen={setPicking} ref={(el) => (opener = el)} />
-            <Show when={picking()}>
+            <AddButton label="Set parent" kind="parent" open={picking()} setOpen={setPicking} ref={(el) => (opener = el)} gone={!props.write} />
+            <Show when={picking() && props.write}>
               <PickerSlot kind="parent" d={props.d} opener={opener} onClose={close} />
             </Show>
           </div>
@@ -378,7 +382,7 @@ export function RelatesTo(props: { d: ShownDetail; search: string; write: boolea
  * opening its picker (also by its key: keys.ts), and the row's marker slot, where a relationship
  * write's dot and its latest failure show.
  */
-export function LinksRow(props: { d: ShownDetail; at: number }) {
+export function LinksRow(props: { d: ShownDetail; at: number; write: boolean }) {
   const [picking, setPicking] = createSignal<RelationshipKind>();
   const openers: Partial<Record<RelationshipKind, HTMLButtonElement>> = {};
   let value: HTMLElement | undefined;
@@ -392,11 +396,20 @@ export function LinksRow(props: { d: ShownDetail; at: number }) {
     if (picking() === kind) value?.querySelector<HTMLElement>('[data-keys="picker"] input')?.focus();
     else if (!writesPaused()) setPicking(kind);
   };
-  touch("blockedBy", open("blocked_by"));
-  touch("blocking", open("blocking"));
-  touch("relatesTo", open("relates"));
+  // Without Triage the keys refuse, with the reason (keys.ts).
+  const why = () => props.d.denied.relationships;
+  touch("blockedBy", open("blocked_by"), why);
+  touch("blocking", open("blocking"), why);
+  touch("relatesTo", open("relates"), why);
   const button = (label: string, kind: RelationshipKind) => (
-    <AddButton label={label} kind={kind} open={picking() === kind} setOpen={(o) => setPicking(o ? kind : undefined)} ref={(el) => (openers[kind] = el)} />
+    <AddButton
+      label={label}
+      kind={kind}
+      open={picking() === kind}
+      setOpen={(o) => setPicking(o ? kind : undefined)}
+      ref={(el) => (openers[kind] = el)}
+      gone={!props.write}
+    />
   );
   return (
     <span ref={value} {...stylex.attrs(s.linksValue, s.anchor)}>
@@ -410,7 +423,7 @@ export function LinksRow(props: { d: ShownDetail; at: number }) {
           {(e) => <ChunkFailure error={e()} what="writes" reset={() => setSendFailed(undefined)} />}
         </Show>
       </span>
-      <Show when={picking()}>
+      <Show when={props.write && picking()}>
         {(kind) => <PickerSlot kind={kind()} d={props.d} opener={openers[kind()]} onClose={close} />}
       </Show>
     </span>
@@ -609,20 +622,21 @@ export function SubIssues(props: { d: ShownDetail; search: string; write: boolea
             {done()} of {subs().length} done
           </span>
         </Show>
-        <Show when={props.write}>
+        <Show when={props.d.kind === "issue"}>
           <span {...stylex.attrs(s.headAdd, s.anchor)}>
             {/* The create form, with this issue as the new one's parent. */}
             <a
               href={`/new${props.search}`}
               noscroll
               data-perf="create-sub"
-              {...stylex.attrs(s.add, s.addAnchor)}
+              {...withheld(!props.write)}
+              {...stylex.attrs(s.add, s.addAnchor, !props.write && hide.withheld)}
               onClick={() => setNewSubIssueOf(related(props.d))}
             >
               + Create a new sub-issue
             </a>
-            <AddButton label="Add sub-issue" kind="sub" open={adding()} setOpen={setAdding} ref={(el) => (opener = el)} />
-            <Show when={adding()}>
+            <AddButton label="Add sub-issue" kind="sub" open={adding()} setOpen={setAdding} ref={(el) => (opener = el)} gone={!props.write} />
+            <Show when={adding() && props.write}>
               <PickerSlot
                 kind="sub"
                 d={props.d}
@@ -649,7 +663,14 @@ export function SubIssues(props: { d: ShownDetail; search: string; write: boolea
               data-perf="sub-row"
               data-id={r().id ?? undefined}
             >
-              <Show when={props.write && movable(r()) ? (r() as Movable) : undefined} fallback={<Show when={props.write}><span {...stylex.attrs(s.grip)} /></Show>}>
+              <Show
+                when={props.write && movable(r()) ? (r() as Movable) : undefined}
+                fallback={
+                  <Show when={props.d.kind === "issue"}>
+                    <span {...stylex.attrs(s.grip)} />
+                  </Show>
+                }
+              >
                 {(m) => (
                   /* The grip keeps the pointer while it's pressed: its moves place the marker,
                      and letting go drops the sub-issue there. */

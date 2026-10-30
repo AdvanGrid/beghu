@@ -89,6 +89,10 @@ pub struct IssueDetail {
     pub closes: Vec<Related>,
     /// On an issue, the PRs that close it when they merge ("Linked PRs"); empty on a PR.
     pub linked_prs: Vec<Related>,
+    /// What the account may do here, why not the rest, and the role line (roles.rs). A PR
+    /// takes no writes.
+    #[serde(flatten)]
+    pub rules: crate::roles::IssueCan,
 }
 
 /// What the detail shows of a PR beside its issue fields.
@@ -317,6 +321,14 @@ pub async fn issue(
         })
         .await??;
     let (labels, assignees, thread, comment_total, (relationships, linked), mut item) = read;
+    let rules = crate::roles::issue_can(
+        &crate::roles::RepoAccess::from(&item),
+        crate::roles::IssueFacts {
+            own: item.author_id == Some(account),
+            locked: item.locked,
+        },
+        item.kind == "pr",
+    );
     let pr = (item.kind == "pr").then(|| PullDetail {
         status: PrStatus::of(&item.state, item.draft, item.merged_at),
         head: item.head_ref.take(),
@@ -385,6 +397,7 @@ pub async fn issue(
         pr,
         closes: linked.closes,
         linked_prs: linked.linked_prs,
+        rules,
     }))
 }
 

@@ -67,7 +67,7 @@ import type { Related } from "./bindings/Related";
 import { isEnd, keyOf, refOf, standIn, type ShownRelated, type ShownRelationships } from "./related";
 import { reconnecting, refetchShown, writesPaused } from "./live";
 import { createNote, setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
-import { link } from "./bits";
+import { hide, link, withheld } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
 import { holdsText } from "./unsaved";
@@ -1105,6 +1105,11 @@ function Status() {
  * as not planned from its menu) or Reopen. While a banner shows (the tab is on another account,
  * or beghu or GitHub can't be reached), Comment, Close and Reopen are disabled and the text
  * stays. A button stays disabled while its write is pending.
+ *
+ * What the role leaves out (the detail's `can`, roles.rs) is withheld in place: Close or Reopen
+ * hidden with its room kept, and its key refusing with the reason. Where the account can't
+ * comment (a locked issue below Write, an archived repo), a notice takes the comment box's place,
+ * and any text typed there before stays, to copy.
  */
 export function Composer(props: { d: ShownDetail }) {
   const me = createMemo(() => getMe());
@@ -1135,45 +1140,75 @@ export function Composer(props: { d: ShownDetail }) {
     setMenu(false);
     write(op, ref(), author());
   };
-  let box!: HTMLTextAreaElement;
+  let box: HTMLTextAreaElement | undefined;
   // The composer's touchpoints (keys.ts): only an issue's panel has a composer, so a PR's offers
   // none. Close or reopen goes as its button would, and not while its button is disabled; send
   // (Ctrl or Cmd+Enter, from the comment box) as Comment would.
-  touch("comment", () => box.focus());
-  touch("send", comment);
-  touch("closeReopen", () => {
-    if (writesPaused() || changingState()) return;
-    setState(props.d.state === "open" ? { kind: "close", issue: issue(), reason: "completed" } : { kind: "reopen", issue: issue() });
-  });
+  const cantComment = () => props.d.denied.comment;
+  /** Close or Reopen, whichever the state offers: why the role leaves it out, if it does. */
+  const cantChangeState = () => props.d.denied[props.d.state === "open" ? "close" : "reopen"];
+  const stateGone = () => cantChangeState() !== undefined;
+  const commentGone = () => cantComment() !== undefined;
+  touch("comment", () => box?.focus(), cantComment);
+  touch("send", comment, cantComment);
+  touch(
+    "closeReopen",
+    () => {
+      if (writesPaused() || changingState()) return;
+      setState(props.d.state === "open" ? { kind: "close", issue: issue(), reason: "completed" } : { kind: "reopen", issue: issue() });
+    },
+    cantChangeState,
+  );
   onCleanup(() => {
     if (composerBox === box) composerBox = undefined;
   });
   return (
     <div {...stylex.attrs(s.composer)} data-perf="composer">
-      <textarea
-        ref={(el) => {
-          box = el;
-          composerBox = el;
-        }}
-        value={text()}
-        maxlength={MAX_COMMENT}
-        {...stylex.attrs(s.box)}
-        aria-label="Comment"
-        placeholder="Leave a comment"
-        rows={3}
-        data-keys="composer"
-        onInput={(e) => setDraft(issue(), e.currentTarget.value)}
-      />
+      <Show
+        when={cantComment()}
+        fallback={
+          <textarea
+            ref={(el) => {
+              box = el;
+              composerBox = el;
+            }}
+            value={text()}
+            maxlength={MAX_COMMENT}
+            {...stylex.attrs(s.box)}
+            aria-label="Comment"
+            placeholder="Leave a comment"
+            rows={3}
+            data-keys="composer"
+            onInput={(e) => setDraft(issue(), e.currentTarget.value)}
+          />
+        }
+      >
+        {(why) => (
+          <>
+            <p {...stylex.attrs(s.noComment)} data-perf={props.d.locked ? "locked-notice" : "no-comment"}>
+              {noComments(why())}
+            </p>
+            <KeptText issue={issue()} />
+          </>
+        )}
+      </Show>
       <div {...stylex.attrs(s.actions)}>
         <Show
           when={props.d.state === "open"}
           fallback={
-            <button type="button" {...stylex.attrs(s.button)} disabled={writesPaused() || changingState()} onClick={() => setState({ kind: "reopen", issue: issue() })}>
+            <button
+              type="button"
+              {...stylex.attrs(s.button, stateGone() && hide.withheld)}
+              {...withheld(stateGone())}
+              data-perf="reopen"
+              disabled={writesPaused() || changingState() || stateGone()}
+              onClick={() => setState({ kind: "reopen", issue: issue() })}
+            >
               Reopen issue
             </button>
           }
         >
-          <span {...stylex.attrs(s.split)}>
+          <span {...stylex.attrs(s.split, stateGone() && hide.withheld)} {...withheld(stateGone())} data-perf="close">
             <button
               type="button"
               {...stylex.attrs(s.button)}
@@ -1217,12 +1252,23 @@ export function Composer(props: { d: ShownDetail }) {
           </span>
         </Show>
         <span {...stylex.attrs(s.spacer)} />
-        <button type="button" {...stylex.attrs(s.button, s.primary)} disabled={!text().trim() || writesPaused() || commenting()} onClick={comment}>
+        <button
+          type="button"
+          {...stylex.attrs(s.button, s.primary, commentGone() && hide.withheld)}
+          {...withheld(commentGone())}
+          disabled={!text().trim() || writesPaused() || commenting() || commentGone()}
+          onClick={comment}
+        >
           Comment
         </button>
       </div>
     </div>
   );
+}
+
+/** Why the account can't comment here, as the notice in the comment box's place says it. */
+function noComments(why: string): string {
+  return `No comments here: ${why}.`;
 }
 
 setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, keepsSelection, panelOn, Status, StateNote, CommentNote, PropNote, EditNote });
@@ -1360,6 +1406,12 @@ const s = stylex.create({
     borderTopColor: colors.line,
     borderTopStyle: "solid",
     borderTopWidth: 1,
+  },
+  // In the comment box's place, where the account can't comment.
+  noComment: {
+    margin: 0,
+    color: colors.muted,
+    fontSize: 13,
   },
   // A lost issue's kept text.
   kept: {

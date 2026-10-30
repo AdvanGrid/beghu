@@ -650,8 +650,9 @@ async fn archiving_a_repo_on_github_marks_it_archived_for_every_account_and_unar
             })
             .await;
         }
-        // Open tabs read what they show again.
-        st.reset().await;
+        // Open tabs read what the account may do again.
+        let ev = st.event_within(std::time::Duration::from_secs(1)).await;
+        assert_eq!(ev.map(|e| e.event), Some("roles".to_owned()));
     }
 }
 

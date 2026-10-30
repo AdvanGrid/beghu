@@ -62,6 +62,7 @@ import type { Label } from "./bindings/Label";
 import type { Milestone } from "./bindings/Milestone";
 import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
+import type { Can } from "./bindings/Can";
 import type { RepoLabel } from "./bindings/RepoLabel";
 import { Avatar, link } from "./bits";
 import { applyNow } from "./held";
@@ -267,7 +268,7 @@ function follow(repo: number): void {
  * paused (a stale tab, beghu or GitHub out of reach), the button disabled with no title or while labels are checked. Picks still in another
  * repo are moved to `r` (`follow`), which shows as their check.
  */
-async function create(r: Repo): Promise<void> {
+async function create(r: Repo, parentOk: boolean): Promise<void> {
   const d = draftNow;
   const title = d.title.trim();
   if (sending || checkingFor !== undefined || !title || untrack(writesPaused)) return;
@@ -275,16 +276,17 @@ async function create(r: Repo): Promise<void> {
     follow(r.id);
     return;
   }
-  const read = r.role === "read";
+  // What a new issue of the account's may set there, as `/api/me`'s table says (roles.rs).
+  const sets = (c: Can) => r.can.own.includes(c);
   const op: CreateOp = {
     kind: "create",
     repo: r.id,
     title,
     body: d.body,
-    labels: read ? [] : d.labels.map((l) => l.name),
-    assignees: read ? [] : d.assignees.map((u) => u.login),
-    milestone: read ? null : (d.milestone?.number ?? null),
-    parent: read ? null : (d.parent?.id ?? null),
+    labels: sets("labels") ? d.labels.map((l) => l.name) : [],
+    assignees: sets("assignees") ? d.assignees.map((u) => u.login) : [],
+    milestone: sets("milestone") ? (d.milestone?.number ?? null) : null,
+    parent: parentOk ? (d.parent?.id ?? null) : null,
   };
   change({ repo: r.id });
   sending = true;
@@ -429,19 +431,51 @@ function FormFailure(props: { error: unknown; reset: () => void }) {
   );
 }
 
+/** "Won't be sent: labels and milestone (you have Read on cli)", each reason once. */
+function unsentNote(unsent: { field: string; why: string }[]): string {
+  const fields = unsent.map((u) => u.field);
+  const list = fields.length > 1 ? `${fields.slice(0, -1).join(", ")} and ${fields.at(-1)}` : fields[0];
+  return `Won't be sent: ${list} (${[...new Set(unsent.map((u) => u.why))].join("; ")}).`;
+}
+
 function Form() {
   const location = useLocation();
   const navigate = useNavigate();
   const me = createMemo(() => getMe());
-  /** The repos a new issue can go in: the synced ones, but not those archived. */
-  const offered = createMemo(() => me().repos.filter((r) => !r.archived));
+  /** The repos a new issue can go in: the synced ones that take one (not those archived). */
+  const offered = createMemo(() => me().repos.filter((r) => r.can.own.includes("create")));
   const repo = createMemo((): Repo | undefined => {
     const chosen = draft().repo;
     const id = offered().some((r) => r.id === chosen) ? chosen : defaultRepo(offered(), location.search);
     return offered().find((r) => r.id === id);
   });
-  /** Read opens an issue with a title and body only. */
-  const limited = () => repo()?.role === "read";
+  /** Whether a new issue here may set `c`, as `/api/me`'s table says: Read sets none of them. */
+  const sets = (c: Can) => {
+    const r = repo();
+    return r === undefined || r.can.own.includes(c);
+  };
+  /**
+   * What a create here won't send, and why, as `/api/me`'s tables say (roles.rs): a field this
+   * repo's role doesn't let a new issue set, and the parent, which is a relationship, so either
+   * repo's table may refuse it (the parent's, if beghu syncs it).
+   */
+  const unsent = (): { field: string; why: string }[] => {
+    const r = repo();
+    if (!r) return [];
+    const out: { field: string; why: string }[] = [];
+    for (const c of ["labels", "assignees", "milestone"] as const) {
+      const why = r.can.denied_own[c];
+      if (why) out.push({ field: c, why });
+    }
+    const p = draft().parent;
+    if (p) {
+      const home = me().repos.find((x) => same(x.owner, p.owner) && same(x.name, p.repo));
+      const why = r.can.denied_own.relationships ?? home?.can.denied_others.relationships;
+      if (why) out.push({ field: "parent", why });
+    }
+    return out;
+  };
+  const parentOk = () => !unsent().some((u) => u.field === "parent");
   /** Several owners: the repo is named in full. */
   const full = () => new Set(offered().map((r) => r.owner)).size > 1;
   const repoName = (r: Repo) => (full() ? `${r.owner}/${r.name}` : r.name);
@@ -483,12 +517,12 @@ function Form() {
     const r = repo();
     if (!r) return;
     setPicking(undefined);
-    void create(r);
+    void create(r, parentOk());
   };
   // The keys that open a row's picker, as on an issue (keys.ts).
   const offer = (prop: Prop) =>
     touch(prop, () => {
-      if (!limited() && !creating()) setPicking(prop);
+      if (sets(prop) && !creating()) setPicking(prop);
     });
   offer("labels");
   offer("assignees");
@@ -555,7 +589,7 @@ function Form() {
           />
         </label>
         <dl {...stylex.attrs(s.props)}>
-          <PropRow prop="assignees" title="Assignees" disabled={limited()} open={picking() === "assignees"} setOpen={setOpen("assignees")} pickable={pickable()} onPick={pick}>
+          <PropRow prop="assignees" title="Assignees" disabled={!sets("assignees")} open={picking() === "assignees"} setOpen={setOpen("assignees")} pickable={pickable()} onPick={pick}>
             <For each={draft().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
               {(u) => (
                 <span {...stylex.attrs(s.person)} data-perf="assignee">
@@ -565,7 +599,7 @@ function Form() {
               )}
             </For>
           </PropRow>
-          <PropRow prop="labels" title="Labels" disabled={limited()} open={picking() === "labels"} setOpen={setOpen("labels")} pickable={pickable()} onPick={pick}>
+          <PropRow prop="labels" title="Labels" disabled={!sets("labels")} open={picking() === "labels"} setOpen={setOpen("labels")} pickable={pickable()} onPick={pick}>
             <For each={draft().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
               {(l) => (
                 <span {...stylex.attrs(s.pill)} data-perf="label">
@@ -575,7 +609,7 @@ function Form() {
               )}
             </For>
           </PropRow>
-          <PropRow prop="milestone" title="Milestone" disabled={limited()} open={picking() === "milestone"} setOpen={setOpen("milestone")} pickable={pickable()} onPick={pick}>
+          <PropRow prop="milestone" title="Milestone" disabled={!sets("milestone")} open={picking() === "milestone"} setOpen={setOpen("milestone")} pickable={pickable()} onPick={pick}>
             <Show when={draft().milestone} fallback={<span {...stylex.attrs(s.muted)}>None</span>}>
               {(m) => <span data-perf="milestone-title">{m().title}</span>}
             </Show>
@@ -585,7 +619,7 @@ function Form() {
             {(p) => (
               <>
                 <dt {...stylex.attrs(s.key)}>Parent</dt>
-                <dd {...stylex.attrs(s.value, limited() && s.unsent)} data-perf="parent" data-unsent={limited() ? "true" : undefined}>
+                <dd {...stylex.attrs(s.value, parentTone[parentOk() ? "sent" : "unsent"])} data-perf="parent" data-unsent={!parentOk() ? "true" : undefined}>
                   <span>
                     {p().repo}#{p().number} {p().title}
                   </span>
@@ -599,13 +633,7 @@ function Form() {
         </dl>
         {/* One line, always there, so the role note moves nothing when the repo changes. */}
         <p {...stylex.attrs(s.roleLine)} data-perf="create-role">
-          <Show when={limited() && repo()}>
-            {(r) => (
-              <>
-                You have Read on {r().name}: labels, assignees{draft().parent ? ", milestone and parent" : " and milestone"} won't be sent.
-              </>
-            )}
-          </Show>
+          <Show when={unsent().length > 0}>{unsentNote(unsent())}</Show>
         </p>
         <label {...stylex.attrs(s.field, s.grow)}>
           <span {...stylex.attrs(s.label)}>Description</span>
@@ -939,5 +967,16 @@ const s = stylex.create({
       ":hover": colors.accent,
     },
     color: colors.accentFg,
+  },
+});
+
+/**
+ * The parent row's tone, looked up by whether it will be sent: StyleX can't evaluate the rules'
+ * accessor in a condition, as it can a lookup.
+ */
+const parentTone = stylex.create({
+  sent: {},
+  unsent: {
+    color: colors.muted,
   },
 });

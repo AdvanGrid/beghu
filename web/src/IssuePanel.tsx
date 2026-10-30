@@ -16,6 +16,10 @@
 // field's place, their state in editing.ts.
 // A PR opens in the same layout, read-only: no composer, no pickers and no write affordances
 // (no Edit on its title or body).
+// What the account may do on the issue is the server's to say (roles.rs): the detail's `can` set,
+// a reason for each op left out, and the role line by the status badge. An op left out keeps its
+// values and loses its affordance in place (hidden, its room kept), so a role change moves nothing;
+// its key is still offered, and refuses: the role line pulses and says why (`role="status"`).
 // What only a PR shows (its status badge, branches and review chip, "Open on GitHub" as the
 // primary action, the link out to reviews) is a chunk of its own too (Pull.tsx); an issue shows
 // its linked PRs, and a PR the issues it closes, each in a property row.
@@ -47,12 +51,13 @@ import {
   type IssueDetail,
   type IssueRef,
 } from "./api";
-import { Avatar, issueState, StateIcon, type IssueState } from "./bits";
+import { Avatar, hide, issueState, StateIcon, withheld, type IssueState } from "./bits";
 import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
 import { searchOf, type Term } from "./highlight";
-import { touch, type Action } from "./keys";
+import { refusedKey, touch, type Action } from "./keys";
+import type { Can } from "./bindings/Can";
 import { editorOf, openEditor, type Field } from "./editing";
 import { cantReach, coalesced, onPush, resetAt } from "./live";
 import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
@@ -127,8 +132,9 @@ export function refetchOpenIssue(ids: readonly number[]): Promise<void> {
 }
 
 // The live stream (live.ts), from when this code loads: `ids` go to `refetchOpenIssue`, and a
-// reset refetches the open issue (live.ts itself forgets the remembered detail and the cached
-// reads). Before this code loads no issue is open, and the router's cache is cleared on every push.
+// reset or a `roles` push (what the account may do changed) refetches the open issue. On either,
+// live.ts itself forgets every detail a hover remembered; on every push it clears the router's
+// cached reads. Before this code loads no issue is open.
 const unsubscribe = onPush((p) => {
   if (p.kind === "defs") return;
   void refetchOpenIssue(p.kind === "ids" ? p.ids : openDetail ? [openDetail.id] : []);
@@ -607,6 +613,7 @@ function Body(props: {
               Locked
             </span>
           </Show>
+          <RoleLine d={d()} />
           <Show when={!d().pr}>
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
@@ -625,9 +632,9 @@ function Body(props: {
             ×
           </a>
         </div>
-        <ParentCrumb d={d()} search={props.search} write={d().kind === "issue"} />
+        <ParentCrumb d={d()} search={props.search} write={allows(d(), "relationships")} />
         <Show when={d().kind === "issue"}>
-          <Offer action="editTitle" run={editTitle} />
+          <Offer action="editTitle" run={editTitle} why={() => d().denied.edit} />
         </Show>
         <Show
           when={editing("title")}
@@ -638,7 +645,15 @@ function Body(props: {
                 <Dynamic component={overlay()?.EditNote} issue={d().id} field="title" at={at()} />
               </h2>
               <Show when={d().kind === "issue"}>
-                <button type="button" {...stylex.attrs(s.edit)} data-perf="edit-title" disabled={saving("title")} onClick={editTitle} aria-label="Edit the title">
+                <button
+                  type="button"
+                  {...stylex.attrs(s.edit, !allows(d(), "edit") && hide.withheld)}
+                  data-perf="edit-title"
+                  {...withheld(!allows(d(), "edit"))}
+                  disabled={!allows(d(), "edit") || saving("title")}
+                  onClick={editTitle}
+                  aria-label="Edit the title"
+                >
                   Edit
                 </button>
               </Show>
@@ -682,7 +697,7 @@ function Body(props: {
           <Show when={d().kind === "issue"}>
             <dt {...stylex.attrs(s.key)}>Links</dt>
             <dd {...stylex.attrs(s.value)} data-perf="links">
-              <LinksRow d={d()} at={at()} />
+              <LinksRow d={d()} at={at()} write={allows(d(), "relationships")} />
             </dd>
           </Show>
           <Show
@@ -702,8 +717,8 @@ function Body(props: {
             </dd>
           </Show>
         </dl>
-        <Blocks d={d()} search={props.search} write={d().kind === "issue"} />
-        <RelatesTo d={d()} search={props.search} write={d().kind === "issue"} />
+        <Blocks d={d()} search={props.search} write={allows(d(), "relationships")} />
+        <RelatesTo d={d()} search={props.search} write={allows(d(), "relationships")} />
         {/* The body is a post like each comment: on its tint, its byline inside. */}
         <div {...stylex.attrs(s.bodySlot)}>
           <div {...stylex.attrs(s.post)}>
@@ -713,7 +728,15 @@ function Body(props: {
                 <Dynamic component={overlay()?.EditNote} issue={d().id} field="body" at={at()} />
               </Byline>
               <Show when={d().kind === "issue" && !editing("body")}>
-                <button type="button" {...stylex.attrs(s.edit, s.editOnPost)} data-perf="edit-body" disabled={saving("body")} onClick={editBody} aria-label="Edit the description">
+                <button
+                  type="button"
+                  {...stylex.attrs(s.edit, s.editOnPost, !allows(d(), "edit") && hide.withheld)}
+                  data-perf="edit-body"
+                  {...withheld(!allows(d(), "edit"))}
+                  disabled={!allows(d(), "edit") || saving("body")}
+                  onClick={editBody}
+                  aria-label="Edit the description"
+                >
                   Edit
                 </button>
               </Show>
@@ -744,7 +767,7 @@ function Body(props: {
           </div>
         </div>
         <Show when={!d().pr}>
-          <SubIssues d={d()} search={props.search} write={d().kind === "issue"} />
+          <SubIssues d={d()} search={props.search} write={allows(d(), "relationships")} />
         </Show>
         <h3 {...stylex.attrs(s.section)}>
           Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
@@ -839,7 +862,8 @@ function CommentOrderSwitch(props: { order: CommentOrder; resort: (order: Commen
 
 /**
  * One property row: its name, which opens its picker on an issue (a PR takes no writes), as does
- * its key (`l`, `a`, `m`) with the focus in the panel; and its
+ * its key (`l`, `a`, `m`) with the focus in the panel (without the role, the name is plain text and
+ * the key refuses); and its
  * values, then what the tab's picks on it show (a pending dot, a failed pick with Retry). The
  * picker opens over what follows, so nothing moves.
  */
@@ -863,19 +887,28 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
     <>
       <dt {...stylex.attrs(s.key)}>
         <Show when={props.d.kind === "issue"} fallback={props.title}>
-          <Offer action={props.prop} run={open} />
-          <button
-            ref={button}
-            type="button"
-            aria-haspopup="dialog"
-            aria-expanded={props.open ? "true" : "false"}
-            aria-describedby={noteId()}
-            data-perf={`pick-${props.prop}`}
-            {...stylex.attrs(s.keyButton)}
-            onClick={() => props.setOpen(!props.open)}
+          <Offer action={props.prop} run={open} why={() => props.d.denied[props.prop]} />
+          <Show
+            when={allows(props.d, props.prop)}
+            fallback={
+              <span data-perf={`pick-${props.prop}`} data-withheld="true" title={props.d.denied[props.prop]}>
+                {props.title}
+              </span>
+            }
           >
-            {props.title}
-          </button>
+            <button
+              ref={button}
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={props.open ? "true" : "false"}
+              aria-describedby={noteId()}
+              data-perf={`pick-${props.prop}`}
+              {...stylex.attrs(s.keyButton)}
+              onClick={() => props.setOpen(!props.open)}
+            >
+              {props.title}
+            </button>
+          </Show>
         </Show>
       </dt>
       <dd ref={value} {...stylex.attrs(s.value, s.anchor)} data-perf={props.prop}>
@@ -887,7 +920,7 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
             <Dynamic component={overlay()?.PropNote} issue={props.d.id} prop={props.prop} at={props.at} />
           </span>
         </Show>
-        <Show when={props.open}>
+        <Show when={props.open && allows(props.d, props.prop)}>
           <Errored fallback={(err, reset) => <ChunkFailure error={err()} reset={reset} />}>
             <Loading>
               <Picker prop={props.prop} d={props.d} onClose={close} opener={button} />
@@ -920,10 +953,78 @@ function OfferImage(props: { scroller: HTMLDivElement }) {
   return null;
 }
 
-/** Offers `action` (keys.ts) while it's shown: a PR's rows don't show it, so offer no write keys. */
-function Offer(props: { action: Action; run: () => void }) {
-  touch(props.action, () => props.run());
+/**
+ * Offers `action` (keys.ts) while it's shown: a PR's rows don't show it, so offer no write keys.
+ * While `why` gives a reason the role doesn't allow it, its key refuses instead.
+ */
+function Offer(props: { action: Action; run: () => void; why?: () => string | undefined }) {
+  touch(
+    props.action,
+    () => props.run(),
+    () => props.why?.(),
+  );
   return null;
+}
+
+/** Whether the detail offers `can` (roles.rs decides; the tab only looks it up). */
+export function allows(d: Pick<IssueDetail, "can">, can: Can): boolean {
+  return d.can.includes(can);
+}
+
+/** What a refused key was for, as the role line names it. */
+const REFUSED: Partial<Record<Action, string>> = {
+  labels: "Labels",
+  assignees: "Assignees",
+  milestone: "Milestone",
+  blockedBy: "Links",
+  blocking: "Links",
+  relatesTo: "Links",
+  comment: "Comment",
+  send: "Comment",
+  editTitle: "Edit",
+  closeReopen: "Close / reopen",
+};
+
+/** How long a refused key's reason shows in the role line. */
+const REFUSAL_MS = 4000;
+
+/**
+ * The role line by the status badge: what the account's role means on this issue ("Read on cli",
+ * "Archived repo · read-only"), nothing when it allows everything. A key the role refuses pulses
+ * it and shows why in its place for a few seconds, and a `role="status"` region beside it announces
+ * the reason (only the reason). It shrinks before anything else in the row, so nothing moves.
+ */
+function RoleLine(props: { d: ShownDetail }) {
+  const [shown, setShown] = createSignal<string>();
+  const [pulse, setPulse] = createSignal(false);
+  const refused = () => shown() !== undefined;
+  /** Refusals from before this detail showed aren't its own. */
+  const seen = untrack(refusedKey)?.n ?? 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(refusedKey, (r) => {
+    if (!r || r.n <= seen) return;
+    clearTimeout(timer);
+    setShown(`${REFUSED[r.action] ?? "Not allowed"}: ${r.why}`);
+    // Off, then on in the next frame: the pulse plays again for each refusal.
+    setPulse(false);
+    requestAnimationFrame(() => setPulse(true));
+    timer = setTimeout(() => {
+      setShown(undefined);
+      setPulse(false);
+    }, REFUSAL_MS);
+  });
+  onCleanup(() => clearTimeout(timer));
+  return (
+    <>
+      <span data-perf="role-line" data-refused={refused() ? "true" : undefined} {...stylex.attrs(s.roleLine, refused() && s.refused, pulse() && s.pulse)}>
+        {shown() ?? props.d.role_line ?? ""}
+      </span>
+      {/* Only a refusal is announced: opening another issue, or a role change, isn't news. */}
+      <span role="status" data-perf="role-refusal" {...stylex.attrs(s.visuallyHidden)}>
+        {shown() ?? ""}
+      </span>
+    </>
+  );
 }
 
 /**
@@ -1135,6 +1236,10 @@ function writeWidth(px: number | undefined) {
 
 const BADGE_TEXT: Record<IssueState, string> = { open: "Open", done: "Closed", notPlanned: "Not planned" };
 
+const rolePulse = stylex.keyframes({
+  "50%": { opacity: 0.35 },
+});
+
 const s = stylex.create({
   divider: {
     backgroundColor: {
@@ -1204,6 +1309,41 @@ const s = stylex.create({
   },
   spacer: {
     flexGrow: 1,
+  },
+  // The role line: muted, one line, the first thing in the row to give way.
+  roleLine: {
+    borderRadius: 4,
+    overflow: "hidden",
+    paddingInline: 4,
+    color: colors.muted,
+    flexShrink: 1,
+    fontSize: 12,
+    lineHeight: "20px",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  // Read by screen readers only: the refusal's live region.
+  visuallyHidden: {
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    position: "absolute",
+    whiteSpace: "nowrap",
+    height: 1,
+    width: 1,
+  },
+  // A refused key's reason, in the role line's place.
+  refused: {
+    backgroundColor: colors.mark,
+    color: colors.fg,
+  },
+  pulse: {
+    animationDuration: "0.5s",
+    animationIterationCount: 2,
+    animationName: {
+      default: rolePulse,
+      "@media (prefers-reduced-motion: reduce)": "none",
+    },
   },
   locked: {
     borderColor: colors.line,

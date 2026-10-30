@@ -162,9 +162,9 @@ impl Role {
 pub enum Access {
     /// The user can't see the repo.
     None,
-    /// GitHub's answer has no `permissions`: the role is unknown.
-    Unknown,
-    Role(Role),
+    /// The user sees it: the role (`None` when GitHub's answer has no `permissions`), and whether
+    /// the repo is archived.
+    Seen { role: Option<Role>, archived: bool },
 }
 
 /// A repo the user can see through an installation, and the user's role on it: `None` when
@@ -1011,15 +1011,16 @@ impl GitHub {
         }
     }
 
-    /// The user's role on `owner/repo`, from its `permissions`.
+    /// The user's role on `owner/repo`, from its `permissions`, and whether it's archived.
     pub async fn repo_access(&self, token: &str, owner: &str, repo: &str) -> Result<Access, Error> {
         match self
             .get::<Repo>(token, &format!("/repos/{owner}/{repo}"))
             .await
         {
-            Ok(r) => Ok(r
-                .permissions
-                .map_or(Access::Unknown, |p| Access::Role(p.role()))),
+            Ok(r) => Ok(Access::Seen {
+                role: r.permissions.map(|p| p.role()),
+                archived: r.archived,
+            }),
             Err(Error::Status(404)) => Ok(Access::None),
             Err(e) => Err(e),
         }

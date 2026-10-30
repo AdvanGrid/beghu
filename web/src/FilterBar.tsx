@@ -71,7 +71,7 @@ export function FilterBar() {
       else if (untrack(facets) === undefined) setFacetsFailed(true);
     }
   });
-  onSettled(() => onPush(() => void refetchFacets()));
+  onSettled(() => onPush((p) => p.kind !== "roles" && void refetchFacets()));
   const retryFacets = () => {
     forgetFailure(getFacets);
     loadFacets();

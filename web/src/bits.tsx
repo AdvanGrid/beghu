@@ -1,5 +1,6 @@
 // Small pieces the list and the detail share: an issue's state icon, a PR's status icon and its
-// review chip, a user's avatar, sub-issue progress as a ring, and the button that reads as a link.
+// review chip, a user's avatar, sub-issue progress as a ring, the button that reads as a link, and
+// how a control the account's role leaves out is withheld.
 import * as stylex from "@stylexjs/stylex";
 import { Show } from "solid-js";
 import type { PrStatus } from "./bindings/PrStatus";
@@ -21,6 +22,22 @@ export const link = stylex.create({
     },
   },
 });
+
+/**
+ * A control the account's role leaves out (roles.rs): hidden by `hide.withheld` (its room kept, so
+ * a role change moves nothing), and `withheld`'s attributes take it out of the tab order and the
+ * accessibility tree.
+ */
+export const hide = stylex.create({
+  withheld: {
+    pointerEvents: "none",
+    visibility: "hidden",
+  },
+});
+
+export function withheld(gone: boolean) {
+  return gone ? { "aria-hidden": "true" as const, tabindex: -1, "data-withheld": "true" } : {};
+}
 
 export type IssueState = "open" | "done" | "notPlanned";
 

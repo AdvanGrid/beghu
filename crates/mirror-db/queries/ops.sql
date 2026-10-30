@@ -5,7 +5,8 @@
 -- param: id i64
 SELECT i.id, i.node_id, i.kind, i.is_stub AS "is_stub: bool", r.synced AS "synced: bool",
        i.repo_id, r.installation_id AS "installation_id?", r.owner, r.name AS repo, i.number,
-       i.author_id AS "author_id?"
+       i.author_id AS "author_id?", r.role, r.archived AS "archived: bool",
+       i.locked AS "locked: bool"
 FROM items i JOIN repos r ON r.id = i.repo_id
 WHERE i.id = :id;
 

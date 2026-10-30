@@ -32,6 +32,7 @@ mod reconcile;
 mod relationship_writes;
 mod relationships;
 mod repos;
+mod roles;
 mod shell;
 mod tokens;
 mod volume;
@@ -417,6 +418,7 @@ impl Opened {
         app.spawn(|app| follow_installations(app, installs));
         app.spawn(|app| accounts::follow_lost(app, lost));
         app.spawn(accounts::daily);
+        app.spawn(repos::keep_live_roles_fresh);
         app.0
             .started
             .store(true, std::sync::atomic::Ordering::SeqCst);

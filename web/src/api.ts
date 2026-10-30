@@ -492,6 +492,15 @@ export async function prefsChanged(): Promise<void> {
 }
 
 /**
+ * A `roles` push: what the account may do changed (a role, a repo archived). `/api/me` is read
+ * again, so its per-repo tables (the create form's) follow; the open detail refetches its own.
+ */
+export async function rolesChanged(): Promise<void> {
+  void revalidate(getMe.key);
+  await getMe();
+}
+
+/**
  * Sets the account's comment order: stored, then pushed to its other tabs. Until it's stored, this
  * tab takes it as set; if it isn't, it goes back. Fails with the named error.
  */

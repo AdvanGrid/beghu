@@ -36,7 +36,8 @@ use crate::error::ApiError;
 use crate::github::{self, RepoInfo, Shown};
 use crate::live::Push;
 use crate::markdown::Refs;
-use crate::ops::{self, Failure, IssueRepo, Op, OpReply, Outcome, Sending, Unapplied};
+use crate::ops::{self, Failure, Op, OpReply, Outcome, Sending, Unapplied};
+use crate::roles::{self, At, IssueFacts};
 use crate::tokens;
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
@@ -53,6 +54,8 @@ const MAX_CHILDREN: i64 = 100;
 const MAX_DEPENDENCIES: i64 = 50;
 /// How many issues a picker offers for title words.
 const MAX_MATCHES: i64 = 30;
+/// How old the account's roles may be before a picker that dims an offer for one re-reads them.
+const PICKER_REREAD: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The other end of a relationship op: its id when the tab knows it (an issue in the mirror, or
 /// one the picker read from GitHub), and its place on GitHub, which names it otherwise (with an
@@ -82,10 +85,39 @@ pub enum RelationshipKind {
     Relates,
 }
 
+/// Why the account's roles don't allow a relationship between issues `this` and `other`, as the
+/// mirror stores them: Triage on both repos (roles.rs). The first thing [`refusal`] asks; a write
+/// asks it of its two ends however it names them.
+pub(crate) fn role_refusal(c: &Connection, this: i64, other: i64) -> QueryResult<Option<String>> {
+    let repo = |id: i64| Ok::<_, rusqlite::Error>(q::op_target(c, id)?.map(|t| t.repo_id));
+    let Some(mine) = repo(this)? else {
+        return Ok(None);
+    };
+    roles::relationship_refusal(c, mine, repo(other)?)
+}
+
 /// Why GitHub would refuse to link `this` to `other` as `kind`, from what the mirror holds: the
-/// reason, in words for the user, or none. `moving`: a sub-issue add that moves the sub-issue
-/// from its parent (`replace_parent`), so its having one isn't a refusal.
+/// reason, in words for the user, or none. The roles come first ([`role_refusal`]); then what
+/// GitHub refuses whoever asks. `moving`: a sub-issue add that moves the sub-issue from its parent
+/// (`replace_parent`), so its having one isn't a refusal. The detail's `can`, the pickers and the
+/// tree's drops ask this; a write asks it too, before any call.
 pub(crate) fn refusal(
+    c: &Connection,
+    kind: RelationshipKind,
+    this: i64,
+    other: i64,
+    moving: bool,
+) -> QueryResult<Option<String>> {
+    match role_refusal(c, this, other)? {
+        Some(why) => Ok(Some(why)),
+        None => structural_refusal(c, kind, this, other, moving),
+    }
+}
+
+/// What GitHub refuses whoever asks: [`refusal`] after the roles. A write asks this from its plan;
+/// it asks the roles itself, of both ends however they're named, and re-reads a role that
+/// refuses.
+fn structural_refusal(
     c: &Connection,
     kind: RelationshipKind,
     this: i64,
@@ -195,13 +227,14 @@ impl Side {
         format!("/repos/{}/{}/issues/{}", self.owner, self.repo, self.number)
     }
 
-    /// Its repo, for a refusal's reason.
-    fn repo_of(&self) -> IssueRepo {
-        IssueRepo {
+    /// Its repo, for the roles rule module: a relationship asks for the same role whoever
+    /// opened the issues.
+    fn at(&self) -> At {
+        At {
             repo_id: self.repo_id,
             owner: self.owner.clone(),
             repo: self.repo.clone(),
-            own: false,
+            issue: IssueFacts::default(),
         }
     }
 }
@@ -405,8 +438,32 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
         return Err(Failure::Internal(format!("{op:?} names no issue")));
     };
     let this = Side::of(&ops::writable(app, account, issue).await?);
+    // Triage on both repos, as the mirror has the roles: refused before any call, first for the
+    // ends the mirror holds (before what GitHub would refuse of them), and again once the plan
+    // has both ends, one of which may be an issue only GitHub has shown.
+    let named = match op {
+        Op::SubAdd { child, .. } | Op::SubRemove { child, .. } => child.id,
+        Op::SubReorder { child, .. } => Some(*child),
+        Op::BlockAdd { other, .. }
+        | Op::BlockRemove { other, .. }
+        | Op::RelateAdd { other, .. }
+        | Op::RelateRemove { other, .. } => other.id,
+        _ => None,
+    };
+    let held = match named {
+        Some(id) => app
+            .mirrors()
+            .read(account, Caller::Request, move |c| q::op_target(c, id))
+            .await
+            .map_err(Failure::from)?
+            .map(|t| Side::of(&t).at()),
+        None => None,
+    };
+    roles_allow(app, account, &this.at(), held).await?;
     let plan = plan(app, account, op, this).await?;
+    let (on, other) = ends(app, account, &plan).await?;
     writes_to_every_end(app, account, &plan).await?;
+    let other = roles_allow(app, account, &on, other).await?;
     let (method, path, body) = match &plan {
         Plan::Sub {
             parent,
@@ -470,13 +527,8 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
             Value::Null,
         ),
     };
-    // The repo whose issue the call is on: a refusal is worded from the account's role there.
-    let at = match &plan {
-        Plan::Sub { parent, .. } | Plan::Reorder { parent, .. } => parent,
-        Plan::Blocks { blocked, .. } => blocked,
-        Plan::Relates { this, .. } => this,
-    };
-    let (on, on_synced, on_named) = (at.repo_of(), at.synced, at.named());
+    let at = call_side(&plan);
+    let (on_synced, on_named) = (at.synced, at.named());
     let add = matches!(
         plan,
         Plan::Sub { add: true, .. }
@@ -492,7 +544,7 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
         }
         Err(Failure::Forbidden) => {
             return Err(Failure::Refused(
-                ops::refused_why(app, account, &on, op).await,
+                roles::refused_why(app, account, &on, other.as_ref(), op).await,
             ));
         }
         // There already, as asked.
@@ -536,7 +588,9 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
         .await;
         if let Err(f) = placed {
             let why = match f {
-                Failure::Forbidden => ops::refused_why(app, account, &on, &reorder).await,
+                Failure::Forbidden => {
+                    roles::refused_why(app, account, &on, other.as_ref(), &reorder).await
+                }
                 f => f.words(),
             };
             let mut r = reply(issue);
@@ -559,6 +613,69 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
         .await;
     }
     Ok(reply(issue))
+}
+
+/// Whether the stored roles allow a relationship between an issue in `on`'s repo and one in
+/// `other`'s (roles.rs: Triage on both). If not, the write is refused before any call, and both
+/// roles are re-read in the background, since the stored ones may be stale: the next attempt has
+/// GitHub's. If so, the other end, if its repo has a role stored to re-read on a refusal.
+async fn roles_allow(
+    app: &App,
+    account: i64,
+    on: &At,
+    other: Option<At>,
+) -> Result<Option<At>, Failure> {
+    let (this_repo, other_repo) = (on.repo_id, other.as_ref().map(|o| o.repo_id));
+    let (why, other_known) = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| {
+            let known = match other_repo {
+                Some(r) => q::repo_access(c, r)?.is_some_and(|a| a.role.is_some()),
+                None => false,
+            };
+            Ok((
+                roles::relationship_refusal(c, this_repo, other_repo)?,
+                known,
+            ))
+        })
+        .await
+        .map_err(Failure::from)?;
+    let other = other.filter(|_| other_known);
+    if let Some(why) = why {
+        let sides: Vec<&At> = std::iter::once(on).chain(other.as_ref()).collect();
+        roles::reread_later(app, account, &sides);
+        return Err(Failure::Refused(why));
+    }
+    Ok(other)
+}
+
+/// The end whose issue GitHub's call is on: a sub-issue's parent, a dependency's blocked issue, a
+/// relates-to's own issue.
+fn call_side(plan: &Plan) -> &Side {
+    match plan {
+        Plan::Sub { parent, .. } | Plan::Reorder { parent, .. } => parent,
+        Plan::Blocks { blocked, .. } => blocked,
+        Plan::Relates { this, .. } => this,
+    }
+}
+
+/// The repos of `plan`'s two ends, for the roles rule module: the call's end, and the other one
+/// (a reorder's sub-issue, read from the mirror).
+async fn ends(app: &App, account: i64, plan: &Plan) -> Result<(At, Option<At>), Failure> {
+    let other = match plan {
+        Plan::Sub { child, .. } => Some(child.at()),
+        Plan::Blocks { blocker, .. } => Some(blocker.at()),
+        Plan::Relates { other, .. } => Some(other.at()),
+        Plan::Reorder { child, .. } => {
+            let child = *child;
+            app.mirrors()
+                .read(account, Caller::Request, move |c| q::op_target(c, child))
+                .await
+                .map_err(Failure::from)?
+                .map(|t| Side::of(&t).at())
+        }
+    };
+    Ok((call_side(plan).at(), other))
 }
 
 /// Whether `plan` removes a sub-issue from a parent GitHub still shows: its 404 is a sub-issue
@@ -666,7 +783,7 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
         .mirrors()
         .read(account, Caller::Request, move |c| {
             let why = if add {
-                refusal(c, kind, this_id, other_id, moving)?
+                structural_refusal(c, kind, this_id, other_id, moving)?
             } else {
                 None
             };
@@ -1120,21 +1237,60 @@ pub async fn candidates(
                     }
                 }
             }
+            let mut by_role = false;
             for cand in &mut out {
                 if cand.why_not.is_none()
                     && let Some(other) = cand.id
                 {
+                    by_role |= role_refusal(c, this_id, other)?.is_some();
                     cand.why_not = refusal(c, kind, this_id, other, moving)?;
                 }
             }
-            Ok((out, lookup))
+            Ok((out, lookup, by_role))
         })
         .await?;
-    let (mut out, lookup) = found;
+    let (mut out, lookup, by_role) = found;
     if let Some(end) = lookup
         && let Some(c) = look_up(&app, account, end).await
     {
         out.push(c);
+    }
+    // An issue the mirror doesn't hold (read from GitHub just now) wasn't asked `refusal`: its
+    // repo's role, by name, is the shared check's.
+    let unheld: Vec<(usize, String, String)> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.why_not.is_none())
+        .map(|(i, c)| (i, c.owner.clone(), c.repo.clone()))
+        .collect();
+    let this_repo = this.repo_id;
+    let role_reasons = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| {
+            let mut reasons = Vec::new();
+            for (i, owner, repo) in &unheld {
+                let theirs = q::repo_access_named(c, owner, repo)?.map(|r| r.id);
+                if let Some(why) = roles::relationship_refusal(c, this_repo, theirs)? {
+                    reasons.push((*i, why));
+                }
+            }
+            Ok(reasons)
+        })
+        .await?;
+    let dimmed_by_role = by_role || !role_reasons.is_empty();
+    for (i, why) in role_reasons {
+        out[i].why_not = Some(why);
+    }
+    // A role that dims an offer may be stale: re-read the account's roles, at most once a minute
+    // (a picker asks on every keystroke), without waiting; a change pushes `roles`.
+    if dimmed_by_role {
+        app.spawn(move |app| async move {
+            if let Err(e) =
+                crate::repos::refresh_roles_if_older_than(&app, account, PICKER_REREAD).await
+            {
+                eprintln!("relatable: account {account}: re-reading the roles: {e:?}");
+            }
+        });
     }
     // A parent takes the write (its sub-issue list is GitHub's call on it), and so does an
     // issue this one would block (its blocked-by list): only a synced one.
