@@ -168,10 +168,13 @@ test("a cross-repo relationship shows on both ends within 2 s", async ({ page })
   const me = unlinked.find((u) => u.repo === "web")!;
   const far = unlinked.find((u) => u.repo === "api")!;
   await open(page, `/issues/${me.id}`);
+  // On screen as the shift cue in the empty Blocks section's spot (#110), or once it has opened.
   const blockerShown = await timeFromPush(
     page,
     me.id,
-    (far) => !!document.querySelector(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far}"]`),
+    (far) =>
+      !!document.querySelector(`[data-perf="blocked_by"] [data-perf="block-item"][data-id="${far}"]`) ||
+      document.querySelector('[data-unit="blocks"] [data-perf="cue-line"]')?.textContent === "blocker added",
     far.id,
   );
   try {

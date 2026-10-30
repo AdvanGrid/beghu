@@ -31,6 +31,9 @@ export const colors = stylex.defineVars({
   warn: "light-dark(#8a5c00, #d29922)",
   // The shift cue's tint on a row that will leave (held.ts): danger at 8% (light) and 12% (dark).
   cueLeave: "light-dark(rgb(207 34 46 / 0.08), rgb(248 81 73 / 0.12))",
+  // The detail's held changes (HeldDetail.tsx): the tint under a part that will change, and on
+  // what just arrived, fading out: accent at 8% (light) and 14% (dark).
+  cueTint: "light-dark(rgb(37 99 235 / 0.08), rgb(59 130 246 / 0.14))",
   // A search's matched words in the detail.
   mark: "light-dark(#fff1a8, #5c4a00)",
   // Hover cards, over the list.

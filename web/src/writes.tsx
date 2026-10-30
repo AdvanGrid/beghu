@@ -740,7 +740,7 @@ function withBody(d: DetailBase, at: number): ShownDetail {
  */
 function pendingComment(p: Pending): ShownComment {
   const confirmed = p.reply?.comment;
-  if (confirmed) return { ...confirmed, id: p.commentId, op: p.id };
+  if (confirmed) return { ...confirmed, id: p.commentId, op: p.id, of: confirmed.id };
   const typed = p.op.kind === "comment" ? p.op.body : "";
   return { op: p.id, id: p.commentId, author: { login: p.author }, typed, created_at: p.createdAt, updated_at: p.createdAt };
 }

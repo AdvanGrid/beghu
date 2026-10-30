@@ -519,9 +519,10 @@ const s = stylex.create({
   },
   hr: {
     borderWidth: 0,
-    marginBlock: 16,
     backgroundColor: tone.line,
     height: 1,
+    marginBottom: { default: 16, ":last-child": 0 },
+    marginTop: { default: 16, ":first-child": 0 },
   },
   input: { marginBlock: 0, marginInlineEnd: 6, verticalAlign: "middle" },
   kbd: {
@@ -593,7 +594,7 @@ const s = stylex.create({
     display: "flex",
     fontWeight: 650,
     lineHeight: 1.3,
-    marginBottom: "0.5em",
+    marginBottom: { default: "0.5em", ":last-child": 0 },
     marginTop: { default: "1.1em", ":first-child": 0 },
   },
   // A heading's level: 42.5 × 5 px, in as many segments as the level (h1 a line, h6 six dots).
@@ -651,7 +652,7 @@ const s = stylex.create({
     borderTopColor: tone.line,
     borderTopStyle: "solid",
     borderTopWidth: 1,
-    marginTop: 16,
+    marginTop: { default: 16, ":first-child": 0 },
     paddingTop: 6,
   },
   footnotesTitle: { marginBlock: 0, fontSize: "1em", fontWeight: 600, marginBottom: 2 },

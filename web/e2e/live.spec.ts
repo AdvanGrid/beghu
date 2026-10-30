@@ -422,11 +422,12 @@ test("a comment made on GitHub shows in the open issue within 2 s, in one reques
   const api = apiRequests(page);
   const text = unique("Commented with gh");
   try {
-    // Newest first: it arrives on top, and nothing loaded is skipped or repeated.
+    // Newest first: it arrives on top, and nothing loaded is skipped or repeated. On screen as
+    // the shift cue where it will open, when that's in view (#110), or as itself.
     const onTop = await timeFromPush(
       page,
       issue.id,
-      (text) => !!document.querySelector('[data-perf="comment"]')?.textContent?.includes(text),
+      (text) => !!document.querySelector('[data-perf="comment"]')?.textContent?.includes(text) || [...document.querySelectorAll('[data-perf="comments"] [data-perf="cue-line"]')].some((l) => l.textContent?.endsWith(" commented")),
       text,
     );
     devCtl(["fake", "edit", issue.ref, "--comment", text]);

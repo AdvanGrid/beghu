@@ -72,6 +72,8 @@ import type { Links } from "./md/links";
 import { IssueNotice, resetOnChange } from "./Root";
 import { stale } from "./account";
 import { ChunkFailed } from "./router";
+import { CueLine, cueStyles } from "./cue";
+import { applyAtOnce, createDetailHeld, type Unit, type UnitCue } from "./HeldDetail";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
 
@@ -117,6 +119,9 @@ const BodyEditor = lazy(editorChunk, { export: "BodyEditor" });
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
 
+/** The next refetch of the open issue applies at once (HeldDetail.tsx): Back restored the page. */
+let restored = false;
+
 /**
  * What the live stream's push handler (#90) calls with the ids of the issues a push names. For
  * each, nothing the tab read before shows again: a hover's remembered detail goes, a hover read
@@ -137,6 +142,9 @@ export function refetchOpenIssue(ids: readonly number[]): Promise<void> {
 // cached reads. Before this code loads no issue is open.
 const unsubscribe = onPush((p) => {
   if (p.kind === "defs") return;
+  // Back restored the page: the refetch its stream's reset brings applies at once, as a page that
+  // loads now would show it.
+  if (p.kind === "reset" && p.restored && openDetail) restored = true;
   void refetchOpenIssue(p.kind === "ids" ? p.ids : openDetail ? [openDetail.id] : []);
 });
 // A hot reload of this file in development subscribes its new copy instead.
@@ -281,6 +289,8 @@ function Detail(props: { id: number; search: string }) {
   let scroller!: HTMLDivElement;
   /** The issue whose next comment page is on its way. */
   let loadingFor: number | undefined;
+  /** The next refetch is the one that replaces what the issue opened with: it applies at once. */
+  let opensAtOnce = false;
 
   /**
    * Looking for the search's first match to bring into view: from when an issue opens or the
@@ -379,6 +389,10 @@ function Detail(props: { id: number; search: string }) {
    * other failure rejects, for the caller to decide, as long as the issue is still on screen.
    */
   const refetch = async (read: (have: IssueDetail, last?: Comment) => Promise<IssueDetail> = (have, last) => refetchIssue(have.id, have.comment_order, last)) => {
+    // The read that replaces what the issue opened with, and the first after Back restored the
+    // page, apply at once: the user opened it as it is now.
+    const now = opensAtOnce || restored;
+    opensAtOnce = restored = false;
     const have = current();
     if (!have) return;
     const last = have.comments.comments.at(-1);
@@ -392,28 +406,27 @@ function Detail(props: { id: number; search: string }) {
       else throw e;
       return;
     }
-    const now = current();
+    const shown = current();
     // Re-sorted meanwhile (`resort`): the thread on screen is in another order now.
-    if (now?.id !== have.id || now.comment_order !== have.comment_order) return;
+    if (shown?.id !== have.id || shown.comment_order !== have.comment_order) return;
     setLost(undefined);
     // Pages that landed after the refetch left stay, after the comment it went through.
     const got = fresh.comments.comments;
-    const at = last === undefined ? -1 : now.comments.comments.findIndex((c) => c.id === last.id);
-    const tail = got.at(-1)?.id === last?.id && at >= 0 ? now.comments.comments.slice(at + 1) : [];
-    setD(
-      stamp(
-        {
-          ...fresh,
-          comments: {
-            comments: merge(got, tail),
-            next: tail.length > 0 ? now.comments.next : fresh.comments.next,
-            refs: tail.length > 0 ? mergeRefs(now.comments.refs, fresh.comments.refs) : fresh.comments.refs,
-            media: tail.length > 0 ? { ...now.comments.media, ...fresh.comments.media } : fresh.comments.media,
-          },
+    const at = last === undefined ? -1 : shown.comments.comments.findIndex((c) => c.id === last.id);
+    const tail = got.at(-1)?.id === last?.id && at >= 0 ? shown.comments.comments.slice(at + 1) : [];
+    const next = stamp(
+      {
+        ...fresh,
+        comments: {
+          comments: merge(got, tail),
+          next: tail.length > 0 ? shown.comments.next : fresh.comments.next,
+          refs: tail.length > 0 ? mergeRefs(shown.comments.refs, fresh.comments.refs) : fresh.comments.refs,
+          media: tail.length > 0 ? { ...shown.comments.media, ...fresh.comments.media } : fresh.comments.media,
         },
-        readAt(fresh),
-      ),
+      },
+      readAt(fresh),
     );
+    setD(now ? applyAtOnce(next) : next);
   };
 
   /**
@@ -464,6 +477,7 @@ function Detail(props: { id: number; search: string }) {
       // afresh, page 2 and all.
       if (fromMemory === id) {
         fromMemory = undefined;
+        opensAtOnce = true;
         untrack(() => refetch((have) => getIssue(have.id)))
           .catch((e: unknown) => {
             failure = { error: e };
@@ -473,6 +487,7 @@ function Detail(props: { id: number; search: string }) {
       } else if (readBefore(detail, resetAt())) {
         // Its read began before a push named it or the stream reset, while nothing was open for
         // that push to refetch (the read was on its way, or the panel's code was): refetch it now.
+        opensAtOnce = true;
         void untrack(refetchForPush);
       }
       requestAnimationFrame(() => setTimeout(() => void loadMore().finally(() => settle(o))));
@@ -522,20 +537,23 @@ function Body(props: {
   scroller: (el: HTMLDivElement) => void;
   onScroll: () => void;
 }) {
-  /** When the detail's read began: the tab's writes show over anything older. */
-  const at = () => readAt(props.d);
-  const d = createMemo((): ShownDetail => overlay()?.detailWithWrites(props.d, at()) ?? props.d);
+  let scroller!: HTMLDivElement;
+  // The latest read, with its layout changes held while the user may be about to act (#110). The
+  // composer, under the scroller, is the panel too.
+  const held = createDetailHeld({ target: () => props.d, scroller: () => scroller, region: (t) => scroller.parentElement?.contains(t) ?? false });
+  /** When the read on screen began: the tab's writes show over anything older. */
+  const at = () => readAt(held.shown());
+  const d = createMemo((): ShownDetail => overlay()?.detailWithWrites(held.shown(), at()) ?? held.shown());
   // The writes code learns which read the detail shows, so it can drop the writes it has caught
   // up with.
   createEffect(
-    () => ({ o: overlay(), issue: props.d.id, at: at() }),
+    () => ({ o: overlay(), issue: held.shown().id, at: at() }),
     ({ o, issue, at }) => o?.detailShown(issue, at),
   );
   // The filter bar's free text, marked in the fields it searched.
   const search = createMemo(() => searchOf(queryOf(props.search)));
   const terms = (field: SearchField): Term[] => (search().fields[field] ? search().terms : []);
   const state = () => issueState(d());
-  let scroller!: HTMLDivElement;
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
   // Whether a post shows an image the lightbox opens: `imageOpen` is offered only then.
@@ -593,7 +611,7 @@ function Body(props: {
       >
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
-        <div {...stylex.attrs(s.status)}>
+        <div {...stylex.attrs(s.status)} data-k="status">
           <Show
             when={d().pr}
             fallback={
@@ -632,14 +650,16 @@ function Body(props: {
             ×
           </a>
         </div>
-        <ParentCrumb d={d()} search={props.search} write={allows(d(), "relationships")} />
+        <HeldUnit unit="parent" cue={held.unitCue("parent")} tint={held.unitTint("parent")}>
+          <ParentCrumb d={d()} search={props.search} write={allows(d(), "relationships")} />
+        </HeldUnit>
         <Show when={d().kind === "issue"}>
           <Offer action="editTitle" run={editTitle} why={() => d().denied.edit} />
         </Show>
         <Show
           when={editing("title")}
           fallback={
-            <div {...stylex.attrs(s.titleRow)}>
+            <div {...stylex.attrs(s.titleRow)} data-k="title">
               <h2 {...stylex.attrs(s.title)} data-perf="title">
                 {marked(d().title, terms("title"))}
                 <Dynamic component={overlay()?.EditNote} issue={d().id} field="title" at={at()} />
@@ -668,7 +688,7 @@ function Body(props: {
         </Show>
         <Show when={d().pr}>{(pr) => <PullBranches pr={pr()} />}</Show>
         <dl {...stylex.attrs(s.props)}>
-          <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")}>
+          <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")} unit="assignees" cue={held.unitCue("assignees")} tint={held.unitTint("assignees")}>
             <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
               {(u) => (
                 <span {...stylex.attrs(s.person)} data-perf="assignee">
@@ -678,7 +698,7 @@ function Body(props: {
               )}
             </For>
           </PropRow>
-          <PropRow prop="labels" title="Labels" d={d()} at={at()} open={picking() === "labels"} setOpen={setOpen("labels")}>
+          <PropRow prop="labels" title="Labels" d={d()} at={at()} open={picking() === "labels"} setOpen={setOpen("labels")} unit="labels" cue={held.unitCue("labels")} tint={held.unitTint("labels")}>
             <For each={d().labels} keyed={(l) => l.name} fallback={<span {...stylex.attrs(s.muted, s.noLabels)}>None</span>}>
               {(l) => (
                 <span {...stylex.attrs(s.pill)} data-perf="label">
@@ -696,7 +716,7 @@ function Body(props: {
           {/* Relationship writes: an issue's only, as every write. */}
           <Show when={d().kind === "issue"}>
             <dt {...stylex.attrs(s.key)}>Links</dt>
-            <dd {...stylex.attrs(s.value)} data-perf="links">
+            <dd {...stylex.attrs(s.value)} data-perf="links" data-k="p:links">
               <LinksRow d={d()} at={at()} write={allows(d(), "relationships")} />
             </dd>
           </Show>
@@ -705,24 +725,30 @@ function Body(props: {
             fallback={
               <>
                 <dt {...stylex.attrs(s.key)}>Linked PRs</dt>
-                <dd {...stylex.attrs(s.value)}>
+                <dd {...unitAttrs("linked", held.unitCue("linked"), held.unitTint("linked"), s.value)}>
                   <Linked items={d().linked_prs} search={props.search} empty="None" perf="linked-prs" />
                 </dd>
               </>
             }
           >
             <dt {...stylex.attrs(s.key)}>Closes</dt>
-            <dd {...stylex.attrs(s.value)}>
+            <dd {...unitAttrs("linked", held.unitCue("linked"), held.unitTint("linked"), s.value)}>
               <Linked items={d().closes} search={props.search} empty="Nothing" perf="closes" />
             </dd>
           </Show>
         </dl>
-        <Blocks d={d()} search={props.search} write={allows(d(), "relationships")} />
-        <RelatesTo d={d()} search={props.search} write={allows(d(), "relationships")} />
+        {/* Units of their own (#110): an empty one keeps a spot of no height, where a first item
+            is cued and opens. */}
+        <HeldUnit unit="blocks" cue={held.unitCue("blocks")} tint={held.unitTint("blocks")}>
+          <Blocks d={d()} search={props.search} write={allows(d(), "relationships")} />
+        </HeldUnit>
+        <HeldUnit unit="relates" cue={held.unitCue("relates")} tint={held.unitTint("relates")}>
+          <RelatesTo d={d()} search={props.search} write={allows(d(), "relationships")} />
+        </HeldUnit>
         {/* The body is a post like each comment: on its tint, its byline inside. */}
         <div {...stylex.attrs(s.bodySlot)}>
           <div {...stylex.attrs(s.post)}>
-            <div {...stylex.attrs(s.postHead)}>
+            <div {...stylex.attrs(s.postHead)} data-k="byline">
               <Byline author={d().author}>
                 opened <Ago at={d().created_at} /> · {d().comment_total} {d().comment_total === 1 ? "comment" : "comments"}
                 <Dynamic component={overlay()?.EditNote} issue={d().id} field="body" at={at()} />
@@ -749,8 +775,16 @@ function Body(props: {
                     when={d().typedBody === undefined}
                     fallback={<div {...stylex.attrs(s.plain)}>{d().typedBody}</div>}
                   >
-                    <Show when={d().body.length > 0} fallback={<span {...stylex.attrs(s.postMuted)}>No description provided.</span>}>
-                      <Markdown md={d().body} links={links(d(), d().refs, d().media, props.search)} terms={terms("body")} />
+                    <Show
+                      when={d().body.length > 0}
+                      fallback={
+                        <>
+                          <Show when={held.body()?.line}>{(line) => <CueLine label={line().label} />}</Show>
+                          <span {...stylex.attrs(s.postMuted)}>No description provided.</span>
+                        </>
+                      }
+                    >
+                      <Markdown md={d().body} links={links(d(), d().refs, d().media, props.search)} terms={terms("body")} keyed="b:" marks={held.body()} />
                     </Show>
                   </Show>
                 </div>
@@ -767,10 +801,15 @@ function Body(props: {
           </div>
         </div>
         <Show when={!d().pr}>
-          <SubIssues d={d()} search={props.search} write={allows(d(), "relationships")} />
+          <HeldUnit unit="subs" cue={held.unitCue("subs")} tint={held.unitTint("subs")}>
+            <SubIssues d={d()} search={props.search} write={allows(d(), "relationships")} />
+          </HeldUnit>
         </Show>
-        <h3 {...stylex.attrs(s.section)}>
-          Comments <span {...stylex.attrs(s.muted, s.count)}>{d().comment_total}</span>
+        <h3 {...stylex.attrs(s.section)} data-k="comments-head">
+          Comments{" "}
+          <span {...stylex.attrs(s.muted, s.count)} data-perf="comment-total">
+            {d().comment_total}
+          </span>
           <CommentOrderSwitch order={d().comment_order} resort={props.resort} />
           <Show when={d().pr}>
             <ReviewsElsewhere href={githubUrl(d())} />
@@ -778,8 +817,24 @@ function Body(props: {
         </h3>
         <div {...stylex.attrs(s.comments)} data-perf="comments" data-perf-loaded={d().comments.comments.length}>
           <For each={d().comments.comments} keyed={(c) => c.id}>
-            {(c) => <CommentView c={c()} at={at()} links={links(d(), d().comments.refs, d().comments.media, props.search, c().id)} terms={terms("comments")} />}
+            {(c) => (
+              <>
+                <Show when={held.lineBefore(c().id)}>{(label) => <CueLine label={label()} inset />}</Show>
+                {/* The comment's gap is inside its slot: it opens and closes with it. */}
+                <div data-k={`c:${c().id}`} {...stylex.attrs(s.commentSlot)}>
+                  <CommentView
+                    c={c()}
+                    at={at()}
+                    links={links(d(), d().comments.refs, d().comments.media, props.search, c().id)}
+                    terms={terms("comments")}
+                    leaving={held.leaving(c().id)}
+                    arrived={held.arrived(c().id)}
+                  />
+                </div>
+              </>
+            )}
           </For>
+          <Show when={held.lineBefore("end")}>{(label) => <CueLine label={label()} inset />}</Show>
         </div>
         <Show when={d().comments.next !== null}>
           <p {...stylex.attrs(s.more)} aria-live="polite">
@@ -867,7 +922,19 @@ function CommentOrderSwitch(props: { order: CommentOrder; resort: (order: Commen
  * values, then what the tab's picks on it show (a pending dot, a failed pick with Retry). The
  * picker opens over what follows, so nothing moves.
  */
-function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number; open: boolean; setOpen: (open: boolean) => void; children: Element }) {
+function PropRow(props: {
+  prop: Prop;
+  title: string;
+  d: ShownDetail;
+  at: number;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  /** The unit it is, if its changes are held (#110), with its cue and tint. */
+  unit?: Unit;
+  cue?: UnitCue;
+  tint?: boolean;
+  children: Element;
+}) {
   let button: HTMLButtonElement | undefined;
   let value: HTMLElement | undefined;
   // The marker slot describes the row's opener: a failed pick is read out with it.
@@ -911,7 +978,11 @@ function PropRow(props: { prop: Prop; title: string; d: ShownDetail; at: number;
           </Show>
         </Show>
       </dt>
-      <dd ref={value} {...stylex.attrs(s.value, s.anchor)} data-perf={props.prop}>
+      <dd
+        ref={value}
+        {...(props.unit ? unitAttrs(props.unit, props.cue, props.tint ?? false, s.value, s.anchor) : { "data-k": `p:${props.prop}`, ...stylex.attrs(s.value, s.anchor) })}
+        data-perf={props.prop}
+      >
         {props.children}
         {/* The row's marker slot: one line it always keeps, so a pick's dot or failure moves
             nothing. Only an issue takes picks. */}
@@ -951,6 +1022,30 @@ function OfferImage(props: { scroller: HTMLDivElement }) {
     if (first) openLightbox(first);
   });
   return null;
+}
+
+/**
+ * A part of the detail held, cued and animated on its own (HeldDetail.tsx): marked as the unit, its
+ * cue an outline (`change`, `leave`) or, while it's empty, a labelled line in its spot.
+ */
+function HeldUnit(props: { unit: Unit; cue: UnitCue | undefined; tint: boolean; children: Element }) {
+  return (
+    <div {...unitAttrs(props.unit, props.cue, props.tint, s.unit)}>
+      <Show when={typeof props.cue === "object" ? props.cue.line : undefined}>{(label) => <CueLine label={label()} inset />}</Show>
+      {props.children}
+    </div>
+  );
+}
+
+/** A unit's markers and styles: `data-unit`, its anchor key, and its cue and tint over `base`. */
+function unitAttrs(unit: Unit, cue: UnitCue | undefined, tint: boolean, ...base: stylex.StyleXStyles[]) {
+  const outline = typeof cue === "string" ? cue : undefined;
+  return {
+    "data-unit": unit,
+    "data-k": `u:${unit}`,
+    "data-cue": outline,
+    ...stylex.attrs(...base, outline !== undefined && cueStyles[outline], tint && cueStyles.tint),
+  };
 }
 
 /**
@@ -1047,11 +1142,18 @@ function links(
   };
 }
 
-function CommentView(props: { c: ShownComment; at: number; links: Links; terms: Term[] }) {
+function CommentView(props: { c: ShownComment; at: number; links: Links; terms: Term[]; leaving: boolean; arrived: boolean }) {
   const body = () => ("body" in props.c ? props.c.body : undefined);
   const typed = () => ("typed" in props.c ? props.c.typed : undefined);
   return (
-    <article {...stylex.attrs(s.post, s.comment)} data-perf="comment" data-id={props.c.id} data-comment-id={props.c.id} data-op={props.c.op}>
+    <article
+      {...stylex.attrs(s.post, s.comment, props.leaving && cueStyles.leave, props.arrived && cueStyles.tint)}
+      data-perf="comment"
+      data-id={props.c.id}
+      data-comment-id={props.c.id}
+      data-op={props.c.op}
+      data-cue={props.leaving ? "leave" : undefined}
+    >
       <Byline author={props.c.author}>
         <Ago at={props.c.created_at} />
         <Show when={props.c.op}>{(op) => <Dynamic component={overlay()?.CommentNote} op={op()} at={props.at} />}</Show>
@@ -1584,9 +1686,16 @@ const s = stylex.create({
   // Off-screen comments skip layout and paint, with a size estimate standing in for them.
   comment: {
     containIntrinsicSize: "auto 140px",
-    marginInline: 16,
     contentVisibility: "auto",
-    marginBottom: 10,
+  },
+  commentSlot: {
+    paddingInline: 16,
+    display: "flow-root",
+    paddingBottom: 10,
+  },
+  // A unit's margins stay inside it: it opens and closes with its gap, and empty takes no room.
+  unit: {
+    display: "flow-root",
   },
   comments: {
     paddingTop: 10,

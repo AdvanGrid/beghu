@@ -183,7 +183,7 @@ test("the detail scrolls to a first match that comment page 2 brings", async ({ 
   // On page 2: the 16th comment or later.
   const at = await mark.evaluate((m) => {
     const c = m.closest('[data-perf="comment"]')!;
-    return [...c.parentElement!.children].indexOf(c);
+    return [...document.querySelectorAll('[data-perf="detail"] [data-perf="comment"]')].indexOf(c);
   });
   expect(at).toBeGreaterThanOrEqual(15);
 });

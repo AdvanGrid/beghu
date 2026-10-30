@@ -19,11 +19,11 @@ export type Prop = PickProp | "links";
 
 /**
  * A comment as the thread shows it: as the server rendered it (a write's comment GitHub has
- * carries the write's `op_id`), or a pending or failed write's comment GitHub doesn't have, which
- * shows its text as typed, plain.
+ * carries the write's `op_id`, and `of`, the id GitHub gave it, while its pending id stands in),
+ * or a pending or failed write's comment GitHub doesn't have, which shows its text as typed, plain.
  */
 export type ShownComment =
-  | (Comment & { op?: string })
+  | (Comment & { op?: string; of?: number })
   | { op: string; id: number; author: User; typed: string; created_at: number; updated_at: number };
 
 /** The detail as it shows, the tab's pending comments among its own. */

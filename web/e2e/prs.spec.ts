@@ -131,7 +131,8 @@ test("a closing keyword added to a PR on GitHub shows it under the issue's Linke
   await page.goto(`/issues/${issue.id}`);
   const linked = page.locator('[data-perf="linked-prs"]');
   await expect(linked).toHaveText("None");
-  const shown = await timeFromPush(page, issue.id, (id) => !!document.querySelector(`[data-perf="linked-prs"] [data-id="${id}"]`), pr.id);
+  // On screen as the shift cue on the Linked PRs row (#110), or once the row has it.
+  const shown = await timeFromPush(page, issue.id, (id) => !!document.querySelector(`[data-perf="linked-prs"] [data-id="${id}"], [data-unit="linked"][data-cue]`), pr.id);
   const before = (await edit({ repo: "acme/web", number: pr.number })).body;
   try {
     await edit({ repo: "acme/web", number: pr.number, body: `${before ?? ""}\n\nFixes #${issue.number}` });
@@ -155,7 +156,8 @@ test("a PR linked to an issue in GitHub's Development sidebar shows under its Li
   await page.goto(`/issues/${issue.id}`);
   const linked = page.locator('[data-perf="linked-prs"]');
   await expect(linked).toHaveText("None");
-  const shown = await timeFromPush(page, issue.id, (id) => !!document.querySelector(`[data-perf="linked-prs"] [data-id="${id}"]`), pr.id);
+  // On screen as the shift cue on the Linked PRs row (#110), or once the row has it.
+  const shown = await timeFromPush(page, issue.id, (id) => !!document.querySelector(`[data-perf="linked-prs"] [data-id="${id}"], [data-unit="linked"][data-cue]`), pr.id);
   try {
     // No webhook: the events-feed poller sees it while this tab's stream is open.
     devCtl(["fake", "edit", `web#${pr.number}`, "--link-issue", `#${issue.number}`]);

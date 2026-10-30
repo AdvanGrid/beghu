@@ -24,20 +24,16 @@
 // (`applyNextAtOnce`): the user wasn't on it while it changed.
 //
 // With reduced motion the cue is a still mark for 900 ms, and the batch swaps in unanimated.
-import { createEffect, createMemo, createSignal, flush, onCleanup, onSettled, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, flush, onSettled, untrack } from "solid-js";
+import { createCueTimer, createHidden, EASE } from "./cue";
 import { area, type Area } from "./keys";
 
 /** How long the pointer rests, or how long after a key, before held changes apply. */
 export const REST_MS = 5000;
 /** How long after a touch ends held changes stay held. */
 const TOUCH_MS = 1000;
-/** How long the shift cue shows before the batch applies. */
-const CUE_MS = 700;
-/** With reduced motion: the still mark's time. */
-const STILL_CUE_MS = 900;
 /** The slide that applies a batch. */
 const SLIDE_MS = 180;
-const EASE = "cubic-bezier(0.2, 0, 0, 1)";
 
 /** The areas whose keys mean the user may be about to act on the list: not typing. */
 const ACTING: readonly Area[] = ["page", "list", "panel"];
@@ -376,7 +372,7 @@ export function createHeld<R extends { id: number }>(opts: {
   const [cue, setCue] = createSignal<Shift>();
   const [ghosts, setGhosts] = createSignal<readonly Ghost[]>([]);
   // A hidden tab holds every batch, so none applies unseen; it's considered again on return.
-  const [hidden, setHidden] = createSignal(document.hidden);
+  const hidden = createHidden();
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
   /** A batch is held: the last look found the order shown differs from the latest read's. */
   let pending = false;
@@ -408,13 +404,11 @@ export function createHeld<R extends { id: number }>(opts: {
     return out;
   });
 
-  let cueTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = createCueTimer(reduced);
   const cancelCue = () => {
-    clearTimeout(cueTimer);
-    cueTimer = undefined;
+    timer.stop();
     setCue(undefined);
   };
-  onCleanup(() => clearTimeout(cueTimer));
 
   const targetIds = () => untrack(opts.target).map((r) => r.id);
   const viewport = (): View => ({ top: opts.scroller().scrollTop, height: opts.scroller().clientHeight });
@@ -535,17 +529,12 @@ export function createHeld<R extends { id: number }>(opts: {
     if (!untrack(reading)) return cancelCue();
     // A batch that changes mid-cue shows its new cue, from the start.
     const showing = untrack(cue);
-    if (showing && cueTimer !== undefined && sameShift(showing, shift)) return;
+    if (showing && timer.running() && sameShift(showing, shift)) return;
     setCue(shift);
-    clearTimeout(cueTimer);
-    cueTimer = setTimeout(
-      () => {
-        cueTimer = undefined;
-        if (untrack(reading) && !untrack(hidden)) apply(true);
-        else cancelCue();
-      },
-      reduced.matches ? STILL_CUE_MS : CUE_MS,
-    );
+    timer.start(() => {
+      if (untrack(reading) && !untrack(hidden)) apply(true);
+      else cancelCue();
+    });
   };
 
   createEffect(
@@ -578,13 +567,8 @@ export function createHeld<R extends { id: number }>(opts: {
     const scrolled = () => {
       if (pending) consider();
     };
-    const visibility = () => setHidden(document.hidden);
     el.addEventListener("scroll", scrolled, { passive: true });
-    document.addEventListener("visibilitychange", visibility);
-    return () => {
-      el.removeEventListener("scroll", scrolled);
-      document.removeEventListener("visibilitychange", visibility);
-    };
+    return () => el.removeEventListener("scroll", scrolled);
   });
 
   return { rows, cue, ghosts, fade };

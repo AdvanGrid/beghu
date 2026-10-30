@@ -215,3 +215,27 @@ test("images load through beghu at their size, a bad one says why, a video plays
       .toBe("closed");
   }
 });
+
+test("text after an `align`ed image wraps beside it, in the next block too", async ({ page }) => {
+  const issue: Issue = await claimBelowTheTop(page);
+  const fake = status().urls.fake;
+  const marker = `floated ${Date.now()}`;
+  const md = [`<img align="left" width="120" height="120" alt="floated" src="${fake}/ext/img/120x120.png">`, `${marker}: this paragraph wraps beside the image.`].join("\n\n");
+  try {
+    devCtl(["fake", "edit", issue.ref, "--comment", md]);
+    await page.goto(`/issues/${issue.id}`);
+    const c = thread(page, marker);
+    await expect(c).toBeVisible({ timeout: SHOWS_WITHIN_MS });
+    // The image's box (or its placeholder's, sized the same) floats left; the paragraph after it,
+    // a block of its own, starts its text to its right.
+    const box = (await c.locator('img[alt="floated"]').or(c.getByText("floated", { exact: true })).first().boundingBox())!;
+    const textLeft = await c.locator("p", { hasText: marker }).evaluate((p) => {
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      return range.getClientRects()[0]!.left;
+    });
+    expect(textLeft).toBeGreaterThanOrEqual(box.x + box.width);
+  } finally {
+    devCtl(["fake", "edit", issue.ref, "--close"]);
+  }
+});

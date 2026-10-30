@@ -80,6 +80,16 @@ export async function claimBelowTheTop(page: Page, fits: (r: Issue) => boolean =
   return issue;
 }
 
+/**
+ * An open issue below the top of the default list with a long thread (`comments` or more, several
+ * pages), that no other test has claimed, claimed for this one.
+ */
+export async function claimLongThread(page: Page, comments: number, depth = 400): Promise<Issue> {
+  const issue = (await listed(page, depth)).slice(40).find((r) => r.comments >= comments && claim(r.id));
+  if (!issue) throw new Error(`no unclaimed issue below the top with ${comments} comments or more`);
+  return issue;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function alive(pid: number): boolean {

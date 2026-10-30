@@ -10,6 +10,7 @@ import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { StillImporting } from "./WhileImporting";
 import { stale } from "./account";
+import { cueStyles } from "./cue";
 import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
@@ -643,7 +644,7 @@ export function Row(props: {
       data-cue={props.leaving ? "leave" : undefined}
       aria-current={props.current ? "page" : undefined}
       onPointerEnter={r().pr ? preloadPull : undefined}
-      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && s.leaving, props.tree?.context && s.context)}
+      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && cueStyles.leave, props.tree?.context && s.context)}
     >
       {props.tree?.lead}
       <span {...stylex.attrs(s.state)}>
@@ -980,18 +981,6 @@ const s = stylex.create({
   // A blocked row's red edge.
   blocked: {
     boxShadow: `inset 3px 0 0 ${colors.danger}`,
-  },
-  // The shift cue on a row that will leave its spot: an outline inside it (the row's paint is
-  // contained) and a tint.
-  leaving: {
-    backgroundColor: {
-      default: colors.cueLeave,
-      ":hover": colors.cueLeave,
-    },
-    outlineColor: colors.danger,
-    outlineOffset: -2,
-    outlineStyle: "solid",
-    outlineWidth: 2,
   },
   // A row that left the list, over the rows while it fades out.
   ghost: (y: number) => ({
