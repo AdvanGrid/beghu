@@ -439,6 +439,9 @@ export function createHeld<R extends { id: number }>(opts: {
         // Nothing in the copy is a row, a part of one, or reachable: its markers go, inside too.
         const strip = ["data-perf", "data-id", "data-cue", "id", "tabindex", "aria-selected", "aria-current", "href"];
         for (const n of [node, ...node.querySelectorAll(strip.map((a) => `[${a}]`).join(","))]) for (const a of strip) n.removeAttribute(a);
+        // Its place in the list goes too (a row's inline style holds only that): the ghost puts
+        // it where it was on screen.
+        node.removeAttribute("style");
         copies.push({ id, node });
       }
     }

@@ -24,10 +24,15 @@ import { colors, fonts } from "./tokens.stylex";
 
 /** Every row is exactly this tall, border included: the virtualizer's pitch. */
 export const ROW_HEIGHT = 34;
-/** Rows past either edge of the window kept in the DOM. */
+/** Rows past either edge of the window kept in the DOM at rest (virtual.ts: while scrolling, most go ahead). */
 const OVERSCAN = 6;
-/** Load the next page when the window gets this close to the last loaded row. */
-const NEAR_END = 40;
+/**
+ * Load the next page when the last row on screen gets this close to the last loaded row: 45 rows
+ * (1,530 px) ahead, against the 34 the window's last row left before, so a fling has the next page
+ * before it reaches the end. With the server's 100-row pages, a list area taller than 56 rows
+ * (1,904 px) asks for the second page as it loads, as one taller than 1,870 px did before.
+ */
+const NEAR_END = 45;
 /** A view change that takes longer than this pulses the list's outline, over the old rows. */
 export const PULSE_AFTER_MS = 200;
 /**
@@ -515,10 +520,10 @@ function Rows(props: {
     },
   );
   onCleanup(() => clearTimeout(rest));
-  // Near the end of what's loaded, ask for the next page. Driven by the window, which the
-  // virtualizer moves after its own scroll handling.
+  // Near the end of what's loaded, ask for the next page. Driven by the last row on screen, which
+  // the virtualizer moves after its own scroll handling.
   createEffect(
-    () => (v.items().at(-1)?.index ?? 0) > rows().length - NEAR_END,
+    () => v.end() > rows().length - NEAR_END,
     (near) => {
       if (near) props.onNearEnd();
     },
@@ -547,31 +552,31 @@ function Rows(props: {
               </div>
             )}
           </For>
-          {/* One translated wrapper around rows in normal flow: a row that stays in the window
-              keeps its DOM node, and so the focus, through a refetch that replaces its data
-              (rows are keyed by issue, not by object). */}
-          <div {...stylex.attrs(s.window(visible().first * ROW_HEIGHT))}>
-            <For each={visible().rows} keyed={(r) => r.id}>
-              {(r, i) => (
-                <Row
-                  r={r()}
-                  readStart={props.readStart}
-                  search={props.search}
-                  current={props.openId === r().id}
-                  selected={selected() === r().id}
-                  tabbable={selectedShown() ? selected() === r().id : i() === 0}
-                  pos={visible().first + i() + 1}
-                  of={props.more ? -1 : rows().length}
-                  leaving={held.cue()?.leaving.has(r().id) ?? false}
-                  takeFocus={focusing() === r().id}
-                  onFocusTaken={() => setFocusing(undefined)}
-                  time={props.time}
-                  cols={props.cols}
-                  card={props.card}
-                />
-              )}
-            </For>
-          </div>
+          {/* Each row sits at its own place: a row that stays in the window keeps its DOM node,
+              and so the focus, through a refetch that replaces its data (rows are keyed by
+              issue, not by object), and the window moving never moves it, so nothing but the
+              rows that came in is painted again. */}
+          <For each={visible().rows} keyed={(r) => r.id}>
+            {(r, i) => (
+              <Row
+                r={r()}
+                y={(visible().first + i()) * ROW_HEIGHT}
+                readStart={props.readStart}
+                search={props.search}
+                current={props.openId === r().id}
+                selected={selected() === r().id}
+                tabbable={selectedShown() ? selected() === r().id : i() === 0}
+                pos={visible().first + i() + 1}
+                of={props.more ? -1 : rows().length}
+                leaving={held.cue()?.leaving.has(r().id) ?? false}
+                takeFocus={focusing() === r().id}
+                onFocusTaken={() => setFocusing(undefined)}
+                time={props.time}
+                cols={props.cols}
+                card={props.card}
+              />
+            )}
+          </For>
         </div>
       </Show>
       <StillImporting />
@@ -588,6 +593,8 @@ export type TreeLook = { level: number; expanded: boolean | undefined; context: 
 
 export function Row(props: {
   r: IssueRow;
+  /** Where it sits in the list, in px from the top. */
+  y: number;
   readStart: number;
   search: string;
   /** The open issue. */
@@ -610,7 +617,15 @@ export function Row(props: {
   /** In Tree mode: its place in the tree. */
   tree?: TreeLook;
 }) {
-  const r = () => overlay()?.rowWithWrites(props.r, props.readStart) ?? props.r;
+  // A memo: every part of the row reads it, and with a write pending each read would apply the
+  // write again, into a new object.
+  const r = createMemo(() => overlay()?.rowWithWrites(props.r, props.readStart) ?? props.r);
+  // Memos, so the window moving (which changes every row's index into it, but not its place)
+  // runs nothing in the row: the element's attributes are one spread, which reads them all again
+  // when any one it reads changes.
+  const y = createMemo(() => props.y);
+  const pos = createMemo(() => props.pos);
+  const tabbable = createMemo(() => props.tabbable);
   const at = () => props.time(r());
   const w = (c: Column) => props.cols.width(c);
   const blocked = () => r().state === "open" && r().blocked_by > 0;
@@ -635,16 +650,16 @@ export function Row(props: {
       aria-expanded={props.tree?.expanded === undefined ? undefined : props.tree.expanded ? "true" : "false"}
       data-context={props.tree?.context ? "" : undefined}
       aria-selected={props.selected ? "true" : "false"}
-      aria-posinset={props.pos}
+      aria-posinset={pos()}
       aria-setsize={props.of}
-      tabindex={props.tabbable ? 0 : -1}
+      tabindex={tabbable() ? 0 : -1}
       data-perf="row"
       data-id={r().id}
       data-blocked={blocked() ? "" : undefined}
       data-cue={props.leaving ? "leave" : undefined}
       aria-current={props.current ? "page" : undefined}
       onPointerEnter={r().pr ? preloadPull : undefined}
-      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && cueStyles.leave, props.tree?.context && s.context)}
+      {...stylex.attrs(s.row, s.link, s.at(y()), props.selected && s.current, blocked() && s.blocked, props.leaving && cueStyles.leave, props.tree?.context && s.context)}
     >
       {props.tree?.lead}
       <span {...stylex.attrs(s.state)}>
@@ -896,6 +911,9 @@ const s = stylex.create({
     scrollbarGutter: "stable",
     contain: "strict",
     flexGrow: 1,
+    // The list places its rows and keeps its own scroll position through a held change
+    // (held.ts): the browser's scroll anchoring would move it again.
+    overflowAnchor: "none",
     overflowY: "auto",
   },
   pulse: {
@@ -909,9 +927,12 @@ const s = stylex.create({
     position: "relative",
     height,
   }),
-  window: (y: number) => ({
-    transform: `translateY(${y}px)`,
-    willChange: "transform",
+  // A row's place in the list. Not a transform: the held changes' slide animates that.
+  at: (y: number) => ({
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: y,
   }),
   // Flex, not grid: every cell right of the title has its column's width, set per cell. (A
   // dynamic grid template would be a multi-word dynamic property; see the label dot below.)

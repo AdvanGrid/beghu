@@ -28,7 +28,7 @@ import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import { createColumns } from "./columns";
 import { opensKey, opensNow, opensOf, setOpens, used, type Opens } from "./expand";
-import { CardLayer, createCard, keepsSelection, ListHead, PULSE_AFTER_MS, ROW_HEIGHT, Row, type Card, type Cols } from "./IssueList";
+import { CardLayer, createCard, keepsSelection, ListHead, PULSE_AFTER_MS, ROW_HEIGHT, Row, type Card, type Cols, type TreeLook } from "./IssueList";
 import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush, writesPaused } from "./live";
@@ -40,8 +40,8 @@ import { StillImporting } from "./WhileImporting";
 import { colors, fonts } from "./tokens.stylex";
 
 const OVERSCAN = 6;
-/** Load more roots when the window gets this close to the last loaded row. */
-const NEAR_END = 40;
+/** Load more roots when the last row on screen gets this close to the last loaded row (as the list's). */
+const NEAR_END = 45;
 const PRELOAD_REST_MS = 150;
 /** Each level's indent. */
 const INDENT = 16;
@@ -608,7 +608,7 @@ function Nodes(props: {
   );
   onCleanup(() => clearTimeout(rest));
   createEffect(
-    () => (v.items().at(-1)?.index ?? 0) > nodes().length - NEAR_END,
+    () => v.end() > nodes().length - NEAR_END,
     (near) => {
       if (near) props.onNearEnd();
     },
@@ -778,11 +778,43 @@ function Nodes(props: {
               </div>
             )}
           </For>
-          <div {...stylex.attrs(s.window(visible().first * ROW_HEIGHT))}>
-            <For each={visible().nodes} keyed={(n) => n.row.id}>
-              {(n, i) => (
+          {/* Each row at its own place, as the list's. */}
+          <For each={visible().nodes} keyed={(n) => n.row.id}>
+            {(n, i) => {
+              // Its place in the tree, built once: read through getters, so it follows the node,
+              // and its lead (indent, grip, chevron) is one component for the row's life. (A
+              // fresh object literal here would build a new lead on every read of it.)
+              const tree: TreeLook = {
+                get level() {
+                  return n().depth + 1;
+                },
+                get expanded() {
+                  return n().children > 0 ? n().open : undefined;
+                },
+                get context() {
+                  return n().context;
+                },
+                lead: (
+                  <Lead
+                    node={n()}
+                    dragged={dragging() === n().row.id}
+                    drags={props.drags(n().row)}
+                    onToggle={(deep) => props.toggle(n(), deep)}
+                    onGrab={(e) => {
+                      if (e.button !== 0 || e.pointerType !== "mouse" || !props.drags(n().row)) return;
+                      e.preventDefault();
+                      // The tree keeps the pointer while it's pressed: its moves place the
+                      // marker, and letting go drops the issue there.
+                      scroller.setPointerCapture(e.pointerId);
+                      setDragging(n().row.id);
+                    }}
+                  />
+                ),
+              };
+              return (
                 <Row
                   r={n().row}
+                  y={(visible().first + i()) * ROW_HEIGHT}
                   readStart={props.readStart}
                   search={props.search}
                   current={props.openId === n().row.id}
@@ -796,31 +828,11 @@ function Nodes(props: {
                   time={props.time}
                   cols={props.cols}
                   card={props.card}
-                  tree={{
-                    level: n().depth + 1,
-                    expanded: n().children > 0 ? n().open : undefined,
-                    context: n().context,
-                    lead: (
-                      <Lead
-                        node={n()}
-                        dragged={dragging() === n().row.id}
-                        drags={props.drags(n().row)}
-                        onToggle={(deep) => props.toggle(n(), deep)}
-                        onGrab={(e) => {
-                          if (e.button !== 0 || e.pointerType !== "mouse" || !props.drags(n().row)) return;
-                          e.preventDefault();
-                          // The tree keeps the pointer while it's pressed: its moves place the
-                          // marker, and letting go drops the issue there.
-                          scroller.setPointerCapture(e.pointerId);
-                          setDragging(n().row.id);
-                        }}
-                      />
-                    ),
-                  }}
+                  tree={tree}
                 />
-              )}
-            </For>
-          </div>
+              );
+            }}
+          </For>
           <Show when={marked()}>
             {(m) => (
               <div
@@ -920,6 +932,8 @@ const s = stylex.create({
     scrollbarGutter: "stable",
     contain: "strict",
     flexGrow: 1,
+    // As the list's: the tree places its rows and keeps its own scroll position.
+    overflowAnchor: "none",
     overflowY: "auto",
   },
   // While a drag is on, nothing in the tree selects as text.
@@ -937,10 +951,6 @@ const s = stylex.create({
   sizer: (height: number) => ({
     position: "relative",
     height,
-  }),
-  window: (y: number) => ({
-    transform: `translateY(${y}px)`,
-    willChange: "transform",
   }),
   lead: {
     alignItems: "center",
