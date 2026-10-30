@@ -6,8 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  ASSETS,
-  BUILDS,
   DATA,
   DEFAULT_SCALE,
   DEPLOYED,
@@ -39,6 +37,7 @@ import {
   writeJson,
 } from "./config.ts";
 import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
+import { GITHUB_DATA } from "./github.ts";
 import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
@@ -858,12 +857,16 @@ async function deploy(args: string[]): Promise<void> {
   if (build === "dev") remove(DEPLOYED);
   else {
     const web = webBuild(build!, json);
-    if (set.has("--prune") && existsSync(ASSETS)) {
+    // The running server's own volume: fixture mode's data, or GitHub mode's.
+    const data = r.state?.mode === "github" ? GITHUB_DATA : DATA;
+    const assets = join(data, "assets");
+    const builds = join(data, "builds");
+    if (set.has("--prune") && existsSync(assets)) {
       // As if every earlier build's day were up: only what this build has stays.
       const keep = new Set(readdirSync(join(web, "assets")));
-      for (const f of readdirSync(ASSETS)) if (!keep.has(f)) remove(join(ASSETS, f));
+      for (const f of readdirSync(assets)) if (!keep.has(f)) remove(join(assets, f));
       // And their records, as pruning drops them.
-      if (existsSync(BUILDS)) for (const f of readdirSync(BUILDS)) if (f !== `${build}.json`) remove(join(BUILDS, f));
+      if (existsSync(builds)) for (const f of readdirSync(builds)) if (f !== `${build}.json`) remove(join(builds, f));
     }
     writeJson(DEPLOYED, { build: build!, web } satisfies Deployed);
   }

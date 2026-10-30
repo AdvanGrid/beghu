@@ -218,6 +218,8 @@ export async function superviseGitHub(): Promise<void> {
   };
   writeJson(PID, process.pid);
   save();
+  // A fresh stack serves the app through Vite, as build `dev`.
+  remove(DEPLOYED);
   const app = readDevApp();
   if (!app) return fail("no dev App set up; run ./dev-ctl github setup");
   for (const [port, env] of [
@@ -261,6 +263,12 @@ export async function superviseGitHub(): Promise<void> {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  // `deploy` wrote what the server is to run as: a restart puts it on that build. (Unhandled,
+  // SIGUSR2 would end this process and leave its children running.)
+  process.on("SIGUSR2", () => {
+    log("dev-ctl", `deploying ${readJson<Deployed>(DEPLOYED)?.build ?? "dev"}`);
+    void stack.restart("server");
+  });
   stack.startAll();
   const deadline = Date.now() + 60_000;
   for (const [name, url] of [
@@ -296,7 +304,8 @@ function githubCommands(app: DevApp): Commands {
       [],
       {
         PORT: String(PORTS.server),
-        BEGHU_BUILD_ID: "dev",
+        // `deploy` puts the server on a web build of its own, as a deploy would.
+        ...deployedEnv(),
         BEGHU_PUBLIC_URL: URLS.app,
         BEGHU_DATA_DIR: GITHUB_DATA,
         BEGHU_TOKEN_KEY: DEV_TOKEN_KEY,
