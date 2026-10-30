@@ -207,27 +207,7 @@ export function IssueList(props: { search: string; openId?: number }) {
   return (
     <>
       <div ref={column} {...stylex.attrs(s.column)}>
-        <div {...stylex.attrs(s.row, s.head)} data-perf="list-head">
-          <span {...stylex.attrs(s.state)} />
-          <span {...stylex.attrs(s.title)}>Title</span>
-          <For each={COLUMNS}>
-            {(c) => (
-              <span {...stylex.attrs(s.cell, s.headCell, WIDE.has(c) && s.wide, END.has(c) && s.end, s.w(cols.width(c)))} data-col={c}>
-                <span
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label={`Resize ${HEAD[c]}`}
-                  title="Drag to resize; double-click to reset"
-                  data-perf="col-grip"
-                  {...stylex.attrs(s.grip)}
-                  onPointerDown={(e) => cols.drag(c, e)}
-                  onDblClick={() => cols.reset(c)}
-                />
-                <span {...stylex.attrs(cols.isSet(c) && s.headSet)}>{c === "updated" ? time().head : HEAD[c]}</span>
-              </span>
-            )}
-          </For>
-        </div>
+        <ListHead cols={cols} time={time().head} />
         {/* The pulse lives on a frame outside the rows' Loading boundary, which holds the old
             rows while the next view loads. */}
         <div
@@ -250,19 +230,55 @@ export function IssueList(props: { search: string; openId?: number }) {
           </Loading>
         </div>
       </div>
-      <Show when={card.shown()}>
-        {(c) => (
-          // A card whose code failed to load shows nothing (an empty marker), never the list's
-          // failure: the list stays, and the next hover mounts the card again, which loads it
-          // again.
-          <Errored fallback={<span data-perf="card-failed" hidden />}>
-            <Loading fallback={null}>
-              <ListCard card={c()} search={props.search} keep={card.keep} hide={card.hide} />
-            </Loading>
-          </Errored>
-        )}
-      </Show>
+      <CardLayer card={card} search={props.search} />
     </>
+  );
+}
+
+/** The list's header: a heading per column, each resizing its column by its left edge. `time` heads the last. */
+export function ListHead(props: { cols: Cols; time: string }) {
+  const cols = props.cols;
+  return (
+    <div {...stylex.attrs(s.row, s.head)} data-perf="list-head">
+      <span {...stylex.attrs(s.state)} />
+      <span {...stylex.attrs(s.title)}>Title</span>
+      <For each={COLUMNS}>
+        {(c) => (
+          <span {...stylex.attrs(s.cell, s.headCell, WIDE.has(c) && s.wide, END.has(c) && s.end, s.w(cols.width(c)))} data-col={c}>
+            <span
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={`Resize ${HEAD[c]}`}
+              title="Drag to resize; double-click to reset"
+              data-perf="col-grip"
+              {...stylex.attrs(s.grip)}
+              onPointerDown={(e) => cols.drag(c, e)}
+              onDblClick={() => cols.reset(c)}
+            />
+            <span {...stylex.attrs(cols.isSet(c) && s.headSet)}>{c === "updated" ? props.time : HEAD[c]}</span>
+          </span>
+        )}
+      </For>
+    </div>
+  );
+}
+
+/** The hover card over a row's labels or blockers, once one shows. */
+export function CardLayer(props: { card: Card; search: string }) {
+  const card = props.card;
+  return (
+    <Show when={card.shown()}>
+      {(c) => (
+        // A card whose code failed to load shows nothing (an empty marker), never the list's
+        // failure: the list stays, and the next hover mounts the card again, which loads it
+        // again.
+        <Errored fallback={<span data-perf="card-failed" hidden />}>
+          <Loading fallback={null}>
+            <ListCard card={c()} search={props.search} keep={card.keep} hide={card.hide} />
+          </Loading>
+        </Errored>
+      )}
+    </Show>
   );
 }
 
@@ -281,10 +297,10 @@ const WIDE = new Set<Column>(["labels", "blockers", "progress"]);
 /** The columns whose content sits at their end. */
 const END = new Set<Column>(["ref", "updated"]);
 
-type Cols = ReturnType<typeof createColumns>;
+export type Cols = ReturnType<typeof createColumns>;
 
 /** The hover card's state: which row's labels or blockers it shows, and where. */
-function createCard() {
+export function createCard() {
   const [shown, setShown] = createSignal<CardAt>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Opens after a short rest, so sweeping across rows doesn't flash cards; stays while the
@@ -301,7 +317,7 @@ function createCard() {
   return { shown, enter, keep, hide };
 }
 
-type Card = ReturnType<typeof createCard>;
+export type Card = ReturnType<typeof createCard>;
 
 function Rows(props: {
   rows: IssueRow[];
@@ -562,7 +578,14 @@ function Rows(props: {
   );
 }
 
-function Row(props: {
+/**
+ * What a row shows of its place in Tree mode's tree (IssueTree.tsx): an ARIA treeitem at `level`
+ * (from 1), open or closed when it has children, dimmed when it's context (an ancestor shown for
+ * a match below it), with `lead` (its indent, chevron and grip) before its state icon.
+ */
+export type TreeLook = { level: number; expanded: boolean | undefined; context: boolean; lead: Element };
+
+export function Row(props: {
   r: IssueRow;
   readStart: number;
   search: string;
@@ -583,6 +606,8 @@ function Row(props: {
   time: (r: IssueRow) => number | null;
   cols: Cols;
   card: Card;
+  /** In Tree mode: its place in the tree. */
+  tree?: TreeLook;
 }) {
   const r = () => overlay()?.rowWithWrites(props.r, props.readStart) ?? props.r;
   const at = () => props.time(r());
@@ -597,14 +622,17 @@ function Row(props: {
       props.onFocusTaken();
     },
   );
-  // An option in the list's listbox (the ARIA list pattern), and still a plain link the router
-  // opens on click.
+  // An option in the list's listbox (the ARIA list pattern), or an item of the tree (its tree
+  // pattern), and still a plain link the router opens on click.
   return (
     <a
       ref={el}
       href={`/issues/${r().id}${props.search}`}
       noscroll
-      role="option"
+      role={props.tree ? "treeitem" : "option"}
+      aria-level={props.tree?.level}
+      aria-expanded={props.tree?.expanded === undefined ? undefined : props.tree.expanded ? "true" : "false"}
+      data-context={props.tree?.context ? "" : undefined}
       aria-selected={props.selected ? "true" : "false"}
       aria-posinset={props.pos}
       aria-setsize={props.of}
@@ -615,8 +643,9 @@ function Row(props: {
       data-cue={props.leaving ? "leave" : undefined}
       aria-current={props.current ? "page" : undefined}
       onPointerEnter={r().pr ? preloadPull : undefined}
-      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && s.leaving)}
+      {...stylex.attrs(s.row, s.link, props.selected && s.current, blocked() && s.blocked, props.leaving && s.leaving, props.tree?.context && s.context)}
     >
+      {props.tree?.lead}
       <span {...stylex.attrs(s.state)}>
         <Show when={r().pr} fallback={<StateIcon state={issueState(r())} />}>
           {(p) => <PrIcon status={p().status} />}
@@ -665,7 +694,7 @@ function Row(props: {
  * place. One that's only out of this view (closed under `is:open`) lets the selection go. When
  * beghu can't say which, it stays.
  */
-async function keepsSelection(id: number): Promise<boolean> {
+export async function keepsSelection(id: number): Promise<boolean> {
   // A stale tab (on another account, or signed out) can't read the issue to tell: it stays.
   if (untrack(stale) !== undefined || untrack(overlay)?.keepsSelection(id)) return true;
   try {
@@ -943,6 +972,10 @@ const s = stylex.create({
       default: colors.selected,
       ":hover": colors.selected,
     },
+  },
+  // Tree mode's context: an ancestor shown for a match below it, its text dimmed.
+  context: {
+    color: colors.context,
   },
   // A blocked row's red edge.
   blocked: {

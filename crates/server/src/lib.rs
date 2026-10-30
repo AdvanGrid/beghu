@@ -35,6 +35,7 @@ mod repos;
 mod roles;
 mod shell;
 mod tokens;
+mod tree;
 mod volume;
 mod walker;
 mod webhook;
@@ -125,6 +126,8 @@ struct Inner {
     edges: Arc<edges::Refetcher>,
     /// Rendered bodies and comments.
     renders: markdown::Cache,
+    /// Tree mode's trees, per view and mirror `seq`.
+    trees: Arc<tree::Cache>,
     /// The attachment route's, the image proxy's and the probes' shared state.
     media: media::State,
     /// True once SIGTERM has started the drain (see [`serve_until`]).
@@ -259,6 +262,7 @@ impl App {
             ops: ops::Ops::default(),
             assignable: pickers::Assignable::default(),
             renders,
+            trees: Arc::default(),
             media: media::State::new(cfg_media),
             draining: tokio::sync::watch::channel(false).0,
             started: Default::default(),
@@ -299,6 +303,10 @@ impl App {
 
     fn renders(&self) -> &markdown::Cache {
         &self.0.renders
+    }
+
+    fn trees(&self) -> &Arc<tree::Cache> {
+        &self.0.trees
     }
 
     fn media(&self) -> &media::State {
@@ -499,6 +507,8 @@ pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/me", get(api::me))
         .route("/issues", get(api::issues))
+        .route("/tree", get(tree::tree))
+        .route("/tree/drop", get(tree::drop_check))
         .route("/facets", get(facets::facets))
         .route("/facets/{facet}/counts", get(facets::counts))
         .route("/issues/{id}", get(detail::issue))

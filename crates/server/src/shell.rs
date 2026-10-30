@@ -4,13 +4,15 @@
 //! which would keep a build's shell past a deploy) and the same for everyone.
 //!
 //! The preloads must match the client's fetches byte for byte (`web/src/api.ts`): `/api/me`,
-//! `/api/facets` (the filter bar's suggestions), `/api/issues` with the page's own query string,
-//! and on an issue's URL (`/issues/:id`) that issue's detail, `/api/issues/:id`.
-//! `web/vite.config.ts` applies the same rule in dev, where Vite serves the shell.
+//! `/api/facets` (the filter bar's suggestions), `/api/issues` with the page's own query string
+//! (`/api/tree` in Tree mode, `mode=tree`: the tree's first fetch, as a tab with no expand state
+//! kept for the query makes it), and on an issue's URL (`/issues/:id`) that issue's detail,
+//! `/api/issues/:id`. `web/vite.config.ts` applies the same rule in dev, where Vite serves the
+//! shell.
 //!
 //! An issue's URL also gets `<link rel=modulepreload>` for the issue panel's chunk, so a cold deep
-//! link fetches it alongside the entry instead of after it. The chunk's hashed name comes from
-//! the build's Vite manifest, read once at startup.
+//! link fetches it alongside the entry instead of after it; a Tree mode URL, for the tree's. The
+//! chunks' hashed names come from the build's Vite manifest, read once at startup.
 //!
 //! The shell names the build it belongs to (`<meta name="beghu-build">`, the server's build id),
 //! since its scripts are that build's. A tab compares it with the `X-Beghu-Build` of beghu's
@@ -29,12 +31,16 @@ pub const MARKER: &str = "<!--beghu:preload-->";
 /// The issue panel's source module, as the Vite manifest keys it (`web/src/router.tsx` imports it
 /// lazily).
 const PANEL_MODULE: &str = "src/IssuePanel.tsx";
+/// Tree mode's source module (`web/src/Root.tsx` imports it lazily).
+const TREE_MODULE: &str = "src/IssueTree.tsx";
 
 /// The built web app's shell: the template and what it preloads besides data.
 pub struct Shell {
     template: String,
     /// The issue panel's chunk, `assets/IssuePanel-<hash>.js`.
     panel_chunk: String,
+    /// Tree mode's chunk, `assets/IssueTree-<hash>.js`.
+    tree_chunk: String,
 }
 
 impl Shell {
@@ -60,14 +66,17 @@ impl Shell {
         let raw = std::fs::read_to_string(&path).map_err(|e| bad(format!("can't be read: {e}")))?;
         let manifest: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| bad(format!("isn't JSON: {e}")))?;
-        let panel_chunk = manifest[PANEL_MODULE]["file"]
-            .as_str()
-            .filter(|f| f.starts_with("assets/") && f.ends_with(".js"))
-            .ok_or_else(|| bad(format!("names no assets/*.js chunk for {PANEL_MODULE}")))?
-            .to_owned();
+        let chunk = |module: &str| {
+            manifest[module]["file"]
+                .as_str()
+                .filter(|f| f.starts_with("assets/") && f.ends_with(".js"))
+                .map(str::to_owned)
+                .ok_or_else(|| bad(format!("names no assets/*.js chunk for {module}")))
+        };
         Ok(Shell {
             template,
-            panel_chunk,
+            panel_chunk: chunk(PANEL_MODULE)?,
+            tree_chunk: chunk(TREE_MODULE)?,
         })
     }
 
@@ -89,6 +98,12 @@ impl Shell {
                 escape_attr(&self.panel_chunk)
             ));
         }
+        if tree_mode(query) {
+            tags.push_str(&format!(
+                r#"<link rel="modulepreload" crossorigin href="/{}">"#,
+                escape_attr(&self.tree_chunk)
+            ));
+        }
         self.template.replacen(MARKER, &tags, 1)
     }
 }
@@ -100,11 +115,22 @@ fn escape_attr(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Whether an app URL's query string shows the list in Tree mode (`mode=tree`), as the web app
+/// reads it (`modeOf` in `web/src/query.ts`).
+fn tree_mode(query: Option<&str>) -> bool {
+    query.is_some_and(|q| q.split('&').any(|p| p == "mode=tree"))
+}
+
 /// The data preload tags for an app URL's path and query string.
 fn preloads(path: &str, query: Option<&str>) -> String {
+    let route = if tree_mode(query) {
+        "/api/tree"
+    } else {
+        "/api/issues"
+    };
     let list = match query.filter(|q| !q.is_empty()) {
-        Some(q) => format!("/api/issues?{q}"),
-        None => "/api/issues".into(),
+        Some(q) => format!("{route}?{q}"),
+        None => route.into(),
     };
     let mut hrefs = vec![String::from("/api/me"), String::from("/api/facets"), list];
     // In the canonical form the app fetches (`/issues/007` opens issue 7). Anything that isn't

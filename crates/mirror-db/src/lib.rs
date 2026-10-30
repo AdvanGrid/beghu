@@ -8,6 +8,7 @@ include!(concat!(env!("OUT_DIR"), "/db.rs"));
 pub mod list;
 pub mod rank;
 pub mod search;
+pub mod tree;
 
 pub use dbrt::AccountId;
 pub use dbrt::mirrors::{CatchUp, Config, Decision, Notice};

@@ -208,3 +208,49 @@ export function withMatch(query: string, match: MatchMode): string {
   if (match !== "blend") rest.push(`match:${match}`);
   return rest.join(" ");
 }
+
+/** How the list shows its view: rows, or Tree mode's sub-issues nested under their parents. */
+export type Mode = "list" | "tree";
+
+/** The URL's mode: `?mode=tree`, or the list. */
+export function modeOf(search: string): Mode {
+  return new URLSearchParams(search).get("mode") === "tree" ? "tree" : "list";
+}
+
+/** `search` with the mode set to `mode`: the list is the default, so it drops `mode`. */
+export function withMode(search: string, mode: Mode): string {
+  const p = new URLSearchParams(search);
+  if (mode === "tree") p.set("mode", "tree");
+  else p.delete("mode");
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * A query in canonical form, for keeping something per view (Tree mode's expand state): its
+ * tokens in lower case, once each, in sorted order, without the default sort or Match mode. Two
+ * queries in any token order or case give the same; `sort:` is part of it.
+ */
+export function normalized(query: string): string {
+  const tokens = new Set(
+    tokenize(query)
+      .map((t) => t.text.toLowerCase())
+      .filter((t) => !["sort:updated", "sort:updated-desc", "match:blend"].includes(t)),
+  );
+  return [...tokens].sort().join(" ");
+}
+
+/** Set by the List | Tree toggle as it switches: the view that opens next keeps the selection. */
+let switching = false;
+
+/** The toggle is switching the view's mode. */
+export function markModeSwitch(): void {
+  switching = true;
+}
+
+/** Whether the mode was just switched (the toggle), once: the view that asks takes it. */
+export function takeModeSwitch(): boolean {
+  const was = switching;
+  switching = false;
+  return was;
+}

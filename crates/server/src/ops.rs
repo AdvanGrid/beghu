@@ -149,12 +149,16 @@ pub enum Op {
         parent: Option<i64>,
     },
     /// Make `child` a sub-issue of the issue: last among its sub-issues, or after `after`, one of
-    /// them. With `replace_parent`, a sub-issue of another parent moves here.
+    /// them, or with `first`, first (`after` is then left out). With `replace_parent`, a
+    /// sub-issue of another parent moves here.
     SubAdd {
         issue: i64,
         child: RelatedEnd,
         replace_parent: bool,
         after: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        first: Option<bool>,
     },
     /// Take `child` out of the issue's sub-issues.
     SubRemove { issue: i64, child: RelatedEnd },
@@ -1491,6 +1495,7 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
             },
             replace_parent: false,
             after: None,
+            first: None,
         };
         if let Err(f) = crate::relationship_writes::run(app, account, &adopt, sending).await {
             left.push(Unapplied {

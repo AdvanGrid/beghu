@@ -1,12 +1,13 @@
 //! The SPA shell: account-free, cached for 5 minutes, and generated per URL with preloads for
 //! `/api/me`, the filter bar's facets, that URL's list page and the issue it opens, so the data
 //! fetches start alongside the JS. An issue's URL also modulepreloads the issue panel's chunk, so
-//! it loads alongside the entry instead of after it. It names its build, so the tab running it
-//! can tell when the server has moved on to another (a deploy).
+//! it loads alongside the entry instead of after it; a Tree mode URL (`mode=tree`) preloads the
+//! tree's first fetch and its chunk instead of the list page. It names its build, so the tab
+//! running it can tell when the server has moved on to another (a deploy).
 
 mod common;
 
-use common::{Browser, PANEL_CHUNK, start};
+use common::{Browser, PANEL_CHUNK, TREE_CHUNK, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_and_caches_for_five_minutes()
@@ -181,5 +182,40 @@ async fn every_app_route_gets_the_shell() {
                 .contains(r#"<meta name="beghu-build""#),
             "{path}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_page() {
+    let s = start().await;
+    let html = |url: &'static str| {
+        let s = &s;
+        async move {
+            s.get(&mut Browser::default(), url)
+                .await
+                .text()
+                .await
+                .unwrap()
+        }
+    };
+    let tree = format!(r#"<link rel="modulepreload" crossorigin href="/{TREE_CHUNK}">"#);
+    for (url, data) in [
+        ("/?mode=tree", "/api/tree?mode=tree"),
+        (
+            "/issues/7?q=label%3Abug&mode=tree",
+            "/api/tree?q=label%3Abug&amp;mode=tree",
+        ),
+    ] {
+        let page = html(url).await;
+        let tag = format!(r#"<link rel="preload" href="{data}" as="fetch" crossorigin>"#);
+        assert!(page.contains(&tag), "{url}: {tag} in {page}");
+        assert!(page.contains(&tree), "{url}");
+        assert!(!page.contains("/api/issues?"), "{url}");
+    }
+    // The list, and a mode that only starts with `tree`, get neither.
+    for url in ["/", "/?q=is%3Aopen", "/?mode=treex"] {
+        let page = html(url).await;
+        assert!(!page.contains("/api/tree"), "{url}");
+        assert!(!page.contains(&tree), "{url}");
     }
 }

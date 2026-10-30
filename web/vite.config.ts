@@ -19,7 +19,8 @@ const THEME = "<!--beghu:theme-->";
 
 /**
  * The same preloads the server's shell writes for a URL (crates/server/src/shell.rs): the data,
- * and on an issue's URL the panel's code, which Vite serves from its source path in dev.
+ * and on an issue's URL the panel's code (in Tree mode the tree's), which Vite serves from its
+ * source path in dev.
  */
 function preloads(url: string): string {
   const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -29,11 +30,14 @@ function preloads(url: string): string {
   const digits = /^\/issues\/(\d+)$/.exec(path)?.[1];
   const id = digits === undefined ? undefined : BigInt(digits);
   const issue = id !== undefined && id <= 2n ** 63n - 1n ? [`/api/issues/${id}`] : [];
-  const data = ["/api/me", "/api/facets", `/api/issues${q.length > 1 ? q : ""}`, ...issue]
+  // Tree mode (`mode=tree`) fetches the tree first, not the list.
+  const tree = q.slice(1).split("&").includes("mode=tree");
+  const data = ["/api/me", "/api/facets", `/api/${tree ? "tree" : "issues"}${q.length > 1 ? q : ""}`, ...issue]
     .map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`)
     .join("");
   const panel = /^\/issues\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";
-  return data + panel;
+  const treeCode = tree ? '<link rel="modulepreload" crossorigin href="/src/IssueTree.tsx">' : "";
+  return data + panel + treeCode;
 }
 
 /**

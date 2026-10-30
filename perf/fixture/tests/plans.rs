@@ -707,3 +707,75 @@ fn a_refetchs_matched_fields_read_each_fields_matches_once() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Tree mode (`mirror_db::tree`): building a view's tree walks up from its matches to their
+/// ancestors (`tree_up`, a recursive CTE), reads the sort keys of roots that aren't matches, and
+/// opening nodes reads their children (`tree_children`). Each walk and lookup goes through the
+/// edges' and items' indexes from the ids it starts with, never a scan of every edge or item,
+/// under the presets, a qualifier, every state and a search.
+#[test]
+fn a_trees_walks_read_through_indexes() {
+    let (_g, c) = fixture();
+    let mut views = vec![
+        ("is:open".to_owned(), open()),
+        ("(every state)".to_owned(), View::default()),
+        (
+            "is:closed".to_owned(),
+            View {
+                closed: true,
+                ..View::default()
+            },
+        ),
+        (
+            "assignee:me".to_owned(),
+            View {
+                assignees: vec![Who::Me],
+                ..open()
+            },
+        ),
+        (
+            "fix match:best".to_owned(),
+            View {
+                words: vec![word("fix")],
+                matching: Some(Match::Best),
+                ..open()
+            },
+        ),
+    ];
+    views.push((
+        "is:open sort:created-asc".to_owned(),
+        sorted(open(), SortKey::Created, true),
+    ));
+    let mut bad = Vec::new();
+    for (what, view) in views {
+        let mut tree = None;
+        // The walk up and the roots' keys: every statement over the matches' ids.
+        let ran = plans_of(&c, "json_each", |c| {
+            tree = Some(mirror_db::tree::Tree::build(c, &view, ME).unwrap());
+        });
+        assert!(
+            ran.iter().any(|(_, sql)| sql.contains("WITH RECURSIVE up")),
+            "{what}: the walk up ran"
+        );
+        for (p, sql) in ran {
+            if p.iter().any(|l| scans_a_table(&sql, l)) {
+                bad.push(format!("building {what}: {p:#?}"));
+            }
+        }
+        let tree = tree.expect("built");
+        let roots: Vec<(i64, bool)> = tree
+            .page(Span::Top, 100)
+            .iter()
+            .map(|r| (r.id, true))
+            .collect();
+        assert!(!roots.is_empty(), "{what} has roots");
+        for (p, sql) in plans_of(&c, "relationships e", |c| {
+            tree.children(c, &roots).unwrap();
+        }) {
+            if p.iter().any(|l| scans_a_table(&sql, l)) {
+                bad.push(format!("children under {what}: {p:#?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

@@ -1,13 +1,18 @@
 import * as stylex from "@stylexjs/stylex";
-import { createSignal, For, onSettled, Show, untrack } from "solid-js";
+import { createMemo, createSignal, For, onSettled, Show, untrack } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { SessionEnded, forgetFailure, getFacets, readThen, signIn, type Facets } from "./api";
 import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
 import type { MatchMode } from "./bindings/MatchMode";
-import { applied, blendFits, effectiveMatch, hasText, MATCHES, queryOf, sameFilters, SORTS, sortValueOf, tokenAt, withMatch, withQuery, withSort, type SortValue } from "./query";
+import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, modeOf, queryOf, sameFilters, SORTS, sortValueOf, tokenAt, withMatch, withMode, withQuery, withSort, type Mode, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
+
+const MODES: { value: Mode; label: string }[] = [
+  { value: "list", label: "List" },
+  { value: "tree", label: "Tree" },
+];
 
 const PRESETS: { name: string; query: string }[] = [
   { name: "Open", query: "is:open" },
@@ -39,6 +44,15 @@ export function FilterBar() {
   });
   // "New issue" beside the presets, by key: the create form in the panel, the view kept.
   touch("create", () => navigate(`/new${location.search}`));
+  // List | Tree: the view's mode, in the URL (`?mode=tree`) as a new history entry, so Back
+  // switches back. The open issue stays open (the tree moves it to its nearest ancestor shown).
+  const mode = createMemo(() => modeOf(location.search));
+  const setMode = (m: Mode) => {
+    if (m === mode()) return;
+    markModeSwitch();
+    navigate(window.location.pathname + withMode(window.location.search, m), { scroll: false });
+  };
+  touch("toggleMode", () => setMode(mode() === "tree" ? "list" : "tree"));
   // Filled from the URL once; after that only typing, picks and Back/Forward change it.
   const initial = untrack(() => queryOf(location.search));
   const [text, setText] = createSignal(initial);
@@ -286,6 +300,21 @@ export function FilterBar() {
             </button>
           )}
         </For>
+        <span role="group" aria-label="Show as" {...stylex.attrs(s.modes)} data-perf="mode">
+          <For each={MODES}>
+            {(m) => (
+              <button
+                type="button"
+                aria-pressed={mode() === m.value ? "true" : "false"}
+                data-perf={`mode-${m.value}`}
+                {...stylex.attrs(s.mode, mode() === m.value && s.presetOn)}
+                onClick={() => setMode(m.value)}
+              >
+                {m.label}
+              </button>
+            )}
+          </For>
+        </span>
         <a href={`/new${location.search}`} noscroll {...stylex.attrs(s.preset, s.create)} data-perf="new-issue">
           New issue
         </a>
@@ -402,11 +431,50 @@ const s = stylex.create({
     cursor: "pointer",
     fontSize: 12,
   },
+  // List | Tree: two halves of one pill, at the end of the presets' row before "New issue".
+  modes: {
+    display: "flex",
+    marginInlineStart: "auto",
+  },
+  mode: {
+    font: "inherit",
+    borderColor: colors.line,
+    borderStyle: "solid",
+    borderWidth: 1,
+    paddingBlock: 2,
+    paddingInline: 10,
+    backgroundColor: {
+      default: "transparent",
+      ":hover": colors.hover,
+    },
+    borderEndEndRadius: {
+      default: 0,
+      ":last-child": 999,
+    },
+    borderEndStartRadius: {
+      default: 0,
+      ":first-child": 999,
+    },
+    borderStartEndRadius: {
+      default: 0,
+      ":last-child": 999,
+    },
+    borderStartStartRadius: {
+      default: 0,
+      ":first-child": 999,
+    },
+    color: colors.muted,
+    cursor: "pointer",
+    fontSize: 12,
+    marginInlineStart: {
+      default: 0,
+      ":last-child": -1,
+    },
+  },
   // "New issue": a link, at the end of the presets' row.
   create: {
     textDecoration: "none",
     color: colors.accent,
-    marginInlineStart: "auto",
   },
   presetOn: {
     borderColor: colors.accent,

@@ -26,11 +26,15 @@ import type { OpReply } from "./bindings/OpReply";
 import type { OpRequest } from "./bindings/OpRequest";
 import type { PrefChange } from "./bindings/PrefChange";
 import type { ResyncReply } from "./bindings/ResyncReply";
+import type { DropCheck } from "./bindings/DropCheck";
+import type { TreePage } from "./bindings/TreePage";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
 
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
+export type { TreeNode } from "./bindings/TreeNode";
+export type { TreePage };
 
 /** Every write but a new issue: each names the issue it changes. */
 export type IssueOp = Exclude<Op, { kind: "create" }>;
@@ -552,6 +556,34 @@ async function timed<T extends object>(url: string): Promise<T> {
 }
 
 export const getIssues = query((search: string, after?: string) => timed<IssuePage>(issuesUrl(search, after)), "issues");
+
+/**
+ * Tree mode's URL for a view (the page's query string) with what the tab has open (`open`) and
+ * closed (`shut`) and `more` parameters. With nothing open or shut and nothing more, it's the
+ * shell's preload (crates/server/src/shell.rs).
+ */
+export function treeUrl(search: string, opens: { open: readonly number[]; shut: readonly number[] }, more: Record<string, string> = {}): string {
+  if (opens.open.length === 0 && opens.shut.length === 0 && Object.keys(more).length === 0) return `/api/tree${search.length > 1 ? search : ""}`;
+  const p = new URLSearchParams(search);
+  if (opens.open.length > 0) p.set("open", opens.open.join(","));
+  if (opens.shut.length > 0) p.set("shut", opens.shut.join(","));
+  for (const [k, v] of Object.entries(more)) p.set(k, v);
+  const s = p.toString();
+  return `/api/tree${s ? `?${s}` : ""}`;
+}
+
+/** A run of Tree mode's nodes (see `treeUrl`), through the query cache: a preload's fetch is used. */
+export const getTree = query((url: string) => timed<TreePage>(url), "tree");
+
+/** A run of Tree mode's nodes, fetched afresh: a node opening, a live refetch. */
+export function fetchTree(url: string): Promise<TreePage> {
+  return timed<TreePage>(url);
+}
+
+/** Whether a drag in the tree may drop `child` under `parent`, and why not. */
+export function checkDrop(child: number, parent: number): Promise<DropCheck> {
+  return request<DropCheck>(`/api/tree/drop?child=${child}&parent=${parent}`);
+}
 
 /** The filter bar's values per facet. The URL matches the shell's preload. */
 export const getFacets = query(() => request<Facets>("/api/facets"), "facets");

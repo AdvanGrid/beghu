@@ -19,6 +19,12 @@ export const ENDPOINTS: [string, string][] = [
   ["facet-counts", "/api/facets/label/counts?q=is%3Aopen"],
 ];
 
+/** Tree mode's reads the gates time, by gate name (see the tree probes below). */
+export const TREE: [string, string][] = [
+  ["tree", "/api/tree?mode=tree"],
+  ["tree-label", "/api/tree?q=is%3Aopen+label%3Abug&mode=tree"],
+];
+
 interface Row {
   id: number;
   comments: number;
@@ -60,6 +66,29 @@ export async function serverProbes(stack: Stack, opts: { quick?: boolean } = {})
       return out;
     },
   }));
+
+  // Tree mode (#108): the default view's first roots, and a filtered tree (matches inside their
+  // dimmed ancestors). The server builds a view's tree once per mirror `seq` and caches it; the
+  // write below bumps `seq` every round, so each sample reads twice: the first read builds the tree
+  // (`.build.ms`, as the first tab's read after a push does), the second reads it cached, which
+  // the `.ms`, `.kb` and `.scan` gates hold.
+  for (const [name, path] of TREE) {
+    probes.push({
+      name: `server.${name}`,
+      gates: [`server.${name}.ms`, `server.${name}.kb`, `server.${name}.scan`, `server.${name}.build.ms`],
+      async sample(): Promise<Sample> {
+        const cold = await s.get(path);
+        const a = await s.get(path);
+        for (const r of [cold, a]) if (r.status !== 200) throw new Error(`${path}: ${r.status} ${r.body.toString().slice(0, 200)}`);
+        const scan = Number(a.headers["x-beghu-scan-steps"] ?? NaN);
+        const out: Sample = {
+          values: { [`server.${name}.ms`]: a.ms, [`server.${name}.kb`]: a.wire.length / 1024, [`server.${name}.scan`]: scan, [`server.${name}.build.ms`]: cold.ms },
+        };
+        if (scan > 0) out.evidence = { [`server.${name}.scan`]: scanEvidence(stack, path) };
+        return out;
+      },
+    });
+  }
 
   // The write, and its push: the stream stays open across samples.
   const abort = new AbortController();

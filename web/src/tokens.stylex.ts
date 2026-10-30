@@ -8,6 +8,9 @@ export const colors = stylex.defineVars({
   bgRaised: "light-dark(#f8f8fa, #111114)",
   fg: "light-dark(#18181b, #f4f4f5)",
   muted: "light-dark(#71717a, #a1a1aa)",
+  // Tree mode's context, the ancestors shown only for a match below them: dimmed text, still at
+  // least 5.3:1 on bg, hover and selected, light and dark.
+  context: "light-dark(#63636c, #a1a1aa)",
   line: "light-dark(#e4e4e7, #27272a)",
   hover: "light-dark(#f4f4f5, #18181b)",
   selected: "light-dark(#eef2ff, #1e2235)",

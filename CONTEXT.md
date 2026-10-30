@@ -128,6 +128,10 @@ _Avoid_: Shortcut handler, hotkey, command
 The issue the list's keys are on: the open issue, or the one the keys just stepped to while it opens. Its row is the one in the tab order when it's on screen, and it follows the issue, not the row's position.
 _Avoid_: Cursor, highlighted row, current row
 
+**Context**:
+In Tree mode, an ancestor shown only because one of the view's matches is below it: dimmed but selectable, and open by default, so a filtered tree opens along each path to a match.
+_Avoid_: Dimmed ancestor, filler node
+
 **Match mode**:
 How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters).
 _Avoid_: Relevance, search ranking

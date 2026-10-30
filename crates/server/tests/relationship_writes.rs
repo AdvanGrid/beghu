@@ -7,45 +7,12 @@
 
 mod common;
 
-use common::{Browser, Stack, full_parent_fixture, ids_of, start, start_on, summary, until};
+use common::{
+    Browser, Issue, Stack, end, full_parent_fixture, ids_of, start, start_on, summary, unlinked,
+    until, uuid,
+};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-
-/// A fixture issue with no relationships: `(repo, number, id)`. 8 in web, 4 in api, 2 in docs.
-fn unlinked(repo: &str) -> Vec<(String, i64, i64)> {
-    summary()["unlinked"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|u| u["repo"] == repo)
-        .map(|u| {
-            (
-                repo.to_owned(),
-                u["number"].as_i64().unwrap(),
-                u["id"].as_i64().unwrap(),
-            )
-        })
-        .collect()
-}
-
-type Issue = (String, i64, i64);
-
-/// An issue as an op names a relationship's other end.
-fn end(u: &Issue) -> Value {
-    json!({ "id": u.2, "owner": "acme", "repo": u.0, "number": u.1 })
-}
-
-fn uuid() -> String {
-    let n: u128 = rand::random();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        n >> 96,
-        (n >> 80) & 0xffff,
-        (n >> 64) & 0xfff,
-        0x8000 | ((n >> 48) & 0x3fff),
-        n & 0xffff_ffff_ffff
-    )
-}
 
 /// `POST /api/ops` from `b`'s tab with a fresh op id, as the web app sends it.
 fn post_op(s: &Stack, b: &Browser, op: Value) -> reqwest::RequestBuilder {

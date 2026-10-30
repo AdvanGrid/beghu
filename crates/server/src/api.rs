@@ -9,7 +9,7 @@ use crate::relationships::{self, Blocker, Progress};
 use crate::{App, query, repos};
 use axum::Json;
 use axum::extract::{Extension, Query, State};
-use mirror_db::{Caller, q};
+use mirror_db::{Caller, QueryResult, Reader, q};
 use mirror_db::{list, search};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -361,7 +361,7 @@ pub async fn issues(
         (None, None) => (list::Span::Top, PAGE),
     };
     let me = s.account;
-    let (rows, labels, assignees, mut related, mut matched, next, last) = app
+    let (rows, next, last) = app
         .mirrors()
         .read(s.account, Caller::Request, move |c| {
             let mut ids = list::page(c, &view, me, span, limit + 1)?;
@@ -378,33 +378,39 @@ pub async fn issues(
             let last = ids.last().copied();
             let next = more.then_some(last).flatten();
             let ids: Vec<i64> = ids.into_iter().map(|row| row.id).collect();
-            let rows = q::hydrate(c, &ids)?;
-            Ok((
-                rows,
-                q::hydrate_labels(c, &ids)?,
-                q::hydrate_assignees(c, &ids)?,
-                relationships::for_rows(c, &ids)?,
-                search::matched(c, &view, &ids)?,
-                next,
-                last,
-            ))
+            Ok((read_rows(c, &view, &ids)?, next, last))
         })
         .await?;
+    // The cursors carry the sort key the id query ordered by, so they're exact for every sort.
+    Ok(Json(IssuePage {
+        rows,
+        next: next.map(|c| c.to_string()),
+        last: last.map(|c| c.to_string()),
+    }))
+}
+
+/// The list's rows for `ids`, in that order, as the view shows them: under free text each with
+/// the fields it matched in. Ids the mirror doesn't hold are left out. The tree's nodes are these
+/// rows too (`tree.rs`).
+pub(crate) fn read_rows(c: &Reader, view: &list::View, ids: &[i64]) -> QueryResult<Vec<IssueRow>> {
+    let rows = q::hydrate(c, ids)?;
     let mut by_item: HashMap<i64, (Vec<Label>, Vec<User>)> = HashMap::new();
-    for l in labels {
+    for l in q::hydrate_labels(c, ids)? {
         by_item.entry(l.item_id).or_default().0.push(Label {
             name: l.name,
             color: l.color,
         });
     }
-    for a in assignees {
+    for a in q::hydrate_assignees(c, ids)? {
         by_item
             .entry(a.item_id)
             .or_default()
             .1
             .push(User { login: a.login });
     }
-    let rows: Vec<IssueRow> = rows
+    let mut related = relationships::for_rows(c, ids)?;
+    let mut matched = search::matched(c, view, ids)?;
+    Ok(rows
         .into_iter()
         .map(|r| {
             let (labels, assignees) = by_item.remove(&r.id).unwrap_or_default();
@@ -444,11 +450,5 @@ pub async fn issues(
                 pr,
             }
         })
-        .collect();
-    // The cursors carry the sort key the id query ordered by, so they're exact for every sort.
-    Ok(Json(IssuePage {
-        rows,
-        next: next.map(|c| c.to_string()),
-        last: last.map(|c| c.to_string()),
-    }))
+        .collect())
 }

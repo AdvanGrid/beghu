@@ -20,8 +20,9 @@
 //!   is this one) is done: the link is there, as asked. A removal is done whether or not the link
 //!   was there: GitHub answers a dependency's or a relates-to's 200 either way, and a sub-issue's
 //!   404, which is told from an issue out of sight by reading the parent.
-//! - A move to another parent is an add with `replace_parent`, then a reorder (`after_id`) unless
-//!   it lands last. A reorder sends `after_id`, or `before_id` of the first sibling to go to the
+//! - A move to another parent is an add with `replace_parent`, then a reorder unless it lands
+//!   last: `after_id`, or for one that goes first (`first`, as a drop in the tree can ask),
+//!   `before_id` of the first of its new siblings. A reorder sends `after_id`, or `before_id` of the first sibling to go to the
 //!   top; one that leaves the order as it is makes no call.
 //! - GitHub's answer to a relationship write is an issue, not the link, so there's nothing to
 //!   compare field by field: a 2xx is the link as asked. The link is written to the mirror (both
@@ -352,6 +353,25 @@ async fn resolve(app: &App, account: i64, end: &RelatedEnd) -> Result<Side, Fail
     }
 }
 
+/// Where a sub-issue moved to another parent lands among its new siblings, when not last.
+#[derive(Clone, Copy)]
+enum Slot {
+    /// After this sibling.
+    After(i64),
+    /// First, before this sibling (the first of the others).
+    Before(i64),
+}
+
+impl Slot {
+    /// The reorder's body, and its `after` as a `sub_reorder` names it (`None` for the top).
+    fn reorder(self, child: i64) -> (Value, Option<i64>) {
+        match self {
+            Slot::After(a) => (json!({ "sub_issue_id": child, "after_id": a }), Some(a)),
+            Slot::Before(b) => (json!({ "sub_issue_id": child, "before_id": b }), None),
+        }
+    }
+}
+
 /// Refuses a relationship write that would change an issue in a repo this server doesn't write
 /// to (`BEGHU_DEV_WRITABLE_REPOS`): either end, and a moved sub-issue's old parent, which loses
 /// it.
@@ -410,7 +430,7 @@ enum Plan {
         add: bool,
         replace: bool,
         /// After the add: where it goes, unless last.
-        then_after: Option<i64>,
+        then: Option<Slot>,
     },
     Reorder {
         parent: Side,
@@ -564,17 +584,17 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
         parent,
         child,
         add: true,
-        then_after: Some(after),
+        then: Some(place),
         ..
     } = &plan
     {
         // A move that doesn't land last: the reorder, as its own call. The move is made whatever
         // this comes to; a failed reorder comes back unapplied, to retry as a reorder.
-        let body = json!({ "sub_issue_id": child.id, "after_id": after });
+        let (body, after) = place.reorder(child.id);
         let reorder = Op::SubReorder {
             issue: parent.id,
             child: child.id,
-            after: Some(*after),
+            after,
         };
         let placed = ops::call(
             app,
@@ -607,7 +627,7 @@ pub(crate) async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> 
                 parent: parent.clone(),
                 child: child.id,
                 body: None,
-                after: Some(*after),
+                after,
             },
         )
         .await;
@@ -754,9 +774,9 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
     if kind == RelationshipKind::Blocking && !other.synced {
         return Err(Failure::Invalid(not_synced(&other.named())));
     }
-    let after = match op {
-        Op::SubAdd { after, .. } => *after,
-        _ => None,
+    let (after, first) = match op {
+        Op::SubAdd { after, first, .. } => (*after, first.unwrap_or(false)),
+        _ => (None, false),
     };
     // A move to the parent it has already (one whose reorder failed, sent again): only the
     // reorder is left, after `after`, or last.
@@ -774,12 +794,13 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
             .await
             .map_err(Failure::from)?;
         if there {
-            return reorder(app, account, this, child, after.or(last)).await;
+            let to = if first { None } else { after.or(last) };
+            return reorder(app, account, this, child, to).await;
         }
     }
     let (this_id, other_id, parent_id) = (this.id, other.id, this.id);
     // Refused as GitHub would, before any call; and where a move lands.
-    let (why, then_after) = app
+    let (why, then) = app
         .mirrors()
         .read(account, Caller::Request, move |c| {
             let why = if add {
@@ -792,7 +813,9 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
                 .map(|s| s.id)
                 .filter(|&s| s != other_id)
                 .collect();
-            let then_after = match after {
+            let then = match after {
+                // First: before the first of the others, if there are any.
+                _ if first => siblings.first().map(|&b| Slot::Before(b)),
                 Some(a) if !siblings.contains(&a) => {
                     return Ok((
                         Some("That isn't one of its sub-issues any more".to_owned()),
@@ -801,9 +824,9 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
                 }
                 // Last already.
                 Some(a) if siblings.last() == Some(&a) => None,
-                a => a,
+                a => a.map(Slot::After),
             };
-            Ok((why, then_after))
+            Ok((why, then))
         })
         .await
         .map_err(Failure::from)?;
@@ -816,7 +839,7 @@ async fn plan(app: &App, account: i64, op: &Op, this: Side) -> Result<Plan, Fail
             child: other,
             add,
             replace: moving,
-            then_after,
+            then,
         },
         RelationshipKind::BlockedBy => Plan::Blocks {
             blocker: other,

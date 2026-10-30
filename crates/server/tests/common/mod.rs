@@ -84,6 +84,8 @@ pub const SHELL_TEMPLATE: &str = "<!doctype html><html><head><!--beghu:preload--
 
 /// Where the minimal build's issue panel chunk is, as its Vite manifest says.
 pub const PANEL_CHUNK: &str = "assets/IssuePanel-test.js";
+/// Where its Tree mode chunk is.
+pub const TREE_CHUNK: &str = "assets/IssueTree-test.js";
 
 /// The minimal build's Vite manifest (`.vite/manifest.json`), in the shape `vite build` writes.
 pub fn manifest() -> String {
@@ -92,7 +94,13 @@ pub fn manifest() -> String {
             "file": "assets/index-test.js",
             "src": "index.html",
             "isEntry": true,
-            "dynamicImports": ["src/IssuePanel.tsx"],
+            "dynamicImports": ["src/IssuePanel.tsx", "src/IssueTree.tsx"],
+        },
+        "src/IssueTree.tsx": {
+            "file": TREE_CHUNK,
+            "src": "src/IssueTree.tsx",
+            "isDynamicEntry": true,
+            "imports": ["index.html"],
         },
         "src/IssuePanel.tsx": {
             "file": PANEL_CHUNK,
@@ -971,4 +979,42 @@ impl WriteLock {
         );
         lock
     }
+}
+
+/// A fixture issue with no relationships: `(repo, number, id)`. 8 in web, 4 in api, 2 in docs.
+pub type Issue = (String, i64, i64);
+
+/// The fixture's issues with no relationships in `repo`.
+pub fn unlinked(repo: &str) -> Vec<Issue> {
+    summary()["unlinked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["repo"] == repo)
+        .map(|u| {
+            (
+                repo.to_owned(),
+                u["number"].as_i64().unwrap(),
+                u["id"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// An issue as an op names a relationship's other end.
+pub fn end(u: &Issue) -> Value {
+    serde_json::json!({ "id": u.2, "owner": "acme", "repo": u.0, "number": u.1 })
+}
+
+/// A fresh op id, as the web app makes one (a v4 UUID).
+pub fn uuid() -> String {
+    let n: u128 = rand::random();
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        n >> 96,
+        (n >> 80) & 0xffff,
+        (n >> 64) & 0xfff,
+        0x8000 | ((n >> 48) & 0x3fff),
+        n & 0xffff_ffff_ffff
+    )
 }

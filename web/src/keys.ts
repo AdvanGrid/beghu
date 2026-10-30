@@ -48,8 +48,10 @@
 // nothing but refuse, through `refusedKey()`, which the detail's role line shows and announces
 // (`role="status"`). The hint bar and the `?` overlay dim it, with the reason (`deniedWhy`).
 //
-// Some touchpoints have no caller yet, pending their tickets: `toggleMode` for tree mode (#108).
-// The `?` overlay shows it dimmed until then.
+// `toggleMode` is offered by the filter bar, always there: it switches the view between List and
+// Tree (`?mode=tree`). In Tree mode the tree offers `collapse` and `expand`, ← and → as ARIA's
+// tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
+// or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
@@ -74,6 +76,8 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   focusFilter: ["/", "s", "Mod+/"],
   create: ["c"],
   toggleMode: ["t"],
+  collapse: [],
+  expand: [],
   labels: ["l"],
   assignees: ["a"],
   milestone: ["m"],
@@ -118,6 +122,8 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   focusFilter: ANYWHERE,
   create: BROWSE,
   toggleMode: ["page", "list"],
+  collapse: ["list"],
+  expand: ["list"],
   labels: ["panel"],
   assignees: ["panel"],
   milestone: ["panel"],
@@ -136,11 +142,12 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
 };
 
 /**
- * Fixed keys, not rebindable, each in its area: the ARIA list keys while the focus is in the
- * list, Escape out of the comment box into the issue, and Escape cancelling an edit.
+ * Fixed keys, not rebindable, each in its area: the ARIA list and tree keys while the focus is in
+ * the list (← and → only do anything in Tree mode), Escape out of the comment box into the issue,
+ * and Escape cancelling an edit.
  */
 const FIXED: Partial<Record<Area, Readonly<Record<string, Action>>>> = {
-  list: { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last" },
+  list: { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last", ArrowLeft: "collapse", ArrowRight: "expand" },
   composer: { Escape: "openIssue" },
   editor: { Escape: "cancelEdit" },
 };

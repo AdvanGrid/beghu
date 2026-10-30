@@ -2,7 +2,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
 import { revalidate, useLocation, useMatch } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
-import { SessionEnded, forgetRemembered, getIssues, getMe, issueId, signIn, signInUrl } from "./api";
+import { SessionEnded, forgetRemembered, getIssues, getMe, getTree, issueId, signIn, signInUrl } from "./api";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { Background } from "./WhileSyncing";
@@ -10,10 +10,20 @@ import { stale } from "./account";
 import { loadAfresh, newBuildOnNavigate } from "./build";
 import { cantReach, connectLive, githubDown, reconnecting } from "./live";
 import { createNote, leaving, overlay } from "./overlay";
+import { modeOf } from "./query";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { unsavedText } from "./unsaved";
 import { colors, fonts, media } from "./tokens.stylex";
+
+/** Tree mode is its own chunk, loaded when the URL asks for it (`?mode=tree`). */
+const IssueTree = lazy(
+  () =>
+    import("./IssueTree").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load the tree: ${String(e)}`);
+    }),
+  { export: "IssueTree" },
+);
 
 /** The account menu is its own chunk: nothing on first paint needs it. */
 const AccountMenu = lazy(() => import("./AccountMenu"), { export: "AccountMenu" });
@@ -315,7 +325,11 @@ function List() {
     <div {...stylex.attrs(s.listColumn)}>
       <FilterBar />
       <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
-        <IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
+        <Show when={modeOf(location.search) === "tree"} fallback={<IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />}>
+          <Loading fallback={<div {...stylex.attrs(s.listColumn)} aria-busy="true" />}>
+            <IssueTree search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
+          </Loading>
+        </Show>
       </Errored>
     </div>
   );
@@ -351,6 +365,7 @@ function ListFailure(props: { error: unknown; reset: () => void }) {
           onClick={() => {
             // Drop the failed read from the query cache, so the retry fetches again.
             void revalidate(getIssues.key);
+            void revalidate(getTree.key);
             props.reset();
           }}
         >

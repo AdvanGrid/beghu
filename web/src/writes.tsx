@@ -66,7 +66,7 @@ import type { Milestone } from "./bindings/Milestone";
 import type { Related } from "./bindings/Related";
 import { isEnd, keyOf, refOf, standIn, type ShownRelated, type ShownRelationships } from "./related";
 import { reconnecting, refetchShown, writesPaused } from "./live";
-import { createNote, setOverlay, type Prop, type ShownComment, type ShownDetail } from "./overlay";
+import { createNote, setOverlay, type Prop, type ShownComment, type ShownDetail, type SubMove } from "./overlay";
 import { hide, link, withheld } from "./bits";
 import { colors } from "./tokens.stylex";
 import { Background } from "./WhileSyncing";
@@ -390,7 +390,7 @@ function applyRelationship<T extends Shown>(x: T, op: RelationshipOp, look?: Loo
     case "sub_add": {
       const child = shownOther(op.child);
       return rels(x, (r) => {
-        if (me) return { ...r, sub_issues: placed(without(r.sub_issues, op.child), child, op.after ?? undefined) };
+        if (me) return { ...r, sub_issues: placed(without(r.sub_issues, op.child), child, op.first ? null : (op.after ?? undefined)) };
         if (op.child.id === x.id) return issue ? { ...r, parent: issue } : r;
         // The parent a move takes it from.
         return op.replace_parent ? { ...r, sub_issues: without(r.sub_issues, op.child) } : r;
@@ -677,6 +677,19 @@ function panelOn(issue: number | undefined): void {
 function listShown(at: number): void {
   listAt = Math.max(listAt, at);
   sweep();
+}
+
+/** The sub-issue moves showing over a tree read from `at`, in the order they were made. */
+function subMoves(at: number): SubMove[] {
+  const out: SubMove[] = [];
+  for (const p of ops()) {
+    if (!shows(p, at)) continue;
+    const op = p.op;
+    if (op.kind === "sub_add" && op.child.id !== null) out.push({ child: op.child.id, parent: op.issue, after: op.first ? null : (op.after ?? undefined) });
+    else if (op.kind === "sub_remove" && op.child.id !== null) out.push({ child: op.child.id, parent: null, after: undefined });
+    else if (op.kind === "sub_reorder") out.push({ child: op.child, parent: op.issue, after: op.after });
+  }
+  return out;
 }
 
 function detailShown(issue: number, at: number): void {
@@ -1271,7 +1284,7 @@ function noComments(why: string): string {
   return `No comments here: ${why}.`;
 }
 
-setOverlay({ rowWithWrites, listShown, detailWithWrites, detailShown, keepsSelection, panelOn, Status, StateNote, CommentNote, PropNote, EditNote });
+setOverlay({ rowWithWrites, listShown, subMoves, detailWithWrites, detailShown, keepsSelection, panelOn, Status, StateNote, CommentNote, PropNote, EditNote });
 
 const blink = stylex.keyframes({
   "50%": { opacity: 0.25 },

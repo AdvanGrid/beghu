@@ -116,6 +116,48 @@ max = 0
 measured = 0
 reason = "Free-text search (is:open dark m) through FTS5: rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10). Exact on the fixed fixture, so a scan added anywhere in the answer moves it; what is left is small tables walked whole (the repos, the labels)."
 
+[gates."server.tree.ms"]
+max = 7.3
+measured = 6.31
+reason = "The default view's tree (?mode=tree, is:open): the first roots every Tree mode load fetches, read with the view's tree cached for the mirror's seq (#108): its answer time, median of 10."
+
+[gates."server.tree.kb"]
+max = 5.4
+measured = 5.15
+reason = "The default view's tree (?mode=tree, is:open): the first roots every Tree mode load fetches, read with the view's tree cached for the mirror's seq (#108): its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.tree.scan"]
+max = 0
+measured = 0
+reason = "The default view's tree (?mode=tree, is:open): the first roots every Tree mode load fetches, read with the view's tree cached for the mirror's seq (#108): rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10): the recursive walks go through the edge indexes (perf/fixture's plan test)."
+
+[gates."server.tree.build.ms"]
+max = 293
+measured = 254.82
+report_only = true
+reason = "The default view's tree built afresh: the first read after a write bumps the mirror's seq (every match, its ancestors and the roots' order, then the page), median of 10. Report-only: measured on the dev host at load 60 to 100; the spec settles caching per view and seq, not a build budget. For the owner: CI's first run calibrates it."
+
+[gates."server.tree-label.ms"]
+max = 9.3
+measured = 8.08
+reason = "A filtered tree (is:open label:bug, ?mode=tree): matches inside their dimmed ancestors, read with the view's tree cached for the mirror's seq (#108): its answer time, median of 10."
+
+[gates."server.tree-label.kb"]
+max = 5.7
+measured = 5.39
+reason = "A filtered tree (is:open label:bug, ?mode=tree): matches inside their dimmed ancestors, read with the view's tree cached for the mirror's seq (#108): its answer gzip as sent, under the 14 KB first flight."
+
+[gates."server.tree-label.scan"]
+max = 0
+measured = 0
+reason = "A filtered tree (is:open label:bug, ?mode=tree): matches inside their dimmed ancestors, read with the view's tree cached for the mirror's seq (#108): rows its statements stepped through with no index to seek on, all told (x-beghu-scan-steps, median of 10): the recursive walks go through the edge indexes (perf/fixture's plan test)."
+
+[gates."server.tree-label.build.ms"]
+max = 147
+measured = 127.86
+report_only = true
+reason = "The filtered tree (is:open label:bug) built afresh after a write, median of 10. Report-only, as server.tree.build.ms."
+
 [gates."server.facets.ms"]
 max = 129.8
 measured = 112.81

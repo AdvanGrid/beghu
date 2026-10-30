@@ -35,11 +35,19 @@ export type ShownDetail = Omit<IssueDetail, "comments" | "relationships"> & {
   typedBody?: string;
 };
 
+/**
+ * A sub-issue move a pending write makes, as Tree mode shows it: `child` goes under `parent` (none:
+ * it has no parent any more), after the sibling `after`, first (`null`), or last (`undefined`).
+ */
+export type SubMove = { child: number; parent: number | null; after: number | null | undefined };
+
 export interface Overlay {
   /** A list row with the tab's pending writes on it; `at` is when its page's read began. */
   rowWithWrites(r: IssueRow, at: number): IssueRow;
-  /** The list now shows a page whose read began at `at`. */
+  /** The list (or the tree) now shows a page whose read began at `at`. */
   listShown(at: number): void;
+  /** The sub-issue moves of the tab's pending writes, over a tree read that began at `at`. */
+  subMoves(at: number): SubMove[];
   /** The detail with the tab's pending writes on it; its comments are `ShownComment`s. Pure. */
   detailWithWrites(d: IssueDetail, at: number): ShownDetail;
   /** The detail of `issue` now shows a read that began at `at`. */
