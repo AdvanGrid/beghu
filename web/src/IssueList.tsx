@@ -686,15 +686,16 @@ export function Row(props: {
           {(p) => (
             <span {...stylex.attrs(s.progress)} title={`${p().done} of ${p().total} sub-issues closed, at every level`}>
               <ProgressRing done={p().done} total={p().total} />
-              {p().done}/{p().total}
+              {`${p().done}/${p().total}`}
             </span>
           )}
         </Show>
       </span>
       <span {...stylex.attrs(s.cell, s.ref, s.end, s.w(w("ref")))} data-perf="ref">
-        {r().repo}#{r().number}
+        {/* One text node (and no marker between parts): one run for the browser to shape. */}
+        {`${r().repo}#${r().number}`}
       </span>
-      <span {...stylex.attrs(s.cell, s.avatars, s.w(w("who")))}>
+      <span {...stylex.attrs(fits(Math.min(3, r().assignees.length), AVATAR, 2, w("who")) ? s.open : s.cell, s.avatars, s.w(w("who")))}>
         <For each={r().assignees.slice(0, 3)}>{(u) => <Avatar login={u.login} />}</For>
       </span>
       <span {...stylex.attrs(s.cell, s.when, s.end, s.w(w("updated")))} title={at() === null ? undefined : fullDate(at()!)}>
@@ -757,6 +758,14 @@ function MatchIcon(props: { field: SearchField }) {
       </Show>
     </svg>
   );
+}
+
+/** A user's avatar in a row, in px, as bits.tsx draws it. */
+const AVATAR = 18;
+
+/** Whether `n` items `size` px wide, `gap` px apart, fit in `width` px. */
+function fits(n: number, size: number, gap: number, width: number): boolean {
+  return n * size + Math.max(0, n - 1) * gap <= width;
 }
 
 /** A label's colour dot. GitHub's label colours are data, so they come in as a dynamic style. */
@@ -833,7 +842,7 @@ function Labels(props: { r: IssueRow; width: number; card: Card }) {
       total={items().length}
       width={props.width}
       card={props.card}
-      xstyle={[s.cell, s.wide, s.w(props.width)]}
+      xstyle={[props.width >= slots.labelSlot ? s.open : s.cell, s.wide, s.w(props.width)]}
     >
       {(l, stacked) =>
         "review" in l ? (
@@ -1048,11 +1057,20 @@ const s = stylex.create({
     display: "flex",
     flexShrink: 0,
   },
+  // Unclipped, as the state icon (bits.tsx).
   matchIcon: {
+    overflow: "visible",
     display: "block",
   },
   cell: {
     overflow: "hidden",
+    flexShrink: 0,
+  },
+  // A cell whose content can't overflow it, which needn't clip: each clip in a row is a paint
+  // chunk more for the compositor to sort through on every frame that paints. The labels cell at
+  // a slot's width or more (one label shrinks to fit, and stacked ones fill as many slot columns
+  // as fit), and the assignees when their avatars fit.
+  open: {
     flexShrink: 0,
   },
   w: (width: number) => ({
@@ -1068,9 +1086,10 @@ const s = stylex.create({
     justifyContent: "flex-end",
     textAlign: "end",
   },
+  // One label or blocker on a line of its own: it shrinks to fit, so this needn't clip (the
+  // cell does when it must).
   labels: {
     gap: 4,
-    overflow: "hidden",
     alignItems: "center",
     display: "flex",
     minWidth: 0,

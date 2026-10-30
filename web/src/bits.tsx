@@ -52,6 +52,17 @@ export const STATE_LABEL: Record<IssueState, string> = {
   notPlanned: "Closed as not planned",
 };
 
+/**
+ * The state icon's one path: the ring (r 6.25), and inside it the open state's dot (a ring of
+ * r 0.75 under a 1.5 px stroke, so a disc of r 1.5), the completed state's check or the not
+ * planned state's slash. One element, so a list row builds and styles one node for it.
+ */
+const STATE_PATH: Record<IssueState, string> = {
+  open: "M8 1.75a6.25 6.25 0 1 1 0 12.5a6.25 6.25 0 1 1 0-12.5zM8 7.25a.75.75 0 1 1 0 1.5a.75.75 0 1 1 0-1.5z",
+  done: "M8 1.75a6.25 6.25 0 1 1 0 12.5a6.25 6.25 0 1 1 0-12.5zM5.2 8.2 7.1 10l3.7-4",
+  notPlanned: "M8 1.75a6.25 6.25 0 1 1 0 12.5a6.25 6.25 0 1 1 0-12.5zM3.8 12.2 12.2 3.8",
+};
+
 /** The state icon, in the state's colour unless `plain` (then it takes the text colour). */
 export function StateIcon(props: { state: IssueState; plain?: boolean }) {
   return (
@@ -63,16 +74,7 @@ export function StateIcon(props: { state: IssueState; plain?: boolean }) {
       aria-label={STATE_LABEL[props.state]}
       {...stylex.attrs(s.icon, !props.plain && s[props.state])}
     >
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
-      <Show when={props.state === "open"}>
-        <circle cx="8" cy="8" r="1.5" fill="currentColor" />
-      </Show>
-      <Show when={props.state === "done"}>
-        <path d="M5.2 8.2 7.1 10l3.7-4" fill="none" stroke="currentColor" stroke-width="1.5" />
-      </Show>
-      <Show when={props.state === "notPlanned"}>
-        <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" stroke-width="1.5" />
-      </Show>
+      <path d={STATE_PATH[props.state]} fill="none" stroke="currentColor" stroke-width="1.5" />
     </svg>
   );
 }
@@ -190,7 +192,11 @@ function hash(s: string): number {
 }
 
 const s = stylex.create({
+  // Nothing an icon draws leaves its viewBox, so it needn't clip as the UA's `svg { overflow:
+  // hidden }` has it do: in a list row each clip is a paint chunk more for the compositor to sort
+  // through on every frame that paints.
   icon: {
+    overflow: "visible",
     flexShrink: 0,
   },
   open: {

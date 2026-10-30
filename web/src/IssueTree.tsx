@@ -999,7 +999,9 @@ const s = stylex.create({
     color: colors.muted,
     cursor: "pointer",
   },
+  // Unclipped, as the state icon (bits.tsx).
   chevronIcon: {
+    overflow: "visible",
     display: "block",
     transitionDuration: "0.1s",
     transitionProperty: "transform",
