@@ -320,14 +320,20 @@ function AccountFailure(props: { error: unknown; reset: () => void }) {
 function List() {
   const location = useLocation();
   const open = useMatch(() => "/issues/:id");
+  // A memo, read by every row: a conditional written in the props below would build a new
+  // computation on each read.
+  const openId = createMemo(() => {
+    const m = open();
+    return m ? issueId(m.params.id) : undefined;
+  });
   // The bar sits outside the list's boundary, so a view that fails to load can be changed.
   return (
     <div {...stylex.attrs(s.listColumn)}>
       <FilterBar />
       <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
-        <Show when={modeOf(location.search) === "tree"} fallback={<IssueList search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />}>
+        <Show when={modeOf(location.search) === "tree"} fallback={<IssueList search={location.search} openId={openId()} />}>
           <Loading fallback={<div {...stylex.attrs(s.listColumn)} aria-busy="true" />}>
-            <IssueTree search={location.search} openId={open() ? issueId(open()!.params.id) : undefined} />
+            <IssueTree search={location.search} openId={openId()} />
           </Loading>
         </Show>
       </Errored>

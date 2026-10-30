@@ -182,6 +182,131 @@ export function ProgressRing(props: { done: number; total: number }) {
   );
 }
 
+// The list row's parts as plain DOM nodes (IssueList.tsx builds its rows from these, with no
+// component or computation each): the same markup as StateIcon, PrIcon, ReviewChip, Avatar and
+// ProgressRing above, each variant a static template cloned whole.
+
+/** A state icon's node, in its state's colour. */
+export const stateIconNode: Record<IssueState, () => Element> = {
+  open: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Open" {...stylex.attrs(s.icon, s.open)}>
+        <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="8" cy="8" r="1.5" fill="currentColor" />
+      </svg>
+    ) as Element,
+  done: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Closed as completed" {...stylex.attrs(s.icon, s.done)}>
+        <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M5.2 8.2 7.1 10l3.7-4" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    ) as Element,
+  notPlanned: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Closed as not planned" {...stylex.attrs(s.icon, s.notPlanned)}>
+        <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    ) as Element,
+};
+
+/** A PR status icon's node, in its status's colour. */
+export const prIconNode: Record<PrStatus, () => Element> = {
+  open: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Open pull request" data-pr-status="open" {...stylex.attrs(s.icon, pr.open)}>
+        <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M4 5.25v5.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M12 10.75V6.5a2 2 0 0 0-2-2H7.25M8.75 3l-1.5 1.5 1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    ) as Element,
+  draft: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Draft pull request" data-pr-status="draft" {...stylex.attrs(s.icon, pr.draft)}>
+        <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M4 5.25v5.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path
+          d="M12 10.75V6.5a2 2 0 0 0-2-2H7.25M8.75 3l-1.5 1.5 1.5 1.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-dasharray="1.5 1.5"
+        />
+      </svg>
+    ) as Element,
+  closed: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Closed pull request" data-pr-status="closed" {...stylex.attrs(s.icon, pr.closed)}>
+        <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M4 5.25v5.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M12 10.75V6.5a2 2 0 0 0-2-2H7.25M8.75 3l-1.5 1.5 1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    ) as Element,
+  merged: () =>
+    (
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Merged pull request" data-pr-status="merged" {...stylex.attrs(s.icon, pr.merged)}>
+        <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M4 5.25v5.5M4 5.5c0 3 2.5 3.5 6.25 3.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="9" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    ) as Element,
+};
+
+/** The compact review chip's look per decision, built on first use (the styles are defined below). */
+let reviewLook: Record<ReviewDecision, string> | undefined;
+
+/** A PR's review decision as a compact chip's node (ReviewChip with `compact`). */
+export function reviewChipNode(decision: ReviewDecision): HTMLElement {
+  reviewLook ??= {
+    approved: stylex.attrs(s.chip, s.compactChip, review.approved).class ?? "",
+    changes_requested: stylex.attrs(s.chip, s.compactChip, review.changes_requested).class ?? "",
+    review_required: stylex.attrs(s.chip, s.compactChip, review.review_required).class ?? "",
+  };
+  const el = document.createElement("span");
+  el.className = reviewLook[decision];
+  el.dataset.perf = "review";
+  el.dataset.review = decision;
+  el.title = `Review: ${REVIEW_LABEL[decision]}`;
+  el.textContent = REVIEW_SHORT[decision];
+  return el;
+}
+
+/** Each avatar look, by size and then colour: built on first use. */
+const avatarLook = new Map<number, string[]>();
+
+/** A user's avatar as a node (Avatar). */
+export function avatarNode(login: string, size: 11 | 14 | 18 = 18): HTMLElement {
+  let looks = avatarLook.get(size);
+  if (!looks) avatarLook.set(size, (looks = AVATARS.map((c) => stylex.attrs(s.avatar, SIZES[size], c).class ?? "")));
+  const el = document.createElement("span");
+  el.title = login;
+  el.className = looks[hash(login) % AVATARS.length]!;
+  el.textContent = login.slice(0, 1).toUpperCase();
+  return el;
+}
+
+/** Sub-issue progress as a ring's node (ProgressRing). */
+export function progressRingNode(done: number, total: number): Element {
+  const el = (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" {...stylex.attrs(s.icon)}>
+      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" {...stylex.attrs(s.ring)} />
+      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" transform="rotate(-90 8 8)" {...stylex.attrs(s.ringDone)} />
+    </svg>
+  ) as Element;
+  // The ring's circumference (r = 6), as ProgressRing's.
+  const C = 37.7;
+  el.lastElementChild!.setAttribute("stroke-dasharray", `${total > 0 ? (done / total) * C : 0} ${C}`);
+  return el;
+}
+
 /** A stable small hash, so a login keeps its avatar colour. */
 function hash(s: string): number {
   let h = 0;

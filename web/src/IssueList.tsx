@@ -1,11 +1,11 @@
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
+import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
+import { effect } from "@solidjs/web";
 import { Gone, NoAccess, SessionEnded, commentOrder, getIssues, readAt, refetchIssue, refetchIssues, signIn, stamp, type IssuePage, type IssueRow } from "./api";
-import type { Label } from "./bindings/Label";
-import type { ReviewDecision } from "./bindings/ReviewDecision";
+import type { Blocker } from "./bindings/Blocker";
 import type { SearchField } from "./bindings/SearchField";
-import { Avatar, issueState, PrIcon, ProgressRing, ReviewChip, StateIcon } from "./bits";
+import { avatarNode, issueState, prIconNode, progressRingNode, reviewChipNode, stateIconNode } from "./bits";
 import { COLUMNS, createColumns, stackFit, type Column } from "./columns";
 import { blockerStatus, type CardAt } from "./cards";
 import { StillImporting } from "./WhileImporting";
@@ -19,7 +19,7 @@ import { queryOf, sortOf, type SortKey } from "./query";
 import { ChunkFailed } from "./router";
 import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
-import { slots } from "./layout.stylex";
+import { colW, slots } from "./layout.stylex";
 import { colors, fonts } from "./tokens.stylex";
 
 /** Every row is exactly this tall, border included: the virtualizer's pitch. */
@@ -212,7 +212,7 @@ export function IssueList(props: { search: string; openId?: number }) {
 
   return (
     <>
-      <div ref={column} {...stylex.attrs(s.column)}>
+      <div ref={column} {...stylex.attrs(s.column, widthsOf(cols))}>
         <ListHead cols={cols} time={time().head} />
         {/* The pulse lives on a frame outside the rows' Loading boundary, which holds the old
             rows while the next view loads. */}
@@ -250,7 +250,7 @@ export function ListHead(props: { cols: Cols; time: string }) {
       <span {...stylex.attrs(s.title)}>Title</span>
       <For each={COLUMNS}>
         {(c) => (
-          <span {...stylex.attrs(s.cell, s.headCell, WIDE.has(c) && s.wide, END.has(c) && s.end, s.w(cols.width(c)))} data-col={c}>
+          <span {...stylex.attrs(s.cell, s.headCell, WIDE.has(c) && s.wide, END.has(c) && s.end, WIDTH[c])} data-col={c}>
             <span
               role="separator"
               aria-orientation="vertical"
@@ -304,6 +304,11 @@ const WIDE = new Set<Column>(["labels", "blockers", "progress"]);
 const END = new Set<Column>(["ref", "updated"]);
 
 export type Cols = ReturnType<typeof createColumns>;
+
+/** The columns' widths as the custom properties every cell reads: set on the list's (or tree's) column. */
+export function widthsOf(cols: Cols) {
+  return s.widths(cols.width("labels"), cols.width("blockers"), cols.width("progress"), cols.width("ref"), cols.width("who"), cols.width("updated"));
+}
 
 /** The hover card's state: which row's labels or blockers it shows, and where. */
 export function createCard() {
@@ -489,6 +494,12 @@ function Rows(props: {
       scroller.querySelector<HTMLElement>(`[data-perf="row"][data-id="${id}"]`)?.focus({ preventScroll: true });
     },
   );
+  // What the rows read, as functions: a conditional written in a row's props would build a new
+  // computation on each read.
+  /** Whether the row for `id`, `i` rows into the window, is the one in the tab order. */
+  const tabbable = (id: number, i: number) => (selectedShown() ? selected() === id : i === 0);
+  const setSize = createMemo(() => (props.more ? -1 : rows().length));
+  const leaving = (id: number) => held.cue()?.leaving.has(id) ?? false;
   touch("next", () => step(1));
   touch("previous", () => step(-1));
   touch("first", () => select(0));
@@ -539,6 +550,8 @@ function Rows(props: {
       data-perf="list"
       data-perf-rows={rows().length}
       onFocusIn={onFocusIn}
+      onPointerOver={rowOver}
+      onPointerOut={rowOut}
     >
       <Show when={rows().length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
@@ -565,10 +578,10 @@ function Rows(props: {
                 search={props.search}
                 current={props.openId === r().id}
                 selected={selected() === r().id}
-                tabbable={selectedShown() ? selected() === r().id : i() === 0}
+                tabbable={tabbable(r().id, i())}
                 pos={visible().first + i() + 1}
-                of={props.more ? -1 : rows().length}
-                leaving={held.cue()?.leaving.has(r().id) ?? false}
+                of={setSize()}
+                leaving={leaving(r().id)}
                 takeFocus={focusing() === r().id}
                 onFocusTaken={() => setFocusing(undefined)}
                 time={props.time}
@@ -587,10 +600,18 @@ function Rows(props: {
 /**
  * What a row shows of its place in Tree mode's tree (IssueTree.tsx): an ARIA treeitem at `level`
  * (from 1), open or closed when it has children, dimmed when it's context (an ancestor shown for
- * a match below it), with `lead` (its indent, chevron and grip) before its state icon.
+ * a match below it), with `lead` (its indent, chevron and grip) before its state icon. `lead` is
+ * built once for the row's life and keeps itself current.
  */
 export type TreeLook = { level: number; expanded: boolean | undefined; context: boolean; lead: Element };
 
+/**
+ * A row: a link with the row's look, its place and its state on it (a few direct attributes, set
+ * by one effect), and cells whose styles are static (their widths are the column's custom
+ * properties, `widthsOf`). The cells' contents are plain DOM built by one more effect from the row
+ * (rowParts), each part rebuilt only when what it shows changes. The pointer's work (the hover
+ * cards, a PR's code preloading, the full date) is the scroller's (`rowOver`, `rowOut`).
+ */
 export function Row(props: {
   r: IssueRow;
   /** Where it sits in the list, in px from the top. */
@@ -620,16 +641,16 @@ export function Row(props: {
   // A memo: every part of the row reads it, and with a write pending each read would apply the
   // write again, into a new object.
   const r = createMemo(() => overlay()?.rowWithWrites(props.r, props.readStart) ?? props.r);
-  // Memos, so the window moving (which changes every row's index into it, but not its place)
-  // runs nothing in the row: the element's attributes are one spread, which reads them all again
-  // when any one it reads changes.
-  const y = createMemo(() => props.y);
-  const pos = createMemo(() => props.pos);
-  const tabbable = createMemo(() => props.tabbable);
-  const at = () => props.time(r());
-  const w = (c: Column) => props.cols.width(c);
-  const blocked = () => r().state === "open" && r().blocked_by > 0;
+  const tree = props.tree;
   let el!: HTMLAnchorElement;
+  let state!: HTMLSpanElement;
+  let title!: HTMLSpanElement;
+  let labels!: HTMLSpanElement;
+  let blockers!: HTMLSpanElement;
+  let progress!: HTMLSpanElement;
+  let ref!: HTMLSpanElement;
+  let who!: HTMLSpanElement;
+  let when!: HTMLSpanElement;
   createEffect(
     () => props.takeFocus,
     (take) => {
@@ -639,69 +660,91 @@ export function Row(props: {
     },
   );
   // An option in the list's listbox (the ARIA list pattern), or an item of the tree (its tree
-  // pattern), and still a plain link the router opens on click.
-  return (
-    <a
-      ref={el}
-      href={`/issues/${r().id}${props.search}`}
-      noscroll
-      role={props.tree ? "treeitem" : "option"}
-      aria-level={props.tree?.level}
-      aria-expanded={props.tree?.expanded === undefined ? undefined : props.tree.expanded ? "true" : "false"}
-      data-context={props.tree?.context ? "" : undefined}
-      aria-selected={props.selected ? "true" : "false"}
-      aria-posinset={pos()}
-      aria-setsize={props.of}
-      tabindex={tabbable() ? 0 : -1}
-      data-perf="row"
-      data-id={r().id}
-      data-blocked={blocked() ? "" : undefined}
-      data-cue={props.leaving ? "leave" : undefined}
-      aria-current={props.current ? "page" : undefined}
-      onPointerEnter={r().pr ? preloadPull : undefined}
-      {...stylex.attrs(s.row, s.link, s.at(y()), props.selected && s.current, blocked() && s.blocked, props.leaving && cueStyles.leave, props.tree?.context && s.context)}
-    >
-      {props.tree?.lead}
-      <span {...stylex.attrs(s.state)}>
-        <Show when={r().pr} fallback={<StateIcon state={issueState(r())} />}>
-          {(p) => <PrIcon status={p().status} />}
-        </Show>
+  // pattern), and still a plain link the router opens on click. Its `href` is written directly, so
+  // the router's link claim (its `aria-current` and `data-active`) never runs: the row sets its
+  // own `aria-current`.
+  const view = (
+    <a ref={el} data-perf="row" noscroll>
+      <span ref={state} {...stylex.attrs(s.state)} />
+      <span ref={title} {...stylex.attrs(s.title)}>
+        <span {...stylex.attrs(s.titleText)} />
       </span>
-      <span {...stylex.attrs(s.title)}>
-        <span {...stylex.attrs(s.titleText)}>{r().title}</span>
-        <Show when={r().matched.length > 0}>
-          <span {...stylex.attrs(s.matched)} data-perf="matched" data-fields={r().matched.join(" ")}>
-            <For each={r().matched}>{(f) => <MatchIcon field={f} />}</For>
-          </span>
-        </Show>
-      </span>
-      <Labels r={r()} width={w("labels")} card={props.card} />
-      <span {...stylex.attrs(s.cell, s.wide, s.w(w("blockers")))} data-perf="blockers">
-        <Show when={blocked()}>
-          <Blockers r={r()} width={w("blockers")} card={props.card} />
-        </Show>
-      </span>
-      <span {...stylex.attrs(s.cell, s.wide, s.w(w("progress")))} data-perf="progress">
-        <Show when={r().progress}>
-          {(p) => (
-            <span {...stylex.attrs(s.progress)} title={`${p().done} of ${p().total} sub-issues closed, at every level`}>
-              <ProgressRing done={p().done} total={p().total} />
-              {p().done}/{p().total}
-            </span>
-          )}
-        </Show>
-      </span>
-      <span {...stylex.attrs(s.cell, s.ref, s.end, s.w(w("ref")))} data-perf="ref">
-        {r().repo}#{r().number}
-      </span>
-      <span {...stylex.attrs(s.cell, s.avatars, s.w(w("who")))}>
-        <For each={r().assignees.slice(0, 3)}>{(u) => <Avatar login={u.login} />}</For>
-      </span>
-      <span {...stylex.attrs(s.cell, s.when, s.end, s.w(w("updated")))} title={at() === null ? undefined : fullDate(at()!)}>
-        {at() === null ? "" : ago(at()!)}
-      </span>
+      <span ref={labels} data-perf="labels" />
+      <span ref={blockers} {...stylex.attrs(s.cell, s.wide, s.wBlockers)} data-perf="blockers" />
+      <span ref={progress} {...stylex.attrs(s.cell, s.wide, s.wProgress)} data-perf="progress" />
+      <span ref={ref} {...stylex.attrs(s.cell, s.ref, s.end, s.wRef)} data-perf="ref" />
+      <span ref={who} {...stylex.attrs(s.cell, s.avatars, s.wWho)} />
+      <span ref={when} {...stylex.attrs(s.cell, s.when, s.end, s.wUpdated)} />
     </a>
   );
+  el.setAttribute("role", tree ? "treeitem" : "option");
+  if (tree) el.prepend(tree.lead);
+  rowInfo.set(el, { row: r, at: () => props.time(r()), cols: props.cols, card: props.card });
+
+  let atClass = "";
+  effect(
+    () => {
+      const row = r();
+      const blocked = row.state === "open" && row.blocked_by > 0;
+      const context = tree?.context ?? false;
+      return {
+        href: `/issues/${row.id}${props.search}`,
+        id: row.id,
+        look: (props.selected ? 1 : 0) | (blocked ? 2 : 0) | (props.leaving ? 4 : 0) | (context ? 8 : 0),
+        y: props.y,
+        selected: props.selected,
+        blocked,
+        leaving: props.leaving,
+        context,
+        current: props.current,
+        tabbable: props.tabbable,
+        pos: props.pos,
+        of: props.of,
+        level: tree?.level,
+        expanded: tree?.expanded,
+      };
+    },
+    (v, p) => {
+      // Before the first look, none of the flags is on the link.
+      const q: Partial<typeof v> = p ?? { blocked: false, leaving: false, current: false, context: false };
+      if (v.href !== q.href) el.setAttribute("href", v.href);
+      if (v.id !== q.id) el.setAttribute("data-id", String(v.id));
+      if (v.y !== q.y) {
+        const at = stylex.attrs(s.at(v.y));
+        atClass = at.class ?? "";
+        el.setAttribute("style", at.style ?? "");
+      }
+      if (v.look !== q.look || v.y !== q.y) el.setAttribute("class", `${rowLook(v.look)} ${atClass}`);
+      if (v.selected !== q.selected) el.setAttribute("aria-selected", v.selected ? "true" : "false");
+      if (v.pos !== q.pos) el.setAttribute("aria-posinset", String(v.pos));
+      if (v.of !== q.of) el.setAttribute("aria-setsize", String(v.of));
+      if (v.tabbable !== q.tabbable) el.setAttribute("tabindex", v.tabbable ? "0" : "-1");
+      if (v.blocked !== q.blocked) flag(el, "data-blocked", v.blocked ? "" : undefined);
+      if (v.leaving !== q.leaving) flag(el, "data-cue", v.leaving ? "leave" : undefined);
+      if (v.current !== q.current) flag(el, "aria-current", v.current ? "page" : undefined);
+      if (tree) {
+        if (v.level !== q.level) flag(el, "aria-level", v.level === undefined ? undefined : String(v.level));
+        if (v.expanded !== q.expanded) flag(el, "aria-expanded", v.expanded === undefined ? undefined : v.expanded ? "true" : "false");
+        if (v.context !== q.context) flag(el, "data-context", v.context ? "" : undefined);
+      }
+    },
+  );
+
+  const parts = rowParts({ state, title, labels, blockers, progress, ref, who, when });
+  effect(
+    () => {
+      const row = r();
+      return { row, at: props.time(row), labels: props.cols.width("labels"), blockers: props.cols.width("blockers") };
+    },
+    (v) => parts(v.row, v.at, v.labels, v.blockers),
+  );
+  return view;
+}
+
+/** Sets attribute `name` to `value`, or removes it for `undefined`. */
+function flag(el: Element, name: string, value: string | undefined) {
+  if (value === undefined) el.removeAttribute(name);
+  else el.setAttribute(name, value);
 }
 
 /**
@@ -735,152 +778,219 @@ function preloadPull() {
   import("./Pull").catch(() => undefined);
 }
 
-const MATCHED: Record<SearchField, string> = {
-  title: "Matched in the title",
-  body: "Matched in the description",
-  comments: "Matched in a comment",
-};
+/** What the scroller's pointer handlers need of a row: its issue (writes on it), its time, the columns, the card. */
+type RowInfo = { row: () => IssueRow; at: () => number | null; cols: Cols; card: Card };
+const rowInfo = new WeakMap<Element, RowInfo>();
+
+/** A row's stacked cells that show a hover card: its labels, and its blockers' stack. */
+const STACKS = '[data-perf="labels"], [data-perf="blockers"] > span';
+
+/**
+ * The pointer coming onto a part of a row (the list's or the tree's scroller hears it for every
+ * row): a PR's row preloads its code; a row's labels (when some are left out) or blockers open
+ * their card after a rest; the time shows its full date.
+ */
+export function rowOver(e: PointerEvent) {
+  const t = e.target as Element;
+  const a = t.closest('[data-perf="row"]');
+  const info = a && rowInfo.get(a);
+  if (!a || !info) return;
+  const from = e.relatedTarget as Node | null;
+  if (!a.contains(from) && info.row().pr) preloadPull();
+  const stack = t.closest(STACKS);
+  if (stack && a.contains(stack) && !stack.contains(from)) {
+    const row = info.row();
+    if (stack.matches('[data-perf="labels"]')) {
+      const total = row.labels.length + (row.pr?.review ? 1 : 0);
+      if (stackFit(total, info.cols.width("labels"), slots.labelSlot, slots.labelGap) < total) info.card.enter("labels", row, stack as HTMLElement);
+    } else info.card.enter("blockers", row, stack as HTMLElement);
+  }
+  // The full date, only once the pointer is on it.
+  if (t === a.lastElementChild) {
+    const at = info.at();
+    flag(t, "title", at === null ? undefined : fullDate(at));
+  }
+}
+
+/** The pointer leaving a row's labels or blockers: their card goes after a moment. */
+export function rowOut(e: PointerEvent) {
+  const stack = (e.target as Element).closest(STACKS);
+  const a = stack?.closest('[data-perf="row"]');
+  const info = a && rowInfo.get(a);
+  if (!stack || !info || stack.contains(e.relatedTarget as Node | null)) return;
+  info.card.hide();
+}
 
 /** A muted mark for a field the search matched in: the title, the description, a comment. */
-function MatchIcon(props: { field: SearchField }) {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" role="img" aria-label={MATCHED[props.field]} {...stylex.attrs(s.matchIcon)}>
-      <title>{MATCHED[props.field]}</title>
-      <Show when={props.field === "title"}>
+const MATCH_ICON: Record<SearchField, () => Element> = {
+  title: () =>
+    (
+      <svg viewBox="0 0 16 16" width="12" height="12" role="img" aria-label="Matched in the title" {...stylex.attrs(s.matchIcon)}>
+        <title>Matched in the title</title>
         <path d="M3 3.5h10M8 3.5V13" fill="none" stroke="currentColor" stroke-width="1.5" />
-      </Show>
-      <Show when={props.field === "body"}>
+      </svg>
+    ) as Element,
+  body: () =>
+    (
+      <svg viewBox="0 0 16 16" width="12" height="12" role="img" aria-label="Matched in the description" {...stylex.attrs(s.matchIcon)}>
+        <title>Matched in the description</title>
         <path d="M2.5 4h11M2.5 8h11M2.5 12h7" fill="none" stroke="currentColor" stroke-width="1.5" />
-      </Show>
-      <Show when={props.field === "comments"}>
+      </svg>
+    ) as Element,
+  comments: () =>
+    (
+      <svg viewBox="0 0 16 16" width="12" height="12" role="img" aria-label="Matched in a comment" {...stylex.attrs(s.matchIcon)}>
+        <title>Matched in a comment</title>
         <path d="M2.75 2.75h10.5v8H7.5l-3 2.5v-2.5H2.75z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-      </Show>
-    </svg>
-  );
-}
+      </svg>
+    ) as Element,
+};
 
 /** A label's colour dot. GitHub's label colours are data, so they come in as a dynamic style. */
 export function LabelDot(props: { color: string }) {
   return <span {...stylex.attrs(s.dot(`#${props.color}`))} />;
 }
 
+/** A span with `look` (a `stylex.attrs` result's class) and, if given, `text`. */
+function span(look: string, text?: string): HTMLSpanElement {
+  const el = document.createElement("span");
+  if (look) el.className = look;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+/** Each label colour's dot, as `stylex.attrs` gives it: label colours repeat, so built once each. */
+const dots = new Map<string, { class?: string; style?: string }>();
+
+function dotNode(color: string): HTMLSpanElement {
+  let look = dots.get(color);
+  if (!look) dots.set(color, (look = stylex.attrs(s.dot(`#${color}`))));
+  const el = span(look.class ?? "");
+  if (look.style) el.setAttribute("style", look.style);
+  return el;
+}
+
+/**
+ * Fills a row's cells from its issue, as LabelDot, ReviewChip, Avatar and the rest show them, as
+ * plain DOM: each call rebuilds only the parts whose content changed since the last.
+ */
+function rowParts(c: {
+  state: HTMLElement;
+  title: HTMLElement;
+  labels: HTMLElement;
+  blockers: HTMLElement;
+  progress: HTMLElement;
+  ref: HTMLElement;
+  who: HTMLElement;
+  when: HTMLElement;
+}) {
+  const was: Record<"icon" | "title" | "matched" | "labels" | "blockers" | "progress" | "ref" | "who" | "when", string | undefined> = {
+    icon: undefined,
+    title: undefined,
+    matched: undefined,
+    labels: undefined,
+    blockers: undefined,
+    progress: undefined,
+    ref: undefined,
+    who: undefined,
+    when: undefined,
+  };
+  /** Whether part `k` now shows `key`, noting it. */
+  const changed = (k: keyof typeof was, key: string) => {
+    if (was[k] === key) return false;
+    was[k] = key;
+    return true;
+  };
+  return (r: IssueRow, at: number | null, labelsWidth: number, blockersWidth: number) => {
+    const icon = r.pr ? `pr ${r.pr.status}` : issueState(r);
+    if (changed("icon", icon)) c.state.replaceChildren(r.pr ? prIconNode[r.pr.status]() : stateIconNode[issueState(r)]());
+    if (changed("title", r.title)) c.title.firstElementChild!.textContent = r.title;
+    if (changed("matched", r.matched.join(" "))) {
+      c.title.firstElementChild!.nextElementSibling?.remove();
+      if (r.matched.length > 0) {
+        const m = span(LOOK.matched);
+        m.dataset.perf = "matched";
+        m.dataset.fields = r.matched.join(" ");
+        m.append(...r.matched.map((f) => MATCH_ICON[f]()));
+        c.title.append(m);
+      }
+    }
+    const review = r.pr?.review ?? null;
+    if (changed("labels", `${labelsWidth} ${review ?? ""} ${r.labels.map((l) => `${l.color}:${l.name}`).join("\u0000")}`)) {
+      const total = r.labels.length + (review ? 1 : 0);
+      const stacked = total > 1;
+      const fit = stackFit(total, labelsWidth, slots.labelSlot, slots.labelGap);
+      c.labels.className = stacked ? LOOK.labelsStacked : LOOK.labelsFlat;
+      const nodes: Node[] = [];
+      if (review && fit > 0) nodes.push(reviewChipNode(review));
+      for (const l of r.labels.slice(0, fit - nodes.length)) {
+        const pill = span(stacked ? LOOK.stacked : LOOK.pill);
+        pill.title = l.name;
+        pill.append(dotNode(l.color), span(LOOK.clip, l.name));
+        nodes.push(pill);
+      }
+      if (total > nodes.length) nodes.push(span(LOOK.more, `+${total - nodes.length}`));
+      c.labels.replaceChildren(...nodes);
+    }
+    const blocked = r.state === "open" && r.blocked_by > 0;
+    if (changed("blockers", blocked ? `${blockersWidth} ${r.repo} ${r.blocked_by} ${r.blockers.map(blockerKey).join(" ")}` : "")) {
+      if (!blocked) c.blockers.replaceChildren();
+      else {
+        const stacked = r.blocked_by > 1;
+        const stack = span(stacked ? LOOK.chipStack : LOOK.labelsPlain);
+        const shown = r.blockers.slice(0, stackFit(r.blocked_by, blockersWidth, slots.blockerSlot, slots.blockerGap));
+        for (const b of shown) stack.append(blockerChip(b, r.repo, stacked));
+        if (r.blocked_by > shown.length) stack.append(span(LOOK.more, `+${r.blocked_by - shown.length}`));
+        c.blockers.replaceChildren(stack);
+      }
+    }
+    const p = r.progress;
+    if (changed("progress", p ? `${p.done}/${p.total}` : "")) {
+      if (!p) c.progress.replaceChildren();
+      else {
+        const el = span(LOOK.progress);
+        el.title = `${p.done} of ${p.total} sub-issues closed, at every level`;
+        el.append(progressRingNode(p.done, p.total), `${p.done}/${p.total}`);
+        c.progress.replaceChildren(el);
+      }
+    }
+    const ref = `${r.repo}#${r.number}`;
+    if (changed("ref", ref)) c.ref.textContent = ref;
+    const who = r.assignees.slice(0, 3).map((u) => u.login);
+    if (changed("who", who.join(" "))) c.who.replaceChildren(...who.map((login) => avatarNode(login)));
+    const when = at === null ? "" : ago(at);
+    const first = was.when === undefined;
+    if (changed("when", when)) {
+      c.when.textContent = when;
+      // Its full date comes when the pointer reaches it (rowOver).
+      if (!first) c.when.removeAttribute("title");
+    }
+  };
+}
+
+/** What a blocker's chip shows. */
+function blockerKey(b: Blocker): string {
+  return `${b.repo}#${b.number}:${b.assignee ?? ""}:${blockerStatus(b)}`;
+}
+
+/**
+ * A blocker's chip (who has it, and its number). Amber and dashed when nobody has it; red when
+ * it's itself blocked.
+ */
+function blockerChip(b: Blocker, repo: string, stacked: boolean): HTMLSpanElement {
+  const status = blockerStatus(b);
+  const chip = span(LOOK.chip[`${stacked ? "small" : "full"} ${status}`]!);
+  chip.dataset.perf = "blocker";
+  chip.append(b.assignee ? avatarNode(b.assignee, stacked ? 11 : 14) : span(stacked ? LOOK.nooneSmall : LOOK.noone));
+  if (b.repo !== repo) chip.append(span(LOOK.clip, b.repo));
+  chip.append(span(LOOK.num, `#${b.number}`));
+  return chip;
+}
+
 const pulseOutline = stylex.keyframes({
   from: { outlineColor: "transparent" },
   to: { outlineColor: colors.accent },
 });
-
-/**
- * How a kind of stacked cell lays out: two to a column of `slot` px, `gap` px apart, laid out by
- * `style`. Hovering shows its card `always`, or only `when-clipped` (some are left out).
- */
-type StackKind = {
-  kind: "labels" | "blockers";
-  slot: number;
-  gap: number;
-  style: stylex.StyleXStyles;
-  hoverable: "always" | "when-clipped";
-  perf?: string;
-};
-
-/**
- * A cell of a row's labels or blockers: one on a line of its own; more stack as `stack` lays them
- * out, as many columns as the cell holds, the last slot saying "+n" when they don't all fit.
- * `items` is what the row carries of them, `total` how many there are.
- */
-function Stack<T>(props: {
-  stack: StackKind;
-  r: IssueRow;
-  items: T[];
-  total: number;
-  width: number;
-  card: Card;
-  xstyle?: stylex.StyleXStyles;
-  children: (item: T, stacked: () => boolean) => Element;
-}) {
-  let el!: HTMLSpanElement;
-  const stacked = () => props.total > 1;
-  const shown = () => props.items.slice(0, stackFit(props.total, props.width, props.stack.slot, props.stack.gap));
-  const more = () => props.total - shown().length;
-  return (
-    <span
-      ref={el}
-      {...stylex.attrs(props.xstyle, stacked() ? props.stack.style : s.labels)}
-      data-perf={props.stack.perf}
-      onPointerEnter={() =>
-        (props.stack.hoverable === "always" || more() > 0) && props.card.enter(props.stack.kind, props.r, el)
-      }
-      onPointerLeave={props.card.hide}
-    >
-      <For each={shown()}>{(x) => props.children(x, stacked)}</For>
-      <Show when={more() > 0}>
-        <span {...stylex.attrs(s.more)}>+{more()}</span>
-      </Show>
-    </span>
-  );
-}
-
-/** A row's labels, stacked when there's more than one; a PR's review chip comes first. */
-function Labels(props: { r: IssueRow; width: number; card: Card }) {
-  const items = (): (Label | { review: ReviewDecision })[] => {
-    const review = props.r.pr?.review;
-    return review ? [{ review }, ...props.r.labels] : props.r.labels;
-  };
-  return (
-    <Stack
-      stack={LABELS}
-      r={props.r}
-      items={items()}
-      total={items().length}
-      width={props.width}
-      card={props.card}
-      xstyle={[s.cell, s.wide, s.w(props.width)]}
-    >
-      {(l, stacked) =>
-        "review" in l ? (
-          <ReviewChip review={l.review} compact />
-        ) : (
-          <span {...stylex.attrs(stacked() ? s.stacked : s.pill)} title={l.name}>
-            <LabelDot color={l.color} />
-            <span {...stylex.attrs(s.clip)}>{l.name}</span>
-          </span>
-        )
-      }
-    </Stack>
-  );
-}
-
-/**
- * A blocked row's open blockers, one chip each (who has it, and its number), stacked as the
- * labels are. Amber and dashed when nobody has it; red when it's itself blocked. Hovering shows a
- * card with every open blocker the row carries, with no fetch.
- */
-function Blockers(props: { r: IssueRow; width: number; card: Card }) {
-  return (
-    <Stack
-      stack={BLOCKERS}
-      r={props.r}
-      items={props.r.blockers}
-      total={props.r.blocked_by}
-      width={props.width}
-      card={props.card}
-    >
-      {(b, stacked) => (
-        <span
-          {...stylex.attrs(s.chip, stacked() && s.chipSmall, blockerStatus(b) === "chain" && s.chain, blockerStatus(b) === "nobody" && s.nobody)}
-          data-perf="blocker"
-        >
-          <Show when={b.assignee} fallback={<span {...stylex.attrs(s.noone, stacked() && s.nooneSmall)} />}>
-            {(who) => <Avatar login={who()} size={stacked() ? 11 : 14} />}
-          </Show>
-          <Show when={b.repo !== props.r.repo}>
-            <span {...stylex.attrs(s.clip)}>{b.repo}</span>
-          </Show>
-          <span {...stylex.attrs(s.num)}>#{b.number}</span>
-        </span>
-      )}
-    </Stack>
-  );
-}
 
 /**
  * A wide list shows every column; a narrow one keeps state, title, number, assignees and age. The
@@ -1055,9 +1165,33 @@ const s = stylex.create({
     overflow: "hidden",
     flexShrink: 0,
   },
-  w: (width: number) => ({
-    width,
+  // The columns' widths, set once for every cell (widthsOf).
+  widths: (labels: number, blockers: number, progress: number, ref: number, who: number, updated: number) => ({
+    [colW.labels]: `${labels}px`,
+    [colW.blockers]: `${blockers}px`,
+    [colW.progress]: `${progress}px`,
+    [colW.ref]: `${ref}px`,
+    [colW.who]: `${who}px`,
+    [colW.updated]: `${updated}px`,
   }),
+  wLabels: {
+    width: colW.labels,
+  },
+  wBlockers: {
+    width: colW.blockers,
+  },
+  wProgress: {
+    width: colW.progress,
+  },
+  wRef: {
+    width: colW.ref,
+  },
+  wWho: {
+    width: colW.who,
+  },
+  wUpdated: {
+    width: colW.updated,
+  },
   wide: {
     display: {
       [NARROW]: "none",
@@ -1225,19 +1359,49 @@ const s = stylex.create({
   },
 });
 
-const LABELS: StackKind = {
-  kind: "labels",
-  slot: slots.labelSlot,
-  gap: slots.labelGap,
-  style: s.stack,
-  hoverable: "when-clipped",
-  perf: "labels",
+/** The class of `styles`, as `stylex.attrs` gives it: for the looks built once, below. */
+function cls(...styles: (stylex.StyleXStyles | false)[]): string {
+  return stylex.attrs(...styles).class ?? "";
+}
+
+/** Each header cell's width. */
+const WIDTH: Record<Column, stylex.StyleXStyles> = {
+  labels: s.wLabels,
+  blockers: s.wBlockers,
+  progress: s.wProgress,
+  ref: s.wRef,
+  who: s.wWho,
+  updated: s.wUpdated,
 };
 
-const BLOCKERS: StackKind = {
-  kind: "blockers",
-  slot: slots.blockerSlot,
-  gap: slots.blockerGap,
-  style: s.chipStack,
-  hoverable: "always",
+/** The row's own look for each mix of selected (1), blocked (2), leaving (4) and context (8). */
+const ROW_LOOK = Array.from({ length: 16 }, (_, f) =>
+  cls(s.row, s.link, (f & 1) !== 0 && s.current, (f & 2) !== 0 && s.blocked, (f & 4) !== 0 && cueStyles.leave, (f & 8) !== 0 && s.context),
+);
+
+function rowLook(f: number): string {
+  return ROW_LOOK[f]!;
+}
+
+/** The looks of a row's parts (rowParts). */
+const LOOK = {
+  matched: cls(s.matched),
+  labelsFlat: cls(s.cell, s.wide, s.wLabels, s.labels),
+  labelsStacked: cls(s.cell, s.wide, s.wLabels, s.stack),
+  labelsPlain: cls(s.labels),
+  stacked: cls(s.stacked),
+  pill: cls(s.pill),
+  clip: cls(s.clip),
+  more: cls(s.more),
+  chipStack: cls(s.chipStack),
+  progress: cls(s.progress),
+  noone: cls(s.noone),
+  nooneSmall: cls(s.noone, s.nooneSmall),
+  num: cls(s.num),
+  /** A blocker's chip, by size (`full` or `small`, stacked) and status (blockerStatus). */
+  chip: Object.fromEntries(
+    (["full", "small"] as const).flatMap((z) =>
+      (["chain", "nobody", "moving"] as const).map((st) => [`${z} ${st}`, cls(s.chip, z === "small" && s.chipSmall, st === "chain" && s.chain, st === "nobody" && s.nobody)]),
+    ),
+  ) as Record<string, string>,
 };

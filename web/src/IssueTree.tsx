@@ -23,12 +23,13 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
+import { effect } from "@solidjs/web";
 import { SessionEnded, checkDrop, getMe, fetchTree, getTree, readAt, signIn, stamp, treeUrl, type IssueOp, type IssueRow, type TreeNode, type TreePage } from "./api";
 import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import { createColumns } from "./columns";
 import { opensKey, opensNow, opensOf, setOpens, used, type Opens } from "./expand";
-import { CardLayer, createCard, keepsSelection, ListHead, PULSE_AFTER_MS, ROW_HEIGHT, Row, type Card, type Cols, type TreeLook } from "./IssueList";
+import { CardLayer, createCard, keepsSelection, ListHead, PULSE_AFTER_MS, ROW_HEIGHT, Row, rowOut, rowOver, widthsOf, type Card, type Cols, type TreeLook } from "./IssueList";
 import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush, writesPaused } from "./live";
@@ -383,7 +384,7 @@ export function IssueTree(props: { search: string; openId?: number }) {
 
   return (
     <>
-      <div ref={column} {...stylex.attrs(s.column)}>
+      <div ref={column} {...stylex.attrs(s.column, widthsOf(cols))}>
         <ListHead cols={cols} time={time().head} />
         <div {...stylex.attrs(s.frame, pulse() && s.pulse)} data-perf="list-frame" aria-busy={pulse() ? "true" : undefined}>
           <Loading fallback={<div {...stylex.attrs(s.scroller)} data-perf="tree" aria-busy="true" />}>
@@ -563,6 +564,11 @@ function Nodes(props: {
       else revealed = true;
     },
   );
+  /**
+   * Whether the row for `id`, `i` rows into the window, is the one in the tab order: a function, as
+   * a conditional written in a row's props would build a new computation on each read.
+   */
+  const tabbable = (id: number, i: number) => (selectedShown() ? selected() === id : i === 0);
   touch("next", () => select(from() < 0 ? 0 : from() + 1));
   touch("previous", () => select(from() < 0 ? 0 : from() - 1));
   touch("first", () => select(0));
@@ -731,6 +737,33 @@ function Nodes(props: {
     if (!child) return;
     send(p.op, p.issue, child.row, child.parent);
   };
+  /** The node whose row holds `el`, if it's still in the tree. */
+  const nodeOf = (el: Element) => {
+    const id = el.closest<HTMLElement>('[data-perf="row"]')?.dataset.id;
+    return id === undefined ? undefined : nodes()[nodeAt(Number(id))];
+  };
+  // A press on a row's grip starts dragging it (mouse only). The tree keeps the pointer while
+  // it's pressed: its moves place the marker, and letting go drops the issue there.
+  const onGrab = (e: PointerEvent) => {
+    const grip = (e.target as Element).closest('[data-perf="tree-grip"]');
+    const n = grip && nodeOf(grip);
+    if (!n || e.button !== 0 || e.pointerType !== "mouse" || !props.drags(n.row)) return;
+    e.preventDefault();
+    scroller.setPointerCapture(e.pointerId);
+    setDragging(n.row.id);
+  };
+  // A click on a chevron is the tree's, not the row link's: handled on the scroller, before the
+  // router's listener on the document sees it (it leaves a click whose default was prevented
+  // alone), and with Shift no new window opens. Shift or Alt opens or closes the whole subtree.
+  const onChevron = (e: MouseEvent) => {
+    const chevron = (e.target as Element).closest('[data-perf="chevron"]');
+    if (!chevron) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const n = nodeOf(chevron);
+    if (n) props.toggle(n, e.shiftKey || e.altKey);
+  };
+
   const markerTop = () => {
     const m = marked();
     if (!m) return 0;
@@ -746,7 +779,10 @@ function Nodes(props: {
 
   return (
     <div
-      ref={scroller}
+      ref={(el) => {
+        scroller = el;
+        el.addEventListener("click", onChevron);
+      }}
       {...stylex.attrs(s.scroller, dragging() !== undefined && s.dragging)}
       role="tree"
       aria-label="Issues"
@@ -754,6 +790,9 @@ function Nodes(props: {
       data-perf="tree"
       data-perf-rows={nodes().length}
       onFocusIn={onFocusIn}
+      onPointerOver={rowOver}
+      onPointerOut={rowOut}
+      onPointerDown={onGrab}
       onPointerUp={() => {
         if (dragging() !== undefined) void dropIt();
       }}
@@ -781,9 +820,8 @@ function Nodes(props: {
           {/* Each row at its own place, as the list's. */}
           <For each={visible().nodes} keyed={(n) => n.row.id}>
             {(n, i) => {
-              // Its place in the tree, built once: read through getters, so it follows the node,
-              // and its lead (indent, grip, chevron) is one component for the row's life. (A
-              // fresh object literal here would build a new lead on every read of it.)
+              // Its place in the tree, read through getters so it follows the node, and its lead
+              // (indent, grip, chevron), built once for the row's life.
               const tree: TreeLook = {
                 get level() {
                   return n().depth + 1;
@@ -794,22 +832,7 @@ function Nodes(props: {
                 get context() {
                   return n().context;
                 },
-                lead: (
-                  <Lead
-                    node={n()}
-                    dragged={dragging() === n().row.id}
-                    drags={props.drags(n().row)}
-                    onToggle={(deep) => props.toggle(n(), deep)}
-                    onGrab={(e) => {
-                      if (e.button !== 0 || e.pointerType !== "mouse" || !props.drags(n().row)) return;
-                      e.preventDefault();
-                      // The tree keeps the pointer while it's pressed: its moves place the
-                      // marker, and letting go drops the issue there.
-                      scroller.setPointerCapture(e.pointerId);
-                      setDragging(n().row.id);
-                    }}
-                  />
-                ),
+                lead: lead(() => ({ node: n(), dragged: dragging() === n().row.id, drags: props.drags(n().row) })),
               };
               return (
                 <Row
@@ -819,7 +842,7 @@ function Nodes(props: {
                   search={props.search}
                   current={props.openId === n().row.id}
                   selected={selected() === n().row.id}
-                  tabbable={selectedShown() ? selected() === n().row.id : i() === 0}
+                  tabbable={tabbable(n().row.id, i())}
                   pos={places().get(n().row.id)?.pos ?? visible().first + i() + 1}
                   of={places().get(n().row.id)?.of ?? -1}
                   leaving={held.cue()?.leaving.has(n().row.id) ?? false}
@@ -860,48 +883,69 @@ function Nodes(props: {
   );
 }
 
-/** A row's lead in the tree: its indent, its chevron (with children) and its drag grip. */
-function Lead(props: { node: TreeNode; dragged: boolean; drags: boolean; onToggle: (deep: boolean) => void; onGrab: (e: PointerEvent) => void }) {
-  const what = () => `${props.node.open ? "Close" : "Open"} ${refOf(props.node.row)}`;
-  // A click on the chevron is the tree's, not the row link's: handled on the element, before the
-  // router's listener on the document sees it (it leaves a click whose default was prevented
-  // alone), and with Shift no new window opens.
-  const own = (el: HTMLElement, run: (e: MouseEvent) => void) =>
-    el.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      run(e);
-    });
-  return (
-    <span {...stylex.attrs(s.lead, props.dragged && s.draggedLead)}>
-      <span {...stylex.attrs(s.indent(props.node.depth * INDENT))} />
-      <Show when={props.drags} fallback={<span {...stylex.attrs(s.gripSpace)} />}>
-        <span
-          aria-hidden="true"
-          title="Drag to move"
-          data-perf="tree-grip"
-          {...stylex.attrs(s.grip)}
-          onPointerDown={(e) => props.onGrab(e)}
-        >
-          ⠿
-        </span>
-      </Show>
-      <Show when={props.node.children > 0} fallback={<span {...stylex.attrs(s.chevron)} />}>
-        <span
-          ref={(el) => own(el, (e) => props.onToggle(e.shiftKey || e.altKey))}
-          aria-hidden="true"
-          title={`${what()} (Shift or Alt: everything under it)`}
-          data-perf="chevron"
-          data-open={props.node.open ? "" : undefined}
-          {...stylex.attrs(s.chevron, s.toggle)}
-        >
-          <svg viewBox="0 0 16 16" width="12" height="12" {...stylex.attrs(s.chevronIcon, props.node.open && s.chevronOpen)}>
-            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" />
-          </svg>
-        </span>
-      </Show>
-    </span>
+/**
+ * A row's lead in the tree: its indent, its chevron (with children) and its drag grip, as plain
+ * DOM kept current by one effect. The tree's scroller handles presses on the grip and clicks on
+ * the chevron (`onGrab`, `onChevron`).
+ */
+function lead(look: () => { node: TreeNode; dragged: boolean; drags: boolean }): HTMLElement {
+  const el = document.createElement("span");
+  const indent = document.createElement("span");
+  let grip: HTMLElement | undefined;
+  let chevron: HTMLElement | undefined;
+  el.append(indent);
+  effect(
+    () => {
+      const { node, dragged, drags } = look();
+      return { depth: node.depth, dragged, drags, open: node.open, children: node.children > 0, ref: node.children > 0 ? refOf(node.row) : "" };
+    },
+    (v, p) => {
+      if (v.dragged !== p?.dragged) el.className = v.dragged ? LEAD.dragged : LEAD.plain;
+      if (v.depth !== p?.depth) {
+        const a = stylex.attrs(s.indent(v.depth * INDENT));
+        indent.className = a.class ?? "";
+        indent.setAttribute("style", a.style ?? "");
+      }
+      if (v.drags !== p?.drags) {
+        const next = document.createElement("span");
+        if (v.drags) {
+          next.className = LEAD.grip;
+          next.setAttribute("aria-hidden", "true");
+          next.title = "Drag to move";
+          next.dataset.perf = "tree-grip";
+          next.textContent = "⠿";
+        } else next.className = LEAD.gripSpace;
+        if (grip) grip.replaceWith(next);
+        else el.append(next);
+        grip = next;
+      }
+      if (v.children !== p?.children) {
+        const next = v.children ? chevronNode() : document.createElement("span");
+        if (!v.children) next.className = LEAD.chevron;
+        if (chevron) chevron.replaceWith(next);
+        else el.append(next);
+        chevron = next;
+      }
+      if (v.children && (v.open !== p?.open || v.ref !== p?.ref || v.children !== p?.children)) {
+        chevron!.title = `${v.open ? "Close" : "Open"} ${v.ref} (Shift or Alt: everything under it)`;
+        if (v.open) chevron!.dataset.open = "";
+        else delete chevron!.dataset.open;
+        chevron!.firstElementChild!.setAttribute("class", v.open ? LEAD.iconOpen : LEAD.icon);
+      }
+    },
   );
+  return el;
+}
+
+/** A chevron that opens or closes its row (its title and state set by `lead`). */
+function chevronNode(): HTMLElement {
+  return (
+    <span aria-hidden="true" data-perf="chevron" {...stylex.attrs(s.chevron, s.toggle)}>
+      <svg viewBox="0 0 16 16" width="12" height="12">
+        <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    </span>
+  ) as HTMLElement;
 }
 
 const pulseOutline = stylex.keyframes({
@@ -1079,3 +1123,19 @@ const s = stylex.create({
     color: colors.muted,
   },
 });
+
+/** The class of `styles`, as `stylex.attrs` gives it: for the looks built once, below. */
+function cls(...styles: (stylex.StyleXStyles | false)[]): string {
+  return stylex.attrs(...styles).class ?? "";
+}
+
+/** The looks of a row's lead (`lead`). */
+const LEAD = {
+  plain: cls(s.lead),
+  dragged: cls(s.lead, s.draggedLead),
+  grip: cls(s.grip),
+  gripSpace: cls(s.gripSpace),
+  chevron: cls(s.chevron),
+  icon: cls(s.chevronIcon),
+  iconOpen: cls(s.chevronIcon, s.chevronOpen),
+};
