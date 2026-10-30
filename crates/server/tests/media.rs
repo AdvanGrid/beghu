@@ -49,6 +49,21 @@ async fn until_comment(s: &Stack, b: &mut Browser, t: &Value, md: &str) -> (Valu
     }
 }
 
+/// The `media` map of `t`'s newest comments once it has every one of `srcs`. A webhook's
+/// measuring may land after the comment shows: past its wait, or past the detail's.
+async fn until_media(s: &Stack, b: &mut Browser, t: &Value, srcs: &[String]) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let path = format!("/api/issues/{}/comments?order=newest", t["id"]);
+        let (_, page) = s.api(b, &path).await;
+        if srcs.iter().all(|src| page["media"].get(src).is_some()) {
+            return page["media"].clone();
+        }
+        assert!(Instant::now() < deadline, "never measured: {page}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Writes `md` as a comment on `t` on GitHub (an outside edit, with its webhook), and returns it
 /// as the thread shows it, with its page's `media` map.
 async fn comment(s: &Stack, b: &mut Browser, t: &Value, md: &str) -> (Value, Value) {
@@ -185,13 +200,14 @@ async fn a_video_seeks_through_range_and_a_seek_after_the_minted_url_expires_min
     // The editor puts a video's bare URL on its own line: a media node, which minting found to
     // be a video.
     let md = format!("Here's the bug:\n\n{}\n", up["markdown"].as_str().unwrap());
-    let (c, media) = comment(&s, &mut b, &t, &md).await;
+    let (c, _) = comment(&s, &mut b, &t, &md).await;
     let src = format!("/api/attachments/{uuid}");
     assert_eq!(
         media_nodes(&c["body"]),
         [("media".to_owned(), json!({ "src": src, "href": up["url"] }))]
     );
     // Its frame size too, read from its first bytes, so its box is kept before it loads.
+    let media = until_media(&s, &mut b, &t, std::slice::from_ref(&src)).await;
     assert_eq!(
         media[&src],
         json!({ "w": 320, "h": 180, "type": "video/webm" }),
@@ -535,16 +551,7 @@ async fn an_image_known_not_to_load_says_why_before_the_browser_asks() {
     ];
     let srcs = images(&s, &mut b, &t, &urls).await;
     // The webhook measured them before its push; the detail says why each won't load.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let media = loop {
-        let path = format!("/api/issues/{}/comments?order=newest", t["id"]);
-        let (_, page) = s.api(&mut b, &path).await;
-        if srcs.iter().all(|src| page["media"].get(src).is_some()) {
-            break page["media"].clone();
-        }
-        assert!(Instant::now() < deadline, "{page}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    let media = until_media(&s, &mut b, &t, &srcs).await;
     assert_eq!(media[&srcs[0]]["unavailable"], "too_large", "{media}");
     assert_eq!(media[&srcs[1]]["unavailable"], "not_image", "{media}");
     assert_eq!(media[&srcs[2]]["unavailable"], "blocked", "{media}");
