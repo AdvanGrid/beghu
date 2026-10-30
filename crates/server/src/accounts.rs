@@ -404,7 +404,8 @@ rel="external">Authorized GitHub Apps</a>, revoke it there.</p>
 /// start are made under the account's token lock, which a sign-in stores its pair under before
 /// it revives the mirror: so a sign-in lands wholly before the check, or revives a mirror whose
 /// delete is under way, which then comes back empty and imports. After the delete, the status is
-/// read again under the lock: a sign-in that landed meanwhile keeps its sync state and its tabs.
+/// read again under the lock: a sign-in that landed meanwhile keeps its tabs. What sync missed
+/// in the deleted mirror is forgotten either way.
 pub async fn lost_access(app: &App, account: i64) {
     let deleting = {
         let _turn = app.tokens().hold(account).await;
@@ -414,18 +415,32 @@ pub async fn lost_access(app: &App, account: i64) {
         app.imports().stop(account);
         app.mirrors().delete(account)
     };
-    match deleting.await {
-        Ok(()) => eprintln!("account {account}: lost access; its mirror is deleted"),
+    let deleted = match deleting.await {
+        Ok(()) => {
+            eprintln!("account {account}: lost access; its mirror is deleted");
+            true
+        }
         Err(mirror_db::Error::Sealed) => {
             eprintln!(
                 "account {account}: lost access as beghu stopped; the next start deletes its mirror"
-            )
+            );
+            false
         }
-        Err(e) => eprintln!("account {account}: deleting its mirror: {e}"),
+        Err(e) => {
+            eprintln!("account {account}: deleting its mirror: {e}");
+            false
+        }
+    };
+    // What sync missed in the mirror (a delivery that failed on it, a sweep's repair) went with
+    // it: the mirror that follows, whether a sign-in revived it during the delete or comes after,
+    // imports everything afresh. Forgotten now, before that import finds misses of its own, and
+    // whoever wins below: left, the account would show "sync degraded" from its sign-in on.
+    if deleted {
+        forget_sync(app, account).await;
     }
     // Read once more, under the token lock, which a sign-in activates the account under: one that
     // landed while the mirror was being deleted wins, and its mirror comes back (empty, so it
-    // imports); its sync state, resync mark and tabs are left alone.
+    // imports); its tabs are left alone.
     let turn = app.tokens().hold(account).await;
     if status_of(app, account).await == Some(AccountStatus::Active) {
         drop(turn);
@@ -433,9 +448,17 @@ pub async fn lost_access(app: &App, account: i64) {
         crate::repos::refresh_roles_now(app, account).await;
         return;
     }
-    // What sync missed in the mirror (a delivery that failed on it, a sweep's repair): with the
-    // mirror gone there's nothing to repair, and the import after a sign-in reads everything
-    // afresh. Left, the account would show "sync degraded" from its first sign-in after.
+    if !deleted {
+        forget_sync(app, account).await;
+    }
+    // After the delete, so a tab that signs in again from here finds the mirror gone.
+    app.hub()
+        .publish(account, Push::switched(Some(account), true));
+}
+
+/// Forgets what sync missed in the account's mirror, deleted as it lost access or went dormant:
+/// its sweeps' repairs and its resync mark.
+async fn forget_sync(app: &App, account: i64) {
     app.reconcile().forget(account);
     if let Err(e) = app
         .control()
@@ -444,9 +467,6 @@ pub async fn lost_access(app: &App, account: i64) {
     {
         eprintln!("account {account}: forgetting its resync mark: {e}");
     }
-    // After the delete, so a tab that signs in again from here finds the mirror gone.
-    app.hub()
-        .publish(account, Push::switched(Some(account), true));
 }
 
 /// The account's status, if it can be read.
@@ -550,18 +570,14 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
     match app.mirrors().delete_if(account, check).await {
         Ok(Decision::Deleted) => {
             eprintln!("account {account}: unused for a while; dormant, its mirror deleted");
-            // A request may have woken it already: its sync state is then its own again.
+            // What sync missed in the mirror went with it: the mirror that follows, whether a
+            // request woke the account during the delete or comes later, imports everything
+            // afresh. Forgotten now, before that import finds misses of its own, and whether or
+            // not it woke: left, the account would show "sync degraded" once it's back.
+            forget_sync(app, account).await;
+            // A request may have woken it already: its repos stay in the sweeps.
             if status_of(app, account).await != Some(AccountStatus::Dormant) {
                 return;
-            }
-            // Nothing left to repair: its next use imports everything afresh.
-            app.reconcile().forget(account);
-            if let Err(e) = app
-                .control()
-                .write(move |tx| q::forget_needs_resync(tx, account))
-                .await
-            {
-                eprintln!("account {account}: forgetting its resync mark: {e}");
             }
             // Its repos leave the sweeps, unless an active account syncs them too.
             app.reconcile().repos_changed();

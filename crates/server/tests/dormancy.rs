@@ -409,3 +409,46 @@ async fn a_dormant_account_used_or_signed_in_again_re_imports_what_it_can_still_
     let id = listed[0]["id"].as_i64().unwrap();
     assert_eq!(title_of(&s, &b, id).await, listed[0]["title"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_that_went_dormant_with_sync_degraded_wakes_to_healthy_sync() {
+    let s = start_with(|c| {
+        dormant_after_3s(c);
+        c.reconcile.tick = Duration::from_millis(100);
+        c.reconcile.probe_every = Duration::from_millis(300);
+        c.reconcile.count_every = Duration::from_millis(600);
+        c.reconcile.webhook_grace = Duration::ZERO;
+    })
+    .await;
+    let s = &s;
+    let (mut b, tomsj) = signed_in(s, "tomsj").await;
+    let issue = rows(s, &b, "is:issue is:open repo:acme/web").await[0].clone();
+    // A webhook lost: a sweep repairs the change and the account's sync is degraded.
+    s.fake("POST", "/faults/webhooks", json!({ "drop": 1 }))
+        .await;
+    s.edit(json!({ "repo": "acme/web", "number": issue["number"], "title": "Webhook lost" }))
+        .await;
+    until(5.0, "sync degraded", || {
+        let mut b = b.clone();
+        async move { (me(s, &mut b).await["sync"]["degraded"] == true).then_some(()) }
+    })
+    .await;
+
+    // Unused, it goes dormant and its mirror is deleted; its next request wakes it, and the
+    // mirror re-imports afresh: nothing the old one missed is left to repair or to say.
+    until_dormant(s, tomsj).await;
+    s.api(&mut b, "/api/me").await;
+    until(30.0, "the re-import to end", || {
+        let mut b = b.clone();
+        async move {
+            let me = me(s, &mut b).await;
+            (me["import"].is_null() && status_of(s, tomsj) == "active").then_some(())
+        }
+    })
+    .await;
+    assert_eq!(
+        title_of(s, &b, issue["id"].as_i64().unwrap()).await,
+        "Webhook lost"
+    );
+    assert_eq!(me(s, &mut b).await["sync"], Value::Null);
+}
