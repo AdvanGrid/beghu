@@ -2,9 +2,10 @@
 // review chip, a user's avatar, sub-issue progress as a ring, the button that reads as a link, and
 // how a control the account's role leaves out is withheld.
 import * as stylex from "@stylexjs/stylex";
-import { Show } from "solid-js";
+import { Show, type Element } from "solid-js";
 import type { PrStatus } from "./bindings/PrStatus";
 import type { ReviewDecision } from "./bindings/ReviewDecision";
+import { cx, cxMap, cxTable } from "./cx";
 import { colors } from "./tokens.stylex";
 
 /** A button that reads as a link: underlined, in the accent colour (Retry, Resync). */
@@ -121,6 +122,71 @@ export function PrIcon(props: { status: PrStatus; plain?: boolean }) {
   );
 }
 
+/** What a list row's state icon shows: its issue's state, or its PR's status. */
+export type RowIconKey = IssueState | `pr-${PrStatus}`;
+
+/** A list row's icon key. */
+export function rowIconKey(r: { state: string; state_reason: string | null; pr: { status: PrStatus } | null }): RowIconKey {
+  return r.pr ? `pr-${r.pr.status}` : issueState(r);
+}
+
+/**
+ * The state icons a list row shows, one static template per key: nothing in them is reactive, and
+ * they carry no class (an element's `class` binding is an effect), so the row's state cell takes
+ * the colour (ROW_ICON_COLOUR) and the icon paints in currentColor. The same shapes as StateIcon's
+ * and PrIcon's.
+ */
+export const ROW_ICONS: Record<RowIconKey, () => Element> = {
+  open: () => (
+    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Open">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="8" cy="8" r="1.5" fill="currentColor" />
+    </svg>
+  ),
+  done: () => (
+    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Closed as completed">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M5.2 8.2 7.1 10l3.7-4" fill="none" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+  ),
+  notPlanned: () => (
+    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Closed as not planned">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+  ),
+  "pr-open": () => prShape("open"),
+  "pr-draft": () => prShape("draft"),
+  "pr-closed": () => prShape("closed"),
+  "pr-merged": () => (
+    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Merged pull request" data-pr-status="merged">
+      <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M4 5.25v5.5M4 5.5c0 3 2.5 3.5 6.25 3.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="12" cy="9" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+  ),
+};
+
+/** The pull-request shape (open, draft, closed), for ROW_ICONS. */
+function prShape(status: Exclude<PrStatus, "merged">) {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label={PR_LABEL[status]} data-pr-status={status}>
+      <circle cx="4" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="4" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M4 5.25v5.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="12" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path
+        d="M12 10.75V6.5a2 2 0 0 0-2-2H7.25M8.75 3l-1.5 1.5 1.5 1.5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-dasharray={status === "draft" ? "1.5 1.5" : undefined}
+      />
+    </svg>
+  );
+}
+
 export const REVIEW_LABEL: Record<ReviewDecision, string> = {
   approved: "Approved",
   changes_requested: "Changes requested",
@@ -138,48 +204,41 @@ const REVIEW_SHORT: Record<ReviewDecision, string> = {
 export function ReviewChip(props: { review: ReviewDecision; compact?: boolean }) {
   return (
     <span
-      {...stylex.attrs(s.chip, props.compact && s.compactChip, review[props.review])}
+      class={REVIEW_CHIP[props.compact ? 1 : 0]![props.review]}
       data-perf="review"
       data-review={props.review}
       title={`Review: ${REVIEW_LABEL[props.review]}`}
-    >
-      {(props.compact ? REVIEW_SHORT : REVIEW_LABEL)[props.review]}
-    </span>
+      textContent={(props.compact ? REVIEW_SHORT : REVIEW_LABEL)[props.review]}
+    />
   );
 }
 
 /** A user's initial on a colour that stays the same for their login. */
 export function Avatar(props: { login: string; size?: 11 | 14 | 18 | 20 }) {
-  return (
-    <span
-      title={props.login}
-      {...stylex.attrs(s.avatar, props.size && SIZES[props.size], AVATARS[hash(props.login) % AVATARS.length])}
-    >
-      {props.login.slice(0, 1).toUpperCase()}
-    </span>
-  );
+  return <span title={props.login} class={AVATAR[avatarLook(props.login, props.size)]} textContent={props.login.slice(0, 1).toUpperCase()} />;
+}
+
+/** The entry of AVATAR for `login` at `size`. */
+function avatarLook(login: string, size: 11 | 14 | 18 | 20 = 18): number {
+  return SIZE_INDEX[size] * AVATARS.length + (hash(login) % AVATARS.length);
 }
 
 /** Sub-issue progress: closed descendants against all of them, as a ring. */
 export function ProgressRing(props: { done: number; total: number }) {
-  // The ring's circumference (r = 6).
-  const C = 37.7;
-  const filled = () => (props.total > 0 ? (props.done / props.total) * C : 0);
   return (
-    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" {...stylex.attrs(s.icon)}>
-      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" {...stylex.attrs(s.ring)} />
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke-width="3"
-        stroke-dasharray={`${filled()} ${C}`}
-        transform="rotate(-90 8 8)"
-        {...stylex.attrs(s.ringDone)}
-      />
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" class={ICON}>
+      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" class={RING} />
+      <circle cx="8" cy="8" r="6" fill="none" stroke-width="3" stroke-dasharray={ringDash(props.done, props.total)} transform="rotate(-90 8 8)" class={RING_DONE} />
     </svg>
   );
+}
+
+/** The ring's circumference (r = 6). */
+const C = 37.7;
+
+/** The filled part of the ring's stroke, then the rest. */
+function ringDash(done: number, total: number): string {
+  return `${total > 0 ? (done / total) * C : 0} ${C}`;
 }
 
 /** A stable small hash, so a login keeps its avatar colour. */
@@ -262,7 +321,8 @@ const sizes = stylex.create({
   s14: { fontSize: 8, height: 14, width: 14 },
   s20: { fontSize: 11, height: 20, width: 20 },
 });
-const SIZES = { 11: sizes.s11, 14: sizes.s14, 18: undefined, 20: sizes.s20 };
+const SIZES = [sizes.s11, sizes.s14, undefined, sizes.s20];
+const SIZE_INDEX = { 11: 0, 14: 1, 18: 2, 20: 3 } as const;
 
 const a = stylex.create({
   c0: { backgroundColor: colors.avatar0 },
@@ -273,3 +333,24 @@ const a = stylex.create({
   c5: { backgroundColor: colors.avatar5 },
 });
 const AVATARS = [a.c0, a.c1, a.c2, a.c3, a.c4, a.c5];
+
+// The class strings of the parts above that a list row builds (cx.ts).
+const ICON = cx(s.icon);
+const RING = cx(s.ring);
+const RING_DONE = cx(s.ringDone);
+const REVIEWS = ["approved", "changes_requested", "review_required"] as const;
+/** By compactness (0, 1), then decision. */
+const REVIEW_CHIP = [cxMap(REVIEWS, (k) => [s.chip, review[k]]), cxMap(REVIEWS, (k) => [s.chip, s.compactChip, review[k]])];
+/** By size (SIZE_INDEX), then colour. */
+const AVATAR = cxTable(SIZES.length * AVATARS.length, (i) => [s.avatar, SIZES[Math.floor(i / AVATARS.length)], AVATARS[i % AVATARS.length]]);
+
+/** The colour of a list row's state icon, for the cell it sits in (ROW_ICONS). */
+export const ROW_ICON_COLOUR: Record<RowIconKey, stylex.StyleXStyles> = {
+  open: s.open,
+  done: s.done,
+  notPlanned: s.notPlanned,
+  "pr-open": pr.open,
+  "pr-draft": pr.draft,
+  "pr-merged": pr.merged,
+  "pr-closed": pr.closed,
+};

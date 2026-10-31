@@ -47,9 +47,13 @@ CI runs all of these; run them before you commit:
   stays out of first-load JS; its CSS still goes in the one stylesheet, so nothing splits CSS).
   Every page supports
   light and dark mode: each token is a `light-dark()` pair, and `web/theme.js` sets
-  `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`, never a `class` or
-  `style` attribute; the only CSS file is `web/src/escape.css`, one comment per rule. The lint
-  enforces all three. Pages outside the web app (the server's and Fake GitHub's plain HTML pages)
+  `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`. Where a list builds an
+  element per row (the list's and Tree mode's rows), `class={…}` may instead take a class string
+  StyleX made once: a module-level constant from a `web/src/cx.ts` function (`cx`, `cxTable`,
+  `cxMap`), an entry of one, or a choice of two such; never a hand-written class. `style` may only
+  set CSS custom properties (`style={{ "--row-y": … }}`), read by a static style. No `className`,
+  `classList` or other `style`. The only CSS file is `web/src/escape.css`, one comment per rule.
+  The lint enforces all of these. Pages outside the web app (the server's and Fake GitHub's plain HTML pages)
   use system colours (`Canvas`, `CanvasText`, `GrayText`, `LinkText`) under
   `color-scheme: light dark`, never literals. GitHub label colours are data, not design: they
   come from GitHub per label and are exempt from the token rule (passed into a dynamic style,
