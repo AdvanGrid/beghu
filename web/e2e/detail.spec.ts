@@ -94,6 +94,9 @@ test("hovering a row preloads its detail, and the click shows it with no placeho
   expect(await placeholders()).toBe(0);
   expect(api.filter((p) => p === `/api/issues/${id}`)).toHaveLength(1);
   await expect(row).toHaveAttribute("aria-current", "page");
+  // The row's own `aria-current`: the router leaves rows unclaimed (Row's `prop:href`), so it
+  // marks no row active.
+  await expect(row).not.toHaveAttribute("data-active");
 });
 
 test("a hover longer than a preload lasts still opens the issue with no placeholder frame, then refreshes it", async ({ page }) => {
@@ -235,6 +238,24 @@ test("below 900 px the panel sits under the list, 40% list to 60% issue", async 
   expect(issue.width).toBe(800);
   expect(list.height / (list.height + issue.height)).toBeCloseTo(0.4, 1);
   await expect(page.locator('[data-perf="divider"]')).toHaveCount(0);
+});
+
+test("a narrow list leaves out the labels column, a row with one label as well as one with several", async ({ page }) => {
+  await signIn(page);
+  const labels = page.locator('[data-perf="labels"]');
+  /** The labels cells shown, by how many labels (or review chips) each holds: one, or several. */
+  const shown = () =>
+    labels.evaluateAll((els) => {
+      const on = els.filter((e) => getComputedStyle(e).display !== "none");
+      return { one: on.filter((e) => e.children.length === 1).length, several: on.filter((e) => e.children.length > 1).length };
+    });
+  // Wide, both kinds show (the 1k fixture's first rows hold both).
+  const wide = await shown();
+  expect(wide.one).toBeGreaterThan(0);
+  expect(wide.several).toBeGreaterThan(0);
+  // Under the list's 700 px, neither does.
+  await page.setViewportSize({ width: 600, height: 900 });
+  await expect.poll(shown).toEqual({ one: 0, several: 0 });
 });
 
 test("the divider resizes, keeps 360 px either side, and is remembered on this device", async ({ page }) => {

@@ -9,10 +9,15 @@ export function ago(unixSeconds: number, now = Date.now() / 1000): string {
   return `${Math.floor(s / (365 * 86400))}y`;
 }
 
-/** The full date, for a tooltip. */
+/**
+ * The full date, for a tooltip: `Date.prototype.toLocaleString()`'s text (the locale's date and
+ * time, to the second), from one formatter made once rather than one per call.
+ */
 export function fullDate(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString();
+  return FULL.format(unixSeconds * 1000);
 }
+
+const FULL = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
 
 /**
  * The time of day, to the minute, in the browser's locale ("14:05" or "2:05 PM"), with the day
