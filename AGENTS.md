@@ -47,13 +47,21 @@ CI runs all of these; run them before you commit:
   stays out of first-load JS; its CSS still goes in the one stylesheet, so nothing splits CSS).
   Every page supports
   light and dark mode: each token is a `light-dark()` pair, and `web/theme.js` sets
-  `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`, never a `class` or
-  `style` attribute; the only CSS file is `web/src/escape.css`, one comment per rule. The lint
-  enforces all three. Pages outside the web app (the server's and Fake GitHub's plain HTML pages)
-  use system colours (`Canvas`, `CanvasText`, `GrayText`, `LinkText`) under
-  `color-scheme: light dark`, never literals. GitHub label colours are data, not design: they
-  come from GitHub per label and are exempt from the token rule (passed into a dynamic style,
-  as the list's label dots do).
+  `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`, or with `class={…}`
+  bound to a class string StyleX made once: a module-level constant from a `web/src/cx.ts`
+  function (`cx`, `cxTable`, `cxMap`), an entry of one, or a choice of two such, never a
+  hand-written class. The lint allows that constant on any element; use it where elements are
+  built by the thousand (the list's and Tree mode's rows, and the parts they share such as
+  avatars, review chips and label dots), where a spread costs, and the spread elsewhere. `style`
+  may only set CSS custom properties (`style={{ "--row-y": … }}`), read by a static style. No
+  `className`, `classList` or other `style`. The only CSS file is `web/src/escape.css`, one
+  comment per rule. The lint enforces all of these. A width a row's styles draw with and its
+  code measures by (a slot, an avatar) is one constant in `web/src/layout.stylex.ts`, read by
+  both. Pages outside the web app (the server's and Fake GitHub's plain HTML pages) use system colours (`Canvas`,
+  `CanvasText`, `GrayText`, `LinkText`) under `color-scheme: light dark`, never literals. GitHub
+  label colours are data, not design: they come from GitHub per label and are exempt from the
+  token rule (passed into a dynamic style, as the detail's label dots do, or a custom property,
+  as the list's do).
 - **Check UI changes in fixture mode.** Start the stack, sign in as a fixture user
   (`./dev-ctl login <user>`), and drive the failure states with `./dev-ctl fake …` (latency,
   failing calls, down). Look at the change in both themes. `./dev-ctl reset` puts the mirrors and

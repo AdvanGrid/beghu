@@ -1,6 +1,6 @@
 // Lint for the web app, local and in CI: StyleX's own rules, plus beghu's (eslint-rules.js):
-// colours only from the token modules, no class or style attributes in JSX, and no CSS import
-// but the escape stylesheet.
+// colours only from the token modules, no class or style attributes in JSX but StyleX class
+// constants (src/cx.ts) and custom properties, and no CSS import but the escape stylesheet.
 import css from "@eslint/css";
 import stylex from "@stylexjs/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";

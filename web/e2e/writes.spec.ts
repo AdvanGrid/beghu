@@ -882,6 +882,25 @@ test("a write with no answer for 15 s shows still sending, with no Retry, then l
   }
 });
 
+/** A list row: its issue, its place in the list (from 1) and its top, and whether it's on screen. */
+type Place = { id: string | null; pos: string | null; top: number; onScreen: boolean };
+
+/** Every row the list's DOM holds, in DOM order. */
+function places(page: Page): Promise<Place[]> {
+  return rows(page).evaluateAll((els) => {
+    const view = els[0]?.closest('[data-perf="list"]')?.getBoundingClientRect();
+    return els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        id: el.getAttribute("data-id"),
+        pos: el.getAttribute("aria-posinset"),
+        top: (el as HTMLElement).offsetTop,
+        onScreen: view !== undefined && r.bottom > view.top && r.top < view.bottom,
+      };
+    });
+  });
+}
+
 test("a pending close shows on its row but never moves, adds or removes a row", { tag: "@alone" }, async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
@@ -895,15 +914,26 @@ test("a pending close shows on its row but never moves, adds or removes a row", 
     // The list renders only the rows in its window: bring the issue's row into it (34 px rows).
     await page.locator('[data-perf="list"]').evaluate((el, y) => el.scrollTo(0, y), issue.index * 34 - 100);
     await expect(row).toBeVisible();
-    const order = () => rows(page).evaluateAll((els) => els.map((el) => el.getAttribute("data-id")));
-    const before = await order();
+    // Each row by its issue and place, not which rows the DOM holds: as a scroll ends, the rows
+    // kept past the window's edges move from ahead of the scroll to both sides, so the DOM's rows
+    // change while no row moves.
+    const before = await places(page);
     const count = await page.locator('[data-perf="list"]').getAttribute("data-perf-rows");
 
     await fake("/faults/latency", { endpoint: ISSUE(issue), ms: 3000 });
     await button(page, "Close issue").click();
     await expect(row.getByRole("img", { name: "Closed as completed" })).toBeVisible();
     await expect(badge(page)).toHaveText("Closed");
-    expect(await order()).toEqual(before);
+    const after = await places(page);
+    // The rows on screen are the same issues at the same places, the closed one among them.
+    const onScreen = (ps: Place[]) => ps.filter((p) => p.onScreen).map(({ id, pos, top }) => ({ id, pos, top }));
+    expect(onScreen(after)).toEqual(onScreen(before));
+    expect(onScreen(after).map((p) => p.id)).toContain(String(issue.id));
+    // And every row both hold, on screen or not: an issue at one place, and one issue at a place.
+    for (const a of after) {
+      const was = before.find((b) => b.id === a.id || b.pos === a.pos);
+      if (was) expect({ id: a.id, pos: a.pos, top: a.top }).toEqual({ id: was.id, pos: was.pos, top: was.top });
+    }
     await expect(page.locator('[data-perf="list"]')).toHaveAttribute("data-perf-rows", count!);
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });
