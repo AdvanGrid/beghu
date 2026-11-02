@@ -482,6 +482,41 @@ async fn a_row_ranks_by_the_best_field_any_word_is_in() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_number_names_its_issue_which_ranks_above_every_field() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let rows = all(&s, &mut b, "is:open repo:web sort:created").await;
+    // Newest first by creation: the body and title mentions are newer than the issue named.
+    let (body, title, named) = (&rows[0], &rows[5], &rows[30]);
+    let n = named["number"].as_i64().unwrap();
+    edit(&s, body, json!({ "body": format!("Blocked on #{n}.") })).await;
+    edit(&s, title, json!({ "title": format!("Follow up {n}") })).await;
+    let three: BTreeSet<i64> = [id(body), id(title), id(named)].into();
+    let q = |rest: &str| format!("is:open repo:web {rest}");
+    until(&s, &mut b, &q(&n.to_string()), &three).await;
+    // With or without `#`, under Blend and Best: the issue named first, though it's the oldest
+    // and its text never says the number; then the title, then the body.
+    for text in [n.to_string(), format!("#{n}")] {
+        for mode in ["", "match:best"] {
+            let got = order(&all(&s, &mut b, &q(&format!("{text} sort:created {mode}"))).await);
+            assert_eq!(got, [id(named), id(title), id(body)], "{text} {mode}");
+        }
+        // Off: the number only filters.
+        let off = order(&all(&s, &mut b, &q(&format!("{text} sort:created match:off"))).await);
+        assert_eq!(off, [id(body), id(title), id(named)], "{text} match:off");
+    }
+    // With another word, the issue named must match that too.
+    let both = ids(&s, &mut b, &q(&format!("{n} blocked"))).await;
+    assert_eq!(both, [id(body)].into());
+    // `-n` leaves out the issue named as well as the mentions.
+    let without = ids(&s, &mut b, &q(&format!("-{n}"))).await;
+    assert!(without.is_disjoint(&three), "{without:?}");
+    // A phrase is text only.
+    let phrase = ids(&s, &mut b, &q(&format!("\"{n}\""))).await;
+    assert_eq!(phrase, [id(body), id(title)].into());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cursor_from_another_order_is_refused() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
@@ -564,7 +599,7 @@ async fn a_crafted_cursor_out_of_range_is_refused() {
             format!("{}.-9223372036854775808.0.1", tag(&best)),
         ),
         ("laptop match:best", format!("{}.1.0.1", tag(&best))),
-        ("laptop match:best", format!("{}.-3.0.1", tag(&best))),
+        ("laptop match:best", format!("{}.-4.0.1", tag(&best))),
     ];
     for (q, cur) in bad {
         for param in ["after", "through"] {

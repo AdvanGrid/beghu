@@ -133,7 +133,7 @@ In Tree mode, an ancestor shown only because one of the view's matches is below 
 _Avoid_: Dimmed ancestor, filler node
 
 **Match mode**:
-How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters).
+How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters). Under Blend and Best match, an issue whose number a word names (`2273`, `#2273`) comes before every field's matches.
 _Avoid_: Relevance, search ranking
 
 **Preference**:

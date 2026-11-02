@@ -1,5 +1,5 @@
 // Tree mode (`?mode=tree`, #108): the view's issues nested under their parents, sub-issues in
-// GitHub's order. Its own chunk (Root.tsx loads it when the URL asks for the tree). The server
+// GitHub's order, except that those with a match at or under them come first. Its own chunk (Root.tsx loads it when the URL asks for the tree). The server
 // builds the tree (crates/server/src/tree.rs): roots in the view's sort (or by the best Match in
 // their subtree), each followed by what it shows open, depth first, which this lists as the list
 // does its rows: 34 px rows, only those on screen in the DOM, more roots loading near the end, a
@@ -11,14 +11,17 @@
 // tree, another view, opening or closing a node (here or in another tab), a drop, the next roots.
 //
 // - A chevron opens one level; Shift- or Alt-click opens the whole subtree (and on an open node,
-//   closes it and everything under it). What's open is kept per query on this device (expand.ts).
+//   closes it and everything under it). What's open is one state on this device for every query
+//   (expand.ts), so changing the filter narrows the tree as it is rather than closing it.
 // - Context, the ancestors shown only for a match below them, is dimmed but selectable, and opens
-//   by default, so a filtered tree arrives opened along each path to a match.
+//   by default, so a filtered tree arrives opened along each path to a match. A match's children
+//   that aren't matches are dimmed too.
 // - The keys are the list's (↑ ↓ Home End, j/k) and the tree's: → opens a closed node or steps to
 //   an open one's first child, ← closes an open node or steps out to its parent.
 // - A row's grip drags it (mouse only, as the spec has it for v1): its top or bottom edge places it
 //   beside a row, its middle nests it under one. Where GitHub would refuse it, the drop marker says
-//   why (the server's reasons, `/api/tree/drop`) and dropping does nothing. A drop is a write of the
+//   why (the server's reasons, `/api/tree/drop`, or that a parent shows its matches first, out of
+//   GitHub's order) and dropping does nothing. A drop is a write of the
 //   detail's own kinds (`sub_reorder`, `sub_add` moving it, `sub_remove`), shown at once.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
@@ -27,7 +30,7 @@ import { SessionEnded, checkDrop, getMe, fetchTree, getTree, readAt, signIn, sta
 import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import { createColumns } from "./columns";
-import { opensKey, opensNow, opensOf, setOpens, used, type Opens } from "./expand";
+import { opens, opensKey, opensNow, setOpens, type Opens } from "./expand";
 import { CardLayer, createCard, createRowFocus, keepsSelection, ListHead, PULSE_AFTER_MS, ROW_HEIGHT, Row, widthsOf, type Card, type Cols, type TreeLook } from "./IssueList";
 import { cx, cxTable } from "./cx";
 import { applyNextAtOnce, createHeld } from "./held";
@@ -70,6 +73,7 @@ export function canDrag(r: IssueRow, repos: readonly Repo[]): boolean {
 
 /** Why a drop beside a root can't be made: roots follow the view's sort, not an order of their own. */
 const ROOTS_SORTED = "Top-level issues follow the view's sort; remove its parent from the issue's panel";
+const KIDS_SORTED = "These sub-issues show the matches first; clear the filter to reorder them";
 
 /** `nodes` with `n`'s subtree (the rows after it, deeper than it) left out, and how many rows that was. */
 function subtreeEnd(nodes: readonly TreeNode[], at: number): number {
@@ -165,9 +169,9 @@ export function IssueTree(props: { search: string; openId?: number }) {
   const [page, setPage] = createSignal<TreePage>(() => {
     const gen = ++generation;
     const search = props.search;
-    const opens = opensNow(queryOf(search));
+    const o = opensNow();
     const sel = gen === 1 && switched ? untrack(() => props.openId) : undefined;
-    const fetched = getTree(treeUrl(search, opens, sel === undefined ? {} : { sel: String(sel) }));
+    const fetched = getTree(treeUrl(search, o, sel === undefined ? {} : { sel: String(sel) }));
     if (gen > 1) {
       waitingSince ??= performance.now();
       clearTimeout(pulseTimer);
@@ -200,8 +204,6 @@ export function IssueTree(props: { search: string; openId?: number }) {
     () => ({ view: props.search, page: page(), open: props.openId }),
     (now, prev) => {
       recordShown(now.view, now.page);
-      // A view the tab comes to is the newest used (not every refetch of it).
-      if (prev?.view !== now.view) untrack(() => used(queryOf(now.view)));
       // The toggle's selection: it stays if it shows, or moves to the nearest ancestor that does.
       const open = now.open;
       if (prev === undefined && switched && now.page.selected !== null && open !== undefined && now.page.selected !== open) {
@@ -243,7 +245,7 @@ export function IssueTree(props: { search: string; openId?: number }) {
         const have = untrack(page);
         if (!have.next || view !== untrack(() => props.search)) return;
         const started = refetchesStarted;
-        const more = await fetchTree(treeUrl(view, opensNow(queryOf(view)), { after: have.next }));
+        const more = await fetchTree(treeUrl(view, opensNow(), { after: have.next }));
         if (view !== untrack(() => props.search)) return;
         if (started === refetchesStarted) {
           const next = stamp({ ...have, nodes: [...untrack(page).nodes, ...more.nodes], next: more.next, last: more.last }, readAt(have));
@@ -271,8 +273,7 @@ export function IssueTree(props: { search: string; openId?: number }) {
     let done!: () => void;
     refetching = new Promise<void>((r) => (done = r));
     try {
-      const opens = opensNow(queryOf(view));
-      const fresh = await fetchTree(treeUrl(view, opens, have.last ? { through: have.last } : {}));
+      const fresh = await fetchTree(treeUrl(view, opensNow(), have.last ? { through: have.last } : {}));
       if (view !== now()) return;
       setPage(fresh);
       if (atOnce) setEdits((n) => n + 1);
@@ -292,9 +293,9 @@ export function IssueTree(props: { search: string; openId?: number }) {
       if (p.kind !== "defs") void refetch();
     }),
   );
-  // Another tab changed this query's expand state: the tree follows it.
+  // Another tab changed the expand state: the tree follows it.
   createEffect(
-    () => opensKey(opensOf(query())),
+    () => opensKey(opens()),
     (key, prev) => {
       if (prev === undefined || key === prev || key === mine) return;
       atOnceNext = true;
@@ -302,13 +303,13 @@ export function IssueTree(props: { search: string; openId?: number }) {
     },
   );
 
-  /** Stores `query`'s expand state as this tab changed it. */
-  const store = (opens: Opens) => (mine = opensKey(setOpens(untrack(query), opens)));
+  /** Stores the expand state as this tab changed it. */
+  const store = (o: Opens) => (mine = opensKey(setOpens(o)));
 
   /** Opens or closes node `n`; `deep`, its whole subtree too. */
   const toggle = async (n: TreeNode, deep: boolean) => {
     const view = untrack(() => props.search);
-    const o = opensNow(queryOf(view));
+    const o = opensNow();
     const open = new Set(o.open);
     const shut = new Set(o.shut);
     const setOpen = (x: { row: IssueRow; context: boolean }, to: boolean) => {
@@ -345,7 +346,7 @@ export function IssueTree(props: { search: string; openId?: number }) {
       if (view !== untrack(() => props.search)) return;
       if (deep) {
         // Over the state as it is now: another change may have come meanwhile.
-        const now = opensNow(queryOf(view));
+        const now = opensNow();
         open.clear();
         shut.clear();
         for (const x of now.open) open.add(x);
@@ -679,6 +680,8 @@ function Nodes(props: {
     if (parent === null) return { why: ROOTS_SORTED };
     const p = parentNode(parent);
     if (!p) return { none: true };
+    // Beside a sub-issue the view put ahead of others: its place shown isn't GitHub's.
+    if (nodes()[nodeAt(parent)]?.reordered) return { why: KIDS_SORTED };
     if (parent === oldParent) {
       const all = siblings(parent);
       const now = all.findIndex((n) => n.row.id === id);
@@ -801,6 +804,9 @@ function Nodes(props: {
                 },
                 get context() {
                   return n().context;
+                },
+                get dim() {
+                  return !n().matched;
                 },
                 lead: (
                   <Lead

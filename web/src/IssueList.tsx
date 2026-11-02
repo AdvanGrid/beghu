@@ -623,10 +623,11 @@ export function createRowFocus(scroller: () => HTMLElement, window: () => unknow
 
 /**
  * What a row shows of its place in Tree mode's tree (IssueTree.tsx): an ARIA treeitem at `level`
- * (from 1), open or closed when it has children, dimmed when it's context (an ancestor shown for
- * a match below it), with `lead` (its indent, chevron and grip) before its state icon.
+ * (from 1), open or closed when it has children, marked when it's context (an ancestor shown for
+ * a match below it), dimmed when it isn't a match (context, or a child shown under a match), with
+ * `lead` (its indent, chevron and grip) before its state icon.
  */
-export type TreeLook = { level: number; expanded: boolean | undefined; context: boolean; lead: Element };
+export type TreeLook = { level: number; expanded: boolean | undefined; context: boolean; dim: boolean; lead: Element };
 
 export function Row(props: {
   r: IssueRow;
@@ -664,7 +665,7 @@ export function Row(props: {
   // the row's data (a refetch), so a hover card waiting to open on the cell keeps its anchor.
   const blocked = createMemo(() => r().state === "open" && r().blocked_by > 0);
   /** The row's look, as its entry in ROW_LOOK. */
-  const look = () => (props.selected ? 1 : 0) | (blocked() ? 2 : 0) | (props.leaving ? 4 : 0) | (props.tree?.context ? 8 : 0);
+  const look = () => (props.selected ? 1 : 0) | (blocked() ? 2 : 0) | (props.leaving ? 4 : 0) | (props.tree?.dim ? 8 : 0);
   const at = () => props.time(r());
   // Tree mode's lead, built once for the row's life: a plain value, so inserting it is no effect.
   const lead = props.tree?.lead;
@@ -707,6 +708,7 @@ export function Row(props: {
       aria-level={props.tree?.level}
       aria-expanded={expanded(props.tree)}
       data-context={props.tree?.context ? "" : undefined}
+      data-dim={props.tree?.dim ? "" : undefined}
       aria-selected={props.selected ? "true" : "false"}
       aria-posinset={place().pos}
       aria-setsize={props.of}
@@ -1085,7 +1087,8 @@ const s = stylex.create({
       ":hover": colors.selected,
     },
   },
-  // Tree mode's context: an ancestor shown for a match below it, its text dimmed.
+  // Tree mode's rows that aren't matches (context, and children shown under a match): their text
+  // dimmed.
   context: {
     color: colors.context,
   },
@@ -1347,7 +1350,7 @@ const s = stylex.create({
 });
 
 // The class strings of a row's parts (cx.ts), each made once here.
-/** A row by its look: bit 1 selected, 2 blocked, 4 leaving (the shift cue), 8 context (Tree mode). */
+/** A row by its look: bit 1 selected, 2 blocked, 4 leaving (the shift cue), 8 dim (Tree mode: not a match). */
 const ROW_LOOK = cxTable(16, (m) => [s.row, s.link, s.at, (m & 1) > 0 && s.current, (m & 2) > 0 && s.blocked, (m & 4) > 0 && cueStyles.leave, (m & 8) > 0 && s.context]);
 /** The state cell, in its icon's colour. */
 const STATE = cxMap(Object.keys(ROW_ICON_COLOUR) as RowIconKey[], (k) => [s.state, ROW_ICON_COLOUR[k]]);

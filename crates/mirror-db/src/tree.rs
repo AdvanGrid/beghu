@@ -11,9 +11,13 @@
 //! - by the best rank in its subtree, under a ranked Match mode (`rank`): a root ranks as its best
 //!   match, and ties go to the root's id.
 //!
-//! Children keep GitHub's order. A match's subtree stays openable: under a match every child the
-//! tree can show is shown, closed ones hidden under `is:open` unless a match is under them (see
-//! `Tree::children`). Progress counts every descendant whatever the filter, as the list's does.
+//! A match's subtree stays openable: under a match every child the tree can show is shown, closed
+//! ones hidden under `is:open` unless a match is under them (see `Tree::children`); the web app
+//! dims the children that aren't matches, as it dims context. Children with a match at or under
+//! them come first, then the rest; each group keeps GitHub's order, except that under a ranked
+//! Match mode the first group goes by the best rank in each child's subtree, as the roots do. So
+//! `2273` lists #2273 first under a parent its text matched too. Progress counts every descendant
+//! whatever the filter, as the list's does.
 //!
 //! Building a tree reads every match, so the server caches it per view and mirror `seq`; a page of
 //! roots, and the children of the nodes it opens, are then read per request.
@@ -39,6 +43,11 @@ pub struct Tree {
     hidden_parent: HashSet<i64>,
     /// The roots in the tree's order, each as its place in it.
     roots: Vec<Cursor>,
+    /// Each node's best place in the view's order: its own if it's a match, else that of the best
+    /// match under it.
+    best: HashMap<i64, usize>,
+    /// The view's text ranks (a Match mode other than Off).
+    ranked: bool,
     sort: Sort,
     /// Only `is:open` (`Some("open")`) or only `is:closed` shows; `None`, every state.
     state: Option<&'static str>,
@@ -93,6 +102,17 @@ impl Tree {
                 None => {}
             }
         }
+        for (place, m) in matches.iter().enumerate() {
+            // Best first: an ancestor placed already has a better place than this one.
+            let mut at = Some(m.id);
+            while let Some(id) = at
+                && !tree.best.contains_key(&id)
+            {
+                tree.best.insert(id, place);
+                at = tree.parent.get(&id).copied().flatten();
+            }
+        }
+        tree.ranked = rank::mode(&view) != Match::Off;
         for (p, mut kids) in siblings {
             kids.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
             tree.children
@@ -212,16 +232,17 @@ impl Tree {
         self.parent.get(&id) == Some(&None)
     }
 
-    /// The children each of `nodes` shows, in GitHub's order. A node not under a match (`false`
-    /// beside it: context, there for a match below) shows only the children a match is under. A
-    /// match, and every node under one, shows every child the tree can show, but under `is:open`
-    /// (or `is:closed`) only those in that state, or with a match under them.
+    /// The children each of `nodes` shows, in the tree's order (see the module's notes). A node
+    /// not under a match (`false` beside it: context, there for a match below) shows only the
+    /// children a match is under. A match, and every node under one, shows every child the tree
+    /// can show, but under `is:open` (or `is:closed`) only those in that state, or with a match
+    /// under them.
     pub fn children(
         &self,
         c: &Connection,
         nodes: &[(i64, bool)],
-    ) -> rusqlite::Result<HashMap<i64, Vec<i64>>> {
-        let mut out = HashMap::new();
+    ) -> rusqlite::Result<HashMap<i64, Kids>> {
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut read = Vec::new();
         for &(id, under_match) in nodes {
             if under_match {
@@ -231,17 +252,40 @@ impl Tree {
                 out.insert(id, self.children.get(&id).cloned().unwrap_or_default());
             }
         }
-        if read.is_empty() {
-            return Ok(out);
-        }
-        for r in q::tree_children(c, &read)? {
-            let shown = self.state.is_none_or(|s| s == r.state) || self.holds(r.id);
-            if shown && let Some(kids) = out.get_mut(&r.parent) {
-                kids.push(r.id);
+        if !read.is_empty() {
+            for r in q::tree_children(c, &read)? {
+                let shown = self.state.is_none_or(|s| s == r.state) || self.holds(r.id);
+                if shown && let Some(kids) = out.get_mut(&r.parent) {
+                    kids.push(r.id);
+                }
             }
         }
-        Ok(out)
+        Ok(out
+            .into_iter()
+            .map(|(id, github)| (id, self.ordered(github)))
+            .collect())
     }
+
+    /// Children in GitHub's order put in the tree's: those with a match at or under them first.
+    fn ordered(&self, github: Vec<i64>) -> Kids {
+        let mut ids = github.clone();
+        // Stable: each group keeps GitHub's order unless the view ranks.
+        ids.sort_by_key(|id| match self.best.get(id) {
+            Some(&place) => (0, if self.ranked { place } else { 0 }),
+            None => (1, 0),
+        });
+        let reordered = ids != github;
+        Kids { ids, reordered }
+    }
+}
+
+/// A node's children as the tree shows them.
+#[derive(Debug, Clone, Default)]
+pub struct Kids {
+    /// In the tree's order.
+    pub ids: Vec<i64>,
+    /// That isn't GitHub's: matches moved ahead of the rest, or ranked among themselves.
+    pub reordered: bool,
 }
 
 /// An item's key in `sort`, as the list's id query for that sort orders by it (`list.sql`): a

@@ -226,20 +226,6 @@ export function withMode(search: string, mode: Mode): string {
   return s ? `?${s}` : "";
 }
 
-/**
- * A query in canonical form, for keeping something per view (Tree mode's expand state): its
- * tokens in lower case, once each, in sorted order, without the default sort or Match mode. Two
- * queries in any token order or case give the same; `sort:` is part of it.
- */
-export function normalized(query: string): string {
-  const tokens = new Set(
-    tokenize(query)
-      .map((t) => t.text.toLowerCase())
-      .filter((t) => !["sort:updated", "sort:updated-desc", "match:blend"].includes(t)),
-  );
-  return [...tokens].sort().join(" ");
-}
-
 /** Set by the List | Tree toggle as it switches: the view that opens next keeps the selection. */
 let switching = false;
 

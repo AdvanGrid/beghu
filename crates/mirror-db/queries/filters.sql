@@ -69,6 +69,12 @@ i.id IN (SELECT ia.item_id FROM item_assignees ia)
 -- name: no_milestone :fragment
 i.milestone_id IS NULL
 
+-- An issue or PR number, in any repo: a word of digits (`search::number`). One lookup per repo on
+-- `UNIQUE(repo_id, number)`: there's no index on the number alone.
+-- name: number :fragment
+-- param: n i64
+i.id IN (SELECT x.id FROM repos r CROSS JOIN items x ON x.repo_id = r.id AND x.number = :n)
+
 -- Title or body text, as an FTS5 query.
 -- name: text :fragment
 -- param: q &str
