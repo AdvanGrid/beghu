@@ -3,12 +3,13 @@
 //! A row that matches (every positive word somewhere in the searched fields) ranks by its best
 //! field: the first of title, body, comments that any positive word is in, which is the first
 //! of its icons (`search::matched`). So `crash login` with "crash" in the title and "login" in
-//! the body is a title match.
+//! the body is a title match. Above every field is the number: a row whose number a word names
+//! (`2273`, see `search::number`) ranks by it, so the issue asked for by number comes first.
 //!
 //! - **Blend** (the default): field weight × 0.5^(age on the sort key / half-life), highest
 //!   first, ties on the sort key and then id. It needs a descending time sort; under any other
 //!   sort it falls back to Best.
-//! - **Best**: title matches, then body, then comment, each group in the view's sort.
+//! - **Best**: number matches, then title, then body, then comment, each group in the view's sort.
 //! - **Off**: the plain sort; the text only filters.
 //!
 //! Blend's order needs no clock. With `t` the sort key, a row's score is
@@ -29,7 +30,9 @@ use crate::search::{self, Field};
 use dbrt::filter::Filter;
 use rusqlite::Connection;
 
-/// Blend's field weights.
+/// Blend's field weights. A number's is so far above the rest that its match comes first: a
+/// title match would have to be 19 years newer to pass it (40 half-lives against 2).
+pub const NUMBER_WEIGHT: f64 = (1u64 << 40) as f64;
 pub const TITLE_WEIGHT: f64 = 4.0;
 pub const BODY_WEIGHT: f64 = 2.0;
 pub const COMMENT_WEIGHT: f64 = 1.0;
@@ -50,7 +53,7 @@ pub fn mode(view: &View) -> Match {
 }
 
 /// Whether a ranked cursor's `value` is a rank a row can have under `mode` and `sort`, with
-/// sort key `key`: Best's is the field's place (0, 1, 2), negated under a descending sort;
+/// sort key `key`: Best's is the field's place (0 to 3), negated under a descending sort;
 /// Blend's is the key moved by one field's offset, and Blend's keys (descending times, never
 /// closed or never commented as 0) are never negative. A cursor's parse checks it, so the
 /// arithmetic `blend` and `best` do on a cursor stays in range.
@@ -58,11 +61,11 @@ pub(crate) fn possible(mode: Match, sort: Sort, value: i64, key: i64) -> bool {
     match mode {
         Match::Best => {
             let dir = if sort.asc { 1 } else { -1 };
-            (0..=2).any(|place| place * dir == value)
+            (0..=3).any(|place| place * dir == value)
         }
         Match::Blend => {
             key >= 0
-                && [TITLE_WEIGHT, BODY_WEIGHT, COMMENT_WEIGHT]
+                && [NUMBER_WEIGHT, TITLE_WEIGHT, BODY_WEIGHT, COMMENT_WEIGHT]
                     .into_iter()
                     .any(|w| key.checked_add(offset(w)) == Some(value))
         }
@@ -77,7 +80,7 @@ fn offset(weight: f64) -> i64 {
 
 /// One field's list: the rows that rank by it.
 struct Tier {
-    /// Best's position: 0 for title, 1 for body, 2 for the rest.
+    /// Best's position: 0 for number, 1 for title, 2 for body, 3 for the rest.
     order: i64,
     weight: f64,
     filter: Filter,
@@ -105,34 +108,44 @@ fn tiers(view: &View, me: i64, plan: search::Plan) -> Vec<Tier> {
         }
         all
     };
+    let number = search::any_number(view);
     let title = fields
         .title
         .then(|| search::any_in(view, Field::Title, plan));
     let body = fields.body.then(|| search::any_in(view, Field::Body, plan));
     let mut out = Vec::new();
-    if let Some(t) = &title {
+    if let Some(n) = &number {
         out.push(Tier {
             order: 0,
+            weight: NUMBER_WEIGHT,
+            filter: with(whole(n.clone())),
+        });
+    }
+    if let Some(t) = &title {
+        let mut f: Vec<Filter> = number.iter().map(not).collect();
+        f.extend(whole(t.clone()));
+        out.push(Tier {
+            order: 1,
             weight: TITLE_WEIGHT,
-            filter: with(whole(t.clone())),
+            filter: with(f),
         });
     }
     if let Some(b) = &body {
-        let mut f: Vec<Filter> = title.iter().map(not).collect();
+        let mut f: Vec<Filter> = number.iter().chain(&title).map(not).collect();
         f.extend(whole(b.clone()));
         out.push(Tier {
-            order: 1,
+            order: 2,
             weight: BODY_WEIGHT,
             filter: with(f),
         });
     }
-    // The rest: no word in title or body, so every word in a comment (not necessarily the
-    // same one). Without comments there's no rest.
+    // The rest: no number named and no word in title or body, so every word in a comment (not
+    // necessarily the same one). Without comments there's no rest.
     if fields.comments {
-        let mut f: Vec<Filter> = title.iter().chain(&body).map(not).collect();
+        let mut f: Vec<Filter> = number.iter().chain(&title).chain(&body).map(not).collect();
         f.extend(pos.iter().map(|w| search::in_comments(w, plan)));
         out.push(Tier {
-            order: 2,
+            order: 3,
             weight: COMMENT_WEIGHT,
             filter: with(f),
         });

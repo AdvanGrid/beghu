@@ -26,6 +26,16 @@ open: boolean,
  */
 context: boolean, 
 /**
+ * One of the view's matches. A node that isn't, context or a child shown under a match, is
+ * dimmed.
+ */
+matched: boolean, 
+/**
+ * Its children show matches first, not in GitHub's order: a drop beside one of them has no
+ * place among GitHub's to go.
+ */
+reordered: boolean, 
+/**
  * It has a parent on GitHub, shown or not (a root's may be a stub, a PR or in a repo the
  * tree doesn't show): a move under another issue takes it from that parent.
  */

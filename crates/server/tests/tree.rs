@@ -389,6 +389,70 @@ async fn under_a_ranked_match_mode_a_root_ranks_by_the_best_match_in_its_subtree
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn under_a_match_the_children_with_a_match_come_first_and_the_rest_are_marked_not_matches() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let web = unlinked("web");
+    let id = |u: &Issue| u.2;
+    for k in &web[1..4] {
+        nest(&s, &b, &web[0], k).await;
+    }
+    // web0's body names web3 by number: both match the number, web3 by its own.
+    let n = web[3].1;
+    let (_, src) = s
+        .api(
+            &mut b.clone(),
+            &format!("/api/issues/{}/source", id(&web[0])),
+        )
+        .await;
+    ok(
+        &s,
+        &b,
+        json!({ "kind": "body_edit", "issue": id(&web[0]), "new": format!("Tracks #{n}."), "base": src["body"] }),
+    )
+    .await;
+    let q = format!("repo:web {n}");
+    let page = tree(&s, &b, &q, &format!("&open={}", id(&web[0]))).await;
+    let shown: Vec<(i64, bool, bool)> = page["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            (
+                n["row"]["id"].as_i64().unwrap(),
+                n["matched"].as_bool().unwrap(),
+                n["reordered"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    // web3 first, then the others in GitHub's order, marked as no matches.
+    assert_eq!(
+        shown,
+        [
+            (id(&web[0]), true, true),
+            (id(&web[3]), true, false),
+            (id(&web[1]), false, false),
+            (id(&web[2]), false, false),
+        ]
+    );
+    // Opening it alone gives the same order.
+    let under = tree(&s, &b, &q, &format!("&under={}", id(&web[0]))).await;
+    let kids: Vec<i64> = nodes(&under).iter().map(|n| n.0).collect();
+    assert_eq!(kids, [id(&web[3]), id(&web[1]), id(&web[2])]);
+    // Unfiltered, GitHub's order, and every node a match.
+    let plain = tree(&s, &b, "repo:web", &format!("&under={}", id(&web[0]))).await;
+    let kids: Vec<i64> = nodes(&plain).iter().map(|n| n.0).collect();
+    assert_eq!(kids, [id(&web[1]), id(&web[2]), id(&web[3])]);
+    assert!(
+        plain["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["matched"] == true && n["reordered"] == false)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_drop_is_refused_with_githubs_reasons_before_any_write() {
     let s = start_on(full_parent_fixture(), |_| {}).await;
     let b = s.sign_in("tomsj").await;

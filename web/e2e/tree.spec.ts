@@ -1,7 +1,7 @@
 // Tree mode in a real browser (#108): `?mode=tree` and the List | Tree toggle through links, Back
 // and Forward; a filtered tree's matches inside their dimmed ancestors, opened along each path,
-// readable in both themes; the expand state kept per query on this device (any token order, other
-// tabs, the 50 queries used last); ← and → on the tree; and dragging to reorder and re-parent,
+// readable in both themes; one expand state on this device for every query (kept as the filter
+// changes, across reloads and tabs); ← and → on the tree; and dragging to reorder and re-parent,
 // with a refused drop saying why at its marker; a live change to the order is held as in the list.
 //
 // It links fixture issues with no relationships (as relationships.spec.ts does), so it runs with
@@ -154,6 +154,9 @@ test("a filtered tree shows matches inside dimmed ancestors opened along each pa
       await expect(r).toHaveAttribute("aria-level", level);
       if (context) await expect(r).toHaveAttribute("data-context", "");
       else await expect(r).not.toHaveAttribute("data-context");
+      // Context isn't a match: dimmed.
+      if (context) await expect(r).toHaveAttribute("data-dim", "");
+      else await expect(r).not.toHaveAttribute("data-dim");
       if (expanded) await expect(r).toHaveAttribute("aria-expanded", expanded);
       else await expect(r).not.toHaveAttribute("aria-expanded");
     }
@@ -193,8 +196,7 @@ test("a filtered tree shows matches inside dimmed ancestors opened along each pa
   }
 });
 
-test("expand state survives a reload in any token order, reaches other tabs, and is kept for the 50 queries used last", async ({ page, context }) => {
-  test.setTimeout(240_000);
+test("one expand state serves every query: a node stays open as the filter changes, after a reload and in other tabs", async ({ page, context }) => {
   const [top, child] = [web[3]!, web[4]!];
   await signIn(page);
   try {
@@ -205,14 +207,20 @@ test("expand state survives a reload in any token order, reaches other tabs, and
     await expect(row(page, top.id)).toHaveAttribute("aria-expanded", "false");
     await row(page, top.id).locator('[data-perf="chevron"]').click();
     await expect(row(page, child.id)).toBeVisible();
-    // The same query, its tokens in another order and case: still open after a reload.
-    // Its tokens: the two qualifiers, then the quoted title.
-    const phrase = q.slice(q.indexOf('"'));
-    const reordered = `${phrase} REPO:web is:open`;
-    await page.goto(treeAt(reordered));
+    // Another filter that still shows it, typed into the bar: it stays open, its child under it
+    // dimmed (a child shown under a match that isn't one itself).
+    const bar = page.locator('[data-perf="filter"]');
+    await bar.fill(q.replace("is:open ", ""));
+    await bar.press("Enter");
+    await expect(page).toHaveURL((u) => !u.searchParams.get("q")?.includes("is:open"));
+    await expect(row(page, child.id)).toBeVisible();
+    await expect(row(page, child.id)).toHaveAttribute("data-dim", "");
+    await expect(row(page, top.id)).not.toHaveAttribute("data-dim");
+    // And after a reload.
+    await page.reload();
     await expect(row(page, child.id)).toBeVisible();
 
-    // Another tab on the query follows a change made here.
+    // Another tab, on another query, follows a change made here.
     const other = await context.newPage();
     await other.goto(treeAt(q));
     await expect(row(other, child.id)).toBeVisible();
@@ -220,44 +228,6 @@ test("expand state survives a reload in any token order, reaches other tabs, and
     await expect(row(page, child.id)).toHaveCount(0);
     await expect(row(other, child.id)).toHaveCount(0);
     await row(other, top.id).locator('[data-perf="chevron"]').click();
-    await expect(row(page, child.id)).toBeVisible();
-    await other.close();
-
-    // 50 more queries opened after it: it's the 51st used, and its state goes; the next one's stays.
-    const nth = (i: number) => `${q} -zzqx${i}`;
-    for (let i = 1; i <= 50; i++) {
-      await page.goto(treeAt(nth(i)));
-      await row(page, top.id).locator('[data-perf="chevron"]').click();
-      await expect(row(page, child.id)).toBeVisible();
-    }
-    await page.goto(treeAt(q));
-    await expect(row(page, top.id)).toHaveAttribute("aria-expanded", "false");
-    await expect(row(page, child.id)).toHaveCount(0);
-    await page.goto(treeAt(nth(2)));
-    await expect(row(page, child.id)).toBeVisible();
-  } finally {
-    await unlinkAll(page, [top, child]);
-  }
-});
-
-test("two tabs on different queries, each with its own expand state, leave each other's trees alone", async ({ page, context }) => {
-  const [top, child] = [web[3]!, web[4]!];
-  await signIn(page);
-  try {
-    await nest(page, top, child);
-    const q = await only(page, top);
-    const other = await context.newPage();
-    // The same issue, matched under is:open in one tab and under every state in the other.
-    for (const [p, view] of [
-      [page, q],
-      [other, q.replace("is:open ", "")],
-    ] as const) {
-      await p.goto(treeAt(view));
-      await row(p, top.id).locator('[data-perf="chevron"]').click();
-      await expect(row(p, child.id)).toBeVisible();
-    }
-    // Each tab uses its own query again (a reload, as coming back to it does).
-    await page.reload();
     await expect(row(page, child.id)).toBeVisible();
     // Left alone, neither asks for its tree again.
     let reads = 0;

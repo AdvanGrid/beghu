@@ -6,6 +6,10 @@
 //! not necessarily the same one. `-word` leaves out every row it matches in a searched field.
 //! The tokenizer (`unicode61 remove_diacritics 2`, 0001_init.sql) folds case and diacritics on
 //! both sides, so `cafe` finds "Café".
+//!
+//! A word of digits (`2273`, or `#2273`) names an issue too: it matches the issue or PR with that
+//! number in any repo, as well as its text, whatever `in:` says (a number is no field), and that
+//! match ranks above every field's (`rank`).
 
 use crate::list::{Fields, View, Word};
 use crate::{frag, q};
@@ -88,6 +92,31 @@ pub fn fts(w: &Word) -> String {
     }
 }
 
+/// The issue number `w` names: digits alone, or after a `#`. A phrase names none.
+pub fn number(w: &Word) -> Option<i64> {
+    let digits = w.text.strip_prefix('#').unwrap_or(&w.text);
+    if w.phrase || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Rows whose number a positive word names, if any word names one: with the search matching, the
+/// rows that rank by their number (see `rank`).
+pub(crate) fn any_number(view: &View) -> Option<Filter> {
+    let (pos, _) = words(view);
+    let mut any: Vec<Filter> = pos
+        .iter()
+        .filter_map(|w| number(w))
+        .map(frag::number)
+        .collect();
+    match any.len() {
+        0 => None,
+        1 => any.pop(),
+        _ => Some(Filter::Or(any)),
+    }
+}
+
 /// How an FTS5 query joins its words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Join {
@@ -138,10 +167,10 @@ fn joined(words: &[&Word], join: Join) -> String {
     ws.join(join.sql())
 }
 
-/// Rows where `w` matches in a field of `fields` (already `searched()`).
+/// Rows where `w` matches in a field of `fields` (already `searched()`), or by number.
 fn matches(w: &Word, fields: Fields, plan: Plan) -> Filter {
     let cols = columns(fields);
-    let mut any = Vec::new();
+    let mut any: Vec<Filter> = number(w).map(frag::number).into_iter().collect();
     // Title and body first: a row they match never needs the comment set.
     if !cols.is_empty() {
         any.push(item_text(&items_query(&[w], &cols, Join::And), plan));
@@ -168,15 +197,15 @@ pub(crate) fn in_comments(w: &Word, plan: Plan) -> Filter {
     comment_text(&comments_query(&[w], Join::And), plan)
 }
 
-/// The positive words, each matching somewhere in the searched fields. Without comments, all of
-/// them in one `items_fts` query.
+/// The positive words, each matching somewhere in the searched fields (or by number). Without
+/// comments or a number, all of them in one `items_fts` query.
 pub(crate) fn qualify(view: &View, plan: Plan) -> Option<Filter> {
     let fields = view.fields.searched();
     let (pos, _) = words(view);
     if pos.is_empty() {
         return None;
     }
-    if !fields.comments {
+    if !fields.comments && !pos.iter().any(|w| number(w).is_some()) {
         return Some(item_text(
             &items_query(&pos, &columns(fields), Join::And),
             plan,

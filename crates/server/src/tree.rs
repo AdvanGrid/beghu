@@ -4,11 +4,12 @@
 //! The tree over a view (its matches and their ancestors, and its roots in order; see
 //! `mirror_db::tree`) is built once per view and mirror `seq` and cached: a request in the same
 //! `seq` reads only its page. A page is a run of roots, in the tree's order, each followed by what
-//! it shows open, depth first, as the web app lists them. What's open is the tab's (it keeps each
-//! query's expand state on its device) and goes with each request: `open` lists the nodes the
+//! it shows open, depth first, as the web app lists them. What's open is the tab's (it keeps one
+//! expand state on its device) and goes with each request: `open` lists the nodes the
 //! user opened, `shut` the ones they closed that open by default. Context, the ancestors there
 //! only for a match below them, opens by default, so a filtered tree arrives opened along each
-//! path to a match; everything else starts closed.
+//! path to a match; everything else starts closed. The state serves every query, so a node stays
+//! as the user left it while they change the filter.
 //!
 //! The query string is the list's (`q`, `after`, `through`; the cursors are a root's place, in
 //! the list's cursor format) plus `open`, `shut`, `under` (only what a node shows under it, to
@@ -173,6 +174,12 @@ pub struct TreeNode {
     pub open: bool,
     /// Context: not a match, shown for a match below it (dimmed, and open by default).
     pub context: bool,
+    /// One of the view's matches. A node that isn't, context or a child shown under a match, is
+    /// dimmed.
+    pub matched: bool,
+    /// Its children show matches first, not in GitHub's order: a drop beside one of them has no
+    /// place among GitHub's to go.
+    pub reordered: bool,
     /// It has a parent on GitHub, shown or not (a root's may be a stub, a PR or in a repo the
     /// tree doesn't show): a move under another issue takes it from that parent.
     pub has_parent: bool,
@@ -228,11 +235,12 @@ struct Placed {
     children: i64,
     open: bool,
     context: bool,
+    reordered: bool,
 }
 
-/// What a node read shows: whether it's open, whether a match is at or above it, and its
-/// children, each with whether a match is at or above it.
-type Shows = (bool, bool, Vec<(i64, bool)>);
+/// What a node read shows: whether it's open, whether a match is at or above it, its children
+/// (each with whether a match is at or above it), and whether they're out of GitHub's order.
+type Shows = (bool, bool, Vec<(i64, bool)>, bool);
 
 /// `starts` (each with whether a match is at or above it) and what each shows open, depth first,
 /// each start at depth 0, at most `NODES_MAX`.
@@ -256,16 +264,22 @@ fn flatten(
         let kids = tree.children(c, &level)?;
         let mut next = Vec::new();
         for &(id, under) in &level {
+            let kids = kids.get(&id);
             let ks: Vec<(i64, bool)> = kids
-                .get(&id)
-                .map(|ks| ks.iter().map(|&k| (k, under || tree.is_match(k))).collect())
+                .map(|ks| {
+                    ks.ids
+                        .iter()
+                        .map(|&k| (k, under || tree.is_match(k)))
+                        .collect()
+                })
                 .unwrap_or_default();
+            let reordered = kids.is_some_and(|ks| ks.reordered);
             let open = !ks.is_empty() && opens.open(id, !under) && count + ks.len() <= NODES_MAX;
             if open {
                 count += ks.len();
                 next.extend(ks.iter().copied());
             }
-            shows.insert(id, (open, under, ks));
+            shows.insert(id, (open, under, ks, reordered));
         }
         level = next;
     }
@@ -276,7 +290,10 @@ fn flatten(
         .map(|&(id, _)| (id, 0, parent))
         .collect();
     while let Some((id, depth, parent)) = stack.pop() {
-        let (open, under, ks) = shows.remove(&id).unwrap_or((false, true, Vec::new()));
+        let (open, under, ks, reordered) =
+            shows
+                .remove(&id)
+                .unwrap_or((false, true, Vec::new(), false));
         out.push(Placed {
             id,
             depth,
@@ -284,6 +301,7 @@ fn flatten(
             children: ks.len() as i64,
             open,
             context: !under,
+            reordered,
         });
         if open {
             stack.extend(ks.iter().rev().map(|&(k, _)| (k, depth + 1, Some(id))));
@@ -309,7 +327,7 @@ fn shown_as(c: &Reader, tree: &Tree, sel: i64, opens: &Opens) -> QueryResult<Opt
     let mut under = tree.is_match(at);
     for &next in &chain[top + 1..] {
         let kids = tree.children(c, &[(at, under)])?;
-        let shows = kids.get(&at).is_some_and(|ks| ks.contains(&next));
+        let shows = kids.get(&at).is_some_and(|ks| ks.ids.contains(&next));
         if !shows || !opens.open(at, !under) {
             break;
         }
@@ -365,6 +383,7 @@ pub async fn tree(
                     let kids = tree.children(c, &[(id, under)])?.remove(&id);
                     let starts: Vec<(i64, bool)> = kids
                         .unwrap_or_default()
+                        .ids
                         .into_iter()
                         .map(|k| (k, under || tree.is_match(k)))
                         .collect();
@@ -402,6 +421,8 @@ pub async fn tree(
                         children: p.children,
                         open: p.open,
                         context: p.context,
+                        matched: tree.is_match(p.id),
+                        reordered: p.reordered,
                         has_parent: p.parent.is_some() || tree.has_hidden_parent(p.id),
                     })
                 })
