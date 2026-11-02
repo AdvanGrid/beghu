@@ -18,4 +18,7 @@ paths = [
   '''^bench/candidates/''',
   # DEV_TOKEN_KEY: the dev server's BEGHU_TOKEN_KEY for local dev data only, public on purpose.
   '''^tools/dev-ctl/src/config\.ts$''',
+  # The perf harness's copy of the dev stack's secrets (its DEV: the same dev App and token key),
+  # for the stacks it starts on dev data only, public on purpose.
+  '''^perf/harness/src/stack\.ts$''',
 ]
