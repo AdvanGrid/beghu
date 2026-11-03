@@ -142,10 +142,16 @@ test("o moves the focus into the issue, and Escape back to its row in the list",
 });
 
 test("Shift+J and Shift+K scroll the open issue from the list, the focus and the selection staying put", async ({ page }) => {
+  // Into the list, then j: the second row is open, with the focus on it.
+  await rows(page).nth(0).focus();
   await page.keyboard.press("j");
-  const id = String(await rowId(page, 0));
+  const id = String(await rowId(page, 1));
   await expect(detail(page)).toHaveAttribute("data-id", id);
-  await expect(rows(page).nth(0)).toBeFocused();
+  await expect(rows(page).nth(1)).toBeFocused();
+  // The list's hint bar offers them while an issue is open.
+  await expect(hints(page)).toHaveAttribute("data-area", "list");
+  await expect(hints(page)).toContainText("Shift+J Scroll the issue down");
+  await expect(hints(page)).toContainText("Shift+K Scroll the issue up");
   const top = () => detail(page).evaluate((el) => el.scrollTop);
   expect(await top()).toBe(0);
 
@@ -154,7 +160,7 @@ test("Shift+J and Shift+K scroll the open issue from the list, the focus and the
   await page.keyboard.press("Shift+J");
   const down = await top();
   await expect.poll(top).toBeGreaterThan(down);
-  await expect(rows(page).nth(0)).toBeFocused();
+  await expect(rows(page).nth(1)).toBeFocused();
   await expect(detail(page)).toHaveAttribute("data-id", id);
 
   await page.keyboard.press("Shift+K");

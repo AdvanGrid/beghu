@@ -54,7 +54,7 @@ function off(action: Action): string | undefined {
 }
 
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
-const LIST_QUICK: Action[] = ["next", "previous", "collapse", "expand", "openIssue", "focusFilter", "create", "toggleMode", "help"];
+const LIST_QUICK: Action[] = ["next", "previous", "scrollDown", "scrollUp", "collapse", "expand", "openIssue", "focusFilter", "create", "toggleMode", "help"];
 const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
@@ -91,7 +91,7 @@ const PICKER: Syntax[] = [
  * about (the first decides which keys show). The one for where the focus was comes first.
  */
 const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[] }[] = [
-  { name: "List", areas: ["list", "page"], actions: ["next", "previous", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode"] },
+  { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
