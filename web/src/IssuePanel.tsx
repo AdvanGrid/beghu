@@ -83,6 +83,8 @@ const STACKED = mediaQueries.stacked.replace(/^@media /, "");
 const MIN_SIDE = 360;
 /** The divider's own width. */
 const DIVIDER = 4;
+/** How soon a scroll key's press must follow the last to add to its scroll: a smooth scroll's length. */
+const KEY_SCROLL_RUN_MS = 1000;
 /** Where the panel's width is kept on this device. */
 const WIDTH_KEY = "beghu.detail-width";
 
@@ -641,7 +643,19 @@ function Body(props: {
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
   // Shift+J and Shift+K: the issue scrolls by part of its height, from the list too.
-  const scrollBy = (dir: 1 | -1) => scroller.scrollBy({ top: dir * Math.round(scroller.clientHeight * 0.4), behavior: "smooth" });
+  // A press soon after the last adds to where that scroll is going, not to where it has got to: a
+  // smooth scroll restarted from its current place on every press (or a held key's repeats) falls
+  // short. (Not `scrollend`: the browser fires it for a scroll a press cut short, after that
+  // press.) A press after a pause starts from wherever the issue is, a wheel's scroll included.
+  let aim = 0;
+  let pressed = -Infinity;
+  const scrollBy = (dir: 1 | -1) => {
+    const now = performance.now();
+    const from = now - pressed < KEY_SCROLL_RUN_MS ? aim : scroller.scrollTop;
+    pressed = now;
+    aim = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, from + dir * Math.round(scroller.clientHeight * 0.4)));
+    scroller.scrollTo({ top: aim, behavior: "smooth" });
+  };
   touch("scrollDown", () => scrollBy(1));
   touch("scrollUp", () => scrollBy(-1));
   // Whether a post shows an image the lightbox opens: `imageOpen` is offered only then.
