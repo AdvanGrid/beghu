@@ -13,7 +13,9 @@ const account = (page: Page) => page.locator('[data-perf="account"]');
 const banner = (page: Page) => page.locator('[data-perf="banner"]');
 const menu = (page: Page) => page.locator('[data-perf="account-menu"]');
 const composer = (page: Page) => page.locator('[data-perf="composer"]');
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 
 /** Signs `logins` in, in order, in `context`: its session holds them all, the last active. */
 async function signIn(context: BrowserContext, ...logins: string[]): Promise<Page> {

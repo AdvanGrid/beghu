@@ -1,4 +1,4 @@
-//! `/api/issues` serves the default list (open issues, newest update first) from the account's
+//! `/api/issues` serves the default list (open issues and PRs, newest update first) from the account's
 //! pre-seeded mirror, a page at a time, and every API answer is `no-store`.
 
 mod common;
@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_default_list_pages_through_every_open_issue_newest_update_first() {
+async fn the_default_list_pages_through_every_open_issue_and_pr_newest_update_first() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let res = s.get(&mut b, "/api/issues").await;
@@ -20,9 +20,11 @@ async fn the_default_list_pages_through_every_open_issue_newest_update_first() {
 
     let rows = first["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 100);
-    // The generator records the top of the default view.
-    let top: Vec<i64> = rows[..40]
+    // The generator records the top of the default view's issues.
+    let top: Vec<i64> = rows
         .iter()
+        .filter(|r| r["kind"] == "issue")
+        .take(40)
         .map(|r| r["id"].as_i64().unwrap())
         .collect();
     let want: Vec<i64> = summary()["detail_targets"]
@@ -32,9 +34,12 @@ async fn the_default_list_pages_through_every_open_issue_newest_update_first() {
         .map(|v| v.as_i64().unwrap())
         .collect();
     assert_eq!(top, want);
-    let r = &rows[0];
+    assert!(
+        rows.iter().any(|r| r["kind"] == "pr"),
+        "PRs list beside issues"
+    );
+    let r = rows.iter().find(|r| r["kind"] == "issue").unwrap();
     assert_eq!(r["state"], "open");
-    assert_eq!(r["kind"], "issue");
     assert_eq!(r["owner"], "acme");
     assert_eq!(r["comments"], 30);
     for key in [
@@ -62,9 +67,19 @@ async fn the_default_list_pages_through_every_open_issue_newest_update_first() {
         assert_eq!(status, 200);
         page = p;
     }
+    let (_, prs) = s
+        .api(&mut b, "/api/facets/repo/counts?q=is:pr+is:open")
+        .await;
+    let open_prs: u64 = prs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["count"].as_u64().unwrap())
+        .sum();
+    assert!(open_prs > 0);
     assert_eq!(
         seen.len() as u64,
-        summary()["open_issues"].as_u64().unwrap()
+        summary()["open_issues"].as_u64().unwrap() + open_prs
     );
     assert!(
         seen.windows(2).all(|w| w[0] > w[1]),

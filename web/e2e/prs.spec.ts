@@ -1,5 +1,5 @@
-// PRs in a real browser: read-only rows beside the issues (only under `is:pr` and `is:any`), each
-// with its status icon and review chip; the PR panel, read-only, with its branches, review chip
+// PRs in a real browser: read-only rows beside the issues (in every view but `is:issue`), each
+// with its status icon and review chip; the Issues and PRs presets narrowing the list to a kind; the PR panel, read-only, with its branches, review chip
 // and conversation; and linked PRs reaching an issue's panel when a closing keyword or a
 // Development-sidebar link is made on Fake GitHub.
 //
@@ -69,10 +69,13 @@ async function barePr(page: Page): Promise<Row> {
   throw new Error("no open PR in acme/web closes nothing");
 }
 
-test("PRs list only under is:pr and is:any, each with its status icon and its review chip", async ({ page }) => {
+test("PRs list beside issues by default, each with its status icon and its review chip; is:issue hides them", async ({ page }) => {
+  // The default view lists PRs beside issues: one PR, found by its number alone, as a number
+  // looked up should find it whichever kind it is.
   await open(page);
-  await expect(rows(page).first()).toBeVisible();
-  await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(0);
+  const pr = ((await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr is:open")}`)).json()) as { rows: Row[] }).rows[0]!;
+  await page.goto(`/?q=${encodeURIComponent(`is:open ${pr.number}`)}`);
+  await expect(page.locator(`[data-perf="row"][data-id="${pr.id}"] [data-pr-status]`)).toBeVisible();
 
   await page.goto(`/?q=${encodeURIComponent("is:pr")}`);
   await expect(rows(page).first()).toBeVisible();
@@ -80,12 +83,36 @@ test("PRs list only under is:pr and is:any, each with its status icon and its re
   await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(shown);
   // A PR's review decision sits in the labels column.
   await expect(page.locator('[data-perf="row"] [data-perf="labels"] [data-perf="review"]').first()).toBeVisible();
+  // Merged and unmerged PRs show apart: merged in its merge shape and colour.
+  await page.goto(`/?q=${encodeURIComponent("is:pr is:closed")}`);
+  await expect(page.locator('[data-perf="row"] [data-pr-status="merged"]').first()).toBeVisible();
 
-  // `is:any` lists PRs beside issues: one PR, found by its title.
-  const pr = ((await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr")}`)).json()) as { rows: (Row & { title: string })[] }).rows[0]!;
-  await page.goto(`/?q=${encodeURIComponent(`is:any "${pr.title}"`)}`);
-  const id = pr.id;
-  await expect(page.locator(`[data-perf="row"][data-id="${id}"] [data-pr-status]`)).toBeVisible();
+  // `is:issue` (the Issues preset) hides them.
+  await page.goto(`/?q=${encodeURIComponent("is:issue")}`);
+  await expect(rows(page).first()).toBeVisible();
+  await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(0);
+});
+
+test("the Issues and PRs presets each narrow the list to a kind, and drop each other", async ({ page }) => {
+  await open(page);
+  const issues = page.getByRole("button", { name: "Issues", exact: true });
+  const prs = page.getByRole("button", { name: "PRs", exact: true });
+  await expect(issues).toHaveAttribute("aria-pressed", "false");
+  await expect(prs).toHaveAttribute("aria-pressed", "false");
+
+  await issues.click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("is:open is:issue");
+  await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("href", /is%3Aissue/);
+  await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(0);
+
+  await prs.click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("is:open is:pr");
+  await expect(issues).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("href", /is%3Apr/);
+  await expect(page.locator('[data-perf="row"]').first().locator("[data-pr-status]")).toBeVisible();
+
+  await prs.click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("is:open");
 });
 
 test("a PR opens in the same panel, read-only: its status, branches, review chip and conversation", async ({ page }) => {

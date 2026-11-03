@@ -102,9 +102,11 @@ pub struct Word {
 pub struct View {
     pub open: bool,
     pub closed: bool,
+    /// `is:issue`: issues only. With neither kind (or both), the view shows issues and PRs.
     pub issues: bool,
+    /// `is:pr`: PRs only.
     pub prs: bool,
-    /// `is:any`: issues and PRs.
+    /// `is:any`: issues and PRs, as with no kind at all.
     pub any_kind: bool,
     pub labels: Vec<String>,
     pub assignees: Vec<Who>,
@@ -174,11 +176,11 @@ fn filter_with(view: &View, me: i64, plan: search::Plan) -> Filter {
 /// Everything the view filters on but its free text.
 pub(crate) fn qualifiers(view: &View, me: i64) -> Vec<Filter> {
     let mut all = Vec::new();
+    // No kind given, or both: issues and PRs, so a number looked up is found whichever it is.
     let kind = match (view.any_kind, view.issues, view.prs) {
-        (true, _, _) | (false, true, true) => None,
+        (false, true, false) => Some("issue"),
         (false, false, true) => Some("pr"),
-        // Issues only unless PRs are asked for.
-        _ => Some("issue"),
+        _ => None,
     };
     let state = match (view.open, view.closed) {
         (true, false) => Some("open"),
@@ -186,10 +188,8 @@ pub(crate) fn qualifiers(view: &View, me: i64) -> Vec<Filter> {
         // Neither, or both: every state.
         _ => None,
     };
-    match (state, kind) {
-        (Some(s), Some(_)) => all.push(frag::state(s)),
-        (Some(s), None) => all.push(frag::state_any_kind(s)),
-        (None, _) => {}
+    if let Some(s) = state {
+        all.push(frag::state(s));
     }
     if let Some(k) = kind {
         all.push(frag::kind(k));

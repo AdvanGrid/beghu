@@ -27,6 +27,8 @@ export const TREE: [string, string][] = [
 
 interface Row {
   id: number;
+  /** `issue` or `pr`: the list shows both. */
+  kind: string;
   comments: number;
   labels: { name: string }[];
 }
@@ -43,8 +45,9 @@ export async function serverProbes(stack: Stack, opts: { quick?: boolean } = {})
   // The fixture's first detail target (30 comments): the same issue however the list moved.
   const summary = JSON.parse(readFileSync(stack.fixture.replace(/mirror-([^/]+)\.db$/, "fixture-$1.json"), "utf8")) as { detail_targets: number[] };
   const detail = { id: summary.detail_targets[0]! };
-  // The write's issue: one below the top that lacks the label, with a short thread.
-  const target = first.rows.slice(40).find((r) => r.comments < 10 && !r.labels.some((l) => l.name === LABEL));
+  // The write's issue: one below the top that lacks the label, with a short thread (an issue: beghu
+  // doesn't write to PRs).
+  const target = first.rows.slice(40).find((r) => r.kind === "issue" && r.comments < 10 && !r.labels.some((l) => l.name === LABEL));
   if (!target) throw new Error("no issue on the first page to write to");
 
   const endpoints: [string, string][] = [

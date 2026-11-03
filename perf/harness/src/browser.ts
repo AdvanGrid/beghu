@@ -340,7 +340,8 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
       const top = await expected(c.session);
       const page = await warmPage(c.warm, "/", top.ids);
       try {
-        const row = top.rows[1 + (open++ % 10)]!;
+        // An issue, as the gate is named: PRs list beside them.
+        const row = top.rows.filter((r) => r.kind === "issue")[1 + (open++ % 10)]!;
         // The pointer lands on the row in one move (crossing no other row, whose hover would
         // preload it), and clicks at once.
         const box = (await page.locator(`[data-perf="row"][data-id="${row.id}"]`).boundingBox())!;
@@ -411,7 +412,8 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     },
   });
 
-  // Live: an outside edit renames the 5th row's issue; from its webhook reaching beghu to the
+  // Live: an outside edit renames the 5th row's issue (the 5th issue: PRs list beside them, and a
+  // PR's edit comes as another webhook); from its webhook reaching beghu to the
   // frame that shows the new title. Then the refetch batches the push caused.
   let edits = 0;
   probes.push({
@@ -421,7 +423,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
       const now = await expected(c.session);
       const page = await warmPage(c.warm, "/", now.ids);
       try {
-        const row = now.rows[4]!;
+        const row = now.rows.filter((r) => r.kind === "issue")[4]!;
         const title = `${row.title.replace(/ · perf \d+$/, "")} · perf ${Date.now() % 1e6}${edits++}`;
         const api = watchApi(page);
         await page.evaluate((x) => window.__perf.arm(x), { kind: "title", id: row.id, text: title } as Check);
@@ -445,8 +447,10 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     },
   });
 
-  // A write: a comment, from the click on Comment to the frame that shows it.
-  const target = first.rows.slice(40).find((r) => r.comments < 10) ?? first.rows[40]!;
+  // A write: a comment, from the click on Comment to the frame that shows it. On an issue: a PR
+  // has no composer.
+  const issues = first.rows.slice(40).filter((r) => r.kind === "issue");
+  const target = issues.find((r) => r.comments < 10) ?? issues[0]!;
   let comments = 0;
   probes.push({
     name: "browser.write",

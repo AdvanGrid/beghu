@@ -177,13 +177,20 @@ async fn words_match_titles_bodies_and_comments_with_prefixes_phrases_exclusions
 async fn prs_are_searched_under_their_kind() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
-    let issue = all(&s, &mut b, "is:open").await[2].clone();
+    let issue = all(&s, &mut b, "is:issue is:open").await[2].clone();
     let pr = all(&s, &mut b, "is:pr is:open").await[2].clone();
     edit(&s, &issue, json!({ "title": "Axolotl rollout" })).await;
     edit(&s, &pr, json!({ "comment": "Axolotl review notes" })).await;
     until(&s, &mut b, "is:any axolotl", &[id(&issue), id(&pr)].into()).await;
-    // Free text follows the active kind: issues unless PRs are asked for.
-    assert_eq!(ids(&s, &mut b, "axolotl").await, [id(&issue)].into());
+    // Free text follows the active kind: both unless one is asked for.
+    assert_eq!(
+        ids(&s, &mut b, "axolotl").await,
+        [id(&issue), id(&pr)].into()
+    );
+    assert_eq!(
+        ids(&s, &mut b, "is:issue axolotl").await,
+        [id(&issue)].into()
+    );
     let prs = all(&s, &mut b, "is:pr axolotl").await;
     assert_eq!(order(&prs), [id(&pr)]);
     assert_eq!(matched(&prs[0]), ["comments"]);

@@ -35,7 +35,9 @@ const CREATE = "POST /repos/*/*/issues";
 /** A word no other issue's title has: titles are searched by the start of their words. */
 const unique = () => `zq${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const form = (page: Page) => page.locator('[data-perf="create-form"]');
 const repoSelect = (page: Page) => page.locator('[data-perf="create-repo"]');
 const title = (page: Page) => page.locator('[data-perf="create-title"]');

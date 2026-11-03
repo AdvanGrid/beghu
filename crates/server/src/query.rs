@@ -1,7 +1,7 @@
 //! The filter bar's language, parsed from the `q` parameter that `/api/issues` and the facet
 //! counts take (the web app sends the bar's text as it stands, less a token still being typed).
 //!
-//! Qualifiers: `is:open|closed` (state) and `is:issue|pr|any` (kind, `issue` when none is
+//! Qualifiers: `is:open|closed` (state) and `is:issue|pr|any` (kind, both when none is
 //! given), `type:` (the GitHub issue type, by name), `label:`, `assignee:`, `author:` (both take
 //! `me`), `repo:` (`name` or `owner/name`), `milestone:` (by title), `no:label|assignee|milestone`
 //! `sort:<key>[-asc|-desc]`, `in:title|body|comments` (the fields free text searches; several,

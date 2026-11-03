@@ -163,6 +163,8 @@ export class Session {
 /** A list row, as far as the harness reads it. */
 export interface Row {
   id: number;
+  /** `issue` or `pr`: the list shows both. */
+  kind: string;
   repo: string;
   owner: string;
   number: number;

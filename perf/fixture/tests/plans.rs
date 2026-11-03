@@ -132,8 +132,9 @@ const KEYS: [SortKey; 5] = [
     SortKey::Comments,
 ];
 
-/// The presets, the list with no filter, `is:any` (no kind), and every sort both ways under
-/// `is:open`, `is:closed` and no state at all.
+/// The presets, the list with no filter, `is:any`, and every sort both ways under `is:open`,
+/// `is:closed` and no state at all, with no kind (the default: issues and PRs), `is:issue`,
+/// `is:pr` and both kinds.
 fn ordered_views() -> Vec<(String, View)> {
     let mut out = vec![
         ("is:open".to_owned(), open()),
@@ -167,18 +168,27 @@ fn ordered_views() -> Vec<(String, View)> {
                 ("is:closed", false, true),
                 ("(every state)", false, false),
             ] {
-                out.push((
-                    format!("{state} {key:?} asc={asc}"),
-                    sorted(
-                        View {
-                            open,
-                            closed,
-                            ..View::default()
-                        },
-                        key,
-                        asc,
-                    ),
-                ));
+                for (kind, issues, prs) in [
+                    ("(no kind)", false, false),
+                    ("is:issue", true, false),
+                    ("is:pr", false, true),
+                    ("is:issue is:pr", true, true),
+                ] {
+                    out.push((
+                        format!("{kind} {state} {key:?} asc={asc}"),
+                        sorted(
+                            View {
+                                open,
+                                closed,
+                                issues,
+                                prs,
+                                ..View::default()
+                            },
+                            key,
+                            asc,
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -388,44 +398,6 @@ fn a_rare_filter_value_is_looked_up_through_its_index() {
     );
 }
 
-/// Accepted cost: with no kind (`is:any`, or `is:issue is:pr`) only the updated sort has an
-/// index (`items_updated_any_kind`). Any other sort reads every row of the view and sorts them
-/// (about 20 ms at 50k), rather than adding 8 more indexes every item write would pay for (see
-/// `list.sql`). Kept out of `every_sort_reads_its_first_page_in_order`; if one of these stops
-/// needing the sort, move it there.
-#[test]
-fn no_kind_under_another_sort_sorts_every_row_as_accepted() {
-    let (_g, c) = fixture();
-    let mut bad = Vec::new();
-    for key in KEYS.into_iter().filter(|&k| k != SortKey::Updated) {
-        for asc in [false, true] {
-            for (what, view) in [
-                (
-                    "is:any",
-                    View {
-                        any_kind: true,
-                        ..View::default()
-                    },
-                ),
-                (
-                    "is:issue is:pr is:open",
-                    View {
-                        issues: true,
-                        prs: true,
-                        ..open()
-                    },
-                ),
-            ] {
-                let p = plan(&c, &sorted(view, key, asc), Span::Top);
-                if !p.iter().any(|l| l.contains("TEMP B-TREE")) {
-                    bad.push(format!("{what} {key:?} asc={asc}: {p:#?}"));
-                }
-            }
-        }
-    }
-    assert!(bad.is_empty(), "{}", bad.join("\n"));
-}
-
 /// `/api/facets`: each facet's values come from a small table or the facet's own index on
 /// items, never from a walk of every item. A value read elsewhere looks its items up by primary
 /// key, to keep only synced repos'.
@@ -510,6 +482,16 @@ fn facet_counts_read_only_the_views_rows() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+    // Under `is:open` alone the labels' counts seek the state through `items_closed`, which reads
+    // the open items in id order, so each row's lookups go through the tables in order (0009).
+    let p = plan_of(&c, "FROM items i", |c| {
+        drop(q::count_labels(c, &list::filter(&open(), ME)))
+    });
+    assert!(
+        p.iter()
+            .any(|l| l.starts_with("SEARCH i USING INDEX items_closed (state=?)")),
+        "{p:#?}"
+    );
 }
 
 /// The mirror's tables the relationship queries read.

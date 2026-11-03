@@ -1222,7 +1222,7 @@ async fn a_user_with_no_installation_installs_comes_back_picks_and_watches_rows_
     }
     assert!(!pushed.is_empty());
     s.until_imported(&mut b, 30).await;
-    let open = whole_list(&s, &mut b, "is:open").await;
+    let open = whole_list(&s, &mut b, "is:issue is:open").await;
     let titles: Vec<&str> = open.iter().map(|r| r["title"].as_str().unwrap()).collect();
     assert_eq!(titles.len(), 5, "{titles:?}");
     assert!(titles.contains(&"Plan the garden beds"), "{titles:?}");

@@ -35,6 +35,8 @@ function claim(id: number): boolean {
 
 export type Row = {
   id: number;
+  /** `issue` or `pr`: the default list shows both. */
+  kind: string;
   owner: string;
   repo: string;
   number: number;
@@ -64,10 +66,11 @@ export async function listed(page: Page, depth = 0): Promise<Issue[]> {
 /**
  * Open issues below the default list's top 40 rows (the browser specs rely on those), with 1 to
  * 15 comments (one page), and where each sits in the list: of its first `depth` rows (a test
- * after a few issues of one repo looks further).
+ * after a few issues of one repo looks further). Issues only: the PRs listed beside them take no
+ * writes.
  */
 export async function issuesBelowTheTop(page: Page, depth = 200): Promise<Issue[]> {
-  return (await listed(page, depth)).slice(40).filter((r) => r.comments >= 1 && r.comments <= 15);
+  return (await listed(page, depth)).slice(40).filter((r) => r.kind === "issue" && r.comments >= 1 && r.comments <= 15);
 }
 
 /**

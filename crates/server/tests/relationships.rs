@@ -1145,7 +1145,7 @@ async fn a_read_back_keeps_every_relates_to_past_the_first_page() {
     let me = &web[0];
     // 100 other open web issues.
     let mut others = Vec::new();
-    let mut path = "/api/issues".to_owned();
+    let mut path = "/api/issues?q=is:issue+is:open".to_owned();
     while others.len() < 100 {
         let (_, page) = s.api(&mut b.clone(), &path).await;
         for r in page["rows"].as_array().unwrap() {
@@ -1153,7 +1153,10 @@ async fn a_read_back_keeps_every_relates_to_past_the_first_page() {
                 others.push(format!("web#{}", r["number"]));
             }
         }
-        path = format!("/api/issues?after={}", page["next"].as_str().unwrap());
+        path = format!(
+            "/api/issues?q=is:issue+is:open&after={}",
+            page["next"].as_str().unwrap()
+        );
     }
 
     // The oldest link (GitHub lists the newest first, 100 to a page), then 100 more, then one

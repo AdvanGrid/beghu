@@ -12,7 +12,9 @@ test.use(bfcache);
 
 const account = (page: Page) => page.locator('[data-perf="account"]');
 const menu = (page: Page) => page.locator('[data-perf="account-menu"]');
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
 
 /** A page on "GitHub" (Fake GitHub's stand-in for the web), another site than beghu's. */

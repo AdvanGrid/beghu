@@ -54,8 +54,8 @@ pub struct Summary {
     pub closes: usize,
     pub stub_edges: usize,
     pub open_issues: usize,
-    /// The top 40 rows of the default view (open issues, newest update first): each has exactly
-    /// 30 comments.
+    /// The top 40 issues of the default view (open, newest update first; the PRs among them
+    /// aside): each has exactly 30 comments.
     pub detail_targets: Vec<i64>,
     /// Every stub's id: issues in the unsynced repo. A mirror holds only those a relationship
     /// reaches (not `unlinked_stubs`): Fake GitHub's pristine mirrors drop the rest, as an
