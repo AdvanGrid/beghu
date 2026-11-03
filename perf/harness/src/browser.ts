@@ -273,10 +273,11 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     },
   });
 
-  // Filter: a preset, then back to Open, a click each.
+  // Filter: a preset on, then off again, a click each. Presets toggle their own token, so the
+  // second click drops `assignee:me` and goes back to the default `is:open`.
   const views = async () => [
     { button: "Assigned to me", ...(await expected(c.session, "is:open assignee:me")) },
-    { button: "Open", ...(await expected(c.session, "is:open")) },
+    { button: "Assigned to me", ...(await expected(c.session, "is:open")) },
   ];
   probes.push({
     name: "browser.filter",

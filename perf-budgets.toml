@@ -256,7 +256,7 @@ reason = "A new tab in a warm context (cached shell and assets), to the same fra
 [gates."browser.filter.ms"]
 max = 100.9
 measured = 87.7
-reason = "A preset click (Assigned to me, then Open) to the frame with the right rows: the slower of the two."
+reason = "A preset click (Assigned to me on, then off again) to the frame with the right rows: the slower of the two."
 
 [gates."browser.search-key.ms"]
 max = 73
