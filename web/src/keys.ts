@@ -48,6 +48,10 @@
 // nothing but refuse, through `refusedKey()`, which the detail's role line shows and announces
 // (`role="status"`). The hint bar and the `?` overlay dim it, with the reason (`deniedWhy`).
 //
+// `scrollDown` and `scrollUp` (Shift+J and Shift+K, beside j and k) are offered by the issue panel
+// while it shows an issue: they scroll it by part of its height, from the list too, so the list
+// keeps the focus while the issue beside it is read.
+//
 // `toggleMode` is offered by the filter bar, always there: it switches the view between List and
 // Tree (`?mode=tree`). In Tree mode the tree offers `collapse` and `expand`, ← and → as ARIA's
 // tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
@@ -92,6 +96,8 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   cancelEdit: [],
   imageOpen: ["i"],
   imageClose: ["Escape"],
+  scrollDown: ["Shift+j"],
+  scrollUp: ["Shift+k"],
   help: ["?", "Ctrl+?"],
 };
 
@@ -138,6 +144,8 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   cancelEdit: ["editor"],
   imageOpen: ["panel"],
   imageClose: ["lightbox", ...BROWSE],
+  scrollDown: BROWSE,
+  scrollUp: BROWSE,
   help: ANYWHERE,
 };
 

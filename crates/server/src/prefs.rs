@@ -80,6 +80,8 @@ actions! {
     CancelEdit = "cancelEdit",
     ImageOpen = "imageOpen",
     ImageClose = "imageClose",
+    ScrollDown = "scrollDown",
+    ScrollUp = "scrollUp",
     Help = "help",
 }
 

@@ -35,6 +35,8 @@ export const LABEL: Record<Action, string> = {
   cancelEdit: "Cancel editing",
   imageOpen: "Open image",
   imageClose: "Close image",
+  scrollDown: "Scroll the issue down",
+  scrollUp: "Scroll the issue up",
   help: "All keys",
 };
 
@@ -56,7 +58,7 @@ const LIST_QUICK: Action[] = ["next", "previous", "collapse", "expand", "openIss
 const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
-  panel: ["next", "previous", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "toList", "help"],
+  panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "toList", "help"],
   lightbox: ["imageClose"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
@@ -90,7 +92,7 @@ const PICKER: Syntax[] = [
  */
 const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[] }[] = [
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode"] },
-  { name: "Issue", areas: ["panel"], actions: ["labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
+  { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },

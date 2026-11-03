@@ -14,18 +14,21 @@ import { CueLine, cueStyles, type BodyMarks } from "../cue";
 import type { Term } from "../highlight";
 import type { Md, MdNode } from "./ast";
 import type { Links } from "./links";
+import { createRefCard, RefCard } from "./RefCard";
 import { renderMd } from "./walker";
 
 /**
  * A post: `md`, its links resolved against `links`, the search's `terms` marked. With `keyed`,
  * each block is marked `data-k` (`keyed` and its position), and `marks` shows the held changes'
- * cue and tint on its blocks.
+ * cue and tint on its blocks. A reference to an issue the mirror holds shows a card on hover or
+ * focus (RefCard.tsx), from the post's own delegated listeners.
  */
 export function Markdown(props: { md: Md; links: Links; terms: Term[]; keyed?: string; marks?: BodyMarks }) {
   const within = (r: { from: number; to: number } | undefined, i: number) => r !== undefined && i >= r.from && i < r.to;
   const lineAt = (i: number) => (props.marks?.line?.at === i ? props.marks.line.label : undefined);
+  const card = createRefCard();
   return (
-    <div {...stylex.attrs(s.md)} data-perf="md">
+    <div {...stylex.attrs(s.md)} data-perf="md" onPointerOver={card.over} onPointerOut={card.out} onFocusIn={card.over} onFocusOut={card.out}>
       <For each={props.md} keyed={false}>
         {(node, i) => {
           const nodes = createMemo(() => renderMd([node()], props.links, props.terms));
@@ -45,6 +48,7 @@ export function Markdown(props: { md: Md; links: Links; terms: Term[]; keyed?: s
         }}
       </For>
       <Show when={lineAt(props.md.length)}>{(label) => <CueLine label={label()} />}</Show>
+      <RefCard card={card} />
     </div>
   );
 }

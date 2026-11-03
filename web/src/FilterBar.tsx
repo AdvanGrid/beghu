@@ -6,7 +6,7 @@ import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
 import type { MatchMode } from "./bindings/MatchMode";
-import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, modeOf, queryOf, sameFilters, SORTS, sortValueOf, tokenAt, withMatch, withMode, withQuery, withSort, type Mode, type SortValue } from "./query";
+import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withMatch, withMode, withQuery, withSort, withToken, type Mode, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
 
 const MODES: { value: Mode; label: string }[] = [
@@ -14,11 +14,16 @@ const MODES: { value: Mode; label: string }[] = [
   { value: "tree", label: "Tree" },
 ];
 
-const PRESETS: { name: string; query: string }[] = [
-  { name: "Open", query: "is:open" },
-  { name: "Assigned to me", query: "is:open assignee:me" },
-  { name: "Created by me", query: "is:open author:me" },
-  { name: "PRs", query: "is:pr is:open" },
+/**
+ * The presets: toggles, each over its own token only. Pressed while the query holds it; a click
+ * adds it (dropping the tokens it `clashes` with) or drops it, and leaves every other token,
+ * the user's own included, as it is.
+ */
+const PRESETS: { name: string; token: string; clashes?: string[] }[] = [
+  { name: "Open", token: "is:open", clashes: ["is:closed"] },
+  { name: "Assigned to me", token: "assignee:me" },
+  { name: "Created by me", token: "author:me" },
+  { name: "PRs", token: "is:pr", clashes: ["is:issue", "is:any"] },
 ];
 
 /**
@@ -288,17 +293,19 @@ export function FilterBar() {
       </Show>
       <div role="group" aria-label="Presets" {...stylex.attrs(s.presets)}>
         <For each={PRESETS}>
-          {(p) => (
-            <button
-              type="button"
-              // Presets are filters: one shows as pressed under any sort, and keeps the sort.
-              aria-pressed={sameFilters(current(), p.query) ? "true" : "false"}
-              {...stylex.attrs(s.preset, sameFilters(current(), p.query) && s.presetOn)}
-              onClick={() => commit(withSort(p.query, sortValueOf(current())))}
-            >
-              {p.name}
-            </button>
-          )}
+          {(p) => {
+            const on = () => hasToken(current(), p.token);
+            return (
+              <button
+                type="button"
+                aria-pressed={on() ? "true" : "false"}
+                {...stylex.attrs(s.preset, on() && s.presetOn)}
+                onClick={() => commit(withToken(text(), p.token, !on(), p.clashes))}
+              >
+                {p.name}
+              </button>
+            );
+          }}
         </For>
         <span role="group" aria-label="Show as" {...stylex.attrs(s.modes)} data-perf="mode">
           <For each={MODES}>

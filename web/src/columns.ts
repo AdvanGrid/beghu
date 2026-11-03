@@ -11,7 +11,7 @@ export type Column = (typeof COLUMNS)[number];
 export type Widths = Partial<Record<Column, number>>;
 
 const KEY = "beghu.list-columns";
-const MIN: Record<Column, number> = { labels: 60, blockers: 70, progress: 30, ref: 56, who: 24, updated: 28 };
+const MIN: Record<Column, number> = { labels: 60, blockers: 60, progress: 30, ref: 56, who: 24, updated: 28 };
 const MAX = 640;
 
 /** A column's width when the user hasn't set one, for a list `w` px wide. */
@@ -33,9 +33,12 @@ function auto(c: Column, w: number): number {
   }
 }
 
-/** How many stacked slot columns `px` holds, at least one. */
+/**
+ * How many stacked slot columns `px` holds, at least one. The last counts once it has three
+ * quarters of a slot: the stack's columns then share the cell, each a little under a slot.
+ */
 function slotColumns(px: number, slot: number, gap: number): number {
-  return Math.max(1, Math.floor((px + gap) / (slot + gap)));
+  return Math.max(1, Math.floor((px + gap) / (slot + gap) + 0.25));
 }
 
 /**

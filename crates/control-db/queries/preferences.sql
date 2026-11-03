@@ -45,11 +45,13 @@ UPDATE preferences SET
   key_cancel_edit = CASE :action WHEN 'cancelEdit' THEN :binding ELSE key_cancel_edit END,
   key_image_open = CASE :action WHEN 'imageOpen' THEN :binding ELSE key_image_open END,
   key_image_close = CASE :action WHEN 'imageClose' THEN :binding ELSE key_image_close END,
+  key_scroll_down = CASE :action WHEN 'scrollDown' THEN :binding ELSE key_scroll_down END,
+  key_scroll_up = CASE :action WHEN 'scrollUp' THEN :binding ELSE key_scroll_up END,
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
   'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'collapse', 'expand', 'labels', 'assignees',
   'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
-  'imageOpen', 'imageClose', 'help');
+  'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'help');
 
 -- The account's own bindings, by action (as the web app names it): only those it set, '' for
 -- one it left unbound. An action not listed has the preset's.
@@ -80,6 +82,8 @@ UNION ALL SELECT 'saveEdit' AS "action!: String", key_save_edit AS "binding!" FR
 UNION ALL SELECT 'cancelEdit' AS "action!: String", key_cancel_edit AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_cancel_edit IS NOT NULL
 UNION ALL SELECT 'imageOpen' AS "action!: String", key_image_open AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_image_open IS NOT NULL
 UNION ALL SELECT 'imageClose' AS "action!: String", key_image_close AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_image_close IS NOT NULL
+UNION ALL SELECT 'scrollDown' AS "action!: String", key_scroll_down AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_scroll_down IS NOT NULL
+UNION ALL SELECT 'scrollUp' AS "action!: String", key_scroll_up AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_scroll_up IS NOT NULL
 UNION ALL SELECT 'help' AS "action!: String", key_help AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_help IS NOT NULL;
 
 -- Disconnect: the account's preferences go.

@@ -22,6 +22,7 @@ import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { colW, rowAvatars, slots } from "./layout.stylex";
 import { cx, cxMap, cxTable } from "./cx";
+import { point, pointed, unpoint } from "./pointed";
 import { colors, fonts } from "./tokens.stylex";
 
 /** Every row is exactly this tall, border included: the virtualizer's pitch. */
@@ -330,7 +331,10 @@ export function createCard() {
   const keep = () => clearTimeout(timer);
   const hide = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => setShown(undefined), 150);
+    timer = setTimeout(() => {
+      setShown(undefined);
+      unpoint("blocker");
+    }, 150);
   };
   return { shown, enter, keep, hide };
 }
@@ -665,7 +669,8 @@ export function Row(props: {
   // the row's data (a refetch), so a hover card waiting to open on the cell keeps its anchor.
   const blocked = createMemo(() => r().state === "open" && r().blocked_by > 0);
   /** The row's look, as its entry in ROW_LOOK. */
-  const look = () => (props.selected ? 1 : 0) | (blocked() ? 2 : 0) | (props.leaving ? 4 : 0) | (props.tree?.dim ? 8 : 0);
+  const look = () =>
+    (props.selected ? 1 : 0) | (blocked() ? 2 : 0) | (props.leaving ? 4 : 0) | (props.tree?.dim ? 8 : 0) | pointedLook(r().id);
   const at = () => props.time(r());
   // Tree mode's lead, built once for the row's life: a plain value, so inserting it is no effect.
   const lead = props.tree?.lead;
@@ -735,7 +740,7 @@ export function Row(props: {
         onPointerOver={labels.over}
         onPointerOut={labels.out}
       >
-        {labels.parts((l) => labelPart(l, labels.stacked()))}
+        {labels.parts(labelPart)}
       </span>
       <span class={CELL.blockers} data-perf="blockers">
         {blockersOf()}
@@ -923,12 +928,12 @@ function labelItems(r: IssueRow): (Label | { review: ReviewDecision })[] {
   return review ? [{ review }, ...r.labels] : r.labels;
 }
 
-/** One of a row's labels (or its PR's review chip), `stacked` with others or alone. */
-function labelPart(l: Label | { review: ReviewDecision }, stacked: boolean): Element {
+/** One of a row's labels (or its PR's review chip): the same pill alone or stacked with others. */
+function labelPart(l: Label | { review: ReviewDecision }): Element {
   return "review" in l ? (
     <ReviewChip review={l.review} compact />
   ) : (
-    <span class={stacked ? STACKED : PILL} title={l.name}>
+    <span class={PILL} title={l.name}>
       <span class={DOT} style={{ "--dot": `#${l.color}` }} />
       <span class={CLIP} textContent={l.name} />
     </span>
@@ -938,7 +943,9 @@ function labelPart(l: Label | { review: ReviewDecision }, stacked: boolean): Ele
 /**
  * A blocked row's open blockers, one chip each (who has it, and its number), stacked as the
  * labels are. Amber and dashed when nobody has it; red when it's itself blocked. Hovering shows a
- * card with every open blocker the row carries, with no fetch.
+ * card with every open blocker the row carries, with no fetch; a chip under the pointer marks its
+ * blocker's own row (pointed.ts), found by the chip's `data-id` from the cell's delegated over
+ * and out.
  */
 function Blockers(props: { r: IssueRow; width: number; card: Card }) {
   let el!: HTMLSpanElement;
@@ -951,11 +958,23 @@ function Blockers(props: { r: IssueRow; width: number; card: Card }) {
     el: () => el,
   });
   return (
-    <span ref={el} class={STACK_LOOK.blockers[stack.stacked() ? 1 : 0]} onPointerOver={stack.over} onPointerOut={stack.out}>
+    <span
+      ref={el}
+      class={STACK_LOOK.blockers[stack.stacked() ? 1 : 0]}
+      onPointerOver={(e) => {
+        stack.over(e);
+        const id = chipId(e.target);
+        if (id !== undefined) point(id, "blocker");
+      }}
+      onPointerOut={(e) => {
+        stack.out(e);
+        if (chipId(e.relatedTarget) === undefined) unpoint("blocker");
+      }}
+    >
       {stack.parts((b) => (
-          <span class={CHIP[chipLook(b, stack.stacked())]} data-perf="blocker">
-            <Show when={b.assignee} fallback={<span class={NOONE[stack.stacked() ? 1 : 0]} />}>
-              {(who) => <Avatar login={who()} size={stack.stacked() ? 11 : 14} />}
+          <span class={CHIP[chipLook(b)]} data-perf="blocker" data-id={b.id}>
+            <Show when={b.assignee} fallback={<span class={NOONE} />}>
+              {(who) => <Avatar login={who()} size={11} />}
             </Show>
             <Show when={b.repo !== props.r.repo}>
               <span class={CLIP} textContent={b.repo} />
@@ -967,10 +986,22 @@ function Blockers(props: { r: IssueRow; width: number; card: Card }) {
   );
 }
 
-/** A blocker chip's entry in CHIP: stacked or not, and itself blocked, or nobody's. */
-function chipLook(b: Blocker, stacked: boolean): number {
+/** The blocker id of the chip `t` is in, if any. */
+function chipId(t: EventTarget | null): number | undefined {
+  const chip = t instanceof Element ? t.closest<HTMLElement>('[data-perf="blocker"]') : null;
+  return chip ? Number(chip.dataset.id) : undefined;
+}
+
+/** A row's look bits for the issue the pointer is on elsewhere (pointed.ts): 16 a blocker, 32 a mention. */
+function pointedLook(id: number): number {
+  const p = pointed();
+  return p?.id !== id ? 0 : p.as === "blocker" ? 16 : 32;
+}
+
+/** A blocker chip's entry in CHIP: itself blocked, or nobody's. */
+function chipLook(b: Blocker): number {
   const status = blockerStatus(b);
-  return (stacked ? 1 : 0) | (status === "chain" ? 2 : status === "nobody" ? 4 : 0);
+  return status === "chain" ? 1 : status === "nobody" ? 2 : 0;
 }
 
 /**
@@ -1092,6 +1123,20 @@ const s = stylex.create({
   context: {
     color: colors.context,
   },
+  // The row of the issue the pointer is on elsewhere (pointed.ts): red for a blocker (a chip, or
+  // its line in the hover card), green for a mention in a post.
+  pointedBlocker: {
+    outlineColor: colors.danger,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
+  pointedMention: {
+    outlineColor: colors.open,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
   // A blocked row's red edge.
   blocked: {
     boxShadow: `inset 3px 0 0 ${colors.danger}`,
@@ -1197,7 +1242,7 @@ const s = stylex.create({
     textAlign: "end",
   },
   // One label or blocker on a line of its own: it shrinks to fit, so this needn't clip (the
-  // cell does when it must).
+  // cell does when it must). Alone or stacked, a label's pill and a blocker's chip are one size.
   labels: {
     gap: 4,
     alignItems: "center",
@@ -1209,16 +1254,19 @@ const s = stylex.create({
     borderRadius: 999,
     borderStyle: "solid",
     borderWidth: 1,
-    gap: 5,
-    paddingInline: 7,
+    gap: 4,
+    paddingInline: 6,
     alignItems: "center",
+    boxSizing: "border-box",
     display: "inline-flex",
-    fontSize: 11.5,
-    height: 18,
+    fontSize: 10.5,
+    height: 15,
     maxWidth: "100%",
     minWidth: 0,
+    width: "max-content",
   },
-  // Two to a column, filled column by column, each column one slot wide.
+  // Two to a column, filled column by column, each column one slot wide, or a little less when the
+  // cell is (stackFit counts a column with three quarters of a slot).
   stack: {
     alignContent: "center",
     columnGap: slots.labelGap,
@@ -1226,17 +1274,11 @@ const s = stylex.create({
       [NARROW]: "none",
       default: "grid",
     },
-    gridAutoColumns: slots.labelSlot,
+    gridAutoColumns: `minmax(0, ${slots.labelSlot}px)`,
     gridAutoFlow: "column",
     gridTemplateRows: "15px 15px",
-    lineHeight: "15px",
-  },
-  stacked: {
-    gap: 4,
-    alignItems: "center",
-    display: "flex",
-    fontSize: 11,
-    minWidth: 0,
+    lineHeight: "13px",
+    rowGap: 1,
   },
   clip: {
     overflow: "hidden",
@@ -1263,7 +1305,7 @@ const s = stylex.create({
     alignContent: "center",
     columnGap: slots.blockerGap,
     display: "grid",
-    gridAutoColumns: slots.blockerSlot,
+    gridAutoColumns: `minmax(0, ${slots.blockerSlot}px)`,
     gridAutoFlow: "column",
     gridTemplateRows: "15px 15px",
     rowGap: 1,
@@ -1273,25 +1315,18 @@ const s = stylex.create({
     borderRadius: 999,
     borderStyle: "solid",
     borderWidth: 1,
-    gap: 3,
+    gap: 2,
     alignItems: "center",
     backgroundColor: colors.bg,
     boxSizing: "border-box",
     display: "inline-flex",
-    fontSize: 11.5,
-    paddingInlineEnd: 6,
-    paddingInlineStart: 2,
-    height: 18,
-    maxWidth: "100%",
-    minWidth: 0,
-    width: "max-content",
-  },
-  chipSmall: {
-    gap: 2,
     fontSize: 10.5,
     paddingInlineEnd: 5,
     paddingInlineStart: 1,
     height: 15,
+    maxWidth: "100%",
+    minWidth: 0,
+    width: "max-content",
   },
   // Nobody has the blocker.
   nobody: {
@@ -1309,10 +1344,6 @@ const s = stylex.create({
     borderWidth: 1,
     boxSizing: "border-box",
     flexShrink: 0,
-    height: 14,
-    width: 14,
-  },
-  nooneSmall: {
     height: 11,
     width: 11,
   },
@@ -1350,8 +1381,21 @@ const s = stylex.create({
 });
 
 // The class strings of a row's parts (cx.ts), each made once here.
-/** A row by its look: bit 1 selected, 2 blocked, 4 leaving (the shift cue), 8 dim (Tree mode: not a match). */
-const ROW_LOOK = cxTable(16, (m) => [s.row, s.link, s.at, (m & 1) > 0 && s.current, (m & 2) > 0 && s.blocked, (m & 4) > 0 && cueStyles.leave, (m & 8) > 0 && s.context]);
+/**
+ * A row by its look: bit 1 selected, 2 blocked, 4 leaving (the shift cue), 8 dim (Tree mode: not a
+ * match), 16 and 32 the issue the pointer is on elsewhere, as a blocker or a mention (pointedLook).
+ */
+const ROW_LOOK = cxTable(64, (m) => [
+  s.row,
+  s.link,
+  s.at,
+  (m & 1) > 0 && s.current,
+  (m & 2) > 0 && s.blocked,
+  (m & 4) > 0 && cueStyles.leave,
+  (m & 8) > 0 && s.context,
+  (m & 16) > 0 && s.pointedBlocker,
+  (m & 32) > 0 && s.pointedMention,
+]);
 /** The state cell, in its icon's colour. */
 const STATE = cxMap(Object.keys(ROW_ICON_COLOUR) as RowIconKey[], (k) => [s.state, ROW_ICON_COLOUR[k]]);
 const TITLE = cx(s.title);
@@ -1367,16 +1411,15 @@ const CELL = {
 const PROGRESS = cx(s.progress);
 const DOT = cx(s.dot);
 const PILL = cx(s.pill);
-const STACKED = cx(s.stacked);
 const CLIP = cx(s.clip);
 const MORE = cx(s.more);
 const NUM = cx(s.num);
 /** The assignees cell, by clipped (0, 1): avatarsClip. */
 const WHO = [cx(s.open, s.avatars, s.wWho), cx(s.cell, s.avatars, s.wWho)];
 /** A blocker chip by chipLook. */
-const CHIP = cxTable(8, (m) => [s.chip, (m & 1) > 0 && s.chipSmall, (m & 2) > 0 && s.chain, (m & 4) > 0 && s.nobody]);
-/** The mark of a blocker nobody has, by stacked (0, 1). */
-const NOONE = cxTable(2, (m) => [s.noone, m === 1 && s.nooneSmall]);
+const CHIP = cxTable(4, (m) => [s.chip, (m & 1) > 0 && s.chain, (m & 2) > 0 && s.nobody]);
+/** The mark of a blocker nobody has. */
+const NOONE = cx(s.noone);
 
 /** A stack's cell, by kind, then one item (0) or stacked (1); a labels cell clipped too (2, labelsLook). */
 const STACK_LOOK = {

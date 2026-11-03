@@ -141,6 +141,27 @@ test("o moves the focus into the issue, and Escape back to its row in the list",
   await expect(rows(page).nth(0)).toBeFocused();
 });
 
+test("Shift+J and Shift+K scroll the open issue from the list, the focus and the selection staying put", async ({ page }) => {
+  await page.keyboard.press("j");
+  const id = String(await rowId(page, 0));
+  await expect(detail(page)).toHaveAttribute("data-id", id);
+  await expect(rows(page).nth(0)).toBeFocused();
+  const top = () => detail(page).evaluate((el) => el.scrollTop);
+  expect(await top()).toBe(0);
+
+  await page.keyboard.press("Shift+J");
+  await expect.poll(top).toBeGreaterThan(100);
+  await page.keyboard.press("Shift+J");
+  const down = await top();
+  await expect.poll(top).toBeGreaterThan(down);
+  await expect(rows(page).nth(0)).toBeFocused();
+  await expect(detail(page)).toHaveAttribute("data-id", id);
+
+  await page.keyboard.press("Shift+K");
+  await page.keyboard.press("Shift+K");
+  await expect.poll(top).toBe(0);
+});
+
 test("single-key shortcuts never fire inside text fields", async ({ page }) => {
   await page.keyboard.press("j");
   const first = String(await rowId(page, 0));

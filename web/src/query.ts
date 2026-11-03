@@ -121,15 +121,22 @@ export function withSort(query: string, sort: SortValue): string {
   return rest.join(" ");
 }
 
-/** Two queries mean the same view, sort aside: the same tokens in any order and case. */
-export function sameFilters(a: string, b: string): boolean {
-  const set = (q: string) =>
-    tokenize(q)
-      .filter((t) => t.key !== "sort")
-      .map((t) => t.text.toLowerCase())
-      .sort()
-      .join(" ");
-  return set(a) === set(b);
+/** Whether `query` holds `token` (a `key:value`, in any case). */
+export function hasToken(query: string, token: string): boolean {
+  const want = token.toLowerCase();
+  return tokenize(query).some((t) => t.text.toLowerCase() === want);
+}
+
+/**
+ * `query` with `token` turned on or off, every other token kept as typed: off drops each copy of
+ * it; on drops the tokens it `clashes` with (`is:closed` for `is:open`) and adds it before the sort.
+ */
+export function withToken(query: string, token: string, on: boolean, clashes: readonly string[] = []): string {
+  const drop = new Set([token, ...(on ? clashes : [])].map((x) => x.toLowerCase()));
+  const kept = tokenize(query).filter((t) => !drop.has(t.text.toLowerCase()));
+  const rest = kept.filter((t) => t.key !== "sort").map((t) => t.text);
+  const sorts = kept.filter((t) => t.key === "sort").map((t) => t.text);
+  return [...rest, ...(on ? [token] : []), ...sorts].join(" ");
 }
 
 /** The Match modes, in the dropdown's order, each with its label. */

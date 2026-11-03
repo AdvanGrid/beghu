@@ -6,7 +6,7 @@ import * as stylex from "@stylexjs/stylex";
 export const slots = stylex.defineConsts({
   labelSlot: 88,
   labelGap: 8,
-  blockerSlot: 96,
+  blockerSlot: 64,
   blockerGap: 4,
 });
 

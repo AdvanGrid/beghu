@@ -51,7 +51,7 @@ import {
   type IssueDetail,
   type IssueRef,
 } from "./api";
-import { Avatar, hide, issueState, StateIcon, withheld, type IssueState } from "./bits";
+import { Avatar, hide, issueState, PrIcon, StateIcon, withheld, type IssueState } from "./bits";
 import type { SearchField } from "./bindings/SearchField";
 import { StillImporting } from "./WhileImporting";
 import type { User } from "./bindings/User";
@@ -249,6 +249,37 @@ export function Panel(props: { label: string; perf: string; children: Element })
   );
 }
 
+/**
+ * Where an issue's detail was left, to open it there again (Detail): by the comment at the top of
+ * the view and how far above the view's top it starts, as the comments lay out late
+ * (`content-visibility`) and pages load as the detail scrolls, so a pixel offset would land
+ * elsewhere; or, above the comments, by pixels.
+ */
+type Spot = { comment?: number; offset: number };
+
+/** Each issue's spot, for the tab's life: the last SPOTS issues left. */
+const spots = new Map<number, Spot>();
+const SPOTS = 100;
+
+/** Where `scroller` is: the first comment reaching into the view, or pixels when the view starts above the comments. */
+function spotOf(scroller: HTMLElement): Spot {
+  const top = scroller.getBoundingClientRect().top;
+  for (const c of scroller.querySelectorAll<HTMLElement>("[data-comment-id]")) {
+    const r = c.getBoundingClientRect();
+    if (r.bottom <= top) continue;
+    return r.top <= top ? { comment: Number(c.dataset.commentId), offset: top - r.top } : { offset: scroller.scrollTop };
+  }
+  return { offset: scroller.scrollTop };
+}
+
+/** Keeps where issue `id` was left, the newest last. */
+function keepSpot(id: number, spot: Spot): void {
+  spots.delete(id);
+  if (spot.comment === undefined && spot.offset === 0) return;
+  spots.set(id, spot);
+  if (spots.size > SPOTS) spots.delete(spots.keys().next().value!);
+}
+
 function Detail(props: { id: number; search: string }) {
   /** The issue showing a remembered detail, until its refetch is under way. */
   let fromMemory: number | undefined;
@@ -266,6 +297,10 @@ function Detail(props: { id: number; search: string }) {
   // (a push revalidates it, and refetches the detail in its own way).
   const [d, setD] = createSignal<IssueDetail>(() => {
     rerun();
+    // Leaving the issue on screen (the old detail is still there): keep where it was.
+    // (`shown` is set only once the detail has rendered, so `scroller` is there.)
+    // Mid-way back to an earlier spot, that spot still stands.
+    if (shown !== undefined && scroller.isConnected) keepSpot(shown, back ?? spotOf(scroller));
     shown = undefined;
     if (failure) {
       const { error } = failure;
@@ -328,13 +363,58 @@ function Detail(props: { id: number; search: string }) {
     opening = undefined;
     seek();
   };
+
+  /**
+   * Going back to where the open issue was left (`spots`): from when it opens until the spot is on
+   * screen and stays put, or the user scrolls the detail themselves. A comment that isn't loaded
+   * yet is further down: the detail goes to its loaded end, which asks for the next page, and
+   * each page landing looks again.
+   */
+  let back: Spot | undefined;
+  let backFrame: number | undefined;
+  const goBack = (tries = 30, last?: number) => {
+    if (backFrame !== undefined) cancelAnimationFrame(backFrame);
+    backFrame = requestAnimationFrame(() => {
+      backFrame = undefined;
+      const spot = back;
+      if (!spot) return;
+      if (spot.comment === undefined) {
+        scroller.scrollTop = spot.offset;
+        if (scroller.scrollTop === last || tries === 0) back = undefined;
+        else goBack(tries - 1, scroller.scrollTop);
+        return;
+      }
+      const c = scroller.querySelector(`[data-comment-id="${spot.comment}"]`);
+      if (!c) {
+        // Not loaded: to the end, for the next page; none left (it was deleted), stay there.
+        scroller.scrollTop = scroller.scrollHeight;
+        if (current()?.comments.next === null) back = undefined;
+        return;
+      }
+      const off = c.getBoundingClientRect().top - scroller.getBoundingClientRect().top + spot.offset;
+      scroller.scrollTop += off;
+      if (Math.abs(off) < 1 || tries === 0) back = undefined;
+      else goBack(tries - 1);
+    });
+  };
+
   onCleanup(() => {
     seeking = false;
     opening = undefined;
+    back = undefined;
     if (frame !== undefined) cancelAnimationFrame(frame);
+    if (backFrame !== undefined) cancelAnimationFrame(backFrame);
   });
   const userScrolls = (el: HTMLDivElement) => {
-    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) el.addEventListener(type, () => (seeking = false), { passive: true });
+    const user = () => {
+      seeking = false;
+      back = undefined;
+    };
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) el.addEventListener(type, user, { passive: true });
+    // Each scroll's end keeps where the issue is, so closing the panel keeps it too.
+    el.addEventListener("scrollend", () => {
+      if (shown !== undefined && back === undefined) keepSpot(shown, spotOf(el));
+    });
   };
   // A new search on the open issue looks for its first match (an issue opening does, below).
   let searched: string | undefined;
@@ -451,7 +531,8 @@ function Detail(props: { id: number; search: string }) {
    */
   const refetchForPush = coalesced(() => refetch());
 
-  // Each issue opens at its top, and fetches comment page 2 once it has painted; so does a Retry.
+  // Each issue opens at its top, or where it was left, and fetches comment page 2 once it has
+  // painted; so does a Retry.
   // (The effect also runs for every write to `d`, a page or a refetch: those keep their place.)
   createEffect(
     () => d(),
@@ -459,16 +540,19 @@ function Detail(props: { id: number; search: string }) {
       const id = detail.id;
       if (id === shown) {
         if (seeking) seek();
+        if (back) goBack();
         return;
       }
       shown = id;
       scroller.scrollTop = 0;
-      // Under a search, to its first match once it's loaded: the first comment page, and a
-      // remembered detail's refetch, may bring it.
+      // Back to where it was left, if it was; else, under a search, to its first match once it's
+      // loaded: the first comment page, and a remembered detail's refetch, may bring it.
+      back = spots.get(id);
       const o = { due: fromMemory === id ? 2 : 1 };
       opening = o;
-      seeking = true;
-      seek();
+      seeking = back === undefined;
+      if (back) goBack();
+      else seek();
       setLost(undefined);
       openDetail = { id, onPush: refetchForPush };
       // A remembered detail is on screen (its first page), maybe minutes old: replace it with the
@@ -556,6 +640,10 @@ function Body(props: {
   const state = () => issueState(d());
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
+  // Shift+J and Shift+K: the issue scrolls by part of its height, from the list too.
+  const scrollBy = (dir: 1 | -1) => scroller.scrollBy({ top: dir * Math.round(scroller.clientHeight * 0.4), behavior: "smooth" });
+  touch("scrollDown", () => scrollBy(1));
+  touch("scrollUp", () => scrollBy(-1));
   // Whether a post shows an image the lightbox opens: `imageOpen` is offered only then.
   const [hasImages, setHasImages] = createSignal(false);
   onSettled(() => {
@@ -596,6 +684,14 @@ function Body(props: {
   const editTitle = () => edit("title", d().title);
   const editBody = () => edit("body");
   const backToIssue = () => scroller.focus();
+  // The title scrolled out of view (the marker under it is above the view): the sticky bar shows.
+  let titleEnd!: HTMLDivElement;
+  const [past, setPast] = createSignal(false);
+  onSettled(() => {
+    const io = new IntersectionObserver(([e]) => setPast(!e!.isIntersecting && e!.boundingClientRect.top < (e!.rootBounds?.top ?? 0)), { root: scroller });
+    io.observe(titleEnd);
+    return () => io.disconnect();
+  });
   return (
     <>
       <div
@@ -609,6 +705,27 @@ function Body(props: {
         data-id={d().id}
         onScroll={props.onScroll}
       >
+        {/* Once the title is scrolled away: a slim bar with the issue's state, number and title,
+            over the top of the detail (its slot takes no room); a click goes back to the top. */}
+        <div {...stylex.attrs(s.stickySlot)}>
+          <button
+            type="button"
+            {...stylex.attrs(s.sticky, past() && s.stickyShown)}
+            data-perf="sticky-head"
+            aria-hidden={past() ? undefined : "true"}
+            tabindex={-1}
+            title="Back to the top"
+            onClick={() => scroller.scrollTo({ top: 0 })}
+          >
+            <Show when={d().pr} fallback={<StateIcon state={state()} />}>
+              {(pr) => <PrIcon status={pr().status} />}
+            </Show>
+            <span {...stylex.attrs(s.stickyRef)}>
+              {d().repo}#{d().number}
+            </span>
+            <span {...stylex.attrs(s.stickyTitle)}>{d().title}</span>
+          </button>
+        </div>
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
         <div {...stylex.attrs(s.status)} data-k="status">
@@ -686,6 +803,7 @@ function Body(props: {
             </Loading>
           </Errored>
         </Show>
+        <div ref={titleEnd} />
         <Show when={d().pr}>{(pr) => <PullBranches pr={pr()} />}</Show>
         <dl {...stylex.attrs(s.props)}>
           <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")} unit="assignees" cue={held.unitCue("assignees")} tint={held.unitTint("assignees")}>
@@ -1378,6 +1496,59 @@ const s = stylex.create({
     flexGrow: 1,
     overflowAnchor: "none",
     overflowY: "auto",
+  },
+  // The sticky bar's slot: stuck to the scroller's top, taking no room, so nothing moves as the
+  // bar shows.
+  stickySlot: {
+    position: "sticky",
+    zIndex: 3,
+    height: 0,
+    top: 0,
+  },
+  sticky: {
+    font: "inherit",
+    borderWidth: 0,
+    gap: 6,
+    paddingBlock: 0,
+    paddingInline: 16,
+    alignItems: "center",
+    backgroundColor: colors.bgRaised,
+    boxShadow: `0 2px 6px ${colors.popShadow}`,
+    boxSizing: "border-box",
+    color: colors.fg,
+    cursor: "pointer",
+    display: "flex",
+    fontSize: 12,
+    opacity: 0,
+    position: "absolute",
+    textAlign: "start",
+    transitionDuration: "120ms",
+    transitionProperty: "opacity, visibility",
+    visibility: "hidden",
+    whiteSpace: "nowrap",
+    borderBottomColor: colors.line,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+    height: 34,
+    left: 0,
+    right: 0,
+    top: 0,
+  },
+  stickyShown: {
+    opacity: 1,
+    visibility: "visible",
+  },
+  stickyRef: {
+    color: colors.muted,
+    flexShrink: 0,
+    fontFamily: fonts.mono,
+    fontSize: 11.5,
+  },
+  stickyTitle: {
+    overflow: "hidden",
+    fontWeight: 600,
+    textOverflow: "ellipsis",
+    minWidth: 0,
   },
   status: {
     gap: 10,

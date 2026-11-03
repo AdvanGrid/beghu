@@ -19,6 +19,7 @@ import * as stylex from "@stylexjs/stylex";
 import { issueState, STATE_LABEL } from "../bits";
 import { matchSpans, type Term } from "../highlight";
 import { colors, fonts } from "../tokens.stylex";
+import type { RefTarget } from "../bindings/RefTarget";
 import type { Md, MdAttrs, MdNode } from "./ast";
 import { codeBlock, highlight, inBlock } from "./code";
 import { icon, type IconName } from "./icons";
@@ -420,9 +421,22 @@ function ref(a: MdAttrs, links: Links): HTMLElement | undefined {
   e.setAttribute("href", link.href);
   e.setAttribute("noscroll", "");
   if (typeof a.c === "number") toComment(e, a.c);
-  e.title = `${link.target.title} · ${STATE_LABEL[state]}`;
+  e.setAttribute("aria-description", `${link.target.title} · ${STATE_LABEL[state]}`);
   e.dataset.ref = state;
+  REFS.set(e, { target: link.target, ref: `${a.o}/${a.r}#${a.n}` });
   return e;
+}
+
+/** What an in-app reference's link points at, for its hover card (Markdown.tsx). */
+export type RefAt = { target: RefTarget; ref: string };
+
+const REFS = new WeakMap<Element, RefAt>();
+
+/** The in-app reference `t` is in, and what it points at, if any. */
+export function refAt(t: EventTarget | null): { a: HTMLElement; at: RefAt } | undefined {
+  const a = t instanceof Element ? t.closest<HTMLElement>("a[data-ref]") : null;
+  const at = a ? REFS.get(a) : undefined;
+  return a && at ? { a, at } : undefined;
 }
 
 /** A user or team: a pill that opens on GitHub. */

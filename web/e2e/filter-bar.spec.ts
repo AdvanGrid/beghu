@@ -102,28 +102,28 @@ test("suggestion counts are fetched only for a value list that stays open", asyn
 test("the URL holds the query; Back and Forward refill the bar, and typing adds no history", async ({ page }) => {
   const box = page.getByRole("combobox", { name: "Filter issues" });
   await page.getByRole("button", { name: "PRs" }).click();
-  await expect.poll(() => q(page)).toBe("is:pr is:open");
+  await expect.poll(() => q(page)).toBe("is:open is:pr");
   await expect(page.getByRole("button", { name: "PRs" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Assigned to me" }).click();
-  await expect.poll(() => q(page)).toBe("is:open assignee:me");
+  await expect.poll(() => q(page)).toBe("is:open is:pr assignee:me");
   const entries = await page.evaluate(() => history.length);
 
   await box.click();
   await box.press("End");
   await box.pressSequentially(" crash", { delay: 40 });
-  await expect.poll(() => q(page)).toBe("is:open assignee:me crash");
+  await expect.poll(() => q(page)).toBe("is:open is:pr assignee:me crash");
   expect(await page.evaluate(() => history.length)).toBe(entries);
 
   await page.goBack();
-  await expect.poll(() => q(page)).toBe("is:pr is:open");
-  await expect(box).toHaveValue("is:pr is:open");
+  await expect.poll(() => q(page)).toBe("is:open is:pr");
+  await expect(box).toHaveValue("is:open is:pr");
   await page.goForward();
-  await expect.poll(() => q(page)).toBe("is:open assignee:me crash");
-  await expect(box).toHaveValue("is:open assignee:me crash");
+  await expect.poll(() => q(page)).toBe("is:open is:pr assignee:me crash");
+  await expect(box).toHaveValue("is:open is:pr assignee:me crash");
 
   // A reload shows the same view.
   await page.reload();
-  await expect(box).toHaveValue("is:open assignee:me crash");
+  await expect(box).toHaveValue("is:open is:pr assignee:me crash");
 });
 
 test("the sort dropdown and the sort: token follow each other", async ({ page }) => {
@@ -191,7 +191,7 @@ test("a view that takes over 200 ms pulses the list over the old rows, and a sta
   await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("data-id", before!);
   await page.getByRole("button", { name: "PRs" }).click();
   await expect(list).not.toHaveAttribute("aria-busy", "true", { timeout: 10_000 });
-  await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("href", /q=is%3Apr\+is%3Aopen/);
+  await expect(page.locator('[data-perf="row"]').first()).toHaveAttribute("href", /q=is%3Aopen\+assignee%3Ame\+is%3Apr/);
 
   const { log, landed } = await page.evaluate(() => ({
     log: (window as unknown as { log: [string, number][] }).log,
@@ -362,9 +362,38 @@ test("a preset keeps the sort, and shows as pressed under any sort", async ({ pa
   await expect.poll(() => q(page)).toBe("is:open sort:created-asc");
   await expect(page.getByRole("button", { name: "Open" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "PRs" }).click();
-  await expect.poll(() => q(page)).toBe("is:pr is:open sort:created-asc");
+  await expect.poll(() => q(page)).toBe("is:open is:pr sort:created-asc");
   await expect(page.getByRole("button", { name: "PRs" })).toHaveAttribute("aria-pressed", "true");
   await expect(sort).toHaveValue("created-asc");
+});
+
+test("presets toggle their own token and keep everything else typed, free text included", async ({ page }) => {
+  const box = page.getByRole("combobox", { name: "Filter issues" });
+  const open = page.getByRole("button", { name: "Open" });
+  const mine = page.getByRole("button", { name: "Assigned to me" });
+  await box.fill("is:open 2248 sort:created");
+  await box.press("Enter");
+  await expect.poll(() => q(page)).toBe("is:open 2248 sort:created");
+  // Pressed with other tokens beside it.
+  await expect(open).toHaveAttribute("aria-pressed", "true");
+  await expect(mine).toHaveAttribute("aria-pressed", "false");
+
+  // On: added before the sort, the rest kept.
+  await mine.click();
+  await expect.poll(() => q(page)).toBe("is:open 2248 assignee:me sort:created");
+  await expect(mine).toHaveAttribute("aria-pressed", "true");
+  await expect(box).toHaveValue("is:open 2248 assignee:me sort:created");
+  // Off: only its own token goes.
+  await open.click();
+  await expect.poll(() => q(page)).toBe("2248 assignee:me sort:created");
+  await expect(open).toHaveAttribute("aria-pressed", "false");
+  await mine.click();
+  await expect.poll(() => q(page)).toBe("2248 sort:created");
+  // On again, in place of the state it clashes with.
+  await box.fill("is:closed 2248");
+  await box.press("Enter");
+  await open.click();
+  await expect.poll(() => q(page)).toBe("2248 is:open");
 });
 
 test("the suggestions load on focus without moving anything on the page", async ({ page }) => {

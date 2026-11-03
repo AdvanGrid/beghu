@@ -6,6 +6,7 @@ import { For, Show } from "solid-js";
 import { Avatar } from "./bits";
 import type { Blocker } from "./bindings/Blocker";
 import { blockerStatus, type CardAt } from "./cards";
+import { point, unpoint } from "./pointed";
 import { ago } from "./time";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -53,6 +54,7 @@ export function ListCard(props: { card: CardAt; search: string; keep: () => void
   );
 }
 
+/** A blocker's line; the pointer on it marks the blocker's own row, if it's in view. */
 function Item(props: { b: Blocker; search: string }) {
   const b = () => props.b;
   const status = () => blockerStatus(b());
@@ -77,6 +79,8 @@ function Item(props: { b: Blocker; search: string }) {
       rel={b().stub ? "noreferrer external" : undefined}
       data-perf="card-blocker"
       {...stylex.attrs(s.item)}
+      onPointerEnter={() => point(b().id, "blocker")}
+      onPointerLeave={() => unpoint("blocker")}
     >
       <span {...stylex.attrs(s.who)}>
         <Show when={b().assignee} fallback={<span {...stylex.attrs(s.noone)} title="Nobody assigned" />}>

@@ -43,11 +43,12 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
   await page.goto(`/issues/${t.id}`);
   await expect(body(page)).toContainText("Heads up");
 
-  // In the mirror: in-app, with its state icon and a hover title.
+  // In the mirror: in-app, with its state icon, and its title and state for screen readers (the
+  // hover card shows them on screen).
   const inApp = body(page).locator("p").first().locator('a[data-ref="notPlanned"]');
   await expect(inApp).toHaveText(`#${x.number}`);
   await expect(inApp).toHaveAttribute("href", `/issues/${x.id}`);
-  await expect(inApp).toHaveAttribute("title", "Stubbed title · Closed as not planned");
+  await expect(inApp).toHaveAttribute("aria-description", "Stubbed title · Closed as not planned");
   await expect(inApp.locator("svg")).toHaveCount(1);
   // Anything else: GitHub, marked ↗, which screen readers don't hear.
   const out = body(page).locator("p").first().locator('a[data-ref="out"]');
@@ -139,6 +140,43 @@ test("a body nested far deeper than the server sends renders, flattened past the
   });
   expect(nesting).toBeLessThanOrEqual(102);
   expect(errors).toEqual([]);
+});
+
+test("hovering a reference shows its card, and outlines its row in the list in green while the pointer is on it", async ({ page }) => {
+  await page.goto("/auth/login?login=tomsj");
+  await page.waitForURL((u) => u.pathname === "/");
+  const list = (await (await page.request.get("/api/issues")).json()) as { rows: Row[] };
+  const [t, x] = [list.rows[0]!, list.rows[1]!];
+  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+    const res = await route.fetch();
+    const d = await res.json();
+    d.body = [["p", 0, "See ", ["ref", { o: x.owner, r: x.repo, n: x.number }], " and ", ["ref", { o: "else", r: "where", n: 7 }]]];
+    d.refs = { [`${x.owner}/${x.repo}#${x.number}`.toLowerCase()]: { id: x.id, kind: "issue", title: "Stubbed title", state: "open", state_reason: null } };
+    await route.fulfill({ response: res, json: d });
+  });
+  await page.goto(`/issues/${t.id}`);
+  const ref = body(page).locator('a[data-ref="open"]');
+  const row = page.locator(`[data-perf="row"][data-id="${x.id}"]`);
+  const card = page.locator('[data-perf="ref-card"]');
+  await expect(row).toBeVisible();
+  await expect(row).toHaveCSS("outline-style", "none");
+
+  await ref.hover();
+  await expect(card).toContainText("Stubbed title");
+  await expect(card).toContainText(`${x.owner}/${x.repo}#${x.number}`);
+  await expect(card).toContainText("Issue · Open");
+  await expect(row).toHaveCSS("outline-style", "solid");
+  // On to the card: both stay. Away: both go.
+  await card.hover();
+  await expect(row).toHaveCSS("outline-style", "solid");
+  await page.mouse.move(1, 1);
+  await expect(card).toBeHidden();
+  await expect(row).toHaveCSS("outline-style", "none");
+
+  // A reference outside the mirror goes to GitHub, with no card.
+  await body(page).locator('a[data-ref="out"]').hover();
+  await page.waitForTimeout(500);
+  await expect(card).toBeHidden();
 });
 
 test("a link to a comment on the open issue scrolls to it, a reference or a link with its own text", async ({ page }) => {

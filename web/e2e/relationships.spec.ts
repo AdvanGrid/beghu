@@ -137,6 +137,31 @@ test("the blockers' hover card lists each open blocker's title, owner and status
   }
 });
 
+test("the pointer on a blocker chip, or on its line in the hover card, outlines the blocker's row in view", async ({ page }) => {
+  await open(page);
+  const [topId, otherId] = await Promise.all([rows(page).nth(0).getAttribute("data-id"), rows(page).nth(1).getAttribute("data-id")]);
+  const refOf = async (id: string) => (await row(page, id).locator('[data-perf="ref"]').textContent())!.trim();
+  const [topRef, otherRef] = await Promise.all([refOf(topId!), refOf(otherId!)]);
+  const other = row(page, otherId!);
+  try {
+    devCtl(["fake", "edit", topRef, "--add-blocked-by", otherRef]);
+    const chip = row(page, topId!).locator('[data-perf="blocker"]');
+    await expect(chip).toBeVisible({ timeout: SHOWS_WITHIN_MS });
+    await expect(other).toBeVisible();
+    await expect(other).toHaveCSS("outline-style", "none");
+    await chip.hover();
+    await expect(other).toHaveCSS("outline-style", "solid");
+    // On to the card's line for it: still outlined; off the card: not.
+    const line = page.locator('[data-perf="card"] [data-perf="card-blocker"]');
+    await line.hover();
+    await expect(other).toHaveCSS("outline-style", "solid");
+    await page.mouse.move(1, 1);
+    await expect(other).toHaveCSS("outline-style", "none");
+  } finally {
+    devCtl(["fake", "edit", topRef, "--remove-blocked-by", otherRef]);
+  }
+});
+
 test("the detail shows the parent with its progress, sub-issues with x of y done, and a stub as not synced ↗", async ({ page }) => {
   const [parent, me, child] = unlinked.filter((u) => u.repo === "web").slice(4, 7) as [Unlinked, Unlinked, Unlinked];
   const other = closed[0]!;
@@ -216,11 +241,11 @@ test("labels and blockers gain stacked columns as the list widens; a column resi
   await page.setViewportSize({ width: 1000, height: 800 });
   await open(page);
   // The list is the whole width with no issue open.
-  expect([await width("labels"), await width("blockers")]).toEqual([192, 100]);
+  expect([await width("labels"), await width("blockers")]).toEqual([192, 68]);
   await page.setViewportSize({ width: 1300, height: 800 });
-  await expect.poll(() => width("blockers")).toBe(200);
+  await expect.poll(() => width("blockers")).toBe(136);
   await page.setViewportSize({ width: 1900, height: 800 });
-  await expect.poll(async () => [await width("labels"), await width("blockers")]).toEqual([288, 300]);
+  await expect.poll(async () => [await width("labels"), await width("blockers")]).toEqual([288, 204]);
 
   // At the narrowest labels cell (one column of two slots), a row with three or more labels shows
   // one, then "+n".

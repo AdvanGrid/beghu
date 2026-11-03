@@ -177,6 +177,55 @@ test("comments come newest first, 15 at a time: page 2 after paint, later pages 
   await expect(comments(page)).toHaveCount(30);
 });
 
+test("an issue opened again comes back where it was left, by the comment at the top", async ({ page }) => {
+  await signIn(page);
+  const [a, b] = await Promise.all([rows(page).nth(0).getAttribute("data-id"), rows(page).nth(1).getAttribute("data-id")]);
+  await rows(page).nth(0).click();
+  await expect(detail(page)).toHaveAttribute("data-id", a!);
+  await expect(comments(page)).toHaveCount(30);
+  // The 20th comment 10 px above the view's top.
+  const left = comments(page).nth(19);
+  const leftId = await left.getAttribute("data-comment-id");
+  await left.evaluate((c) => {
+    const scroller = c.closest<HTMLElement>('[data-perf="detail"]')!;
+    scroller.scrollTop += c.getBoundingClientRect().top - scroller.getBoundingClientRect().top + 10;
+  });
+  const offset = () =>
+    page.locator(`[data-comment-id="${leftId}"]`).evaluate((c) => {
+      const scroller = c.closest<HTMLElement>('[data-perf="detail"]')!;
+      return Math.round(scroller.getBoundingClientRect().top - c.getBoundingClientRect().top);
+    });
+  await expect.poll(offset).toBe(10);
+
+  // Another issue opens at its top; Back, the first is where it was left.
+  await rows(page).nth(1).click();
+  await expect(detail(page)).toHaveAttribute("data-id", b!);
+  await expect.poll(() => detail(page).evaluate((el) => el.scrollTop)).toBe(0);
+  await page.goBack();
+  await expect(detail(page)).toHaveAttribute("data-id", a!);
+  await expect.poll(offset).toBe(10);
+});
+
+test("scrolled past the title, a slim bar shows the issue's number and title; a click goes back to the top", async ({ page }) => {
+  await signIn(page);
+  await rows(page).first().click();
+  await expect(comments(page)).toHaveCount(30);
+  const bar = page.locator('[data-perf="sticky-head"]');
+  const title = (await page.locator('[data-perf="title"]').textContent())!.trim();
+  const ref = (await rows(page).first().locator('[data-perf="ref"]').textContent())!.trim();
+  await expect(bar).toBeHidden();
+
+  await detail(page).evaluate((el) => el.scrollTo(0, 600));
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText(ref);
+  await expect(bar).toContainText(title);
+  expect((await bar.boundingBox())!.height).toBeLessThanOrEqual(34);
+
+  await bar.click();
+  await expect.poll(() => detail(page).evaluate((el) => el.scrollTop)).toBe(0);
+  await expect(bar).toBeHidden();
+});
+
 test("off-screen comments skip rendering until they come near", async ({ page }) => {
   await signIn(page);
   await rows(page).first().click();

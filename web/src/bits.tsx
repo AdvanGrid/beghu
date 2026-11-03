@@ -293,10 +293,11 @@ const s = stylex.create({
     height: 18,
     maxWidth: "100%",
   },
+  // As tall as a list row's label pills and blocker chips.
   compactChip: {
     paddingInline: 5,
     fontSize: 10,
-    height: 14,
+    height: 15,
   },
   ring: {
     stroke: colors.line,
