@@ -1,5 +1,5 @@
--- Tree mode (`mirror_db::tree`): the sub-issue tree over a view. Its nodes are issues the list
--- could show (synced, not stubs, never PRs). Every walk is a recursive CTE over `relationships`
+-- Tree mode (`mirror_db::tree`): the sub-issue tree over a view. Its nodes are the view's matches
+-- (issues and PRs, a PR only ever a root) and the issues above them (synced, not stubs). Every walk is a recursive CTE over `relationships`
 -- joined with `CROSS JOIN`, which keeps the planner's join order: the walk outer, each step a
 -- lookup by the edge's indexes (`relationships_one_parent` up, the primary key down). A plain JOIN
 -- let the planner scan every edge or item and look each up in the walk (perf/fixture's plan test).

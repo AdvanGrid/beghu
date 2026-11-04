@@ -1,4 +1,5 @@
-// Tree mode (`?mode=tree`, #108): the view's issues nested under their parents, sub-issues in
+// Tree mode (`?mode=tree`, #108): the view's issues nested under their parents, its PRs as roots
+// (a PR is never a sub-issue), sub-issues in
 // GitHub's order, except that those with a match at or under them come first. Its own chunk (Root.tsx loads it when the URL asks for the tree). The server
 // builds the tree (crates/server/src/tree.rs): roots in the view's sort (or by the best Match in
 // their subtree), each followed by what it shows open, depth first, which this lists as the list
@@ -18,10 +19,10 @@
 //   that aren't matches are dimmed too.
 // - The keys are the list's (↑ ↓ Home End, j/k) and the tree's: → opens a closed node or steps to
 //   an open one's first child, ← closes an open node or steps out to its parent.
-// - A row's grip drags it (mouse only, as the spec has it for v1): its top or bottom edge places it
+// - An issue's grip drags it (mouse only, as the spec has it for v1): its top or bottom edge places it
 //   beside a row, its middle nests it under one. Where GitHub would refuse it, the drop marker says
-//   why (the server's reasons, `/api/tree/drop`, or that a parent shows its matches first, out of
-//   GitHub's order) and dropping does nothing. A drop is a write of the
+//   why (the server's reasons, `/api/tree/drop`, that a parent shows its matches first, out of
+//   GitHub's order, or that a PR takes no sub-issues) and dropping does nothing. A drop is a write of the
 //   detail's own kinds (`sub_reorder`, `sub_add` moving it, `sub_remove`), shown at once.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
@@ -60,19 +61,20 @@ const TIME: Record<SortKey, { head: string; of: (r: IssueRow) => number | null }
 };
 
 /**
- * Whether the tree offers to drag issue `r`: not while writes are paused, and only where the
- * account's role takes relationship writes (Triage and up, `/api/me`'s per-repo `can`). The one
- * place a drag's availability is decided; a drop's own check (`/api/tree/drop`) also asks the
- * role on the parent it lands under.
+ * Whether the tree offers to drag row `r`: never a PR (only issues are sub-issues), not while
+ * writes are paused, and only where the account's role takes relationship writes (Triage and up,
+ * `/api/me`'s per-repo `can`). The one place a drag's availability is decided; a drop's own check
+ * (`/api/tree/drop`) also asks the role on the parent it lands under.
  */
 export function canDrag(r: IssueRow, repos: readonly Repo[]): boolean {
-  if (writesPaused()) return false;
+  if (r.kind === "pr" || writesPaused()) return false;
   const repo = repos.find((x) => x.owner === r.owner && x.name === r.repo);
   return repo !== undefined && (repo.can.others.includes("relationships") || repo.can.own.includes("relationships"));
 }
 
 /** Why a drop beside a root can't be made: roots follow the view's sort, not an order of their own. */
 const ROOTS_SORTED = "Top-level issues follow the view's sort; remove its parent from the issue's panel";
+const UNDER_PR = "A pull request can't have sub-issues";
 const KIDS_SORTED = "These sub-issues show the matches first; clear the filter to reorder them";
 
 /** `nodes` with `n`'s subtree (the rows after it, deeper than it) left out, and how many rows that was. */
@@ -658,6 +660,7 @@ function Nodes(props: {
     const oldParent = ds.parent;
     const parentNode = (pid: number | null) => nodes()[nodeAt(pid)]?.row;
     if (d.zone === "inside") {
+      if (target.row.kind === "pr") return { why: UNDER_PR };
       if (oldParent === target.row.id) {
         // To the end of its own parent's sub-issues, unless it's last already.
         const all = siblings(target.row.id);

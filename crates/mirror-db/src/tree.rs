@@ -1,7 +1,8 @@
 //! Tree mode: the sub-issue tree over a view (#108).
 //!
-//! The view's **matches** are the rows its list would show, issues only: PRs never appear in the
-//! tree. Each match shows inside its ancestors, which the tree shows too: those that aren't
+//! The view's **matches** are the rows its list would show, issues and PRs alike. A PR is never a
+//! sub-issue and has none, so each PR match is a root with nothing under it, placed among the other
+//! roots in the view's order. Each match shows inside its ancestors, which the tree shows too: those that aren't
 //! matches are **context**, dimmed by the web app and opened by default along each path to a
 //! match. The nodes the tree is built from are the matches and their ancestors (`tree_up`); its
 //! roots are those with no parent among them, ordered:
@@ -53,17 +54,6 @@ pub struct Tree {
     state: Option<&'static str>,
 }
 
-/// The view as the tree reads it: issues only. A view of PRs alone has no tree.
-fn issues_only(view: &View) -> Option<View> {
-    let prs_only = view.prs && !view.issues && !view.any_kind;
-    (!prs_only).then(|| View {
-        issues: true,
-        prs: false,
-        any_kind: false,
-        ..view.clone()
-    })
-}
-
 impl Tree {
     /// Builds the tree of `view` for the account `me` (`assignee:me`, `author:me`).
     pub fn build(c: &Connection, view: &View, me: i64) -> rusqlite::Result<Tree> {
@@ -77,11 +67,8 @@ impl Tree {
             state,
             ..Tree::default()
         };
-        let Some(view) = issues_only(view) else {
-            return Ok(tree);
-        };
         // Every match, in the view's order (its sort, or its Match mode's).
-        let matches = list::page(c, &view, me, Span::Top, i64::MAX)?;
+        let matches = list::page(c, view, me, Span::Top, i64::MAX)?;
         let ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
         tree.matches = ids.iter().copied().collect();
         let mut edges = Vec::new();
@@ -112,13 +99,13 @@ impl Tree {
                 at = tree.parent.get(&id).copied().flatten();
             }
         }
-        tree.ranked = rank::mode(&view) != Match::Off;
+        tree.ranked = rank::mode(view) != Match::Off;
         for (p, mut kids) in siblings {
             kids.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
             tree.children
                 .insert(p, kids.into_iter().map(|(_, id)| id).collect());
         }
-        tree.roots = tree.order_roots(c, &view, &matches)?;
+        tree.roots = tree.order_roots(c, view, &matches)?;
         Ok(tree)
     }
 
