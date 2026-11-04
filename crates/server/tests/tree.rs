@@ -1,5 +1,5 @@
-//! Tree mode: `GET /api/tree`, the view's issues nested under their parents (a run of roots, each
-//! followed by what it shows open), and `GET /api/tree/drop`, whether a drag may drop an issue
+//! Tree mode: `GET /api/tree`, the view's issues nested under their parents and its PRs as roots (a
+//! run of roots, each followed by what it shows open), and `GET /api/tree/drop`, whether a drag may drop an issue
 //! under another. Trees are made of the fixture's issues with no relationships, linked through
 //! `POST /api/ops` (Fake GitHub behind it), and read back as the web app reads them.
 
@@ -103,7 +103,8 @@ async fn sub_issues_nest_under_their_parents_in_githubs_order_and_open_one_level
     nest(&s, &b, &web[3], &api[0]).await;
     let id = |u: &Issue| u.2;
 
-    // Every root is an issue with no parent, in the view's sort, and nothing else is a root.
+    // Every root is an issue with no parent, or a PR, in the view's sort, and nothing else is a
+    // root.
     let all = whole(&s, &b, "is:open", "").await;
     let roots: Vec<&Value> = all.iter().filter(|n| n["depth"] == 0).collect();
     // Nothing opens unasked but context: a closed parent of an open issue, there for it.
@@ -122,8 +123,9 @@ async fn sub_issues_nest_under_their_parents_in_githubs_order_and_open_one_level
         assert!(!ids.contains(&id(child)), "{child:?} is under a parent");
     }
     assert!(
-        roots.iter().all(|n| n["row"]["kind"] == "issue"
-            && (n["row"]["state"] == "open" || n["context"] == true))
+        roots
+            .iter()
+            .all(|n| n["row"]["state"] == "open" || n["context"] == true)
     );
     let updated: Vec<i64> = roots
         .iter()
@@ -265,7 +267,7 @@ async fn a_filtered_tree_shows_matches_inside_context_ancestors_opened_along_eac
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn closed_children_are_hidden_under_is_open_but_counted_and_prs_never_show() {
+async fn closed_children_are_hidden_under_is_open_but_counted() {
     let s = start().await;
     let b = s.sign_in("tomsj").await;
     let web = unlinked("web");
@@ -303,16 +305,55 @@ async fn closed_children_are_hidden_under_is_open_but_counted_and_prs_never_show
     let under = tree(&s, &b, "", &format!("&under={}", id(&web[0]))).await;
     let ids: Vec<i64> = nodes(&under).iter().map(|n| n.0).collect();
     assert_eq!(ids, vec![id(&web[1]), id(&web[2])]);
+}
 
-    // PRs never appear: not among the roots of `is:any`, and `is:pr` has no tree.
-    for q in ["is:any", "is:any is:closed"] {
+#[tokio::test(flavor = "multi_thread")]
+async fn prs_show_as_roots_in_the_views_order_and_is_issue_leaves_them_out() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    // `is:pr`: every PR the list shows, in its order, each a root with nothing under it.
+    let q = "is:pr repo:acme/web";
+    let (status, list) = s
+        .api(&mut b.clone(), &format!("/api/issues?q={}", enc(q)))
+        .await;
+    assert_eq!(status, 200, "{list}");
+    let listed: Vec<i64> = list["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+    assert!(!listed.is_empty());
+    let all = whole(&s, &b, q, "").await;
+    let shown: Vec<i64> = all
+        .iter()
+        .map(|n| n["row"]["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(shown[..listed.len()], listed[..]);
+    for n in &all {
+        assert_eq!(n["row"]["kind"], "pr");
+        assert_eq!(
+            (n["depth"].as_i64(), n["children"].as_i64()),
+            (Some(0), Some(0))
+        );
+        assert_eq!(
+            (n["matched"].as_bool(), n["has_parent"].as_bool()),
+            (Some(true), Some(false))
+        );
+    }
+    // With no kind, PRs are among the roots beside the issues; `is:issue` leaves them out.
+    for (q, prs) in [("", true), ("is:closed", true), ("is:issue", false)] {
         let all = whole(&s, &b, q, "").await;
         assert!(!all.is_empty(), "{q}");
-        assert!(all.iter().all(|n| n["row"]["kind"] == "issue"), "{q}");
+        let pr_rows: Vec<&Value> = all.iter().filter(|n| n["row"]["kind"] == "pr").collect();
+        assert_eq!(!pr_rows.is_empty(), prs, "{q}");
+        assert!(
+            pr_rows
+                .iter()
+                .all(|n| n["depth"] == 0 && n["parent"].is_null()),
+            "{q}"
+        );
     }
-    let prs = tree(&s, &b, "is:pr", "").await;
-    assert_eq!(prs["nodes"], json!([]));
-    assert!(prs["next"].is_null());
 }
 
 #[tokio::test(flavor = "multi_thread")]
