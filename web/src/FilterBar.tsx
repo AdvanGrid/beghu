@@ -23,6 +23,8 @@ const PRESETS: { name: string; token: string; clashes?: string[] }[] = [
   { name: "Open", token: "is:open", clashes: ["is:closed"] },
   { name: "Assigned to me", token: "assignee:me" },
   { name: "Created by me", token: "author:me" },
+  // The list shows issues and PRs unless one of these narrows it to a kind.
+  { name: "Issues", token: "is:issue", clashes: ["is:pr", "is:any"] },
   { name: "PRs", token: "is:pr", clashes: ["is:issue", "is:any"] },
 ];
 

@@ -161,11 +161,11 @@ async fn me_is_the_active_account() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn is_picks_state_and_kind_with_issues_implied() {
+async fn is_picks_state_and_kind_with_both_kinds_by_default() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
 
-    // No `q` is the Open preset.
+    // No `q` is the Open preset: open issues and open PRs.
     let default = all(&s, &mut b, None).await;
     assert_eq!(
         default
@@ -174,11 +174,9 @@ async fn is_picks_state_and_kind_with_issues_implied() {
             .collect::<BTreeSet<_>>(),
         ids(&s, &mut b, "is:open").await
     );
-    assert!(
-        default
-            .iter()
-            .all(|r| r["state"] == "open" && r["kind"] == "issue")
-    );
+    assert!(default.iter().all(|r| r["state"] == "open"));
+    assert!(default.iter().any(|r| r["kind"] == "issue"));
+    assert!(default.iter().any(|r| r["kind"] == "pr"));
 
     let closed = all(&s, &mut b, Some("is:closed")).await;
     assert!(!closed.is_empty() && closed.iter().all(|r| r["state"] == "closed"));
@@ -187,11 +185,14 @@ async fn is_picks_state_and_kind_with_issues_implied() {
     assert_eq!(every.len(), default.len() + closed.len());
     assert_eq!(ids(&s, &mut b, "is:open is:closed").await, every);
 
+    // `is:issue` and `is:pr` split it; `is:any`, or both kinds, is the same as neither.
+    let issues = all(&s, &mut b, Some("is:issue")).await;
+    assert!(!issues.is_empty() && issues.iter().all(|r| r["kind"] == "issue"));
     let prs = all(&s, &mut b, Some("is:pr")).await;
     assert!(!prs.is_empty() && prs.iter().all(|r| r["kind"] == "pr"));
-    let any = ids(&s, &mut b, "is:any").await;
-    assert_eq!(any.len(), every.len() + prs.len());
-    assert_eq!(ids(&s, &mut b, "is:issue is:pr").await, any);
+    assert_eq!(every.len(), issues.len() + prs.len());
+    assert_eq!(ids(&s, &mut b, "is:any").await, every);
+    assert_eq!(ids(&s, &mut b, "is:issue is:pr").await, every);
     let open_prs = all(&s, &mut b, Some("is:pr is:open")).await;
     assert!(
         open_prs

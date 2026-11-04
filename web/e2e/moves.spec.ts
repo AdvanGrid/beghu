@@ -9,7 +9,9 @@ import { claimBelowTheTop, type Row } from "./claims";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 import { devCtl } from "./stack";
 
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const lost = (page: Page) => page.locator('[data-perf="detail-lost"]');
 const composer = (page: Page) => page.locator('[data-perf="composer"]');

@@ -69,8 +69,8 @@ async fn an_outside_edit_reaches_the_list_and_the_streams_of_every_account_synci
         streams.push(st);
     }
 
-    // The tenth row, so the edit visibly moves it to the top.
-    let (_, page) = s.api(&mut owner, "/api/issues").await;
+    // The tenth issue, so the edit visibly moves it to the top.
+    let (_, page) = s.api(&mut owner, "/api/issues?q=is:issue+is:open").await;
     let r = page["rows"][9].clone();
     let id = r["id"].as_i64().unwrap();
     s.edit(json!({

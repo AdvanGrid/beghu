@@ -15,18 +15,12 @@ i.id IN (SELECT ia.item_id FROM item_assignees ia JOIN users u ON u.id = ia.user
 -- param: name &str
 i.repo_id IN (SELECT r.id FROM repos r WHERE r.name = :name COLLATE NOCASE)
 
+-- Sought at the head of the sort's state-led index (0009_list_any_kind.sql).
 -- name: state :fragment
 -- param: state &str
 i.state = :state
 
--- `is:open`/`is:closed` with no kind (`is:any`, `is:issue is:pr`): checked on each row of the
--- kind-less walk in the sort's order (`items_updated_any_kind`), never looked up. The `+` keeps
--- the planner off `items_list`: with statistics it would skip-scan that over both kinds and then
--- sort every row of the state, 4 ms against 0.1 ms at 50k.
--- name: state_any_kind :fragment
--- param: state &str
-+i.state = :state
-
+-- Checked on each row of the sort index's walk, where `kind` trails (0009_list_any_kind.sql).
 -- name: kind :fragment
 -- param: kind &str
 i.kind = :kind

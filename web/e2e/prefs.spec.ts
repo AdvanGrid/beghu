@@ -7,7 +7,9 @@
 // the rest (playwright.config.ts), and puts them back to the defaults around each test.
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const prefs = (page: Page) => page.locator('[data-perf="prefs"]');
 const order = (page: Page) => page.locator('[data-perf="comment-order"]');

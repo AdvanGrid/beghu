@@ -14,7 +14,7 @@ export const COUNTS_AFTER_MS = 400;
 
 /** The keys the bar knows, with what each does. */
 const KEYS: { key: string; hint: string }[] = [
-  { key: "is", hint: "open, closed, pr, any" },
+  { key: "is", hint: "open, closed, issue, pr, any" },
   { key: "label", hint: "has every label" },
   { key: "assignee", hint: "assigned to every one" },
   { key: "author", hint: "opened by any" },
@@ -32,9 +32,9 @@ const FIXED: Record<string, { value: string; hint: string }[]> = {
   is: [
     { value: "open", hint: "open" },
     { value: "closed", hint: "closed" },
-    { value: "issue", hint: "issues (the default)" },
-    { value: "pr", hint: "pull requests" },
-    { value: "any", hint: "issues and pull requests" },
+    { value: "issue", hint: "issues only" },
+    { value: "pr", hint: "pull requests only" },
+    { value: "any", hint: "issues and pull requests (the default)" },
   ],
   no: [
     { value: "label", hint: "no labels" },

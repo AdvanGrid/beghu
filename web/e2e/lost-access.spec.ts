@@ -25,7 +25,9 @@ async function fake(path: string, body: unknown): Promise<void> {
   expect(res.ok, `${path}: ${await res.text()}`).toBe(true);
 }
 
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const banner = (page: Page) => page.locator('[data-perf="banner"]');
 const account = (page: Page) => page.locator('[data-perf="account"]');
 
@@ -160,7 +162,7 @@ test("a comment GitHub took whose answer was lost, then Disconnect, shows as may
   const id = await octoId(page);
   const origin = new URL(page.url()).origin;
   // The last issue of octo-ext's list, left closed afterwards (as writes.spec.ts leaves those).
-  const list = (await (await page.request.get("/api/issues")).json()) as { rows: { id: number; owner: string; repo: string; number: number }[] };
+  const list = (await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:issue is:open")}`)).json()) as { rows: { id: number; owner: string; repo: string; number: number }[] };
   const issue = list.rows.at(-1)!;
   try {
     await page.goto(`/issues/${issue.id}`);

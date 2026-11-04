@@ -7,7 +7,9 @@ import { status } from "./stack";
 const panel = (page: Page) => page.locator('[data-perf="panel"]');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const comments = (page: Page) => page.locator('[data-perf="comment"]');
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 
 /**
  * Loads `url` and waits for the live stream's opening reset to have been handled (the list's

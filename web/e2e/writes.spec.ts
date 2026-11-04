@@ -50,7 +50,9 @@ const ISSUE = (i: Issue) => `PATCH /repos/${i.owner}/${i.repo}/issues/${i.number
 const fail = (endpoint: string, status: number, count = 1, retry_after?: number) =>
   fake("/faults/fail", { endpoint, status, count, retry_after });
 
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const comments = (page: Page) => page.locator('[data-perf="comment"]');
 const badge = (page: Page) => page.locator('[data-perf="badge"]');
 const stateNote = (page: Page) => page.locator('[data-perf="state-note"]');

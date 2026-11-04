@@ -35,7 +35,9 @@ async function summary(): Promise<{ unlinked: Unlinked[]; unlinked_closed: Unlin
 }
 
 const ref = (u: Unlinked) => `${u.repo}#${u.number}`;
-const rows = (page: Page) => page.locator('[data-perf="row"]');
+// Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
+// this spec works on issues.
+const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-status]))');
 const row = (page: Page, id: number | string) => page.locator(`[data-perf="row"][data-id="${id}"]`);
 
 /** Signed in, with the stream's opening refetch done, at `path`. */

@@ -142,6 +142,10 @@ test("o moves the focus into the issue, and Escape back to its row in the list",
 });
 
 test("Shift+J and Shift+K scroll the open issue from the list, the focus and the selection staying put", async ({ page }) => {
+  // Issues only: an issue's thread (the fixture's top issues have 30 comments) is long enough
+  // to scroll, and the default view lists PRs beside them.
+  await goto(page, "/?q=" + encodeURIComponent("is:issue is:open"));
+  await expect(rows(page).first()).toBeVisible();
   // Into the list, then j: the second row is open, with the focus on it.
   await rows(page).nth(0).focus();
   await page.keyboard.press("j");

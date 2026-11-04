@@ -141,14 +141,21 @@ async fn feed_reads(s: &Stack) -> (u64, u64) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn prs_list_only_under_is_pr_or_is_any_with_their_status_and_review() {
+async fn prs_list_beside_issues_unless_is_issue_with_their_status_and_review() {
     let s = start_with(|_| {}).await;
     let b = s.sign_in("tomsj").await;
 
+    // The default view lists both kinds; each PR carries its status, each issue none.
     let default = rows(&s, &b, "is:open").await;
-    assert!(!default.is_empty());
+    assert!(default.iter().any(|r| r["kind"] == "pr"));
+    assert!(default.iter().any(|r| r["kind"] == "issue"));
+    for r in &default {
+        assert_eq!(r["kind"] == "pr", !r["pr"].is_null(), "{r}");
+    }
+    let issues = rows(&s, &b, "is:issue is:open").await;
+    assert!(!issues.is_empty());
     assert!(
-        default
+        issues
             .iter()
             .all(|r| r["kind"] == "issue" && r["pr"].is_null())
     );
