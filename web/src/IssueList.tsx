@@ -22,6 +22,7 @@ import { createVirtualizer } from "./virtual";
 import { ago, fullDate } from "./time";
 import { colW, rowAvatars, slots } from "./layout.stylex";
 import { cx, cxMap, cxTable } from "./cx";
+import { copied, copyRef } from "./copyRef";
 import { point, pointed, unpoint } from "./pointed";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -748,7 +749,13 @@ export function Row(props: {
       <span class={CELL.progress} data-perf="progress">
         {progressOf(r())}
       </span>
-      <span class={CELL.ref} data-perf="ref" textContent={`${r().repo}#${r().number}`} />
+      <span
+        class={CELL.ref}
+        data-perf="ref"
+        title="Copy the number"
+        onClick={(e) => copyRef(e, r())}
+        textContent={copied() === r().id ? "Copied" : `${r().repo}#${r().number}`}
+      />
       <span class={WHO[avatarsClip(r().assignees.length, props.cols.width("who")) ? 1 : 0]}>
         {r().assignees.slice(0, 3).map((u) => <Avatar login={u.login} />)}
       </span>
@@ -1361,6 +1368,7 @@ const s = stylex.create({
   },
   ref: {
     color: colors.muted,
+    cursor: "copy",
     fontFamily: fonts.mono,
     fontSize: 12,
     textOverflow: "ellipsis",
