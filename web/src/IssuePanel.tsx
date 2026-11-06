@@ -76,6 +76,7 @@ import { CueLine, cueStyles } from "./cue";
 import { applyAtOnce, createDetailHeld, type Unit, type UnitCue } from "./HeldDetail";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
+import { copied, copyRef } from "./copyRef";
 
 /** Below 900 px of viewport the panel sits under the list (Root.tsx lays that out). */
 const STACKED = mediaQueries.stacked.replace(/^@media /, "");
@@ -754,9 +755,15 @@ function Body(props: {
           >
             {(pr) => <PullBadge status={pr().status} />}
           </Show>
-          <span {...stylex.attrs(s.ref)} title={`${d().owner}/${d().repo}#${d().number}`}>
-            {d().repo}#{d().number}
-          </span>
+          <button
+            type="button"
+            {...stylex.attrs(s.ref)}
+            data-perf="detail-ref"
+            title={`${d().owner}/${d().repo}#${d().number} · click to copy the number`}
+            onClick={(e) => copyRef(e, d())}
+          >
+            {copied() === d().id ? "Copied" : `${d().repo}#${d().number}`}
+          </button>
           <Show when={d().locked}>
             <span {...stylex.attrs(s.locked)} data-perf="locked" title="Conversation locked on GitHub">
               Locked
@@ -1587,11 +1594,16 @@ const s = stylex.create({
     width: 112,
   },
   ref: {
+    padding: 0,
+    borderWidth: 0,
     overflow: "hidden",
+    backgroundColor: "transparent",
     color: colors.muted,
+    cursor: "copy",
     fontFamily: fonts.mono,
     fontSize: 12,
     textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
     minWidth: 0,
   },
   spacer: {

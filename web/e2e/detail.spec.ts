@@ -101,6 +101,32 @@ test("hovering a row preloads its detail, and the click shows it with no placeho
   await expect(row).not.toHaveAttribute("data-active");
 });
 
+test("a click on an issue's number copies it, in the list without opening the issue and in the detail", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await signIn(page);
+  const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+  const row = rows(page).nth(2);
+  const id = await row.getAttribute("data-id");
+  const ref = row.locator('[data-perf="ref"]');
+  const shown = (await ref.textContent())!;
+  const number = shown.slice(shown.indexOf("#"));
+
+  await ref.click();
+  await expect.poll(clipboard).toBe(number);
+  await expect(ref).toHaveText("Copied");
+  await expect(ref).toHaveText(shown);
+  await expect(page).toHaveURL((u) => u.pathname === "/");
+  await expect(row).not.toHaveAttribute("aria-current", "page");
+
+  await page.evaluate(() => navigator.clipboard.writeText(""));
+  await row.click();
+  await expect(detail(page)).toHaveAttribute("data-id", id!);
+  const detailRef = detail(page).locator('[data-perf="detail-ref"]');
+  await detailRef.click();
+  await expect.poll(clipboard).toBe(number);
+  await expect(detailRef).toHaveText("Copied");
+});
+
 test("a hover longer than a preload lasts still opens the issue with no placeholder frame, then refreshes it", async ({ page }) => {
   await signIn(page);
   const row = rows(page).nth(3);
@@ -247,7 +273,7 @@ test("nothing in the panel moves when a value changes length", async ({ page }) 
       const badge = box('[data-perf="badge"]');
       return {
         badge: [badge.left, badge.width],
-        ref: box('[data-perf="badge"] + span').left,
+        ref: box('[data-perf="detail-ref"]').left,
         title: box('[data-perf="title"]').top,
         keys: [...el.querySelectorAll("dt")].map((d) => [d.getBoundingClientRect().left, d.getBoundingClientRect().top]),
         values: [...el.querySelectorAll("dd")].map((d) => d.getBoundingClientRect().left),
