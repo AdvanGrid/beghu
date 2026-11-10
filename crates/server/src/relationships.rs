@@ -22,7 +22,7 @@ pub struct Progress {
 }
 
 /// One open blocker of a list row, as its chip and the hover card show it.
-#[derive(Serialize, TS)]
+#[derive(Clone, Serialize, TS)]
 #[ts(export)]
 pub struct Blocker {
     pub id: i64,

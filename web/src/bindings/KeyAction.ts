@@ -3,4 +3,4 @@
 /**
  * A key action: something the keymap binds keys to.
  */
-export type KeyAction = "next" | "previous" | "first" | "last" | "openIssue" | "toList" | "focusFilter" | "create" | "toggleMode" | "collapse" | "expand" | "labels" | "assignees" | "milestone" | "blockedBy" | "blocking" | "relatesTo" | "comment" | "editTitle" | "closeReopen" | "send" | "saveEdit" | "cancelEdit" | "imageOpen" | "imageClose" | "scrollDown" | "scrollUp" | "help";
+export type KeyAction = "next" | "previous" | "first" | "last" | "openIssue" | "toList" | "focusFilter" | "create" | "toggleMode" | "focusIssue" | "collapse" | "expand" | "labels" | "assignees" | "milestone" | "blockedBy" | "blocking" | "relatesTo" | "comment" | "editTitle" | "closeReopen" | "send" | "saveEdit" | "cancelEdit" | "imageOpen" | "imageClose" | "scrollDown" | "scrollUp" | "help";

@@ -5,6 +5,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/db.rs"));
 
+pub mod focus;
 pub mod list;
 pub mod rank;
 pub mod search;

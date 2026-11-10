@@ -37,6 +37,11 @@ matched: boolean,
 reordered: boolean, 
 /**
  * It has a parent on GitHub, shown or not (a root's may be a stub, a PR or in a repo the
- * tree doesn't show): a move under another issue takes it from that parent.
+ * tree doesn't show): a move under another issue takes it from that parent. In a blocking
+ * chain, which offers no drag, always `false`.
  */
-has_parent: boolean, };
+has_parent: boolean, 
+/**
+ * Focus view: shown above already, at the place it opens; here it has nothing under it.
+ */
+repeat: boolean, };

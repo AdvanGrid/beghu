@@ -132,6 +132,14 @@ _Avoid_: Cursor, highlighted row, current row
 In Tree mode, an ancestor shown only because one of the view's matches is below it: dimmed but selectable, and open by default, so a filtered tree opens along each path to a match.
 _Avoid_: Dimmed ancestor, filler node
 
+**Focus view**:
+The list's third mode: a tree with one root, the issue in focus, and what's reached down from it along one chain, its sub-issues (parent-child) or what it blocks and what those block (blocking), with each issue's linked PRs as leaves. Opening an issue that isn't on screen in it puts that issue in focus; one that is only opens.
+_Avoid_: Zoom, drill-down, subtree view
+
+**Repeat**:
+In Focus view, an issue reached again after the place it first shows (two blockers block it, or a loop): marked "shown above", with nothing under it.
+_Avoid_: Duplicate, clone
+
 **Match mode**:
 How a search's text affects the list order: Blend (match field weighted against age on the sort key), Best match (title matches, then body, then comment), or Off (the text only filters). Under Blend and Best match, an issue whose number a word names (`2273`, `#2273`) comes before every field's matches.
 _Avoid_: Relevance, search ranking

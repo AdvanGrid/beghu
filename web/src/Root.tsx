@@ -10,7 +10,7 @@ import { stale } from "./account";
 import { loadAfresh, newBuildOnNavigate } from "./build";
 import { cantReach, connectLive, githubDown, reconnecting } from "./live";
 import { createNote, leaving, overlay } from "./overlay";
-import { modeOf } from "./query";
+import { focusOf, modeOf } from "./query";
 import { ChunkFailed } from "./router";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { unsavedText } from "./unsaved";
@@ -331,13 +331,25 @@ function List() {
     <div {...stylex.attrs(s.listColumn)}>
       <FilterBar />
       <Errored fallback={(err, reset) => <ListFailure error={err()} reset={reset} />}>
-        <Show when={modeOf(location.search) === "tree"} fallback={<IssueList search={location.search} openId={openId()} />}>
-          <Loading fallback={<div {...stylex.attrs(s.listColumn)} aria-busy="true" />}>
-            <IssueTree search={location.search} openId={openId()} />
-          </Loading>
+        <Show when={modeOf(location.search) !== "list"} fallback={<IssueList search={location.search} openId={openId()} />}>
+          {/* Focus view on no issue yet: it says how to pick one. */}
+          <Show when={modeOf(location.search) !== "focus" || focusOf(location.search) !== undefined} fallback={<NoFocus />}>
+            <Loading fallback={<div {...stylex.attrs(s.listColumn)} aria-busy="true" />}>
+              <IssueTree search={location.search} openId={openId()} />
+            </Loading>
+          </Show>
         </Show>
       </Errored>
     </div>
+  );
+}
+
+/** Focus view with no issue in focus. */
+function NoFocus() {
+  return (
+    <p {...stylex.attrs(s.notice)} data-perf="no-focus">
+      Open an issue and choose <strong>Focus issue</strong> beside its number to see the issues under it or the chain it blocks.
+    </p>
   );
 }
 

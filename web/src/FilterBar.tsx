@@ -6,12 +6,19 @@ import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
 import type { MatchMode } from "./bindings/MatchMode";
-import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withMatch, withMode, withQuery, withSort, withToken, type Mode, type SortValue } from "./query";
+import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withChain, withMatch, withMode, withQuery, withSort, withToken, chainOf, type Chain, type Mode, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
 
 const MODES: { value: Mode; label: string }[] = [
   { value: "list", label: "List" },
   { value: "tree", label: "Tree" },
+  { value: "focus", label: "Focus" },
+];
+
+/** Focus view's chains: what it follows down from the issue in focus. */
+const CHAINS: { value: Chain; label: string; title: string }[] = [
+  { value: "parent", label: "Parent-child", title: "Sub-issues under the issue in focus" },
+  { value: "blocking", label: "Blocking", title: "What the issue in focus blocks, and what those block" },
 ];
 
 /**
@@ -51,15 +58,25 @@ export function FilterBar() {
   });
   // "New issue" beside the presets, by key: the create form in the panel, the view kept.
   touch("create", () => navigate(`/new${location.search}`));
-  // List | Tree: the view's mode, in the URL (`?mode=tree`) as a new history entry, so Back
-  // switches back. The open issue stays open (the tree moves it to its nearest ancestor shown).
+  // List | Tree | Focus: the view's mode, in the URL (`?mode=tree`) as a new history entry, so
+  // Back switches back. The open issue stays open (the tree moves it to its nearest ancestor
+  // shown). Focus view goes to the open issue (`?focus=`), or the one it was on; with neither, it
+  // says how to pick one.
   const mode = createMemo(() => modeOf(location.search));
   const setMode = (m: Mode) => {
     if (m === mode()) return;
     markModeSwitch();
-    navigate(window.location.pathname + withMode(window.location.search, m), { scroll: false });
+    const open = /^\/issues\/(\d+)/.exec(window.location.pathname)?.[1];
+    navigate(window.location.pathname + withMode(window.location.search, m, open === undefined ? undefined : Number(open)), { scroll: false });
   };
-  touch("toggleMode", () => setMode(mode() === "tree" ? "list" : "tree"));
+  // The key switches between List and Tree; from Focus view, back to the list.
+  touch("toggleMode", () => setMode(mode() === "list" ? "tree" : "list"));
+  // Focus view's chain, a new history entry as the mode is.
+  const chain = createMemo(() => chainOf(location.search));
+  const setChain = (c: Chain) => {
+    if (c === chain()) return;
+    navigate(window.location.pathname + withChain(window.location.search, c), { scroll: false });
+  };
   // Filled from the URL once; after that only typing, picks and Back/Forward change it.
   const initial = untrack(() => queryOf(location.search));
   const [text, setText] = createSignal(initial);
@@ -328,6 +345,24 @@ export function FilterBar() {
             )}
           </For>
         </span>
+        <Show when={mode() === "focus"}>
+          <span role="group" aria-label="Focus on" {...stylex.attrs(s.modes)} data-perf="chain">
+            <For each={CHAINS}>
+              {(c) => (
+                <button
+                  type="button"
+                  title={c.title}
+                  aria-pressed={chain() === c.value ? "true" : "false"}
+                  data-perf={`chain-${c.value}`}
+                  {...stylex.attrs(s.mode, chain() === c.value && s.presetOn)}
+                  onClick={() => setChain(c.value)}
+                >
+                  {c.label}
+                </button>
+              )}
+            </For>
+          </span>
+        </Show>
         <a href={`/new${location.search}`} noscroll {...stylex.attrs(s.preset, s.create)} data-perf="new-issue">
           New issue
         </a>

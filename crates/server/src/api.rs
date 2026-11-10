@@ -168,7 +168,7 @@ pub struct IssuePage {
     pub last: Option<String>,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Clone, Serialize, TS)]
 #[ts(export)]
 pub struct IssueRow {
     pub id: i64,
@@ -209,7 +209,7 @@ pub struct IssueRow {
 
 /// What a PR shows beside its issue fields on a list row: its status icon, and the review chip
 /// in the labels column.
-#[derive(Serialize, TS)]
+#[derive(Clone, Serialize, TS)]
 #[ts(export)]
 pub struct PullRow {
     pub status: PrStatus,
@@ -303,7 +303,7 @@ impl From<MatchMode> for list::Match {
     }
 }
 
-#[derive(Serialize, TS)]
+#[derive(Clone, Serialize, TS)]
 #[ts(export)]
 pub struct Label {
     pub name: String,

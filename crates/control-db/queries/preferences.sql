@@ -29,6 +29,7 @@ UPDATE preferences SET
   key_focus_filter = CASE :action WHEN 'focusFilter' THEN :binding ELSE key_focus_filter END,
   key_create = CASE :action WHEN 'create' THEN :binding ELSE key_create END,
   key_toggle_mode = CASE :action WHEN 'toggleMode' THEN :binding ELSE key_toggle_mode END,
+  key_focus_issue = CASE :action WHEN 'focusIssue' THEN :binding ELSE key_focus_issue END,
   key_collapse = CASE :action WHEN 'collapse' THEN :binding ELSE key_collapse END,
   key_expand = CASE :action WHEN 'expand' THEN :binding ELSE key_expand END,
   key_labels = CASE :action WHEN 'labels' THEN :binding ELSE key_labels END,
@@ -49,7 +50,7 @@ UPDATE preferences SET
   key_scroll_up = CASE :action WHEN 'scrollUp' THEN :binding ELSE key_scroll_up END,
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
-  'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'collapse', 'expand', 'labels', 'assignees',
+  'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'focusIssue', 'collapse', 'expand', 'labels', 'assignees',
   'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
   'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'help');
 
@@ -66,6 +67,7 @@ UNION ALL SELECT 'toList' AS "action!: String", key_to_list AS "binding!" FROM p
 UNION ALL SELECT 'focusFilter' AS "action!: String", key_focus_filter AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_focus_filter IS NOT NULL
 UNION ALL SELECT 'create' AS "action!: String", key_create AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_create IS NOT NULL
 UNION ALL SELECT 'toggleMode' AS "action!: String", key_toggle_mode AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_toggle_mode IS NOT NULL
+UNION ALL SELECT 'focusIssue' AS "action!: String", key_focus_issue AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_focus_issue IS NOT NULL
 UNION ALL SELECT 'collapse' AS "action!: String", key_collapse AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_collapse IS NOT NULL
 UNION ALL SELECT 'expand' AS "action!: String", key_expand AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_expand IS NOT NULL
 UNION ALL SELECT 'labels' AS "action!: String", key_labels AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_labels IS NOT NULL

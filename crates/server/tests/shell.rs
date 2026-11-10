@@ -2,7 +2,8 @@
 //! `/api/me`, the filter bar's facets, that URL's list page and the issue it opens, so the data
 //! fetches start alongside the JS. An issue's URL also modulepreloads the issue panel's chunk, so
 //! it loads alongside the entry instead of after it; a Tree mode URL (`mode=tree`) preloads the
-//! tree's first fetch and its chunk instead of the list page. It names its build, so the tab
+//! tree's first fetch and its chunk instead of the list page, as a Focus view URL on an issue
+//! (`mode=focus&focus=`) does. It names its build, so the tab
 //! running it can tell when the server has moved on to another (a deploy).
 
 mod common;
@@ -205,6 +206,11 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
             "/issues/7?q=label%3Abug&mode=tree",
             "/api/tree?q=label%3Abug&amp;mode=tree",
         ),
+        // Focus view on an issue reads the tree too.
+        (
+            "/issues/7?mode=focus&focus=7&chain=blocking",
+            "/api/tree?mode=focus&amp;focus=7&amp;chain=blocking",
+        ),
     ] {
         let page = html(url).await;
         let tag = format!(r#"<link rel="preload" href="{data}" as="fetch" crossorigin>"#);
@@ -212,8 +218,8 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
         assert!(page.contains(&tree), "{url}");
         assert!(!page.contains("/api/issues?"), "{url}");
     }
-    // The list, and a mode that only starts with `tree`, get neither.
-    for url in ["/", "/?q=is%3Aopen", "/?mode=treex"] {
+    // The list, a mode that only starts with `tree`, and Focus view on no issue get neither.
+    for url in ["/", "/?q=is%3Aopen", "/?mode=treex", "/?mode=focus"] {
         let page = html(url).await;
         assert!(!page.contains("/api/tree"), "{url}");
         assert!(!page.contains(&tree), "{url}");
