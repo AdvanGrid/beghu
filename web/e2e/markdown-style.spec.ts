@@ -14,7 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { claimBelowTheTop, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 
@@ -64,6 +64,16 @@ const style = (page: Page, selector: string, prop: string, pseudo?: string) =>
     .first()
     .evaluate((e, [prop, pseudo]) => getComputedStyle(e, pseudo).getPropertyValue(prop!), [prop, pseudo] as const);
 
+/**
+ * `l`'s box, once it has one: a live refetch of the post (its body edit's webhook, say) can
+ * render it again between finding the element and measuring it.
+ */
+async function boxOf(l: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+  let box: Awaited<ReturnType<Locator["boundingBox"]>> = null;
+  await expect.poll(async () => (box = await l.boundingBox()) !== null).toBe(true);
+  return box!;
+}
+
 async function checkStyleB(page: Page, theme: Theme): Promise<void> {
   // Headings: the level's colour, a 42.5 px mark cut into as many segments as the level, and
   // the text starting at the same place whatever the level.
@@ -72,11 +82,11 @@ async function checkStyleB(page: Page, theme: Theme): Promise<void> {
     const h = body(page).locator(`h${level}`).first();
     await expect(h).toHaveCSS("color", colour(`h${level}`, theme));
     const mark = h.locator("span").first();
-    expect((await mark.boundingBox())!.width).toBeCloseTo(42.5, 1);
+    expect((await boxOf(mark)).width).toBeCloseTo(42.5, 1);
     const segments = mark.locator("span");
     await expect(segments).toHaveCount(level);
     await expect(segments.first()).toHaveCSS("background-color", colour(`h${level}`, theme));
-    starts.add(Math.round((await h.locator(":scope > span").nth(1).boundingBox())!.x));
+    starts.add(Math.round((await boxOf(h.locator(":scope > span").nth(1))).x));
   }
   expect(starts.size).toBe(1);
 

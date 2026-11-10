@@ -164,7 +164,11 @@ export function FilterBar() {
     go(applied(box.value, editing === undefined ? undefined : at), false);
   };
 
-  /** Sets the box and applies all of it, as a new history entry. */
+  /**
+   * Sets the box and applies all of it, as a new history entry. A preset, the sort and the Match
+   * mode build `next` from the box itself, not `text()`: that is held at the last view while the
+   * next one loads, so a second click then would undo the first.
+   */
   const commit = (next: string) => {
     editing = undefined;
     box.value = next;
@@ -259,7 +263,7 @@ export function FilterBar() {
             data-perf="sort"
             value={sortValueOf(current())}
             {...stylex.attrs(s.select)}
-            onChange={(e) => commit(withSort(text(), e.currentTarget.value as SortValue))}
+            onChange={(e) => commit(withSort(box.value, e.currentTarget.value as SortValue))}
           >
             <For each={SORTS}>{(o) => <option value={o.value}>{o.label}</option>}</For>
           </select>
@@ -277,7 +281,7 @@ export function FilterBar() {
             disabled={!hasText(current())}
             value={effectiveMatch(current())}
             {...stylex.attrs(s.select, s.match)}
-            onChange={(e) => commit(withMatch(text(), e.currentTarget.value as MatchMode))}
+            onChange={(e) => commit(withMatch(box.value, e.currentTarget.value as MatchMode))}
           >
             <For each={MATCHES}>
               {(o) => (
@@ -319,7 +323,7 @@ export function FilterBar() {
                 type="button"
                 aria-pressed={on() ? "true" : "false"}
                 {...stylex.attrs(s.preset, on() && s.presetOn)}
-                onClick={() => commit(withToken(text(), p.token, !on(), p.clashes))}
+                onClick={() => commit(withToken(box.value, p.token, !hasToken(box.value, p.token), p.clashes))}
               >
                 {p.name}
               </button>

@@ -211,19 +211,26 @@ test("an issue opened again comes back where it was left, by the comment at the 
   await rows(page).nth(0).click();
   await expect(detail(page)).toHaveAttribute("data-id", a!);
   await expect(comments(page)).toHaveCount(30);
-  // The 20th comment 10 px above the view's top.
+  // The 20th comment 10 px above the view's top. The comments a jump passes lay out a frame after
+  // it lands (they skip layout off screen) and move it: it scrolls again until it stays put.
   const left = comments(page).nth(19);
   const leftId = await left.getAttribute("data-comment-id");
-  await left.evaluate((c) => {
-    const scroller = c.closest<HTMLElement>('[data-perf="detail"]')!;
-    scroller.scrollTop += c.getBoundingClientRect().top - scroller.getBoundingClientRect().top + 10;
-  });
   const offset = () =>
     page.locator(`[data-comment-id="${leftId}"]`).evaluate((c) => {
       const scroller = c.closest<HTMLElement>('[data-perf="detail"]')!;
       return Math.round(scroller.getBoundingClientRect().top - c.getBoundingClientRect().top);
     });
-  await expect.poll(offset).toBe(10);
+  await expect
+    .poll(async () => {
+      const at = await offset();
+      if (at !== 10)
+        await left.evaluate((c) => {
+          const scroller = c.closest<HTMLElement>('[data-perf="detail"]')!;
+          scroller.scrollTop += c.getBoundingClientRect().top - scroller.getBoundingClientRect().top + 10;
+        });
+      return at;
+    })
+    .toBe(10);
 
   // Another issue opens at its top; Back, the first is where it was left.
   await rows(page).nth(1).click();
@@ -231,7 +238,8 @@ test("an issue opened again comes back where it was left, by the comment at the 
   await expect.poll(() => detail(page).evaluate((el) => el.scrollTop)).toBe(0);
   await page.goBack();
   await expect(detail(page)).toHaveAttribute("data-id", a!);
-  await expect.poll(offset).toBe(10);
+  // To within the pixel the restore settles at (it stops under 1 px off).
+  await expect.poll(async () => Math.abs((await offset()) - 10)).toBeLessThanOrEqual(1);
 });
 
 test("scrolled past the title, a slim bar shows the issue's number and title; a click goes back to the top", async ({ page }) => {

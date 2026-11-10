@@ -147,14 +147,16 @@ test("the pointer on a blocker chip, or on its line in the hover card, outlines 
   const other = row(page, otherId!);
   try {
     devCtl(["fake", "edit", topRef, "--add-blocked-by", otherRef]);
-    const chip = row(page, topId!).locator('[data-perf="blocker"]');
+    // Its chip and its line in the card: the row may have blockers of its own already (a spec
+    // before this one may have left some).
+    const chip = row(page, topId!).locator(`[data-perf="blocker"][data-id="${otherId}"]`);
     await expect(chip).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     await expect(other).toBeVisible();
     await expect(other).toHaveCSS("outline-style", "none");
     await chip.hover();
     await expect(other).toHaveCSS("outline-style", "solid");
     // On to the card's line for it: still outlined; off the card: not.
-    const line = page.locator('[data-perf="card"] [data-perf="card-blocker"]');
+    const line = page.locator(`[data-perf="card"] [data-perf="card-blocker"][href^="/issues/${otherId}"]`);
     await line.hover();
     await expect(other).toHaveCSS("outline-style", "solid");
     await page.mouse.move(1, 1);
