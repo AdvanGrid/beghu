@@ -582,10 +582,13 @@ test("a failed write outranks the word on an issue created while away, which sho
   const otherId = await other.getAttribute("data-id");
   await other.click();
   await page.waitForURL((u) => u.pathname === `/issues/${otherId}`);
+  // The other issue is on screen before anything is dismissed.
+  await expect(page.locator(`[data-perf="detail"][data-id="${otherId}"]`)).toBeVisible();
   const slot = page.locator('[data-perf="status"]');
   await expect(slot).toContainText(`Couldn't close ${d.repo}#${d.number}`);
   await expect(createStatus(page)).toHaveCount(0);
   await slot.getByRole("button", { name: "Dismiss" }).click();
+  await expect(slot).not.toContainText("Couldn't close");
   await expect(createStatus(page)).toContainText("Created the issue in docs");
 });
 
