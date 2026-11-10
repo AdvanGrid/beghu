@@ -330,42 +330,46 @@ export function FilterBar() {
             );
           }}
         </For>
-        <span role="group" aria-label="Show as" {...stylex.attrs(s.modes)} data-perf="mode">
-          <For each={MODES}>
-            {(m) => (
-              <button
-                type="button"
-                aria-pressed={mode() === m.value ? "true" : "false"}
-                data-perf={`mode-${m.value}`}
-                {...stylex.attrs(s.mode, mode() === m.value && s.presetOn)}
-                onClick={() => setMode(m.value)}
-              >
-                {m.label}
-              </button>
-            )}
-          </For>
-        </span>
-        <Show when={mode() === "focus"}>
-          <span role="group" aria-label="Focus on" {...stylex.attrs(s.modes)} data-perf="chain">
-            <For each={CHAINS}>
-              {(c) => (
+        {/* Right-aligned together, Focus view's chain first, so the mode toggle and "New issue"
+            stay put when the chain appears. */}
+        <span {...stylex.attrs(s.end)}>
+          <Show when={mode() === "focus"}>
+            <span role="group" aria-label="Focus on" {...stylex.attrs(s.segments)} data-perf="chain">
+              <For each={CHAINS}>
+                {(c) => (
+                  <button
+                    type="button"
+                    title={c.title}
+                    aria-pressed={chain() === c.value ? "true" : "false"}
+                    data-perf={`chain-${c.value}`}
+                    {...stylex.attrs(s.segment, chain() === c.value && s.segmentOn)}
+                    onClick={() => setChain(c.value)}
+                  >
+                    {c.label}
+                  </button>
+                )}
+              </For>
+            </span>
+          </Show>
+          <span role="group" aria-label="Show as" {...stylex.attrs(s.segments)} data-perf="mode">
+            <For each={MODES}>
+              {(m) => (
                 <button
                   type="button"
-                  title={c.title}
-                  aria-pressed={chain() === c.value ? "true" : "false"}
-                  data-perf={`chain-${c.value}`}
-                  {...stylex.attrs(s.mode, chain() === c.value && s.presetOn)}
-                  onClick={() => setChain(c.value)}
+                  aria-pressed={mode() === m.value ? "true" : "false"}
+                  data-perf={`mode-${m.value}`}
+                  {...stylex.attrs(s.segment, mode() === m.value && s.segmentOn)}
+                  onClick={() => setMode(m.value)}
                 >
-                  {c.label}
+                  {m.label}
                 </button>
               )}
             </For>
           </span>
-        </Show>
-        <a href={`/new${location.search}`} noscroll {...stylex.attrs(s.preset, s.create)} data-perf="new-issue">
-          New issue
-        </a>
+          <a href={`/new${location.search}`} noscroll {...stylex.attrs(s.preset, s.create)} data-perf="new-issue">
+            New issue
+          </a>
+        </span>
       </div>
     </div>
   );
@@ -479,45 +483,46 @@ const s = stylex.create({
     cursor: "pointer",
     fontSize: 12,
   },
-  // List | Tree: two halves of one pill, at the end of the presets' row before "New issue".
-  modes: {
+  // The presets' row's end: Focus view's chain, the mode toggle, "New issue".
+  end: {
+    gap: 6,
+    alignItems: "center",
     display: "flex",
+    flexWrap: "wrap",
     marginInlineStart: "auto",
   },
-  mode: {
-    font: "inherit",
+  // A segmented control (List | Tree | Focus, and Focus view's chain): one pill-shaped outline,
+  // the pressed segment a filled pill inside it. As tall as a preset.
+  segments: {
+    padding: 1,
     borderColor: colors.line,
+    borderRadius: 999,
     borderStyle: "solid",
     borderWidth: 1,
-    paddingBlock: 2,
+    gap: 2,
+    display: "flex",
+  },
+  segment: {
+    font: "inherit",
+    borderRadius: 999,
+    borderWidth: 0,
+    paddingBlock: 1,
     paddingInline: 10,
     backgroundColor: {
       default: "transparent",
       ":hover": colors.hover,
     },
-    borderEndEndRadius: {
-      default: 0,
-      ":last-child": 999,
-    },
-    borderEndStartRadius: {
-      default: 0,
-      ":first-child": 999,
-    },
-    borderStartEndRadius: {
-      default: 0,
-      ":last-child": 999,
-    },
-    borderStartStartRadius: {
-      default: 0,
-      ":first-child": 999,
-    },
     color: colors.muted,
     cursor: "pointer",
     fontSize: 12,
-    marginInlineStart: {
-      default: 0,
-      ":last-child": -1,
+  },
+  segmentOn: {
+    backgroundColor: {
+      default: colors.selected,
+      ":hover": colors.selected,
     },
+    boxShadow: `inset 0 0 0 1px ${colors.accent}`,
+    color: colors.fg,
   },
   // "New issue": a link, at the end of the presets' row.
   create: {
