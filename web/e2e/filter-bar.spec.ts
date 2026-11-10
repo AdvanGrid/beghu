@@ -162,7 +162,7 @@ test("a view that takes over 200 ms pulses the list over the old rows, and a sta
       await newerAsked;
       await route.fulfill({ response: await route.fetch() });
       olderLanded();
-    } else if (q === "is:pr is:open") {
+    } else if (q === "is:open assignee:me is:pr") {
       askedNewer();
       const response = await route.fetch();
       await olderIn;
@@ -211,7 +211,7 @@ test("a view that takes over 200 ms pulses the list over the old rows, and a sta
   expect(on - clicks[0]!).toBeGreaterThanOrEqual(200);
   expect(on - clicks[0]!).toBeLessThan(1000);
   const older = landed["is:open assignee:me"]!;
-  const newer = landed["is:pr is:open"]!;
+  const newer = landed["is:open assignee:me is:pr"]!;
   expect(older).toBeGreaterThan(on);
   expect(older).toBeLessThan(newer);
   expect(off).toBeGreaterThanOrEqual(newer);
@@ -374,6 +374,9 @@ test("presets toggle their own token and keep everything else typed, free text i
   await box.fill("is:open 2248 sort:created");
   await box.press("Enter");
   await expect.poll(() => q(page)).toBe("is:open 2248 sort:created");
+  // Enter took the sort's value from its list, which then offers the next token over the presets.
+  await box.press("Escape");
+  await expect(page.locator('[data-perf="suggestions"]')).toBeHidden();
   // Pressed with other tokens beside it.
   await expect(open).toHaveAttribute("aria-pressed", "true");
   await expect(mine).toHaveAttribute("aria-pressed", "false");
