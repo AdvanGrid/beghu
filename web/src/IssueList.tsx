@@ -563,18 +563,20 @@ function Rows(props: {
       data-perf-rows={rows().length}
       onFocusIn={onFocusIn}
     >
+      {/* Rows that left the list, fading out where they were (copies: nothing to act on). Outside
+          the rows' Show, so they fade out over an emptied list too: the scroller (contained) places
+          them as the sizer would, from the top of what it scrolls. */}
+      <For each={held.ghosts()}>
+        {(g) => (
+          <div aria-hidden="true" inert data-perf="ghost" ref={(el) => held.fade(el, g)} {...stylex.attrs(s.ghost(g.y))}>
+            {g.node}
+          </div>
+        )}
+      </For>
       <Show when={rows().length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
           {/* The shift cue's lines, where rows will arrive: zero height, so the cue moves nothing. */}
           <For each={held.cue()?.lines ?? []}>{(line) => <div data-perf="cue-line" {...stylex.attrs(s.cueLine(line * ROW_HEIGHT))} />}</For>
-          {/* Rows that left the list, fading out where they were (copies: nothing to act on). */}
-          <For each={held.ghosts()}>
-            {(g) => (
-              <div aria-hidden="true" inert data-perf="ghost" ref={(el) => held.fade(el, g)} {...stylex.attrs(s.ghost(g.y))}>
-                {g.node}
-              </div>
-            )}
-          </For>
           {/* Each row sits at its own place: a row that stays in the window keeps its DOM node,
               and so the focus, through a refetch that replaces its data (rows are keyed by
               issue, not by object), and the window moving never moves it, so nothing but the
