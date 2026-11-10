@@ -560,6 +560,9 @@ test("the repo a create is sent to holds while it's on its way, so a failed one 
 });
 
 test("a failed write outranks the word on an issue created while away, which shows again once it's dismissed", async ({ page }) => {
+  // DEBUG (temporary): the page's console, with the app's [dbg] and [attr] lines, to this test's output.
+  page.on("console", (m) => console.log(`[console ${m.type()}] ${m.text().slice(0, 4000)}`));
+  page.on("request", (r) => r.url().includes("/api/") && !r.url().includes("/api/stream") && console.log(`[req] ${r.method()} ${r.url().replace(/^https?:\/\/[^/]+/, "")}`));
   await signIn(page);
   await view(page, "is:open repo:docs");
   await fake("/faults/latency", { endpoint: CREATE, ms: 3000 });
@@ -587,7 +590,35 @@ test("a failed write outranks the word on an issue created while away, which sho
   const slot = page.locator('[data-perf="status"]');
   await expect(slot).toContainText(`Couldn't close ${d.repo}#${d.number}`);
   await expect(createStatus(page)).toHaveCount(0);
+  console.log("[test] dismiss click");
   await slot.getByRole("button", { name: "Dismiss" }).click();
+  // DEBUG (temporary): how the slot goes on, and what Solid says held the click's write.
+  for (let i = 0; i < 16; i++) {
+    console.log(`[test] t+${i * 750}ms slot: ${await slot.textContent()}`);
+    await page.waitForTimeout(750);
+  }
+  console.log(
+    "[test] interactions:",
+    await page.evaluate(() => {
+      const a = (window as unknown as { __attr: { history: (t: string) => unknown[] } }).__attr;
+      const seen = new WeakSet();
+      const safe = (v: unknown) =>
+        JSON.stringify(v, (_k, x) => {
+          if (typeof x === "object" && x !== null) {
+            if (seen.has(x)) return "[cycle]";
+            seen.add(x);
+          }
+          return x;
+        });
+      return a
+        .history("interaction")
+        .filter((e) => (e as { name: string }).name === "click")
+        .slice(-3)
+        .map(safe)
+        .join("\n");
+    }),
+  );
+  console.log("[test] holds:", await page.evaluate(() => JSON.stringify((window as unknown as { __attr: { history: (t: string) => unknown[] } }).__attr.history("hold").slice(-4)).slice(0, 8000)));
   await expect(slot).not.toContainText("Couldn't close");
   await expect(createStatus(page)).toContainText("Created the issue in docs");
 });

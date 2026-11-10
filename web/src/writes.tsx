@@ -31,7 +31,7 @@
 //
 // Leaving the page asks first only while there's unsaved text: a draft, or a comment not sent.
 import * as stylex from "@stylexjs/stylex";
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import {
@@ -133,7 +133,7 @@ const LOOK_AFTER_MS = [0, 2_000, 5_000];
 // to what renders them. (A signal read in the same tick as its write still gives the old value.)
 let pendingNow: Pending[] = [];
 let draftsNow: ReadonlyMap<number, string> = new Map();
-const [ops, setOps] = createSignal<Pending[]>(pendingNow);
+const [ops, setOps] = createSignal<Pending[]>(pendingNow, { name: "ops" });
 /** Unsent comment text, per issue. */
 const [drafts, setDrafts] = createSignal(draftsNow);
 /**
@@ -164,7 +164,12 @@ function patch(id: string, change: Partial<Pending>): void {
 }
 
 function drop(id: string): void {
+  console.log("[dbg] drop", id, "before", pendingNow.length);
   commit(pendingNow.filter((p) => p.id !== id));
+  console.log("[dbg] drop done, after", pendingNow.length, "ops() reads", ops().length);
+  queueMicrotask(() => console.log("[dbg] drop microtask: ops() reads", ops().length));
+  setTimeout(() => console.log("[dbg] drop +0ms timer: ops() reads", ops().length), 0);
+  setTimeout(() => console.log("[dbg] drop +1000ms timer: ops() reads", ops().length), 1000);
 }
 
 function setDraft(issue: number, text: string): void {
@@ -1045,7 +1050,11 @@ function CommentNote(props: { op: string; at: number }) {
 function Status() {
   const location = useLocation();
   const open = () => issueId(/^\/issues\/([^/]+)$/.exec(location.pathname)?.[1]);
-  const failed = createMemo(() => ops().filter((p) => p.phase === "failed" && !involves(p, open())));
+  const failed = createMemo(() => {
+    const f = ops().filter((p) => p.phase === "failed" && !involves(p, open()));
+    console.log("[dbg] Status failed memo", f.length, "of", ops().length, "open", open(), performance.now().toFixed(0));
+    return f;
+  });
   const sending = createMemo(() => ops().filter((p) => p.phase === "sending"));
   const quiet = () => {
     const n = sending().length;
@@ -1063,6 +1072,10 @@ function Status() {
   const failedCreate = () => (createNote()?.failed ? createNote()!.Note : undefined);
   const madeCreate = () => (createNote()?.failed === false ? createNote()!.Note : undefined);
   const failures = () => failed().length + (failedCreate() ? 1 : 0);
+  createEffect(
+    () => ({ n: failures(), open: open(), made: !!madeCreate() }),
+    (v) => console.log("[dbg] Status COMMITTED", JSON.stringify(v), performance.now().toFixed(0)),
+  );
   return (
     <Show when={failures() > 0 || madeCreate()} fallback={quiet() ?? <Background />}>
       <Show when={failures() > 0} fallback={<Dynamic component={madeCreate()} />}>

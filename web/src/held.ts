@@ -67,6 +67,7 @@ export function createIntent(el: () => HTMLElement, region: (t: Element) => bool
   const check = () => {
     clearTimeout(timer);
     const left = until() - performance.now();
+    if (untrack(reading) !== (left <= 0)) console.log("[dbg] reading", left <= 0, performance.now().toFixed(0));
     setReading(left <= 0);
     if (left > 0 && left !== Infinity) timer = setTimeout(check, left);
   };
@@ -416,6 +417,7 @@ export function createHeld<R extends { id: number }>(opts: {
 
   /** Applies the latest batch: the order becomes the latest read's, then slides there. */
   const apply = (animate: boolean) => {
+    console.log("[dbg] held apply", animate, performance.now().toFixed(0));
     cancelCue();
     pending = false;
     const s = untrack(shown);
@@ -533,6 +535,7 @@ export function createHeld<R extends { id: number }>(opts: {
     // A batch that changes mid-cue shows its new cue, from the start.
     const showing = untrack(cue);
     if (showing && timer.running() && sameShift(showing, shift)) return;
+    console.log("[dbg] held cue start", [...shift.arriving], [...shift.leaving], performance.now().toFixed(0));
     setCue(shift);
     timer.start(() => {
       if (untrack(reading) && !untrack(hidden)) apply(true);
