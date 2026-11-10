@@ -53,7 +53,8 @@
 // keeps the focus while the issue beside it is read.
 //
 // `toggleMode` is offered by the filter bar, always there: it switches the view between List and
-// Tree (`?mode=tree`). In Tree mode the tree offers `collapse` and `expand`, ← and → as ARIA's
+// Tree (`?mode=tree`), and from Focus view back to the list. `focusIssue` is offered while an
+// issue is open: Focus view on it (`?mode=focus&focus=`). In Tree mode the tree offers `collapse` and `expand`, ← and → as ARIA's
 // tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
 // or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
@@ -80,6 +81,7 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   focusFilter: ["/", "s", "Mod+/"],
   create: ["c"],
   toggleMode: ["t"],
+  focusIssue: ["f"],
   collapse: [],
   expand: [],
   labels: ["l"],
@@ -128,6 +130,7 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   focusFilter: ANYWHERE,
   create: BROWSE,
   toggleMode: ["page", "list"],
+  focusIssue: BROWSE,
   collapse: ["list"],
   expand: ["list"],
   labels: ["panel"],

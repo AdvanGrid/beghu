@@ -24,6 +24,15 @@
 //   why (the server's reasons, `/api/tree/drop`, that a parent shows its matches first, out of
 //   GitHub's order, or that a PR takes no sub-issues) and dropping does nothing. A drop is a write of the
 //   detail's own kinds (`sub_reorder`, `sub_add` moving it, `sub_remove`), shown at once.
+//
+// Focus view (`?mode=focus&focus=<id>`) is this tree with one root, the issue in focus, and what's
+// reached down from it (the server's `focus`): its sub-issues, or with `chain=blocking` what it
+// blocks, and what those block, each issue with its linked PRs as leaves. The root opens unless
+// the tab closed it. An issue reached again is a repeat, marked "shown above", with nothing under
+// it; its row has a key of its own (`keyOf`). Opening an issue that isn't on screen in the tree (a
+// parent, a blocker, a ref in a post) puts it in focus, replacing the history entry the click
+// made, so Back goes to the focus before; one on screen just opens. The drag works on sub-issues
+// only: a blocking chain has none.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
@@ -38,7 +47,7 @@ import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush, writesPaused } from "./live";
 import { overlay, type SubMove } from "./overlay";
-import { queryOf, sortOf, takeModeSwitch, type SortKey } from "./query";
+import { chainOf, focusOf, modeOf, queryOf, sortOf, takeModeSwitch, withMode, type SortKey } from "./query";
 import { endOf, refOf } from "./related";
 import { createVirtualizer } from "./virtual";
 import { StillImporting } from "./WhileImporting";
@@ -75,6 +84,27 @@ export function canDrag(r: IssueRow, repos: readonly Repo[]): boolean {
 /** Why a drop beside a root can't be made: roots follow the view's sort, not an order of their own. */
 const ROOTS_SORTED = "Top-level issues follow the view's sort; remove its parent from the issue's panel";
 const UNDER_PR = "A pull request can't have sub-issues";
+const BESIDE_FOCUS = "The issue in focus stays at the top";
+
+/** The issue Focus view is on, if the tree is Focus view's. */
+function focusIn(search: string): number | undefined {
+  return modeOf(search) === "focus" ? focusOf(search) : undefined;
+}
+
+/** The keys repeats' rows go by, each a negative number of its own for a place (its parent and itself). */
+const repeatKeys = new Map<string, number>();
+
+/**
+ * A row's key in the tree: the issue's id, or for a repeat (Focus view's issue reached again,
+ * under another parent) a key of its own, the same each time that place shows.
+ */
+export function keyOf(n: TreeNode): number {
+  if (!n.repeat) return n.row.id;
+  const place = `${n.parent}>${n.row.id}`;
+  let k = repeatKeys.get(place);
+  if (k === undefined) repeatKeys.set(place, (k = -1 - repeatKeys.size));
+  return k;
+}
 const KIDS_SORTED = "These sub-issues show the matches first; clear the filter to reorder them";
 
 /** `nodes` with `n`'s subtree (the rows after it, deeper than it) left out, and how many rows that was. */
@@ -314,13 +344,16 @@ export function IssueTree(props: { search: string; openId?: number }) {
     const o = opensNow();
     const open = new Set(o.open);
     const shut = new Set(o.shut);
-    const setOpen = (x: { row: IssueRow; context: boolean }, to: boolean) => {
+    // Context opens by default, and so does Focus view's root.
+    const focused = focusIn(view) !== undefined;
+    const setOpen = (x: { row: IssueRow; context: boolean; parent: number | null }, to: boolean) => {
+      const byDefault = x.context || (focused && x.parent === null);
       if (to) {
         shut.delete(x.row.id);
-        if (!x.context) open.add(x.row.id);
+        if (!byDefault) open.add(x.row.id);
       } else {
         open.delete(x.row.id);
-        if (x.context) shut.add(x.row.id);
+        if (byDefault) shut.add(x.row.id);
       }
     };
     const id = n.row.id;
@@ -374,6 +407,21 @@ export function IssueTree(props: { search: string; openId?: number }) {
     }
   };
 
+  // Focus view: opening an issue that isn't on screen in the tree puts it in focus, in place of
+  // the history entry the click made. One the keys or a click on a row opened is on screen.
+  createEffect(
+    () => ({ open: props.openId, view: props.search }),
+    (now, prev) => {
+      if (prev === undefined || now.open === undefined || now.open === prev.open || now.view !== prev.view) return;
+      const root = focusIn(now.view);
+      if (root === undefined || now.open === root) return;
+      if (shown?.view === now.view && shown.page.nodes.some((n) => n.row.id === now.open)) return;
+      const to = now.open;
+      queueMicrotask(() => navigate(`/issues/${to}${withMode(now.view, "focus", to)}`, { replace: true, scroll: false }));
+    },
+  );
+  const focused = () => focusIn(props.search) !== undefined;
+
   let column!: HTMLDivElement;
   const [listWidth, setListWidth] = createSignal(0);
   onSettled(() => {
@@ -400,7 +448,8 @@ export function IssueTree(props: { search: string; openId?: number }) {
               more={page().next !== null}
               onNearEnd={loadMore}
               toggle={toggle}
-              drags={(r) => canDrag(r, me().repos)}
+              focused={focused()}
+              drags={(r) => chainOf(props.search) !== "blocking" && canDrag(r, me().repos)}
               time={time().of}
               cols={cols}
               card={card}
@@ -429,6 +478,8 @@ function Nodes(props: {
   more: boolean;
   onNearEnd: () => void;
   toggle: (n: TreeNode, deep: boolean) => void;
+  /** Focus view's tree: its one root is the issue in focus. */
+  focused: boolean;
   /** Whether the tree offers to drag this issue (`canDrag`). */
   drags: (r: IssueRow) => boolean;
   time: (r: IssueRow) => number | null;
@@ -441,7 +492,7 @@ function Nodes(props: {
   // takes the selected issue out of the tree, the selection goes to the issue that took its row,
   // unless the panel needs it kept.
   const held = createHeld({
-    target: () => props.nodes.map((n) => ({ id: n.row.id, n })),
+    target: () => props.nodes.map((n) => ({ id: keyOf(n), n })),
     view: () => `${props.search}#${props.version}`,
     scroller: () => scroller,
     pitch: ROW_HEIGHT,
@@ -478,11 +529,12 @@ function Nodes(props: {
     for (const n of nodes()) {
       const pos = (seen.get(n.parent) ?? 0) + 1;
       seen.set(n.parent, pos);
-      out.set(n.row.id, { pos, of: 0 });
+      out.set(keyOf(n), { pos, of: 0 });
     }
+    // By the issue: a repeat (no children here) leaves its first place's count alone.
     const size = new Map<number | null, number>();
-    for (const n of nodes()) size.set(n.row.id, n.children);
-    for (const n of nodes()) out.get(n.row.id)!.of = n.parent === null ? (props.more ? -1 : (seen.get(null) ?? 0)) : (size.get(n.parent) ?? 0);
+    for (const n of nodes()) if (!n.repeat) size.set(n.row.id, n.children);
+    for (const n of nodes()) out.get(keyOf(n))!.of = n.parent === null ? (props.more ? -1 : (seen.get(null) ?? 0)) : (size.get(n.parent) ?? 0);
     return out;
   });
 
@@ -649,8 +701,8 @@ function Nodes(props: {
     }
     return undefined;
   };
-  /** The visible siblings under `parent`, in order. */
-  const siblings = (parent: number | null) => nodes().filter((n) => n.parent === parent && (parent !== null || n.depth === 0));
+  /** The visible siblings under `parent`, in order: sub-issues, not Focus view's linked PRs beside them. */
+  const siblings = (parent: number | null) => nodes().filter((n) => n.parent === parent && (parent !== null ? n.row.kind !== "pr" : n.depth === 0));
   /** What dropping `id` at `d` does. */
   const plan = (id: number, d: Drop): Plan => {
     const ds = nodes()[nodeAt(id)];
@@ -676,6 +728,9 @@ function Nodes(props: {
       };
     }
     const parent = target.parent;
+    // Beside Focus view's root, or a linked PR: no sub-issue's place.
+    if (parent === null && props.focused) return { why: BESIDE_FOCUS };
+    if (target.row.kind === "pr" && parent !== null) return { none: true };
     const sibs = siblings(parent).filter((n) => n.row.id !== id);
     const t = sibs.findIndex((n) => n.row.id === target.row.id);
     const after = d.zone === "after" ? target.row.id : t > 0 ? sibs[t - 1]!.row.id : null;
@@ -754,8 +809,8 @@ function Nodes(props: {
   // What the rows read, as functions: a conditional written in a component's props compiles to a
   // new computation on every read of the prop (as the list's).
   const tabbable = (id: number, i: number) => (selectedShown() ? selected() === id : i === 0);
-  const posOf = (id: number, i: number) => places().get(id)?.pos ?? visible().first + i + 1;
-  const setSizeOf = (id: number) => places().get(id)?.of ?? -1;
+  const posOf = (key: number, i: number) => places().get(key)?.pos ?? visible().first + i + 1;
+  const setSizeOf = (key: number) => places().get(key)?.of ?? -1;
   const leaving = (id: number) => held.cue()?.leaving.has(id) ?? false;
 
   return (
@@ -793,7 +848,7 @@ function Nodes(props: {
             )}
           </For>
           {/* Each row at its own place, as the list's. */}
-          <For each={visible().nodes} keyed={(n) => n.row.id}>
+          <For each={visible().nodes} keyed={keyOf}>
             {(n, i) => {
               // Its place in the tree, built once: read through getters, so it follows the node,
               // and its lead (indent, grip, chevron) is one component for the row's life. (A
@@ -837,8 +892,8 @@ function Nodes(props: {
                   current={props.openId === n().row.id}
                   selected={selected() === n().row.id}
                   tabbable={tabbable(n().row.id, i())}
-                  pos={posOf(n().row.id, i())}
-                  of={setSizeOf(n().row.id)}
+                  pos={posOf(keyOf(n()), i())}
+                  of={setSizeOf(keyOf(n()))}
                   leaving={leaving(n().row.id)}
                   time={props.time}
                   cols={props.cols}
@@ -895,11 +950,14 @@ function Lead(props: { node: TreeNode; dragged: boolean; drags: boolean; onToggl
   // built only when whether the issue has children changes (a memo), so opening and closing keep
   // it, and its turn animates.
   const hasChildren = createMemo(() => props.node.children > 0);
+  // A repeat (Focus view) has no children here: its chevron's room says it's shown above.
   const chevronIcon = () =>
     hasChildren() ? (
       <svg viewBox="0 0 16 16" width="12" height="12" class={CHEVRON_ICON[props.node.open ? 1 : 0]}>
         <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" />
       </svg>
+    ) : props.node.repeat ? (
+      "↑"
     ) : undefined;
   return (
     <span class={LEAD[props.dragged ? 1 : 0]}>
@@ -915,10 +973,10 @@ function Lead(props: { node: TreeNode; dragged: boolean; drags: boolean; onToggl
       <span
         ref={(el) => own(el, (e) => props.onToggle(e.shiftKey || e.altKey))}
         aria-hidden={hasChildren() ? "true" : undefined}
-        title={hasChildren() ? `${what()} (Shift or Alt: everything under it)` : undefined}
-        data-perf={hasChildren() ? "chevron" : undefined}
+        title={hasChildren() ? `${what()} (Shift or Alt: everything under it)` : props.node.repeat ? "Shown above: what's under it is there" : undefined}
+        data-perf={hasChildren() ? "chevron" : props.node.repeat ? "repeat" : undefined}
         data-open={hasChildren() && props.node.open ? "" : undefined}
-        class={hasChildren() ? TOGGLE : CHEVRON}
+        class={hasChildren() ? TOGGLE : props.node.repeat ? REPEAT : CHEVRON}
       >
         {chevronIcon()}
       </span>
@@ -1021,6 +1079,11 @@ const s = stylex.create({
     color: colors.muted,
     cursor: "pointer",
   },
+  // A repeat's mark, in the chevron's room.
+  repeat: {
+    color: colors.muted,
+    fontSize: 12,
+  },
   // Unclipped, as every icon (bits.tsx's s.icon).
   chevronIcon: {
     overflow: "visible",
@@ -1112,5 +1175,6 @@ const GRIP = cx(s.grip);
 const GRIP_SPACE = cx(s.gripSpace);
 const CHEVRON = cx(s.chevron);
 const TOGGLE = cx(s.chevron, s.toggle);
+const REPEAT = cx(s.chevron, s.repeat);
 /** The chevron's icon, by open (0, 1). */
 const CHEVRON_ICON = cxTable(2, (m) => [s.chevronIcon, m === 1 && s.chevronOpen]);

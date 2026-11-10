@@ -15,6 +15,12 @@
 //! the list's cursor format) plus `open`, `shut`, `under` (only what a node shows under it, to
 //! open it; with `all`, opened to the bottom), and `sel` (the selection: the answer says where it
 //! shows, itself or the nearest ancestor that does).
+//!
+//! With `focus`, the answer is Focus view's tree instead (`mirror_db::focus`): one root, the issue
+//! in focus, and what's reached down from it along `chain` (`parent`, the default: sub-issues;
+//! `blocking`: what each issue blocks), with linked PRs as leaves, filtered by the view as the
+//! tree is. An issue reached again after its first place is a `repeat`, with nothing under it. The
+//! root opens by default, as context does; it's one page, so `after` and `through` don't apply.
 
 use crate::api::{IssueRow, THROUGH_MAX};
 use crate::auth::Session;
@@ -23,6 +29,7 @@ use crate::relationship_writes::{self, RelationshipKind};
 use crate::{App, ops, query};
 use axum::Json;
 use axum::extract::{Extension, Query, State};
+use mirror_db::focus::{Chain, Focus, Kid, Shown};
 use mirror_db::list::{Cursor, Span, View};
 use mirror_db::tree::Tree;
 use mirror_db::{Caller, QueryResult, Reader, q};
@@ -181,8 +188,11 @@ pub struct TreeNode {
     /// place among GitHub's to go.
     pub reordered: bool,
     /// It has a parent on GitHub, shown or not (a root's may be a stub, a PR or in a repo the
-    /// tree doesn't show): a move under another issue takes it from that parent.
+    /// tree doesn't show): a move under another issue takes it from that parent. In a blocking
+    /// chain, which offers no drag, always `false`.
     pub has_parent: bool,
+    /// Focus view: shown above already, at the place it opens; here it has nothing under it.
+    pub repeat: bool,
 }
 
 #[derive(Deserialize)]
@@ -201,6 +211,10 @@ pub struct TreeQuery {
     /// With `under`: every node under it open (`1`).
     all: Option<String>,
     sel: Option<i64>,
+    /// Focus view: the issue in focus, the tree's one root.
+    focus: Option<i64>,
+    /// With `focus`: `parent` (sub-issues, the default) or `blocking` (what each issue blocks).
+    chain: Option<String>,
 }
 
 /// Comma-separated ids, the last `OPENS_MAX` (the newest); anything that isn't one is left out.
@@ -368,6 +382,18 @@ pub async fn tree(
         shut: ids(&tq.shut),
         all: tq.under.is_some() && matches!(tq.all.as_deref(), Some("1" | "true")),
     };
+    if let Some(root) = tq.focus {
+        let chain = match tq.chain.as_deref() {
+            None | Some("parent") => Chain::Sub,
+            Some("blocking") => Chain::Blocks,
+            Some(other) => {
+                return Err(ApiError::BadRequest(format!(
+                    "chain {other:?} isn't parent or blocking"
+                )));
+            }
+        };
+        return focus(&app, &s, view, root, chain, opens, tq.under, tq.sel).await;
+    }
     let (account, me) = (s.account, s.account);
     let cache = app.trees().clone();
     let (under, sel) = (tq.under, tq.sel);
@@ -424,6 +450,7 @@ pub async fn tree(
                         matched: tree.is_match(p.id),
                         reordered: p.reordered,
                         has_parent: p.parent.is_some() || tree.has_hidden_parent(p.id),
+                        repeat: false,
                     })
                 })
                 .collect();
@@ -435,6 +462,157 @@ pub async fn tree(
                 nodes,
                 next: next.map(|c| c.to_string()),
                 last: last.map(|c| c.to_string()),
+                selected,
+            })
+        })
+        .await?;
+    Ok(Json(page))
+}
+
+/// A node of a focus placed in the answer, before its row is read.
+struct FocusPlaced {
+    id: i64,
+    depth: i64,
+    parent: Option<i64>,
+    children: i64,
+    open: bool,
+    under: bool,
+    repeat: bool,
+}
+
+/// `starts` and what each shows open in the focus `shown`, depth first, each start at depth 0, at
+/// most `NODES_MAX`. The root opens unless the tab closed it, as context does.
+fn flatten_focus(
+    shown: &Shown,
+    starts: &[Kid],
+    parent: Option<i64>,
+    opens: &Opens,
+) -> Vec<FocusPlaced> {
+    // Which nodes open: a level at a time, so the cap leaves the deepest closed, as the tree's.
+    let mut open: HashSet<i64> = HashSet::new();
+    let mut level: Vec<Kid> = starts.to_vec();
+    let mut count = starts.len();
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for k in level.iter().filter(|k| !k.repeat) {
+            let kids = shown.kids(k.id);
+            let default = !k.under || k.id == shown.root();
+            if !kids.is_empty() && opens.open(k.id, default) && count + kids.len() <= NODES_MAX {
+                count += kids.len();
+                open.insert(k.id);
+                next.extend_from_slice(kids);
+            }
+        }
+        level = next;
+    }
+    let mut out = Vec::new();
+    let mut stack: Vec<(Kid, i64, Option<i64>)> =
+        starts.iter().rev().map(|&k| (k, 0, parent)).collect();
+    while let Some((k, depth, parent)) = stack.pop() {
+        let kids = if k.repeat { &[][..] } else { shown.kids(k.id) };
+        let is_open = !k.repeat && open.contains(&k.id);
+        out.push(FocusPlaced {
+            id: k.id,
+            depth,
+            parent,
+            children: kids.len() as i64,
+            open: is_open,
+            under: k.under,
+            repeat: k.repeat,
+        });
+        if is_open {
+            stack.extend(kids.iter().rev().map(|&c| (c, depth + 1, Some(k.id))));
+        }
+    }
+    out
+}
+
+/// Focus view's tree (see the module's notes).
+#[allow(clippy::too_many_arguments)]
+async fn focus(
+    app: &App,
+    s: &Session,
+    view: View,
+    root: i64,
+    chain: Chain,
+    opens: Opens,
+    under: Option<i64>,
+    sel: Option<i64>,
+) -> Result<Json<TreePage>, ApiError> {
+    let (account, me) = (s.account, s.account);
+    let cache = app.trees().clone();
+    let page = app
+        .mirrors()
+        .read(account, Caller::Request, move |c| {
+            let empty = TreePage {
+                nodes: Vec::new(),
+                next: None,
+                last: None,
+                selected: None,
+            };
+            let Some(focus) = Focus::build(c, root, chain)? else {
+                return Ok(empty);
+            };
+            // The view's matches, from its tree (cached as Tree mode's).
+            let seq = q::current_seq(c)?;
+            let tree = cache.get(account, &view_key(&view), seq, || Tree::build(c, &view, me))?;
+            let shown = focus.shown(|id| tree.is_match(id), tree.state());
+            let placed = match under {
+                Some(id) if shown.holds(id) => {
+                    flatten_focus(&shown, shown.kids(id), Some(id), &opens)
+                }
+                Some(_) => Vec::new(),
+                None => {
+                    let top = Kid {
+                        id: root,
+                        repeat: false,
+                        under: shown.under(root),
+                    };
+                    flatten_focus(&shown, &[top], None, &opens)
+                }
+            };
+            let root_has_parent = chain == Chain::Sub && q::parent_of(c, root)?.is_some();
+            let ids: Vec<i64> = placed.iter().map(|p| p.id).collect();
+            let rows: HashMap<i64, IssueRow> = crate::api::read_rows(c, &view, &ids)?
+                .into_iter()
+                .map(|r| (r.id, r))
+                .collect();
+            let nodes = placed
+                .into_iter()
+                .filter_map(|p| {
+                    // An issue shown at more than one place reads its row once.
+                    Some(TreeNode {
+                        row: rows.get(&p.id)?.clone(),
+                        depth: p.depth,
+                        parent: p.parent,
+                        children: p.children,
+                        open: p.open,
+                        context: !p.under,
+                        matched: tree.is_match(p.id),
+                        reordered: false,
+                        has_parent: chain == Chain::Sub && (p.parent.is_some() || root_has_parent),
+                        repeat: p.repeat,
+                    })
+                })
+                .collect();
+            // Where `sel` shows: itself if every node above its first place is open, else the
+            // nearest of them that is.
+            let selected = sel.and_then(|id| {
+                let path = shown.path(id);
+                let mut at = *path.first()?;
+                for w in path.windows(2) {
+                    let default = !shown.under(w[0]) || w[0] == root;
+                    if !opens.open(w[0], default) {
+                        break;
+                    }
+                    at = w[1];
+                }
+                Some(at)
+            });
+            Ok(TreePage {
+                nodes,
+                next: None,
+                last: None,
                 selected,
             })
         })

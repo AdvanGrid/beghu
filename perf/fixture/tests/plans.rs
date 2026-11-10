@@ -761,3 +761,36 @@ fn a_trees_walks_read_through_indexes() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Focus view (`mirror_db::focus`): the walk down from the issue in focus reads its children a
+/// level at a time (`focus_children`), along sub-issues and along dependencies, with each issue's
+/// linked PRs. Each step looks its edges and their ends up through an index from the ids it
+/// starts with, never a scan of every edge or item.
+#[test]
+fn a_focus_walk_reads_through_indexes() {
+    use mirror_db::focus::{Chain, Focus};
+    let (_g, c) = fixture();
+    // The first issues and PRs of every state: some have sub-issues, blockers or linked PRs.
+    let roots: Vec<i64> = list::page(&c, &View::default(), ME, Span::Top, 50)
+        .unwrap()
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    let mut bad = Vec::new();
+    for chain in [Chain::Sub, Chain::Blocks] {
+        let mut reached = 0;
+        for (p, sql) in plans_of(&c, "json_each", |c| {
+            for &root in &roots {
+                reached += Focus::build(c, root, chain)
+                    .unwrap()
+                    .map_or(0, |f| f.shown(|_| true, None).kids(root).len());
+            }
+        }) {
+            if p.iter().any(|l| scans_a_table(&sql, l)) {
+                bad.push(format!("focus along {chain:?}: {p:#?}"));
+            }
+        }
+        assert!(reached > 0, "{chain:?}: some root has children");
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

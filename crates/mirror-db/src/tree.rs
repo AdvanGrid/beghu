@@ -200,6 +200,11 @@ impl Tree {
         self.roots.len()
     }
 
+    /// The one state the view shows (`Some("open")` under `is:open`), or `None` for every state.
+    pub fn state(&self) -> Option<&'static str> {
+        self.state
+    }
+
     pub fn is_match(&self, id: i64) -> bool {
         self.matches.contains(&id)
     }

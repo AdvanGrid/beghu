@@ -64,6 +64,7 @@ actions! {
     FocusFilter = "focusFilter",
     Create = "create",
     ToggleMode = "toggleMode",
+    FocusIssue = "focusIssue",
     Collapse = "collapse",
     Expand = "expand",
     Labels = "labels",

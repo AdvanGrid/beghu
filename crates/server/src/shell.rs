@@ -115,10 +115,15 @@ fn escape_attr(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Whether an app URL's query string shows the list in Tree mode (`mode=tree`), as the web app
-/// reads it (`modeOf` in `web/src/query.ts`).
+/// Whether an app URL's query string shows the list as a tree: Tree mode (`mode=tree`) or Focus
+/// view on an issue (`mode=focus` with `focus=`), as the web app reads it (`modeOf` in
+/// `web/src/query.ts`). Both are the tree's chunk and `/api/tree`.
 fn tree_mode(query: Option<&str>) -> bool {
-    query.is_some_and(|q| q.split('&').any(|p| p == "mode=tree"))
+    query.is_some_and(|q| {
+        let has = |f: &dyn Fn(&str) -> bool| q.split('&').any(f);
+        has(&|p| p == "mode=tree")
+            || (has(&|p| p == "mode=focus") && has(&|p| p.starts_with("focus=")))
+    })
 }
 
 /// The data preload tags for an app URL's path and query string.

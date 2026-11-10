@@ -216,19 +216,56 @@ export function withMatch(query: string, match: MatchMode): string {
   return rest.join(" ");
 }
 
-/** How the list shows its view: rows, or Tree mode's sub-issues nested under their parents. */
-export type Mode = "list" | "tree";
+/**
+ * How the list shows its view: rows, Tree mode's sub-issues nested under their parents, or Focus
+ * view's tree down from one issue.
+ */
+export type Mode = "list" | "tree" | "focus";
 
-/** The URL's mode: `?mode=tree`, or the list. */
+/** The URL's mode: `?mode=tree`, `?mode=focus`, or the list. */
 export function modeOf(search: string): Mode {
-  return new URLSearchParams(search).get("mode") === "tree" ? "tree" : "list";
+  const m = new URLSearchParams(search).get("mode");
+  return m === "tree" || m === "focus" ? m : "list";
 }
 
-/** `search` with the mode set to `mode`: the list is the default, so it drops `mode`. */
-export function withMode(search: string, mode: Mode): string {
+/**
+ * `search` with the mode set to `mode`: the list is the default, so it drops `mode`. Focus view
+ * goes to `focus` if given (else keeps the URL's); any other mode drops what Focus view adds.
+ */
+export function withMode(search: string, mode: Mode, focus?: number): string {
   const p = new URLSearchParams(search);
-  if (mode === "tree") p.set("mode", "tree");
-  else p.delete("mode");
+  if (mode === "list") p.delete("mode");
+  else p.set("mode", mode);
+  if (mode === "focus") {
+    if (focus !== undefined) p.set("focus", String(focus));
+  } else {
+    p.delete("focus");
+    p.delete("chain");
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/** What Focus view follows down from its root: sub-issues, or what each issue blocks. */
+export type Chain = "parent" | "blocking";
+
+/** The issue Focus view is on (`?focus=`), if any. */
+export function focusOf(search: string): number | undefined {
+  const v = new URLSearchParams(search).get("focus");
+  const n = v !== null && /^\d+$/.test(v) ? Number(v) : NaN;
+  return Number.isSafeInteger(n) ? n : undefined;
+}
+
+/** Focus view's chain (`?chain=blocking`, or sub-issues). */
+export function chainOf(search: string): Chain {
+  return new URLSearchParams(search).get("chain") === "blocking" ? "blocking" : "parent";
+}
+
+/** `search` with Focus view's chain set to `chain`: sub-issues are the default, so it drops `chain`. */
+export function withChain(search: string, chain: Chain): string {
+  const p = new URLSearchParams(search);
+  if (chain === "blocking") p.set("chain", "blocking");
+  else p.delete("chain");
   const s = p.toString();
   return s ? `?${s}` : "";
 }

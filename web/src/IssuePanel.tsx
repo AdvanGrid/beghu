@@ -25,7 +25,7 @@
 // its linked PRs, and a PR the issues it closes, each in a property row.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, lazy, Loading, onCleanup, onSettled, Show, untrack, type Element } from "solid-js";
-import { revalidate, useLocation, type RouteSectionProps } from "@solidjs/router";
+import { revalidate, useLocation, useNavigate, type RouteSectionProps } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import {
   Deleted,
@@ -61,7 +61,7 @@ import type { Can } from "./bindings/Can";
 import { editorOf, openEditor, type Field } from "./editing";
 import { cantReach, coalesced, onPush, resetAt } from "./live";
 import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
-import { queryOf } from "./query";
+import { focusOf, modeOf, queryOf, withMode } from "./query";
 import { ChunkFailure } from "./chunks";
 import { Blocks, Linked, LinksRow, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
@@ -643,6 +643,13 @@ function Body(props: {
   const state = () => issueState(d());
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
+  // Focus view on this issue: the tree down from it, the chain kept if Focus view is on already.
+  const focusHref = () => `/issues/${d().id}${withMode(props.search, "focus", d().id)}`;
+  const focused = () => modeOf(props.search) === "focus" && focusOf(props.search) === d().id;
+  const navigate = useNavigate();
+  touch("focusIssue", () => {
+    if (!untrack(focused)) navigate(untrack(focusHref), { scroll: false });
+  });
   // Shift+J and Shift+K: the issue scrolls by part of its height, from the list too.
   // A press soon after the last adds to where that scroll is going, not to where it has got to: a
   // smooth scroll restarted from its current place on every press (or a held key's repeats) falls
@@ -764,6 +771,16 @@ function Body(props: {
           >
             {copied() === d().id ? "Copied" : `${d().repo}#${d().number}`}
           </button>
+          <a
+            href={focusHref()}
+            noscroll
+            {...stylex.attrs(s.focus, focused() && s.focusOn)}
+            data-perf="focus-issue"
+            aria-current={focused() ? "true" : undefined}
+            title={focused() ? "Focus view is on this issue" : "Show this issue's sub-issues or blocking chain as a tree of its own"}
+          >
+            Focus issue
+          </a>
           <Show when={d().locked}>
             <span {...stylex.attrs(s.locked)} data-perf="locked" title="Conversation locked on GitHub">
               Locked
@@ -1654,6 +1671,35 @@ const s = stylex.create({
     flexShrink: 0,
     fontSize: 12,
     lineHeight: "20px",
+  },
+  // "Focus issue", beside the number: pressed while Focus view is on this issue. In a narrow
+  // panel it gives way, as the number does.
+  focus: {
+    borderColor: {
+      default: colors.line,
+      ":hover": colors.accent,
+    },
+    borderRadius: 999,
+    borderStyle: "solid",
+    borderWidth: 1,
+    overflow: "hidden",
+    paddingInline: 8,
+    textDecoration: "none",
+    color: {
+      default: colors.muted,
+      ":hover": colors.fg,
+    },
+    flexShrink: 1,
+    fontSize: 12,
+    lineHeight: "20px",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  focusOn: {
+    borderColor: colors.accent,
+    backgroundColor: colors.selected,
+    color: colors.fg,
   },
   action: {
     textDecoration: "none",
