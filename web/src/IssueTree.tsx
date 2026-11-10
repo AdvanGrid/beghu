@@ -836,17 +836,20 @@ function Nodes(props: {
         else if (e.clientY > box.bottom - ROW_HEIGHT) scroller.scrollTop += ROW_HEIGHT / 2;
       }}
     >
+      {/* Rows that left the tree, fading out where they were (copies: nothing to act on). Outside
+          the rows' Show, so they fade out over an emptied tree too: the scroller (contained) places
+          them as the sizer would, from the top of what it scrolls. */}
+      <For each={held.ghosts()}>
+        {(g) => (
+          <div aria-hidden="true" inert data-perf="ghost" ref={(el) => held.fade(el, g)} {...stylex.attrs(s.ghost(g.y))}>
+            {g.node}
+          </div>
+        )}
+      </For>
       <Show when={nodes().length > 0} fallback={<p {...stylex.attrs(s.empty)}>Nothing matches this view.</p>}>
         <div {...stylex.attrs(s.sizer(v.totalSize()))}>
-          {/* The shift cue's lines, and the rows that left fading out where they were. */}
+          {/* The shift cue's lines. */}
           <For each={held.cue()?.lines ?? []}>{(line) => <div data-perf="cue-line" {...stylex.attrs(s.cueLine(line * ROW_HEIGHT))} />}</For>
-          <For each={held.ghosts()}>
-            {(g) => (
-              <div aria-hidden="true" inert data-perf="ghost" ref={(el) => held.fade(el, g)} {...stylex.attrs(s.ghost(g.y))}>
-                {g.node}
-              </div>
-            )}
-          </For>
           {/* Each row at its own place, as the list's. */}
           <For each={visible().nodes} keyed={keyOf}>
             {(n, i) => {

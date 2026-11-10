@@ -489,10 +489,19 @@ export function createHeld<R extends { id: number }>(opts: {
     });
   };
 
-  /** Fades out a ghost's element, then drops it. */
+  /**
+   * Fades out a ghost's element, then drops it. Called from the element's `ref`, which runs while
+   * Solid's copy of its template still belongs to the template's inert document: an animation
+   * started then is on a timeline that never runs, so it never finishes and the ghost would stay
+   * over the rows for good. It starts on the next frame, once the element is in the page; one
+   * that never got there is dropped.
+   */
   const fade = (node: HTMLElement, g: Ghost) => {
     const drop = () => setGhosts((all) => all.filter((x) => x !== g));
-    node.animate([{ opacity: 1 }, { opacity: 0 }], { duration: SLIDE_MS, easing: EASE, fill: "forwards" }).finished.then(drop, drop);
+    requestAnimationFrame(() => {
+      if (!node.isConnected) return drop();
+      node.animate([{ opacity: 1 }, { opacity: 0 }], { duration: SLIDE_MS, easing: EASE, fill: "forwards" }).finished.then(drop, drop);
+    });
   };
 
   /**

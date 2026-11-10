@@ -492,3 +492,26 @@ test("a parent set from an issue's panel is a write to the parent, yet the selec
     devCtl(["fake", "edit", parent.ref, "--remove-sub-issue", child.ref]);
   }
 });
+
+for (const mode of ["list", "tree"] as const) {
+  test(`rows that leave fade out and are gone, even when they empty the view (${mode})`, async ({ page }) => {
+    // Two issues only this view shows, both closed from outside: the view empties.
+    const tag = unique("fades").replace(" ", "");
+    const issues = [await claimBelowTheTop(page), await claimBelowTheTop(page)];
+    for (const issue of issues) devCtl(["fake", "edit", issue.ref, "--title", tag]);
+    await page.goto(`/?${new URLSearchParams({ q: `${tag} is:open`, ...(mode === "tree" ? { mode } : {}) })}`);
+    await expect(rows(page)).toHaveCount(2, { timeout: SHOWS_WITHIN_MS });
+    await pointerAway(page);
+    // Whether a ghost (a leaving row's fading copy) ever showed.
+    await page.evaluate(() => {
+      const w = window as unknown as { ghosted: boolean };
+      w.ghosted = false;
+      new MutationObserver(() => (w.ghosted ||= document.querySelector('[data-perf="ghost"]') !== null)).observe(document.body, { subtree: true, childList: true });
+    });
+    for (const issue of issues) devCtl(["fake", "edit", issue.ref, "--close"]);
+    await expect(page.getByText("Nothing matches this view.")).toBeVisible({ timeout: SHOWS_WITHIN_MS });
+    await expect.poll(() => page.evaluate(() => (window as unknown as { ghosted: boolean }).ghosted)).toBe(true);
+    // The fade is 180 ms: well within a second, nothing of the rows is left.
+    await expect(page.locator('[data-perf="ghost"]')).toHaveCount(0, { timeout: 1000 });
+  });
+}
