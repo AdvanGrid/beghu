@@ -37,7 +37,10 @@ const OVERSCAN = 6;
  * (1,904 px) asks for the second page as it loads, as one taller than 1,870 px did before.
  */
 const NEAR_END = 45;
-/** A view change that takes longer than this pulses the list's outline, over the old rows. */
+/**
+ * A view change that takes longer than this shows the busy trace (`BusyTrace`) round the list,
+ * over the old rows.
+ */
 export const PULSE_AFTER_MS = 200;
 /**
  * How long the selection rests before its neighbours preload: a held key's repeats never do. The
@@ -218,10 +221,10 @@ export function IssueList(props: { search: string; openId?: number }) {
     <>
       <div ref={column} {...stylex.attrs(s.column, widthsOf(cols))}>
         <ListHead cols={cols} time={time().head} />
-        {/* The pulse lives on a frame outside the rows' Loading boundary, which holds the old
-            rows while the next view loads. */}
+        {/* The busy trace lives on a frame outside the rows' Loading boundary, which holds the
+            old rows while the next view loads. */}
         <div
-          {...stylex.attrs(s.frame, pulse() && s.pulse)}
+          {...stylex.attrs(s.frame)}
           data-perf="list-frame"
           aria-busy={pulse() ? "true" : undefined}
         >
@@ -238,6 +241,9 @@ export function IssueList(props: { search: string; openId?: number }) {
               card={card}
             />
           </Loading>
+          <Show when={pulse()}>
+            <BusyTrace />
+          </Show>
         </div>
       </div>
       <CardLayer card={card} search={props.search} />
@@ -884,10 +890,42 @@ export function LabelDot(props: { color: string }) {
   return <span class={DOT} style={{ "--dot": `#${props.color}` }} />;
 }
 
-const pulseOutline = stylex.keyframes({
-  from: { outlineColor: "transparent" },
-  to: { outlineColor: colors.accent },
+/** A quarter of the edge, in `pathLength` units: one dot and its trail per quarter. */
+const TRACE_PERIOD = 25;
+/** How far back a trail reaches, in the same units: a third of the way to the dot behind. */
+const TRAIL_LENGTH = 8;
+/** The trail's layers' lengths, longest first. */
+const TRAIL = [8, 6, 4, 2.5, 1.2];
+
+/** Each pattern of the busy trace (a quarter of the frame's edge) moves on by one. */
+const traceRun = stylex.keyframes({
+  from: { strokeDashoffset: 0 },
+  to: { strokeDashoffset: -TRACE_PERIOD },
 });
+/** The same for the dots: one zero-length dash per pattern, set TRAIL_LENGTH on, at its trail's head. */
+const dotRun = stylex.keyframes({
+  from: { strokeDashoffset: -TRAIL_LENGTH },
+  to: { strokeDashoffset: -TRAIL_LENGTH - TRACE_PERIOD },
+});
+
+/**
+ * The busy trace: four dots, a quarter of the way round from each other, running clockwise round
+ * the list's edge, each with a trail that fades behind it. Each trail is TRAIL layers of one
+ * faint dash, all ending at the dot and each shorter than the last, so the trail darkens towards
+ * its dot. The edge's length is TRACE_PERIOD × 4 (`pathLength`), whatever the list's size. With
+ * reduced motion the dots stand still.
+ */
+function BusyTrace() {
+  const dash = (len: number) => `0 ${TRAIL_LENGTH - len} ${len} ${TRACE_PERIOD - TRAIL_LENGTH}`;
+  return (
+    <svg {...stylex.attrs(s.trace)} aria-hidden="true">
+      {TRAIL.map((len) => (
+        <rect x="1" y="1" pathLength={TRACE_PERIOD * 4} stroke-dasharray={dash(len)} {...stylex.attrs(s.traceEdge, s.trail)} />
+      ))}
+      <rect x="1" y="1" pathLength={TRACE_PERIOD * 4} stroke-dasharray={`0 ${TRACE_PERIOD}`} {...stylex.attrs(s.traceEdge, s.traceDot)} />
+    </svg>
+  );
+}
 
 /**
  * How a kind of stacked cell lays out: two to a column of `slot` px, `gap` px apart (its classes are STACK_LOOK's).
@@ -1032,10 +1070,7 @@ const s = stylex.create({
     display: "flex",
     flexDirection: "column",
     flexGrow: 1,
-    outlineColor: "transparent",
-    outlineOffset: -2,
-    outlineStyle: "solid",
-    outlineWidth: 2,
+    position: "relative",
     minHeight: 0,
   },
   scroller: {
@@ -1047,12 +1082,41 @@ const s = stylex.create({
     overflowAnchor: "none",
     overflowY: "auto",
   },
-  pulse: {
-    animationDirection: "alternate",
-    animationDuration: "0.6s",
+  trace: {
+    inset: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "absolute",
+    height: "100%",
+    width: "100%",
+  },
+  // One layer round the frame's edge, 1 px in so the 2 px stroke stays inside it.
+  traceEdge: {
+    fill: "none",
+    stroke: colors.accent,
+    animationDuration: "1.6s",
     animationIterationCount: "infinite",
-    animationName: pulseOutline,
-    animationTimingFunction: "ease-in-out",
+    animationName: {
+      default: traceRun,
+      "@media (prefers-reduced-motion: reduce)": "none",
+    },
+    animationTimingFunction: "linear",
+    height: "calc(100% - 2px)",
+    width: "calc(100% - 2px)",
+  },
+  trail: {
+    strokeWidth: 2,
+    opacity: 0.2,
+  },
+  // At its trail's head (and still there with reduced motion).
+  traceDot: {
+    strokeDashoffset: -TRAIL_LENGTH,
+    strokeLinecap: "round",
+    strokeWidth: 4,
+    animationName: {
+      default: dotRun,
+      "@media (prefers-reduced-motion: reduce)": "none",
+    },
   },
   sizer: (height: number) => ({
     position: "relative",
