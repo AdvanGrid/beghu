@@ -18,20 +18,36 @@ CI runs all of these; run them before you commit:
 - `cargo build --workspace --all-targets --locked`, which also runs the build-time SQL check
 - `cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::disallowed_methods`
 - `cargo test --workspace --locked`
-- `npm --prefix tools/dev-ctl ci && npm --prefix tools/dev-ctl run typecheck` after changing `./dev-ctl`
-- `npm --prefix perf/harness ci && npm --prefix perf/harness run typecheck && npm --prefix perf/harness test`
+- `npm --prefix tools/dev-ctl ci --ignore-scripts && npm --prefix tools/dev-ctl run typecheck` after
+  changing `./dev-ctl`
+- `npm --prefix perf/harness ci --ignore-scripts && npm --prefix perf/harness run typecheck && npm --prefix perf/harness test`
   after changing the perf harness
 - `./dev-ctl perf` after changing the server or the web app (about a minute once main is built,
   longer on a busy host:
   this tree against local `main`, failing at more than 10% slower), and `./dev-ctl perf --full`
   (CI's three suites at their absolute limits) before a PR. CI's `perf` check runs the suites on
   every PR that touches them and comments the table
-- In `web/`: `npm ci`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
+- In `web/`: `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
   `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules'
   and the highlight.js output reader's Node tests) and
   `npx vite build`
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
+- npm installs run no install scripts: always `npm ci --ignore-scripts` (CI, the `Dockerfile`
+  and `./dev-ctl` do). After changing a lockfile, `npm audit signatures` in that directory checks
+  the packages' registry signatures, as CI does. A new package that needs its install script is
+  a decision for the owner, not a dropped flag
+- After adding or updating a Rust dependency (`cargo install --locked cargo-deny cargo-vet` once):
+  `cargo deny --locked check` (`deny.toml`: RustSec advisories, the licence allowlist, crates.io
+  only) and `cargo vet --locked`. A crate or version cargo-vet hasn't seen needs an audit
+  (`cargo vet certify`) or an exemption (`cargo vet add-exemption`) in `supply-chain/`; try
+  `cargo vet suggest` first, and never `cargo vet regenerate` to make the check pass
+- After changing a workflow: `uvx zizmor --min-severity medium .github/workflows` (CI's `zizmor`
+  job) and `actionlint`. Pin every `uses:` to a full commit SHA with its version in a comment
+  (`uses: owner/action@<40-hex sha> # v1.2.3`), and give each checkout
+  `persist-credentials: false`. `publish.yml`'s file name and its push-to-`main` trigger are what
+  deployers verify the image against (`docs/deploy.md`, "The published image"): don't rename it
+  or add a trigger
 - The browser suite, against a running stack: `./dev-ctl start --scale 1k`, then
   `npm --prefix web run e2e` (set `DEV_APP_PORT` as for `./dev-ctl` if you changed it)
 

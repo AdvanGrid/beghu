@@ -35,8 +35,9 @@ fn fixture() -> (MutexGuard<'static, ()>, Connection) {
         let path = cached(Scale::K1, &dir.path().join("fixture")).unwrap();
         (dir, path)
     });
-    let c = Connection::open(path).unwrap();
-    c.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(record));
+    let mut c = Connection::open(path).unwrap();
+    c.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(record))
+        .unwrap();
     (guard, c)
 }
 

@@ -917,7 +917,6 @@ fn check_query(conn: &Connection, d: &Def, errs: &mut Vec<String>) -> Option<Che
     }
     let decl: Vec<Option<String>> = stmt
         .columns()
-        .iter()
         .map(|c| c.decl_type().map(str::to_string))
         .collect();
     let mut cols = Vec::new();

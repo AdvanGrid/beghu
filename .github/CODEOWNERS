@@ -4,3 +4,41 @@
 /perf-budgets.toml @tomsjansons
 /perf/harness/src/ @tomsjansons
 /.github/workflows/perf.yml @tomsjansons
+
+# What a deploy trusts (#132): advangrid's bump check treats a change here as sensitive, so an
+# outside PR touching any of it needs the owner's review. The build and its inputs: workflows,
+# the image recipe, build scripts, toolchain and compiler config.
+/.github/ @tomsjansons
+/Dockerfile @tomsjansons
+/.dockerignore @tomsjansons
+/deploy/ @tomsjansons
+**/build.rs @tomsjansons
+/.cargo/ @tomsjansons
+/rust-toolchain* @tomsjansons
+
+# Dependencies and their gates.
+**/Cargo.toml @tomsjansons
+/Cargo.lock @tomsjansons
+**/package.json @tomsjansons
+**/package-lock.json @tomsjansons
+/deny.toml @tomsjansons
+/supply-chain/ @tomsjansons
+
+# Sign-in, secrets and tokens, webhooks, configuration, and the media proxy.
+/crates/server/src/auth.rs @tomsjansons
+/crates/server/src/crypto.rs @tomsjansons
+/crates/server/src/tokens.rs @tomsjansons
+/crates/server/src/webhook.rs @tomsjansons
+/crates/server/src/config.rs @tomsjansons
+/crates/server/src/media/ @tomsjansons
+
+# The schema crates' migrations.
+/crates/control-db/migrations/ @tomsjansons
+/crates/mirror-db/migrations/ @tomsjansons
+/crates/fake-db/migrations/ @tomsjansons
+
+# The GitHub App's manifest and permissions.
+/github-app/ @tomsjansons
+
+# How a vulnerability is reported.
+/SECURITY.md @tomsjansons

@@ -1,0 +1,70 @@
+# cargo-deny's gates over Cargo.lock (CI's `cargo-deny` job: `cargo deny --locked check`).
+# Changes here are owner-reviewed (CODEOWNERS): loosening a gate is a decision, not a fix.
+
+[graph]
+# The deploy image is linux/amd64; dev and CI also run on Linux and macOS.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+all-features = true
+
+# RustSec. Every vulnerability fails; so does an unmaintained, unsound or yanked crate. An
+# advisory beghu has looked at and can live with goes in `ignore`, with the reason.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+version = 2
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+  # { id = "RUSTSEC-YYYY-NNNN", reason = "why it doesn't reach beghu, and what would end it" },
+]
+
+# The licences beghu's dependencies may carry. A crate under any other needs adding here, by
+# the owner. beghu's own crates aren't published (`publish = false`) and carry no licence.
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CDLA-Permissive-2.0",
+]
+
+# MPL-2.0 is file-level copyleft: fine for crates beghu uses unmodified, but allowed per crate
+# rather than for any new one. Both come in through ammonia (md-ast's HTML sanitiser).
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[licenses.private]
+ignore = true
+
+# Duplicate versions are a warning only: they cost build time, not safety.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies are fine; a wildcard on one is not a published version.
+allow-wildcard-paths = true
+
+# Crates come from crates.io only: no git dependency, no other registry. cargo-deny doesn't see
+# path dependencies; the `cargo-deny` job checks that each one is inside this checkout.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

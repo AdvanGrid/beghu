@@ -274,7 +274,7 @@ async function start(args: string[]): Promise<void> {
     if (!readDevApp()) die("no dev App set up yet: run ./dev-ctl github setup (see ./dev-ctl help)");
     if (!existsSync(SMEE)) {
       if (!json) console.log("installing ./dev-ctl's dependencies (smee-client)");
-      const npm = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: join(ROOT, "tools", "dev-ctl"), stdio: "inherit" });
+      const npm = spawnSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: join(ROOT, "tools", "dev-ctl"), stdio: "inherit" });
       if (npm.status !== 0) die("npm ci in tools/dev-ctl failed");
     }
   }
@@ -290,7 +290,7 @@ async function startStack(
 ): Promise<void> {
   if (!existsSync(join(ROOT, "web", "node_modules", "vite"))) {
     if (!json) console.log("installing web dependencies");
-    const npm = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: join(ROOT, "web"), stdio: "inherit" });
+    const npm = spawnSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: join(ROOT, "web"), stdio: "inherit" });
     if (npm.status !== 0) die("npm ci in web/ failed");
   }
   mkdirSync(DEV, { recursive: true });
@@ -966,7 +966,7 @@ function perf(args: string[]): void {
   const harness = join(ROOT, "perf", "harness");
   if (!existsSync(join(harness, "node_modules", "playwright-core"))) {
     console.log("installing the perf harness and its Chromium");
-    const npm = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: harness, stdio: "inherit" });
+    const npm = spawnSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: harness, stdio: "inherit" });
     if (npm.status !== 0) die("npm ci in perf/harness failed");
     const chromium = spawnSync("npx", ["playwright-core", "install", "chromium"], { cwd: harness, stdio: "inherit" });
     if (chromium.status !== 0) die("installing Chromium for the perf harness failed");
