@@ -106,7 +106,7 @@ function mainDependencies(webSrc: string): void {
   if (existsSync(mark) && readFileSync(mark, "utf8") === want && existsSync(join(nm, "vite"))) return;
   rmSync(nm, { recursive: true, force: true });
   if (want === "link") symlinkSync(join(ROOT, "web", "node_modules"), nm);
-  else sh("npm", ["ci", "--no-audit", "--no-fund"], webSrc);
+  else sh("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], webSrc);
   writeFileSync(mark, want);
 }
 

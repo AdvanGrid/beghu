@@ -5,15 +5,22 @@ on:
   push:
     branches: [main]
 
+# Read-only by default; no job here needs more.
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
         run: cargo fmt --all --check
@@ -45,8 +52,9 @@ jobs:
     # a paid licence for an organisation's repos.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Scan for secrets
@@ -56,18 +64,78 @@ jobs:
             ghcr.io/gitleaks/gitleaks:v8.24.0@sha256:2bcceac45179b3a91bff11a824d0fb952585b429e54fc928728b1d4d5c3e5176 \
             git --config .gitleaks.toml --redact --no-banner --verbose .
 
+  zizmor:
+    # The workflows' own audit (zizmor's regular persona): unpinned actions, template injection,
+    # persisted credentials, broad permissions and the rest. Fails at medium and above. Its
+    # online audits (known-vulnerable action versions, impostor commits) read GitHub with the
+    # job's read-only token.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          version: 1.32.0
+          min-severity: medium
+          # The findings go to the log, not code scanning (which would need security-events).
+          advanced-security: false
+
+  cargo-deny:
+    # deny.toml: RustSec advisories, the licence allowlist, crates.io as the only source, bans.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check
+        run: cargo deny --locked check
+
+      # A path dependency is only ever a workspace crate: nothing from outside this checkout.
+      - name: No path dependencies outside the workspace
+        run: |
+          outside=$(cargo metadata --format-version 1 --locked |
+            jq -r --arg root "$PWD/" '.packages[] | select(.source == null) | .manifest_path
+              | select(startswith($root) | not)')
+          [ -z "$outside" ] || { echo "path dependencies outside the workspace:"; echo "$outside"; exit 1; }
+
+  cargo-vet:
+    # supply-chain/: every crate and version in Cargo.lock is audited (ours or an imported audit
+    # set) or exempted, and either shows in the diff. --locked: the imports come from
+    # supply-chain/imports.lock, never fetched afresh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-vet@0.10.3
+
+      - name: Check
+        run: cargo vet --locked
+
   dev-ctl:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: tools/dev-ctl/package-lock.json
 
+      # No package runs an install script; then the registry's signatures and provenance.
       - name: Install
-        run: npm ci
+        run: |
+          npm ci --ignore-scripts
+          npm audit signatures
         working-directory: tools/dev-ctl
 
       - name: Typecheck ./dev-ctl
@@ -81,15 +149,19 @@ jobs:
       run:
         working-directory: perf/harness
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: perf/harness/package-lock.json
 
       - name: Install
-        run: npm ci
+        run: |
+          npm ci --ignore-scripts
+          npm audit signatures
 
       - name: Typecheck
         run: npx tsc --noEmit
@@ -103,15 +175,19 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
       - name: Install
-        run: npm ci
+        run: |
+          npm ci --ignore-scripts
+          npm audit signatures
 
       - name: Typecheck
         run: npx tsc --noEmit
@@ -133,7 +209,9 @@ jobs:
     outputs:
       image: ${{ steps.filter.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
@@ -165,12 +243,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # The layers cached in GitHub Actions' cache between runs.
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           load: true
@@ -188,10 +268,14 @@ jobs:
     # (web/e2e/bfcache.ts); deploy.spec.ts builds the web app twice through ./dev-ctl deploy.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -201,8 +285,8 @@ jobs:
 
       - name: Install
         run: |
-          npm --prefix web ci
-          npm --prefix tools/dev-ctl ci
+          npm --prefix web ci --ignore-scripts
+          npm --prefix tools/dev-ctl ci --ignore-scripts
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
@@ -223,7 +307,7 @@ jobs:
         if: always()
         run: ./dev-ctl stop
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: playwright-report

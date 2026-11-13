@@ -23,7 +23,9 @@ jobs:
     outputs:
       perf: ${{ steps.filter.outputs.perf }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
@@ -56,14 +58,18 @@ jobs:
       matrix:
         suite: [server, load, browser]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # One release cache for the three suites.
           shared-key: perf-release
           save-if: ${{ matrix.suite == 'server' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -73,13 +79,13 @@ jobs:
 
       - name: Install
         run: |
-          npm --prefix web ci
-          npm --prefix perf/harness ci
+          npm --prefix web ci --ignore-scripts
+          npm --prefix perf/harness ci --ignore-scripts
 
       # The fixture is named by its generator's hash, so a stale cache only costs a regeneration.
       # The key hashes what perf/fixture/build.rs hashes: keep the two lists in step.
       - name: Fixture cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: perf/data
           key: perf-fixture-50k-${{ hashFiles('perf/fixture/**', 'crates/mirror-db/migrations/**', 'crates/mirror-db/queries/**', 'crates/mirror-db/src/lib.rs', 'crates/dbrt/src/stats.rs') }}
@@ -103,7 +109,7 @@ jobs:
           --out perf-results/${{ matrix.suite }}.json
           --commit ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: perf-${{ matrix.suite }}
@@ -123,15 +129,17 @@ jobs:
         if: needs.suite.result == 'skipped' && needs.changes.result == 'success'
         run: echo "No change here can move a perf gate."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
-      - uses: actions/setup-node@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: perf/harness/package-lock.json
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
         with:
           pattern: perf-*
@@ -142,7 +150,7 @@ jobs:
         id: gates
         if: needs.suite.result != 'skipped' || needs.changes.result != 'success'
         run: |
-          npm --prefix perf/harness ci
+          npm --prefix perf/harness ci --ignore-scripts
           set +e
           node perf/harness/src/main.ts report perf-results/*.json --md perf-comment.md --title "Perf gates" --expect server,load,browser
           echo "code=$?" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,107 @@
+# The published image (docs/deploy.md, "The image"): every push to main builds the Dockerfile,
+# smoke-tests it, pushes exactly that image as ghcr.io/advangrid/beghu:<sha>, and attests its
+# build provenance and an SPDX SBOM to the registry.
+#
+# A deployer verifies an image against this file by name (`gh attestation verify
+# --signer-workflow AdvanGrid/beghu/.github/workflows/publish.yml --source-ref refs/heads/main`),
+# so the file's name and its push-to-main trigger are a contract: renaming it, or adding a
+# workflow_dispatch or pull_request trigger, changes what a passing verify means.
+#
+# Unlike CI's `image` job, the build reads no cache: the published image comes from the source
+# alone, so a poisoned GitHub Actions cache entry can't reach it.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+# Nothing at workflow level; the one job asks for what it needs.
+permissions: {}
+
+# One run per commit. A second push of the same commit waits rather than racing the first.
+concurrency:
+  group: publish-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/advangrid/beghu
+      id-token: write # the OIDC token Sigstore signs the attestations with
+      attestations: write # record the attestations on the repo
+    env:
+      IMAGE: ghcr.io/advangrid/beghu
+      LOCAL: beghu:publish
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # No cache-from or cache-to. Loaded into the runner's Docker only: nothing leaves the runner
+      # before the smoke test passes. BuildKit's own attestations are off (they don't survive
+      # `load`); the ones that count are made below, on the pushed digest.
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          no-cache: true
+          pull: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.LOCAL }}
+          build-args: BEGHU_BUILD_ID=${{ github.sha }}
+
+      - name: Smoke test
+        run: deploy/smoke.sh "$LOCAL"
+
+      # The tested image, retagged and pushed: no rebuild between the test and the push.
+      - name: Push
+        id: push
+        env:
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag "$LOCAL" "$IMAGE:$SHA"
+          docker push "$IMAGE:$SHA" | tee push.log
+          docker logout ghcr.io
+          digest=$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' push.log | tail -n 1)
+          [ -n "$digest" ] || { echo "no digest in docker push's output"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$IMAGE:$SHA\` as \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # The SBOM of the image as loaded on the runner: the same image the digest names, read
+      # without pulling it back from the registry.
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.LOCAL }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      # actions/attest rather than actions/attest-sbom, which is deprecated in its favour.
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true

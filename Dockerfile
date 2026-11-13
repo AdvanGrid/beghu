@@ -15,12 +15,18 @@
 # lockfile, nothing else), so their layer is reused, locally and through CI's GitHub Actions
 # cache, until a dependency changes; a source change rebuilds only beghu's own crates. npm's
 # download cache is a BuildKit cache mount (local builds only; CI caches the layers).
+#
+# npm runs no package's install script (--ignore-scripts): the build's tools ship their platform
+# binaries as optional dependencies (esbuild, Rollup), and the one package with a script is
+# fsevents, macOS only. `npm audit signatures` then checks every package's registry signature and
+# any provenance attestation against what the lockfile installed.
 
 # 1. The web app. Its wire types (web/src/bindings) are committed, so no Rust is needed here.
 FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts --no-audit --no-fund \
+    && npm audit signatures
 COPY web/ ./
 RUN npx vite build
 
@@ -51,6 +57,9 @@ RUN cargo build --release --locked -p beghu \
 # named volume starts out writable.
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 ARG BEGHU_BUILD_ID
+# The source label links the ghcr.io package to this repo; the revision names the commit.
+LABEL org.opencontainers.image.source=https://github.com/AdvanGrid/beghu \
+    org.opencontainers.image.revision=${BEGHU_BUILD_ID}
 ENV BEGHU_BUILD_ID=${BEGHU_BUILD_ID} \
     PORT=8080 \
     BEGHU_DATA_DIR=/data \

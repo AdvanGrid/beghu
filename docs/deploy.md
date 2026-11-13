@@ -18,7 +18,9 @@ deploy/smoke.sh beghu:"$(git rev-parse HEAD)"
 
 The `Dockerfile` has three stages:
 
-1. `node:24-bookworm-slim` runs `vite build`. The output has the hashed assets with `.br` and
+1. `node:24-bookworm-slim` installs the web app's packages with `npm ci --ignore-scripts`, so no
+   package runs an install script, checks their registry signatures with `npm audit signatures`,
+   and runs `vite build`. The output has the hashed assets with `.br` and
    `.gz` siblings at maximum compression, and `.vite/manifest.json`, which the server reads at
    startup to find the issue panel's chunk.
 2. `rust:1-slim-bookworm` runs `cargo build --release --locked -p beghu`. It's glibc, not musl,
@@ -48,6 +50,49 @@ checks that the image:
 - answers 404 for an unknown asset;
 - keeps its state on the volume, the first backup included;
 - exits 0 within the drain after SIGTERM.
+
+### The published image
+
+Every push to `main` publishes the image to `ghcr.io/advangrid/beghu:<sha>`, where `<sha>` is the
+commit (`.github/workflows/publish.yml`). The package is public, so pulling it needs no
+credentials. There is no `latest` or other moving tag: a deploy names a commit, and pins the
+image's digest.
+
+The publish workflow:
+
+1. builds the `Dockerfile` for `linux/amd64` with `BEGHU_BUILD_ID` set to the commit, reading no
+   build cache, so nothing from an earlier run's GitHub Actions cache can get into the image;
+2. runs `deploy/smoke.sh` on it;
+3. pushes that same image, retagged, so the published image is the one the smoke test passed;
+4. attests the pushed digest twice, both signed through Sigstore with the run's OIDC identity and
+   stored in the registry next to the image and on the repo: its SLSA build provenance
+   (`actions/attest-build-provenance`), and an SPDX SBOM of the image (Syft, through
+   `anchore/sbom-action`, attested with `actions/attest`).
+
+It runs on GitHub-hosted runners only, for pushes to `main` only: no pull request, fork or manual
+run can publish or attest. A run that fails before the push publishes nothing. One run per commit
+at a time.
+
+A deployer checks an image before using it, from any machine and with no AdvanGrid credentials
+(`gh` signed in to any account):
+
+```sh
+gh attestation verify oci://ghcr.io/advangrid/beghu@sha256:<digest> \
+  --repo AdvanGrid/beghu \
+  --signer-workflow AdvanGrid/beghu/.github/workflows/publish.yml \
+  --source-ref refs/heads/main \
+  --source-digest <sha> \
+  --deny-self-hosted-runners
+```
+
+It passes only for an image this repo's publish workflow built on a GitHub-hosted runner from
+commit `<sha>` on `main`. Add `--predicate-type https://spdx.dev/Document/v2.3` to check the SBOM
+attestation instead of the provenance one, and `gh attestation download` (same subject) to read
+the SBOM itself. The image's `/healthz` reports `<sha>` as its build.
+
+Because the verify command names `publish.yml` and `refs/heads/main`, that workflow's file name
+and its trigger are part of what deployers rely on: rename it or give it another trigger, and
+every deployer's check changes meaning.
 
 ## Environment
 

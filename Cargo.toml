@@ -22,7 +22,7 @@ publish = false
 [workspace.dependencies]
 # `bundled` builds SQLite from source with FTS5. `.cargo/config.toml` sets the extra compile
 # flags (LIBSQLITE3_FLAGS) for both the app and the build-time checker.
-rusqlite = { version = "0.40", features = ["bundled", "column_metadata", "column_decltype", "modern_sqlite"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_metadata", "column_decltype", "modern_sqlite"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tempfile = "3"
 axum = "0.8"
