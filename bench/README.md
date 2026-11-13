@@ -5,6 +5,12 @@ the same scripted browser run. The method comes from
 [Benchmark scenarios and metrics for the stack comparison](https://github.com/tomsjansons/beghu/issues/11#issuecomment-6141302538).
 Everything here is throwaway: it exists to compare candidates, not to start the real app.
 
+The candidates themselves (`candidates/`, `stub` included) are gone from the tree: they were the
+stack comparison's prototypes and probes, never built or run since, and their lockfiles only drew
+Dependabot alerts. They're in history at
+[`aba7a01`](https://github.com/AdvanGrid/beghu/tree/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates);
+check `candidates/stub` (or the one you want) out from there before `./bench/run`.
+
 ```sh
 ./bench/run stub                                   # headline cell: low CPU, far network, 20k issues
 ./bench/run stub --profile fast --net near --scale 50k

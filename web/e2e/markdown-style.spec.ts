@@ -6,7 +6,9 @@
 // pills, zebra tables, each post on its tint.
 //
 // The expected colours are the prototype's (bench/candidates/list-prototype/web/src/md/md.css and
-// frames.css, app.css for code), written out here as the reference the tokens started from.
+// frames.css, app.css for code; removed from the tree, still in history at aba7a01), written out
+// here as the reference the tokens started from. The kitchen sink is its copy of that corpus,
+// kept beside this spec.
 //
 // It edits an issue's body, which moves the issue to the top of the list for every tab, so it runs
 // with the specs that edit (playwright.config.ts), on an issue of its own below the top, which it
@@ -19,7 +21,7 @@ import { claimBelowTheTop, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const KITCHEN = readFileSync(`${ROOT}/bench/candidates/list-prototype/md-corpus/kitchen-sink.md`, "utf8");
+const KITCHEN = readFileSync(`${ROOT}/web/e2e/kitchen-sink.md`, "utf8");
 
 function devCtl(args: string[]): string {
   const env = { ...process.env, DEV_APP_PORT: new URL(test.info().project.use.baseURL!).port };

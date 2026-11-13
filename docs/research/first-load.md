@@ -3,7 +3,7 @@
 Research date: 2026-10-21. Stack as settled: axum server, Solid `2.0.0-rc.15`, `@solidjs/router`
 `2.0.0-next.41`, server-side filtering in SQLite, no browser cache, SSE pushes `{ids}` and the
 client revalidates through the router's `query`. The starting code is
-[`bench/candidates/axum-solid2-router`](../../bench/candidates/axum-solid2-router/README.md).
+[`bench/candidates/axum-solid2-router`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/axum-solid2-router/README.md).
 
 Sources: the installed package sources under
 `bench/candidates/axum-solid2-router/web/node_modules/` (written below as `nm/<path>:<lines>`),
@@ -13,7 +13,7 @@ docs, and RFC 6928. Each claim is tagged **[source]** (read in code or a spec), 
 **[measured]** or **[inferred]**.
 
 Measurements are throwaway. A scratch candidate,
-[`bench/candidates/first-load-probe`](../../bench/candidates/first-load-probe/README.md) (untracked),
+[`bench/candidates/first-load-probe`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/first-load-probe/README.md) (untracked),
 is the router build with only the server's `/` handler changed. A toy Solid 2 SSR app was built in
 the session scratchpad, not in the repo. Runs were on the bench host (Xeon E5-2695 v4), which was
 busy (load average about 25 on 32 threads), so p95s are noisy.
@@ -286,7 +286,7 @@ per-response budget. The second generation (JS + CSS + data, 43.3 KB) does not f
 flight. Over one HTTP/2 connection with slow start it needs about two more flights after the
 document: about 14.6 KB, then about 29 KB. That's two round trips of transfer on a cold
 connection **[inferred]**. The 14.7 KB Solid Router 2 adds, as measured in
-[the router results](../../bench/candidates/axum-solid2-router/RESULTS.md), is what pushes the JS
+[the router results](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/axum-solid2-router/RESULTS.md), is what pushes the JS
 past one flight. Without the router the second generation is about 28.6 KB, which is close to one
 flight.
 

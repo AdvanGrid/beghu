@@ -15,6 +15,7 @@ paths = [
   # Bench probes saved from github.com: rendered issue HTML and GraphQL answers whose
   # private-user-images URLs carry short-lived `?jwt=` tokens (long expired), and a Markdown
   # corpus whose sample text trips the generic-api-key rule. Throwaway bench material, no secrets.
+  # Removed from the tree, but gitleaks reads the whole history, where they still are.
   '''^bench/candidates/''',
   # DEV_TOKEN_KEY: the dev server's BEGHU_TOKEN_KEY for local dev data only, public on purpose.
   '''^tools/dev-ctl/src/config\.ts$''',
