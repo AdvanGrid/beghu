@@ -7,7 +7,7 @@
 import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { noteBuild, whileWriting } from "./build";
-import { accountHeaders, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
+import { accountHeaders, cookieAccount, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -757,12 +757,20 @@ let signingIn = false;
 /**
  * Leaves for sign-in, once, coming back to this URL afterwards. Not from a stale tab (a 401 makes
  * one that holds a view stale, account.ts): its banner offers sign-in, and leaving now would lose
- * its drafts.
+ * its drafts. With nothing signed in on this browser (no `beghu_acct`: signed out, cookies
+ * cleared, a first visit) it goes to the signed-out page, which offers sign-in, rather than to
+ * GitHub, which signs a browser still signed in there straight back in and so would undo the
+ * sign-out. A browser whose account's session ended or lost access goes straight to sign-in.
  */
 export function signIn(): void {
   if (signingIn || stale()) return;
   signingIn = true;
-  location.replace(signInUrl());
+  location.replace(cookieAccount() === undefined ? signedOutUrl() : signInUrl());
+}
+
+/** The signed-out page, whose sign-in links come back to this URL. */
+function signedOutUrl(): string {
+  return `/auth/signed-out?next=${encodeURIComponent(location.pathname + location.search)}`;
 }
 
 export function signInUrl(): string {

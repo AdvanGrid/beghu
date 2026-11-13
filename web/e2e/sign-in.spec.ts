@@ -12,23 +12,30 @@ async function pickAccount(page: Page, login: string) {
   await page.getByRole("link", { name: new RegExp(`^${login}`) }).click();
 }
 
-test("a signed-out visit gets a 401, goes to sign in once, and lands back on the same URL", async ({ page }) => {
+test("a signed-out visit gets a 401, goes to the signed-out page once, and signs in back to the same URL", async ({ page }) => {
   const apiStatuses: number[] = [];
   page.on("response", (r) => {
     if (new URL(r.url()).pathname.startsWith("/api/")) apiStatuses.push(r.status());
   });
-  const signIns: string[] = [];
+  const leaves: string[] = [];
   page.on("request", (r) => {
-    if (r.isNavigationRequest() && new URL(r.url()).pathname === "/auth/login") signIns.push(r.url());
+    const path = new URL(r.url()).pathname;
+    if (r.isNavigationRequest() && path.startsWith("/auth/")) leaves.push(r.url());
   });
 
   await page.goto("/issues/1?from=e2e");
+  // Nothing is signed in on this browser: the page offers sign-in, and doesn't go to GitHub by
+  // itself (GitHub would sign a browser still signed in there straight back in).
+  await page.waitForURL((u) => u.pathname === "/auth/signed-out");
+  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(leaves).toHaveLength(1);
+  expect(new URL(leaves[0]!).searchParams.get("next")).toBe("/issues/1?from=e2e");
+  expect(apiStatuses).toContain(401);
+
+  await page.getByRole("link", { name: "Sign in", exact: true }).click();
   await pickAccount(page, "tomsj");
   await page.waitForURL((u) => u.pathname === "/issues/1" && u.search === "?from=e2e");
-
-  expect(apiStatuses).toContain(401);
-  expect(signIns).toHaveLength(1);
-  expect(new URL(signIns[0]!).searchParams.get("next")).toBe("/issues/1?from=e2e");
   await expect(page.locator('[data-perf="account"]')).toHaveText("tomsj");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
 
@@ -37,9 +44,34 @@ test("a signed-out visit gets a 401, goes to sign in once, and lands back on the
   expect(sid).toMatchObject({ path: "/", secure: true, httpOnly: true, sameSite: "Lax" });
 });
 
+test("signed out, then cleared cookies: a load stays signed out and shows no banner", async ({ page }) => {
+  await page.goto("/auth/login?login=tomsj");
+  await page.waitForURL((u) => u.pathname === "/");
+  await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
+  await page.context().clearCookies();
+  const signIns: string[] = [];
+  page.on("request", (r) => {
+    if (r.isNavigationRequest() && new URL(r.url()).pathname === "/auth/login") signIns.push(r.url());
+  });
+  // Held there, the app's own page shows what it would while leaving.
+  await page.route("**/auth/signed-out**", (route) => route.fulfill({ status: 204 }));
+  await page.goto("/");
+  // Read straight from the DOM: the locator API would wait for the 204 navigation to finish.
+  const shown = () =>
+    page.evaluate(() => ({
+      signingIn: document.body.innerText.includes("Signing you in…"),
+      banners: document.querySelectorAll('[data-perf="banner"]').length,
+    }));
+  await expect.poll(shown).toEqual({ signingIn: true, banners: 0 });
+  // Its stream's 401 isn't news to a tab that loaded with nothing signed in.
+  await page.waitForTimeout(1000);
+  expect(await shown()).toEqual({ signingIn: true, banners: 0 });
+  expect(signIns).toEqual([]);
+});
+
 test("while sign-in is on its way the page offers an external sign-in link, and leaves only once", async ({ page }) => {
   const signIns: string[] = [];
-  await page.route("**/auth/login**", (route) => {
+  await page.route("**/auth/signed-out**", (route) => {
     signIns.push(route.request().url());
     // A 204 leaves the page where it is, as a slow or blocked sign-in would.
     return route.fulfill({ status: 204 });

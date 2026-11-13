@@ -12,7 +12,12 @@
 //!   its repo pick, and its row as `needs_sign_in`, so nothing syncs for it until it signs in.
 //!   Without usable tokens it can't reach the grant: it disconnects all the same, and its answer
 //!   says GitHub access wasn't revoked, linking to GitHub's authorized-apps page.
-//! - `GET /auth/signed-out`: the page a browser lands on with nothing signed in.
+//! - `GET /auth/signed-out?next=…`: the page a browser lands on with nothing signed in, after
+//!   signing out or when a load finds nothing signed in (no `beghu_acct`: signed out, cookies
+//!   cleared, a first visit). Its sign-in links carry `next` back to that load's URL. It never
+//!   goes on to GitHub by itself: GitHub sends a browser still signed in there, whose account
+//!   already authorized the App, straight back without asking, so an automatic sign-in would
+//!   undo every sign-out.
 //!
 //! The three are form posts from beghu's own pages, `Origin`-checked as every non-GET is. Each
 //! change of a session's active account is pushed as `switched` to every open tab of that
@@ -55,7 +60,7 @@ use crate::auth;
 use crate::live::Push;
 use crate::tokens::AccountStatus;
 use axum::Form;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use control_db::q;
@@ -129,14 +134,38 @@ fn plain_page(status: StatusCode, title: &str, body: &str) -> Response {
     res
 }
 
-/// `GET /auth/signed-out`.
-pub async fn signed_out() -> Response {
+#[derive(Deserialize)]
+pub struct SignedOutQuery {
+    next: Option<String>,
+}
+
+/// `GET /auth/signed-out?next=…`.
+pub async fn signed_out(Query(q): Query<SignedOutQuery>) -> Response {
+    // Percent-encoded by `serde_urlencoded`, so safe in an attribute as it is; only the `&`
+    // between parameters is escaped.
+    let login = |add: bool| {
+        let next = auth::safe_next(q.next.as_deref());
+        let mut query = vec![("next", next.as_str())];
+        if add {
+            query.push(("add", "1"));
+        }
+        format!(
+            "/auth/login?{}",
+            serde_urlencoded::to_string(query)
+                .unwrap_or_default()
+                .replace('&', "&amp;")
+        )
+    };
     plain_page(
         StatusCode::OK,
         "You're signed out",
-        r#"<p>Nothing is signed in to beghu in this browser. Your GitHub accounts stay connected,
-so signing back in is quick.</p>
-<p><a href="/auth/login">Sign in</a> · <a href="/auth/login?add=1">Sign in with another GitHub account</a></p>"#,
+        &format!(
+            r#"<p>Nothing is signed in to beghu in this browser. Signing in goes through GitHub, and
+an account that has signed in before comes straight back.</p>
+<p><a href="{}">Sign in</a> · <a href="{}">Sign in with another GitHub account</a></p>"#,
+            login(false),
+            login(true)
+        ),
     )
 }
 
