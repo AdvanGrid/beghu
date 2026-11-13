@@ -8,11 +8,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@solidjs/web": "2.0.0-rc.15",
+    "@solidjs/web": "2.0.0-rc.21",
     "@tanstack/browser-db-sqlite-persistence": "^0.2.35",
     "@tanstack/db": "^0.15.0",
     "@tanstack/virtual-core": "^3.19.4",
-    "solid-js": "2.0.0-rc.15"
+    "solid-js": "2.0.0-rc.21"
   },
   "devDependencies": {
     "@solidjs/vite-plugin": "3.0.0-next.35",
