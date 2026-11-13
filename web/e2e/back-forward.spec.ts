@@ -101,11 +101,11 @@ test("Back after signing out never shows the account that signed out", async ({ 
   await menu(page).getByRole("menuitem", { name: "Sign out of all accounts" }).click();
   await page.waitForURL((u) => u.pathname === "/auth/signed-out");
 
-  // Restored from the cache blank, then loaded afresh, which goes to sign in: the old account
-  // never shows.
+  // Restored from the cache blank, then loaded afresh, which finds nothing signed in and comes
+  // back to the signed-out page, now with the way back to the view: the old account never shows.
   await page.goBack({ waitUntil: "commit" });
   await expect.poll(() => restored).toEqual([[]]);
-  await page.waitForURL((u) => u.pathname !== "/" && u.pathname !== "/auth/signed-out");
+  await page.waitForURL((u) => u.pathname === "/auth/signed-out" && u.searchParams.get("next") === "/");
 });
 
 test("Back after a switch never shows the account switched from", async ({ context }) => {

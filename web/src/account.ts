@@ -52,7 +52,8 @@ export function accountHeaders(): Record<string, string> {
  * unless that's its own. The first reason found stands.
  */
 export function noteActive(now: number | null): void {
-  if (stale() || now === mine || reloadIfBlank()) return;
+  // A tab that loaded with nothing signed in is told so too: that's no change for it.
+  if (stale() || (now ?? undefined) === mine || reloadIfBlank()) return;
   setStale(now === null ? "signed_out" : "switched");
 }
 

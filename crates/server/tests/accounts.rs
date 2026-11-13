@@ -291,6 +291,37 @@ async fn signing_out_one_account_switches_to_another_and_signing_out_of_all_ends
     assert_eq!(res.status(), 200);
     let html = res.text().await.unwrap();
     assert!(html.contains("href=\"/auth/login"), "{html}");
+
+    // A load that found nothing signed in lands here with its URL: the way back in returns to
+    // it. The page itself never redirects on to GitHub.
+    let res = s
+        .get(
+            &mut b,
+            "/auth/signed-out?next=%2Fissues%2F1%3Fq%3Dis%3Aopen",
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains(r#"href="/auth/login?next=%2Fissues%2F1%3Fq%3Dis%3Aopen""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"href="/auth/login?next=%2Fissues%2F1%3Fq%3Dis%3Aopen&amp;add=1""#),
+        "{html}"
+    );
+    // Somewhere off-site is no way back.
+    let html = s
+        .get(
+            &mut b,
+            "/auth/signed-out?next=https%3A%2F%2Fevil.example%2F",
+        )
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains(r#"href="/auth/login?next=%2F""#), "{html}");
+    assert!(!html.contains("evil"), "{html}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
