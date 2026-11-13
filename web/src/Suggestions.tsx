@@ -286,16 +286,16 @@ export function Suggestions(props: {
             </For>
           </div>
         </Show>
-        <Show when={notice()}>
+        <Show when={notice()} keyed>
           {(n) => (
             <p role="status" {...stylex.attrs(s.notice)}>
-              {n().text} ·{" "}
+              {n.text} ·{" "}
               <button
                 type="button"
                 {...stylex.attrs(s.retry)}
                 // Keep focus in the box, so the list stays open for the retried values.
                 onPointerDown={(e) => e.preventDefault()}
-                onClick={() => n().retry()}
+                onClick={() => n.retry()}
               >
                 Retry
               </button>
