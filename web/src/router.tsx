@@ -41,14 +41,15 @@ const PrefsPanel = lazy(
   { export: "PrefsPanel" },
 );
 
-// The list is the root layout and always mounted; the view lives in the query string. An open
+// The list is the root layout and always mounted, at `/issues` (`/` is the public site's landing
+// page, web/site/); the view lives in the query string. An open
 // issue is its own path (`/issues/:id`, with the view kept in the query string), shown in the
 // panel beside the list. Rows are plain <a href>s under the router's one delegated click
 // listener; hover and tap preload the panel's code (the router warms a route's lazy component
 // itself) and the issue's detail together, so a click finds both ready.
 export const Router = createRouter({
   routes: [
-    { path: "/", component: () => null },
+    { path: "/issues", component: () => null },
     {
       path: "/issues/:id",
       preload: ({ params, intent }) => {

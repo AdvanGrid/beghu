@@ -46,7 +46,7 @@ test("a signed-out visit gets a 401, goes to the signed-out page once, and signs
 
 test("signed out, then cleared cookies: a load stays signed out and shows no banner", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
   await page.context().clearCookies();
   const signIns: string[] = [];
@@ -55,7 +55,7 @@ test("signed out, then cleared cookies: a load stays signed out and shows no ban
   });
   // Held there, the app's own page shows what it would while leaving.
   await page.route("**/auth/signed-out**", (route) => route.fulfill({ status: 204 }));
-  await page.goto("/");
+  await page.goto("/issues");
   // Read straight from the DOM: the locator API would wait for the 204 navigation to finish.
   const shown = () =>
     page.evaluate(() => ({
@@ -76,7 +76,7 @@ test("while sign-in is on its way the page offers an external sign-in link, and 
     // A 204 leaves the page where it is, as a slow or blocked sign-in would.
     return route.fulfill({ status: 204 });
   });
-  await page.goto("/");
+  await page.goto("/issues");
   // Read straight from the DOM: the locator API would wait for the 204 navigation to finish.
   const rels = () =>
     page.evaluate(() => [...document.querySelectorAll('a[href^="/auth/"]')].map((a) => a.getAttribute("rel")));
@@ -90,14 +90,14 @@ test("the URL ./dev-ctl login prints signs that user in", async ({ page }) => {
   const out = execFileSync(`${ROOT}/dev-ctl`, ["login", "ilze-k", "--json"], { env, encoding: "utf8" });
   const { url } = JSON.parse(out) as { url: string };
   await page.goto(url);
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="account"]')).toHaveText("ilze-k");
 });
 
 test.describe("signed in", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/auth/login?login=tomsj");
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
     await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
   });
 
@@ -141,7 +141,7 @@ test.describe("signed in", () => {
     });
     const unused: string[] = [];
     page.on("console", (m) => /preload/i.test(m.text()) && unused.push(m.text()));
-    await page.goto("/?view=e2e");
+    await page.goto("/issues?view=e2e");
     await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
     // Chrome warns about an unused preload a few seconds after load.
     await page.waitForTimeout(3500);

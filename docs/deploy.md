@@ -116,7 +116,7 @@ refused either way.
 | `GITHUB_APP_SLUG` | no | The App's URL name (`github.com/apps/<slug>`). It's where installing starts when GitHub can't be asked. |
 | `PORT` | no (image: 8080) | The plain-HTTP port. Without the image's setting it's 3000. |
 | `BEGHU_BUILD_ID` | no (image: the git SHA, a required build arg) | Letters, digits, `.`, `_` and `-`, up to 64. `dev` if unset. |
-| `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output. Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app. |
+| `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output: the app and the prerendered public site (`site/`: the landing page at `/`, `/pricing`, `/privacy`, `/terms`, `robots.txt` and `sitemap.xml`, whose canonical URLs take their origin from `BEGHU_PUBLIC_URL`). Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app and the site. |
 | `GITHUB_API_URL` | no | Default `https://api.github.com`. Dev and CI point it at Fake GitHub. |
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
 | `GITHUB_ATTACHMENTS_URL` | no | Default `https://private-user-images.githubusercontent.com`: where the attachment URLs GitHub mints into a post's HTML point. The attachment route fetches from nowhere else. Dev and CI point it at Fake GitHub's `/private-user-images`. |

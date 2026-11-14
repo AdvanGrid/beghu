@@ -53,7 +53,7 @@ type Repo = { id: number; name: string; role: string | null; archived: boolean }
 async function signIn(page: Page, login = "tomsj"): Promise<void> {
   await page.goto("about:blank");
   await page.goto(`/auth/login?login=${login}`);
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
 }
 
@@ -70,7 +70,7 @@ async function repoNamed(page: Page, name: string): Promise<Repo> {
 
 /** Opens the list on `query`, and waits for its rows. */
 async function view(page: Page, query: string): Promise<void> {
-  await page.goto(`/?q=${encodeURIComponent(query)}`);
+  await page.goto(`/issues?q=${encodeURIComponent(query)}`);
   await expect(rows(page).first()).toBeVisible();
 }
 

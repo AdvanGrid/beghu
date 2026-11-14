@@ -1,7 +1,8 @@
 #!/bin/sh
 # Smoke-tests a built beghu image: it runs as nonroot on a fresh named volume, serves /healthz,
-# /readyz, the shell and its assets (an unknown asset is a 404), keeps its state on the volume,
-# and stops cleanly on SIGTERM inside the stop grace period. Removes what it creates.
+# /readyz, the public site's landing page, the shell at /issues and its assets (an unknown asset
+# is a 404), keeps its state on the volume, and stops cleanly on SIGTERM inside the stop grace
+# period. Removes what it creates.
 #
 #   deploy/smoke.sh beghu:ci
 #
@@ -82,7 +83,10 @@ until [ "$(curl -fsS "$base/readyz" 2>/dev/null)" = ready ]; do
   sleep 0.2
 done
 
-shell=$(curl -fsS "$base/")
+# The landing page is the prerendered site, naming BEGHU_PUBLIC_URL; the app is at /issues.
+curl -fsS "$base/" | grep -q '<link rel="canonical" href="http://localhost:8080/">' ||
+  fail "/ isn't the landing page with its canonical URL"
+shell=$(curl -fsS "$base/issues")
 asset=$(printf '%s' "$shell" | grep -o '/assets/index-[^"]*\.js' | head -n 1)
 [ -n "$asset" ] || fail "the shell links no entry chunk"
 curl -fsS -D - -o /dev/null -H 'accept-encoding: br' "$base$asset" | tr -d '\r' >"$secrets/headers"

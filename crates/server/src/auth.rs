@@ -338,7 +338,7 @@ struct Pending {
     at: i64,
 }
 
-/// `next` if it's a path inside beghu, else `/`. Bytes that can't go in a `Location` header as
+/// `next` if it's a path inside beghu, else the list (`/issues`). Bytes that can't go in a `Location` header as
 /// they are (non-ASCII text, spaces) are percent-encoded, which is how the browser sent them.
 pub(crate) fn safe_next(next: Option<&str>) -> String {
     match next {
@@ -358,7 +358,7 @@ pub(crate) fn safe_next(next: Option<&str>) -> String {
             }
             out
         }
-        _ => "/".into(),
+        _ => "/issues".into(),
     }
 }
 
@@ -473,7 +473,7 @@ pub async fn callback(
     headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
-    let bad = |why: &str| sign_in_failed(StatusCode::BAD_REQUEST, why, "/");
+    let bad = |why: &str| sign_in_failed(StatusCode::BAD_REQUEST, why, "/issues");
     if q.error.is_some() {
         return bad("GitHub didn't authorize beghu.");
     }

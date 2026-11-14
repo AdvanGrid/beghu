@@ -135,7 +135,7 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const live = page.waitForResponse((r) => r.url().includes("through=") && r.ok());
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
   // The stream's opening refetch is done: each test's change is the only one.
   await live;
@@ -499,7 +499,7 @@ for (const mode of ["list", "tree"] as const) {
     const tag = unique("fades").replace(" ", "");
     const issues = [await claimBelowTheTop(page), await claimBelowTheTop(page)];
     for (const issue of issues) devCtl(["fake", "edit", issue.ref, "--title", tag]);
-    await page.goto(`/?${new URLSearchParams({ q: `${tag} is:open`, ...(mode === "tree" ? { mode } : {}) })}`);
+    await page.goto(`/issues?${new URLSearchParams({ q: `${tag} is:open`, ...(mode === "tree" ? { mode } : {}) })}`);
     await expect(rows(page)).toHaveCount(2, { timeout: SHOWS_WITHIN_MS });
     await pointerAway(page);
     // Whether a ghost (a leaving row's fading copy) ever showed.

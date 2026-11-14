@@ -136,7 +136,7 @@ test.beforeEach(async ({ page }, info) => {
   faulted.clear();
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
 });
 
@@ -287,7 +287,7 @@ test("a dropped connection resends the same op_id, and the comment is posted onc
 test("a write beghu made whose answer was lost, then a switch in another tab, shows as maybe sent", async ({ page }) => {
   // ilze-k signs in beside tomsj and is this tab's account.
   await page.goto("/auth/login?login=ilze-k");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const me = (await (await page.request.get("/api/me")).json()) as { accounts: { id: number; login: string }[] };
   const tomsj = me.accounts.find((a) => a.login === "tomsj")!.id;
   const origin = new URL(page.url()).origin;
@@ -300,7 +300,7 @@ test("a write beghu made whose answer was lost, then a switch in another tab, sh
       if (sent.length === 1) {
         // beghu posts it; another tab switches to tomsj before the answer gets back.
         await r.fetch();
-        const res = await page.request.post("/auth/switch", { form: { account: String(tomsj), next: "/" }, headers: { origin }, maxRedirects: 0 });
+        const res = await page.request.post("/auth/switch", { form: { account: String(tomsj), next: "/issues" }, headers: { origin }, maxRedirects: 0 });
         expect(res.status()).toBe(303);
         await r.abort("connectionreset");
       } else await r.continue();

@@ -35,7 +35,7 @@ async function signIn(context: BrowserContext, ...logins: string[]): Promise<Pag
   const page = await context.newPage();
   for (const login of logins) {
     await page.goto(`/auth/login?login=${login}`);
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
   }
   await expect(account(page)).toHaveText(logins.at(-1)!);
   await expect(rows(page).first()).toBeVisible();
@@ -105,20 +105,20 @@ test("Back after signing out never shows the account that signed out", async ({ 
   // back to the signed-out page, now with the way back to the view: the old account never shows.
   await page.goBack({ waitUntil: "commit" });
   await expect.poll(() => restored).toEqual([[]]);
-  await page.waitForURL((u) => u.pathname === "/auth/signed-out" && u.searchParams.get("next") === "/");
+  await page.waitForURL((u) => u.pathname === "/auth/signed-out" && u.searchParams.get("next") === "/issues");
 });
 
 test("Back after a switch never shows the account switched from", async ({ context }) => {
   const restored = await recordRestores(context);
   const page = await signIn(context, "tomsj", "ilze-k");
-  await page.goto("/?q=is:open");
+  await page.goto("/issues?q=is:open");
   await expect(rows(page).first()).toBeVisible();
   await openMenu(page);
   // Chromium keeps a page in the cache only when the navigation that leaves it goes to another
   // URL, and a switch comes back to the same one; so this one lands on another view.
   await menu(page)
     .locator('input[name="next"]')
-    .evaluateAll((inputs) => inputs.forEach((i) => ((i as HTMLInputElement).value = "/?q=is:closed")));
+    .evaluateAll((inputs) => inputs.forEach((i) => ((i as HTMLInputElement).value = "/issues?q=is:closed")));
   await menu(page).getByRole("menuitem", { name: "Switch to tomsj" }).click();
   await page.waitForURL((u) => u.search === "?q=is:closed");
   await expect(account(page)).toHaveText("tomsj");
@@ -140,7 +140,7 @@ test("Back to a page whose account another tab switched away from shows nothing 
   await linkOut(page);
 
   const other = await context.newPage();
-  await other.goto("/");
+  await other.goto("/issues");
   await openMenu(other);
   await menu(other).getByRole("menuitem", { name: "Switch to tomsj" }).click();
   await expect(account(other)).toHaveText("tomsj");

@@ -9,7 +9,8 @@ import beghu from "./eslint-rules.js";
 export default [
   { ignores: ["dist/", "src/bindings/", "test-results/", "playwright-report/"] },
   {
-    files: ["src/**/*.{ts,tsx}"],
+    // The app, and the public site (site/), prerendered with the same tokens and rules.
+    files: ["src/**/*.{ts,tsx}", "site/**/*.{ts,tsx}"],
     languageOptions: { parser: tsParser, parserOptions: { ecmaFeatures: { jsx: true } } },
     plugins: { "@stylexjs": stylex, beghu },
     rules: {

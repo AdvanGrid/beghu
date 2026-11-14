@@ -50,13 +50,13 @@ type Row = { id: number; number: number; repo: string; kind: string; pr: { statu
 const rows = (page: Page) => page.locator('[data-perf="row"]');
 
 /** Signed in, with the stream's opening refetch done, at `path`. */
-async function open(page: Page, path = "/"): Promise<void> {
+async function open(page: Page, path = "/issues"): Promise<void> {
   await recordPushes(page);
   const live = page.waitForResponse((r) => r.url().includes("through=") && r.ok());
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await live;
-  if (path !== "/") await page.goto(path);
+  if (path !== "/issues") await page.goto(path);
 }
 
 /** The first open PR in acme/web that closes nothing. */
@@ -74,21 +74,21 @@ test("PRs list beside issues by default, each with its status icon and its revie
   // looked up should find it whichever kind it is.
   await open(page);
   const pr = ((await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr is:open")}`)).json()) as { rows: Row[] }).rows[0]!;
-  await page.goto(`/?q=${encodeURIComponent(`is:open ${pr.number}`)}`);
+  await page.goto(`/issues?q=${encodeURIComponent(`is:open ${pr.number}`)}`);
   await expect(page.locator(`[data-perf="row"][data-id="${pr.id}"] [data-pr-status]`)).toBeVisible();
 
-  await page.goto(`/?q=${encodeURIComponent("is:pr")}`);
+  await page.goto(`/issues?q=${encodeURIComponent("is:pr")}`);
   await expect(rows(page).first()).toBeVisible();
   const shown = await rows(page).count();
   await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(shown);
   // A PR's review decision sits in the labels column.
   await expect(page.locator('[data-perf="row"] [data-perf="labels"] [data-perf="review"]').first()).toBeVisible();
   // Merged and unmerged PRs show apart: merged in its merge shape and colour.
-  await page.goto(`/?q=${encodeURIComponent("is:pr is:closed")}`);
+  await page.goto(`/issues?q=${encodeURIComponent("is:pr is:closed")}`);
   await expect(page.locator('[data-perf="row"] [data-pr-status="merged"]').first()).toBeVisible();
 
   // `is:issue` (the Issues preset) hides them.
-  await page.goto(`/?q=${encodeURIComponent("is:issue")}`);
+  await page.goto(`/issues?q=${encodeURIComponent("is:issue")}`);
   await expect(rows(page).first()).toBeVisible();
   await expect(page.locator('[data-perf="row"] [data-pr-status]')).toHaveCount(0);
 });
@@ -116,7 +116,7 @@ test("the Issues and PRs presets each narrow the list to a kind, and drop each o
 });
 
 test("a PR opens in the same panel, read-only: its status, branches, review chip and conversation", async ({ page }) => {
-  await open(page, `/?q=${encodeURIComponent("is:pr is:open")}`);
+  await open(page, `/issues?q=${encodeURIComponent("is:pr is:open")}`);
   const res = await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr is:open")}`);
   const pr = ((await res.json()) as { rows: Row[] }).rows.find((r) => r.pr?.review)!;
   await page.locator(`[data-perf="row"][data-id="${pr.id}"]`).click();

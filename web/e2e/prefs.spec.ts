@@ -44,7 +44,7 @@ async function resetPrefs(page: Page): Promise<void> {
 }
 
 /** A tab of `context` signed in as tomsj, on `url`, with the list shown. */
-async function tab(context: BrowserContext, url = "/"): Promise<Page> {
+async function tab(context: BrowserContext, url = "/issues"): Promise<Page> {
   const page = await context.newPage();
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto(`/auth/login?login=tomsj&next=${encodeURIComponent(url)}`);
@@ -70,7 +70,7 @@ async function record(page: Page, label: string, ...keys: string[]): Promise<voi
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await resetPrefs(page);
 });
 

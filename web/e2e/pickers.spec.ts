@@ -76,7 +76,7 @@ async function signIn(page: Page, login = "tomsj"): Promise<void> {
   // for its own ended one and leave for sign-in itself, over this navigation.
   await page.goto("about:blank");
   await page.goto(`/auth/login?login=${login}`);
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
 }
 

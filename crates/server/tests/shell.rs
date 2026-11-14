@@ -14,7 +14,7 @@ use common::{Browser, PANEL_CHUNK, TREE_CHUNK, start};
 async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_and_caches_for_five_minutes()
  {
     let s = start().await;
-    let res = s.get(&mut Browser::default(), "/").await;
+    let res = s.get(&mut Browser::default(), "/issues").await;
     assert_eq!(res.status(), 200);
     // The browser only: a shared cache (the edge) would keep serving a build's shell past a deploy.
     assert_eq!(res.headers()["cache-control"], "private, max-age=300");
@@ -64,12 +64,12 @@ async fn the_shell_is_the_same_whoever_asks() {
     let s = start().await;
     let mut signed_in = s.sign_in("tomsj").await;
     let a = s
-        .get(&mut Browser::default(), "/?x=1")
+        .get(&mut Browser::default(), "/issues?x=1")
         .await
         .text()
         .await
         .unwrap();
-    let res = s.get(&mut signed_in, "/?x=1").await;
+    let res = s.get(&mut signed_in, "/issues?x=1").await;
     assert!(res.headers().get("set-cookie").is_none());
     assert_eq!(res.text().await.unwrap(), a);
 }
@@ -130,7 +130,7 @@ async fn an_issue_url_modulepreloads_the_panel_chunk_and_the_list_does_not() {
     for url in ["/issues/1", "/issues/007?label=bug", "/issues/x"] {
         assert!(html(url).await.contains(&tag), "{url}: {tag}");
     }
-    for url in ["/", "/?label=bug"] {
+    for url in ["/issues", "/issues?label=bug"] {
         assert!(!html(url).await.contains("modulepreload"), "{url}");
     }
 }
@@ -153,7 +153,7 @@ async fn the_shell_names_the_build_it_belongs_to() {
     // A deploy: the shell's build is the server's, so a tab knows what it runs.
     s.restart_with(|c| c.build_id = "next-build".into()).await;
     let html = s
-        .get(&mut Browser::default(), "/")
+        .get(&mut Browser::default(), "/issues")
         .await
         .text()
         .await
@@ -167,7 +167,7 @@ async fn the_shell_names_the_build_it_belongs_to() {
 async fn every_app_route_gets_the_shell() {
     let s = start().await;
     for path in [
-        "/",
+        "/issues",
         "/issues/1",
         "/new",
         "/new?repo=acme%2Fweb",
@@ -201,7 +201,7 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
     };
     let tree = format!(r#"<link rel="modulepreload" crossorigin href="/{TREE_CHUNK}">"#);
     for (url, data) in [
-        ("/?mode=tree", "/api/tree?mode=tree"),
+        ("/issues?mode=tree", "/api/tree?mode=tree"),
         (
             "/issues/7?q=label%3Abug&mode=tree",
             "/api/tree?q=label%3Abug&amp;mode=tree",
@@ -219,7 +219,12 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
         assert!(!page.contains("/api/issues?"), "{url}");
     }
     // The list, a mode that only starts with `tree`, and Focus view on no issue get neither.
-    for url in ["/", "/?q=is%3Aopen", "/?mode=treex", "/?mode=focus"] {
+    for url in [
+        "/issues",
+        "/issues?q=is%3Aopen",
+        "/issues?mode=treex",
+        "/issues?mode=focus",
+    ] {
         let page = html(url).await;
         assert!(!page.contains("/api/tree"), "{url}");
         assert!(!page.contains(&tree), "{url}");

@@ -30,7 +30,7 @@ CI runs all of these; run them before you commit:
 - In `web/`: `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
   `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules'
   and the highlight.js output reader's Node tests) and
-  `npx vite build`
+  `npx vite build` (which also prerenders the public site, `web/site/`, in its own Node process)
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
 - npm installs run no install scripts: always `npm ci --ignore-scripts` (CI, the `Dockerfile`
@@ -60,7 +60,8 @@ CI runs all of these; run them before you commit:
   else.
 - **Colours come only from the token modules** (`web/src/tokens.stylex.ts`, and
   `web/src/md/tokens.stylex.ts` for posts' Markdown and code highlighting, kept apart so its JS
-  stays out of first-load JS; its CSS still goes in the one stylesheet, so nothing splits CSS).
+  stays out of first-load JS; its CSS still goes in the app's one stylesheet, so nothing splits
+  the app's CSS; the public site has its own, below).
   Every page supports
   light and dark mode: each token is a `light-dark()` pair, and `web/theme.js` sets
   `color-scheme` on `<html>`. Style elements with `{...stylex.attrs(…)}`, or with `class={…}`
@@ -73,11 +74,22 @@ CI runs all of these; run them before you commit:
   `className`, `classList` or other `style`. The only CSS file is `web/src/escape.css`, one
   comment per rule. The lint enforces all of these. A width a row's styles draw with and its
   code measures by (a slot, an avatar) is one constant in `web/src/layout.stylex.ts`, read by
-  both. Pages outside the web app (the server's and Fake GitHub's plain HTML pages) use system colours (`Canvas`,
+  both. The public site follows these rules too. The server's and Fake GitHub's other plain HTML pages use system colours (`Canvas`,
   `CanvasText`, `GrayText`, `LinkText`) under `color-scheme: light dark`, never literals. GitHub
   label colours are data, not design: they come from GitHub per label and are exempt from the
   token rule (passed into a dynamic style, as the detail's label dots do, or a custom property,
   as the list's do).
+- **The public site is prerendered Solid.** The landing page (`/`), `/pricing`, `/privacy` and
+  the other marketing pages live in `web/site/`: Solid components with StyleX and the same
+  tokens, rendered to static HTML at build time (`renderToString`, compiled with
+  `generate: "ssr"` and `hydratable: false`), never hydrated. They ship no JS but the inline
+  `web/theme.js`, so they stay out of the app's first-load JS and its perf gates, and search
+  engines get the whole page in the first response. They have their own small stylesheet,
+  so a visit to the site doesn't load the app's CSS. Each page sets its own `<title>`, meta
+  description and canonical URL, and the same build writes `robots.txt` and `sitemap.xml`
+  from the page list. The server serves the prerendered files at their paths, with
+  `public` caching; the app's shell is never served for them. The app's list is at `/issues`, not
+  `/`, and `/` is the landing page for everyone, signed in or not, with no redirect.
 - **Check UI changes in fixture mode.** Start the stack, sign in as a fixture user
   (`./dev-ctl login <user>`), and drive the failure states with `./dev-ctl fake …` (latency,
   failing calls, down). Look at the change in both themes. `./dev-ctl reset` puts the mirrors and

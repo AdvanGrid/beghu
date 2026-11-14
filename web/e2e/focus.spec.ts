@@ -50,7 +50,7 @@ test.beforeAll(async () => {
 test("Focus issue roots a tree at the open issue, and an issue outside it becomes the root", async ({ page }) => {
   const [top, child, blocker] = [web[0]!, web[1]!, web[2]!];
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   // top > child, and blocker blocks top.
   devCtl(["fake", "edit", ref(top), "--add-sub-issue", ref(child)]);
   devCtl(["fake", "edit", ref(top), "--add-blocked-by", ref(blocker)]);
@@ -103,7 +103,7 @@ test("Focus issue roots a tree at the open issue, and an issue outside it become
 
 test("Focus view with no issue in focus says how to pick one", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await page.locator('[data-perf="mode-focus"]').click();
   await expect(page).toHaveURL(/mode=focus/);
   await expect(page.locator('[data-perf="no-focus"]')).toBeVisible();

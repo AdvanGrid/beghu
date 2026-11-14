@@ -22,7 +22,7 @@ async function signIn(context: BrowserContext, ...logins: string[]): Promise<Pag
   const page = await context.newPage();
   for (const login of logins) {
     await page.goto(`/auth/login?login=${login}`);
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
   }
   await expect(account(page)).toHaveText(logins.at(-1)!);
   await expect(rows(page).first()).toBeVisible();
@@ -46,11 +46,11 @@ async function openIssue(page: Page): Promise<void> {
 
 test("the account menu lists every account, and switching shows the other account at the same URL", async ({ context }) => {
   const page = await signIn(context, "tomsj", "ilze-k");
-  await page.goto("/?q=is:open+sort:created-asc");
+  await page.goto("/issues?q=is:open+sort:created-asc");
   await openMenu(page);
   await expect(menu(page)).toContainText("Signed in as ilze-k");
   await menu(page).getByRole("menuitem", { name: "Switch to tomsj" }).click();
-  await page.waitForURL((u) => u.pathname === "/" && u.search === "?q=is:open+sort:created-asc");
+  await page.waitForURL((u) => u.pathname === "/issues" && u.search === "?q=is:open+sort:created-asc");
   await expect(account(page)).toHaveText("tomsj");
   await expect(rows(page).first()).toBeVisible();
   // No banner: this tab made the switch.
@@ -65,7 +65,7 @@ test("a side-by-side tab gets the switched banner within a second, freezes Comme
   await expect(composer(stale).getByRole("button", { name: "Comment", exact: true })).toBeEnabled();
 
   const other = await context.newPage();
-  await other.goto("/");
+  await other.goto("/issues");
   await openMenu(other);
   // Timed from beghu's answer to the switch, not from the click: the other tab's page load in
   // between isn't what's measured.
@@ -109,7 +109,7 @@ test("signing out asks in the app only while the tab holds unsaved text", async 
 test("signing out of every account lands on the signed-out page, and a tab left open says so", async ({ context }) => {
   const page = await signIn(context, "tomsj", "ilze-k");
   const left = await context.newPage();
-  await left.goto("/");
+  await left.goto("/issues");
   await expect(rows(left).first()).toBeVisible();
   await openMenu(page);
   await menu(page).getByRole("menuitem", { name: "Sign out of all accounts" }).click();
@@ -125,7 +125,7 @@ test("one banner at a time: another account, then can't reach beghu, then GitHub
   // "Can't reach beghu" waits 15 s.
   test.setTimeout(60_000);
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
   // This tab's stream only: GitHub down as each stream opens, then no stream at all.
   let stream: "github-down" | "none" = "github-down";
@@ -183,7 +183,7 @@ test("a stale tab's repo picker can't save the ticks it holds", async ({ context
   await expect(save).toBeEnabled();
 
   const other = await context.newPage();
-  await other.goto("/");
+  await other.goto("/issues");
   await openMenu(other);
   await menu(other).getByRole("menuitem", { name: "Switch to tomsj" }).click();
   await expect(banner(stale)).toHaveAttribute("data-banner", "switched");
@@ -201,7 +201,7 @@ test("a stale tab that opens another issue says why it can't, and its draft stay
   const unreadPr = prs.rows.at(-1)!.id;
 
   const other = await context.newPage();
-  await other.goto("/");
+  await other.goto("/issues");
   await openMenu(other);
   await menu(other).getByRole("menuitem", { name: "Switch to tomsj" }).click();
   await expect(banner(stale)).toHaveAttribute("data-banner", "switched");
@@ -272,7 +272,7 @@ test("a stale tab's title editor keeps the text, can't save it, and says why", a
   await expect(editor.getByRole("button", { name: "Save" })).toBeEnabled();
 
   const other = await context.newPage();
-  await other.goto("/");
+  await other.goto("/issues");
   await openMenu(other);
   await menu(other).getByRole("menuitem", { name: "Switch to ilze-k" }).click();
   await expect(banner(stale)).toHaveAttribute("data-banner", "switched");

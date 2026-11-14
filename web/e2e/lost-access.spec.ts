@@ -38,13 +38,13 @@ const account = (page: Page) => page.locator('[data-perf="account"]');
 async function signInOcto(page: Page): Promise<void> {
   const streaming = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/stream" && r.status() === 200);
   await page.goto("/auth/login?login=octo-ext");
-  await page.waitForURL((u) => u.pathname === "/" || u.pathname === "/repos");
+  await page.waitForURL((u) => u.pathname === "/issues" || u.pathname === "/repos");
   if (new URL(page.url()).pathname === "/repos") {
     const boxes = page.locator('[data-perf="pick-repo"]').getByRole("checkbox");
     await expect(boxes.first()).toBeVisible();
     for (const box of await boxes.all()) await box.check();
     await page.getByRole("button", { name: "Save" }).click();
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
   }
   await expect(account(page)).toHaveText("octo-ext");
   await expect(rows(page).first()).toBeVisible({ timeout: 30_000 });
@@ -70,7 +70,7 @@ test("a revoke on GitHub asks the open tab to sign in again, and signing in impo
 
   await banner(page).getByRole("link", { name: "Sign in again" }).click();
   // beghu asks GitHub for the same account, which signs straight back in.
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(account(page)).toHaveText("octo-ext");
   await expect(rows(page).first()).toBeVisible({ timeout: 30_000 });
   await expect(banner(page)).toBeHidden();
@@ -96,14 +96,14 @@ test("Disconnect asks first, then ends the session in another browser too", asyn
     await signInOcto(page);
     const other = await elsewhere.newPage();
     await other.goto("/auth/login?login=octo-ext");
-    await other.waitForURL((u) => u.pathname === "/");
+    await other.waitForURL((u) => u.pathname === "/issues");
     await expect(rows(other).first()).toBeVisible();
     // A third browser holds tomsj too, with octo-ext active.
     const both = await shared.newPage();
     await both.goto("/auth/login?login=tomsj");
-    await both.waitForURL((u) => u.pathname === "/");
+    await both.waitForURL((u) => u.pathname === "/issues");
     await both.goto("/auth/login?login=octo-ext");
-    await both.waitForURL((u) => u.pathname === "/");
+    await both.waitForURL((u) => u.pathname === "/issues");
     await expect(account(both)).toHaveText("octo-ext");
     await expect(rows(both).first()).toBeVisible();
 

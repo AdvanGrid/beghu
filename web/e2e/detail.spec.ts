@@ -22,11 +22,11 @@ async function goto(page: Page, url: string): Promise<void> {
   await opened;
 }
 
-async function signIn(page: Page, path = "/") {
+async function signIn(page: Page, path = "/issues") {
   // Signing in lands on the list.
   await goto(page, "/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
-  if (path !== "/") await goto(page, path);
+  await page.waitForURL((u) => u.pathname === "/issues");
+  if (path !== "/issues") await goto(page, path);
   await expect(rows(page).first()).toBeVisible();
 }
 
@@ -115,7 +115,7 @@ test("a click on an issue's number copies it, in the list without opening the is
   await expect.poll(clipboard).toBe(number);
   await expect(ref).toHaveText("Copied");
   await expect(ref).toHaveText(shown);
-  await expect(page).toHaveURL((u) => u.pathname === "/");
+  await expect(page).toHaveURL((u) => u.pathname === "/issues");
   await expect(row).not.toHaveAttribute("aria-current", "page");
 
   await page.evaluate(() => navigator.clipboard.writeText(""));
@@ -532,7 +532,7 @@ const PANEL_CHUNK = "**/src/IssuePanel.tsx*";
 test("an issue URL's shell modulepreloads the panel's code, and the list's doesn't", async ({ request }) => {
   const tag = '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">';
   expect(await (await request.get("/issues/1")).text()).toContain(tag);
-  expect(await (await request.get("/")).text()).not.toContain("modulepreload");
+  expect(await (await request.get("/issues")).text()).not.toContain("modulepreload");
 });
 
 test("while the panel's code is on its way, the list is already usable", async ({ page }) => {

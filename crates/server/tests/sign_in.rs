@@ -241,7 +241,11 @@ async fn next_only_ever_leads_back_into_beghu() {
             serde_urlencoded::to_string([("n", next)]).unwrap()[2..].to_owned()
         );
         let (visited, _) = s.follow(&mut b, &path).await;
-        assert_eq!(visited.last().unwrap(), &format!("{}/", s.server), "{next}");
+        assert_eq!(
+            visited.last().unwrap(),
+            &format!("{}/issues", s.server),
+            "{next}"
+        );
     }
 }
 
@@ -252,7 +256,7 @@ async fn a_next_with_non_ascii_text_still_lands_back_on_that_page() {
     let (visited, res) = s
         .follow(
             &mut b,
-            "/auth/login?login=tomsj&next=%2F%3Fq%3D%C4%BCoti%20%C4%A3%C4%ABti%26x%3D1",
+            "/auth/login?login=tomsj&next=%2Fissues%3Fq%3D%C4%BCoti%20%C4%A3%C4%ABti%26x%3D1",
         )
         .await;
     assert!(res.status().is_success(), "{}", res.status());

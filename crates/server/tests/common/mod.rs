@@ -79,6 +79,31 @@ pub struct Stack {
     _dir: tempfile::TempDir,
 }
 
+/// A minimal prerendered public site (`site/`, as `web/site/build.ts` writes it): two pages,
+/// `robots.txt` and the sitemap, naming beghu's origin as the build leaves it for the server.
+pub const SITE: &[(&str, &str)] = &[
+    (
+        "pages.json",
+        r#"[{"path":"/","file":"index.html"},{"path":"/pricing","file":"pricing.html"}]"#,
+    ),
+    (
+        "index.html",
+        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/"></head><body>The landing page</body></html>"#,
+    ),
+    (
+        "pricing.html",
+        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/pricing"></head><body>Free in beta</body></html>"#,
+    ),
+    (
+        "robots.txt",
+        "User-agent: *\nDisallow: /issues\n\nSitemap: %BEGHU_ORIGIN%/sitemap.xml\n",
+    ),
+    (
+        "sitemap.xml",
+        "<urlset><url><loc>%BEGHU_ORIGIN%/</loc></url></urlset>",
+    ),
+];
+
 /// A minimal built web app: the shell template the server fills in per URL.
 pub const SHELL_TEMPLATE: &str = "<!doctype html><html><head><!--beghu:preload--></head><body><div id=\"root\"></div></body></html>";
 
@@ -237,6 +262,11 @@ async fn start_seeded(
     std::fs::write(web.join("index.html"), SHELL_TEMPLATE).unwrap();
     std::fs::create_dir_all(web.join(".vite")).unwrap();
     std::fs::write(web.join(".vite").join("manifest.json"), manifest()).unwrap();
+    let site = web.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    for (name, body) in SITE {
+        std::fs::write(site.join(name), body).unwrap();
+    }
 
     let mut s = Stack {
         server: String::new(),
