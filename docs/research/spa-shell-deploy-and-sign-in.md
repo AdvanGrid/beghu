@@ -5,13 +5,13 @@ Research date: 2026-10-25, for
 [First load](first-load.md) settled on an account-free shell cached with `max-age=300` and
 immutable hashed assets, without trying either case below.
 
-Probe: [`bench/candidates/deploy-probe`](../../bench/candidates/deploy-probe/README.md), the
+Probe: [`bench/candidates/deploy-probe`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/deploy-probe/README.md), the
 `axum-solid2-router` build (Solid `2.0.0-rc.15`, `@solidjs/router` `2.0.0-next.41`, Vite 8) with a
 lazy issue route, a second-level lazy chunk, three builds A/B/C with different hashes, an in-process
 deploy switch, and a fake cookie sign-in. `drive.mjs` drives Chromium 1248 (Playwright 1.64) on a
 persistent profile, so there's a real disk cache. The server's request log shows what reached it;
 anything missing from it came from the HTTP cache or bfcache. Raw output:
-[`results.jsonl`](../../bench/candidates/deploy-probe/results.jsonl). Each claim is tagged
+[`results.jsonl`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/deploy-probe/results.jsonl). Each claim is tagged
 **[measured]**, **[source]** (read in package code) or **[doc]**.
 
 **Playwright hides bfcache.** It launches Chromium with `--disable-back-forward-cache` and

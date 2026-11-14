@@ -29,7 +29,7 @@ So the representation's size decides how many comments a detail response carries
 - **Tags:** each claim is tagged **[source]** (read in code or a spec), **[doc]**, **[measured]**
   or **[inferred]**.
 - **Measurements:** the scripts are in
-  [`bench/candidates/markdown-probe`](../../bench/candidates/markdown-probe/README.md) (throwaway,
+  [`bench/candidates/markdown-probe`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/markdown-probe/README.md) (throwaway,
   untracked).
 - **Host:** the bench host (Xeon E5-2695 v4, 32 threads), shared and busy (load average 4–20 during
   runs), so p95s are noisy.

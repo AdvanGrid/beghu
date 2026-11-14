@@ -15,7 +15,7 @@ split should go.
   8.8 ms at 6× on a budgeted thread, and 141 ms at 6× for 185 comments.
 
 **Method and tags.** Each claim is tagged **[measured]**, **[source]** or **[inferred]**. The
-scripts are in [`bench/candidates/markdown-probe/thread`](../../bench/candidates/markdown-probe/thread/README.md)
+scripts are in [`bench/candidates/markdown-probe/thread`](https://github.com/AdvanGrid/beghu/blob/aba7a01205f8175fb050cb86356bffde3a577d47/bench/candidates/markdown-probe/thread/README.md)
 (throwaway).
 - **Host:** the bench host (Xeon E5-2695 v4, 32 threads), shared, with a load average of 4–8
   during runs.
