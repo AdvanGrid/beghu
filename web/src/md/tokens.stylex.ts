@@ -4,7 +4,7 @@
 // panel's lazy chunk, never first-load JS; their CSS goes in the one stylesheet either way (this
 // splits JS, not CSS). Values start
 // from the Markdown prototype (bench/candidates/list-prototype/web/src/md/md.css and frames.css,
-// and app.css for the highlight colours).
+// and app.css for the highlight colours; in history at aba7a01).
 import * as stylex from "@stylexjs/stylex";
 
 export const md = stylex.defineVars({

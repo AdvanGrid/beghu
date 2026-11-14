@@ -1,6 +1,6 @@
 // The token module: the only place a colour is written. Every colour is a light-dark() pair, so
 // it follows the `color-scheme` theme.js sets on <html> (light, dark, or the system's). Values
-// start from the list prototype (bench/candidates/list-prototype).
+// start from the list prototype (bench/candidates/list-prototype, in history at aba7a01).
 import * as stylex from "@stylexjs/stylex";
 
 export const colors = stylex.defineVars({
