@@ -122,7 +122,7 @@ async fn two_accounts_in_one_browser_switch_and_each_sees_only_its_own_mirror() 
     s.post_form(
         &mut b,
         "/auth/switch",
-        &[("account", &ilze.to_string()), ("next", "/")],
+        &[("account", &ilze.to_string()), ("next", "/issues")],
     )
     .await;
     let (_, page) = s.api(&mut b, "/api/issues?q=repo:ops").await;
@@ -214,7 +214,7 @@ async fn a_switch_or_a_sign_in_reaches_every_stream_of_the_browser_and_no_other(
     s.post_form(
         &mut b,
         "/auth/switch",
-        &[("account", &tomsj.to_string()), ("next", "/")],
+        &[("account", &tomsj.to_string()), ("next", "/issues")],
     )
     .await;
     let ev = tab.event_within(SECS).await.unwrap();
@@ -240,11 +240,14 @@ async fn signing_out_one_account_switches_to_another_and_signing_out_of_all_ends
         .post_form(
             &mut b,
             "/auth/logout",
-            &[("account", &ilze.to_string()), ("next", "/?q=is:open")],
+            &[
+                ("account", &ilze.to_string()),
+                ("next", "/issues?q=is:open"),
+            ],
         )
         .await;
     assert_eq!(res.status(), 303);
-    assert_eq!(location(&res), "/?q=is:open");
+    assert_eq!(location(&res), "/issues?q=is:open");
     assert_eq!(b.cookies["beghu_acct"], tomsj.to_string());
     let now = me(&s, &mut b).await;
     assert_eq!(now["account"]["login"], "tomsj");
@@ -265,7 +268,7 @@ async fn signing_out_one_account_switches_to_another_and_signing_out_of_all_ends
     tab.reset().await;
     let before = b.clone();
     let res = s
-        .post_form(&mut b, "/auth/logout", &[("all", "1"), ("next", "/")])
+        .post_form(&mut b, "/auth/logout", &[("all", "1"), ("next", "/issues")])
         .await;
     assert_eq!(res.status(), 303);
     assert_eq!(location(&res), "/auth/signed-out");
@@ -320,7 +323,10 @@ async fn signing_out_one_account_switches_to_another_and_signing_out_of_all_ends
         .text()
         .await
         .unwrap();
-    assert!(html.contains(r#"href="/auth/login?next=%2F""#), "{html}");
+    assert!(
+        html.contains(r#"href="/auth/login?next=%2Fissues""#),
+        "{html}"
+    );
     assert!(!html.contains("evil"), "{html}");
 }
 

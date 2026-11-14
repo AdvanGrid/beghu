@@ -50,7 +50,7 @@ const AT_ONCE_MS = 1_500;
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await goto(page, "/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
 });
 
@@ -144,7 +144,7 @@ test("o moves the focus into the issue, and Escape back to its row in the list",
 test("Shift+J and Shift+K scroll the open issue from the list, the focus and the selection staying put", async ({ page }) => {
   // Issues only: an issue's thread (the fixture's top issues have 30 comments) is long enough
   // to scroll, and the default view lists PRs beside them.
-  await goto(page, "/?q=" + encodeURIComponent("is:issue is:open"));
+  await goto(page, "/issues?q=" + encodeURIComponent("is:issue is:open"));
   await expect(rows(page).first()).toBeVisible();
   // Into the list, then j: the second row is open, with the focus on it.
   await rows(page).nth(0).focus();
@@ -283,7 +283,7 @@ test("the hint bar and the ? overlay follow the focus: list, issue, filter", asy
 });
 
 test("on an issue, l opens the labels picker: typing filters it and fires no keys, and Escape closes it", async ({ page }) => {
-  await goto(page, "/?q=" + encodeURIComponent("is:issue is:open"));
+  await goto(page, "/issues?q=" + encodeURIComponent("is:issue is:open"));
   await expect(rows(page).first()).toBeVisible();
   await page.keyboard.press("j");
   await expect(page.locator('[data-perf="composer"]')).toBeVisible();
@@ -347,7 +347,7 @@ test("on an issue, l opens the labels picker: typing filters it and fires no key
 });
 
 test("a PR's panel leaves the write keys out of the hint bar, and its write keys do nothing", async ({ page }) => {
-  await goto(page, "/?q=" + encodeURIComponent("is:pr is:open"));
+  await goto(page, "/issues?q=" + encodeURIComponent("is:pr is:open"));
   await expect(rows(page).first()).toBeVisible();
   await page.keyboard.press("j");
   await expect(detail(page)).toBeVisible();

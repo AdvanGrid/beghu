@@ -41,13 +41,13 @@ const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-s
 const row = (page: Page, id: number | string) => page.locator(`[data-perf="row"][data-id="${id}"]`);
 
 /** Signed in, with the stream's opening refetch done, at `path`. */
-async function open(page: Page, path = "/"): Promise<void> {
+async function open(page: Page, path = "/issues"): Promise<void> {
   await recordPushes(page);
   const live = page.waitForResponse((r) => r.url().includes("through=") && r.ok());
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await live;
-  if (path !== "/") await page.goto(path);
+  if (path !== "/issues") await page.goto(path);
   await expect(rows(page).first()).toBeVisible();
 }
 

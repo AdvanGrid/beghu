@@ -36,7 +36,7 @@ export default async function globalSetup(): Promise<void> {
     const page = await browser.newPage({ baseURL: APP });
     page.setDefaultTimeout(READY_WITHIN_MS);
     await page.goto("/auth/login?login=tomsj");
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
     // The first issue row (a PR's icon carries data-pr-status): a PR has no composer.
     const row = page.locator('[data-perf="row"]:not(:has([data-pr-status]))').first();
     const id = await row.getAttribute("data-id");

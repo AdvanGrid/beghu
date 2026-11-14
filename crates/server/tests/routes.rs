@@ -10,7 +10,9 @@ use common::{BUILD, Browser, start};
 async fn an_unknown_path_outside_the_api_is_a_plain_404() {
     let s = start().await;
     let mut signed_in = s.sign_in("tomsj").await;
-    for path in ["/nope", "/robots.txt", "/issues", "/issues/1/extra"] {
+    // `/robots.txt` and `/issues` are served now (the public site's and the list's), so neither is
+    // here; a path under a site page isn't the page.
+    for path in ["/nope", "/favicon.ico", "/pricing/x", "/issues/1/extra"] {
         for b in [&mut Browser::default(), &mut signed_in] {
             let res = s.get(b, path).await;
             assert_eq!(res.status(), 404, "{path}");

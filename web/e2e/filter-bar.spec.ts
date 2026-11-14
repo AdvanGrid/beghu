@@ -16,7 +16,7 @@ const q = (page: Page) => new URL(page.url()).searchParams.get("q");
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
 });
 
@@ -224,7 +224,7 @@ test("steady typing pulses 200 ms after the list began waiting, not only once ty
     await route.continue();
   });
   const box = page.getByRole("combobox", { name: "Filter issues" });
-  // Clicking the box puts the default view's query in the URL (`/` becomes `/?q=is:open`): a view
+  // Clicking the box puts the default view's query in the URL (`/issues` becomes `/issues?q=is:open`): a view
   // of its own, which pulses if it takes over 200 ms. It lands before the typing starts, so the
   // pulse watched below is the typing's.
   const settled = page.waitForEvent("requestfinished", (r) => {

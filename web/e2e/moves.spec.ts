@@ -21,7 +21,7 @@ async function signIn(page: Page): Promise<void> {
   await recordPushes(page);
   const live = page.waitForResponse((r) => r.url().includes("through=") && r.ok());
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await live;
   await expect(rows(page).first()).toBeVisible();
 }

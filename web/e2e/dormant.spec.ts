@@ -18,7 +18,7 @@ const AWAY = [
 
 test("an account back from dormancy says it's re-importing because the user was away", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
 
   await page.route("**/api/stream?*", (route) =>

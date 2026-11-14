@@ -205,7 +205,7 @@ const first = (r: Record, test: (f: Frame) => boolean) => r.frames.find(test);
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
 });
 
 test("a comment arriving while the pointer moves over the issue is held, then applies after 5 s of rest behind the cue and an animation", async ({ page }) => {

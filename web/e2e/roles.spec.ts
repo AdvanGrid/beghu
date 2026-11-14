@@ -29,7 +29,7 @@ const unique = (what: string) => `${what} ${Date.now().toString(36)}${Math.rando
 async function signIn(page: Page, login: string): Promise<void> {
   await page.goto("about:blank");
   await page.goto(`/auth/login?login=${login}`);
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
 }
 
 /** Open issues in `repo` that `login` didn't open, from the top of its list. */

@@ -34,6 +34,7 @@ mod relationships;
 mod repos;
 mod roles;
 mod shell;
+mod site;
 mod tokens;
 mod tree;
 mod volume;
@@ -72,7 +73,7 @@ pub const GRAPHQL_DOCUMENTS: [(&str, &str); 16] = [
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -105,6 +106,8 @@ struct Inner {
     keys: Arc<crypto::Keys>,
     tokens: tokens::Tokens,
     shell: Option<shell::Shell>,
+    /// The public site, prerendered by the web build.
+    site: Option<site::Site>,
     /// Each account's role re-reads from GitHub.
     roles: repos::Roles,
     /// Each account's live streams.
@@ -173,7 +176,7 @@ pub struct Opened {
 impl App {
     /// Startup up to listening (steps 1 to 3, see [`Opened`]): refuses a data directory on a
     /// network filesystem, opens the control DB (migrating it after a `VACUUM INTO` backup),
-    /// reads the shell template and the build's Vite manifest, copies the build's assets to the
+    /// reads the shell template, the build's Vite manifest and the public site, copies the build's assets to the
     /// volume and prunes the old ones, and opens the mirrors. Nothing runs in the background
     /// yet: [`Opened::start`] starts it once the server listens. Any error should stop startup.
     pub async fn open(cfg: Config) -> Result<Opened, String> {
@@ -189,6 +192,11 @@ impl App {
             .0;
         let control = Arc::new(control);
         let shell = cfg.web_dir.as_deref().map(shell::Shell::load).transpose()?;
+        let site = cfg
+            .web_dir
+            .as_deref()
+            .map(|web| site::Site::load(web, &cfg.public_url))
+            .transpose()?;
         let assets = assets::Assets::new(&cfg.data_dir, cfg.assets_kept_for);
         let prune_next = match cfg.web_dir.clone() {
             None => None,
@@ -254,6 +262,7 @@ impl App {
             keys,
             tokens,
             shell,
+            site,
             roles: repos::Roles::default(),
             hub,
             webhooks: webhook::Queue::new(),
@@ -541,15 +550,24 @@ pub fn router(app: App) -> Router {
         .layer(middleware::from_fn_with_state(app.clone(), api_headers))
         .layer(middleware::from_fn_with_state(app.clone(), scan_steps))
         .layer(compression());
-    // The shell answers only the SPA's own routes (web/src/router.tsx); any other path is a
-    // plain 404 from the router's default fallback.
+    // The shell answers only the SPA's own routes (web/src/router.tsx); the public site its
+    // pages (`/` among them); any other path is a plain 404 from the router's default fallback.
     let shell = Router::new()
-        .route("/", get(shell::shell))
+        .route("/issues", get(shell::shell))
         .route("/issues/{id}", get(shell::shell))
         .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))
         .layer(compression());
+    let mut site = Router::new();
+    for (path, file) in app.0.site.iter().flat_map(|s| s.files()) {
+        let file = file.clone();
+        site = site.route(
+            path,
+            get(move |headers: HeaderMap| async move { file.respond(&headers) }),
+        );
+    }
+    let site = site.layer(compression());
     // The media routes stream bytes through with their own caching headers: outside the API's
     // `no-store` and its compression, behind the same session gate.
     let media = Router::new()
@@ -585,6 +603,7 @@ pub fn router(app: App) -> Router {
             post(webhook::receive).layer(axum::extract::DefaultBodyLimit::max(webhook::MAX_BODY)),
         )
         .merge(shell)
+        .merge(site)
         .merge(media)
         .nest("/api", api);
     if let Some(dir) = &app.0.assets_dir {

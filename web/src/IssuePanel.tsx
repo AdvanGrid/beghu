@@ -801,7 +801,7 @@ function Body(props: {
           >
             <OpenOnGitHub href={githubUrl(d())} />
           </Show>
-          <a href={`/${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
+          <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
             ×
           </a>
         </div>
@@ -1455,7 +1455,7 @@ function LostIssue(props: { error: Gone | NoAccess; search: string; id: number }
           <KeptText issue={props.id} />
         </Loading>
       </Errored>
-      <a href={`/${props.search}`} noscroll {...stylex.attrs(s.link)}>
+      <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.link)}>
         Back to the list
       </a>
     </div>

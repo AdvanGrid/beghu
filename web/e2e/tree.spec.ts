@@ -38,7 +38,7 @@ test.beforeAll(async () => {
 
 async function signIn(page: Page): Promise<void> {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
 }
 
 /** The parent of each of `ids` as the mirror has it (from each one's detail). */
@@ -79,7 +79,7 @@ async function only(page: Page, u: Unlinked): Promise<string> {
   return `is:open repo:web "${d.title.replace(/"/g, "")}"`;
 }
 
-const treeAt = (q: string) => `/?${new URLSearchParams({ q, mode: "tree" })}`;
+const treeAt = (q: string) => `/issues?${new URLSearchParams({ q, mode: "tree" })}`;
 
 /** The contrast of `el`'s text against the page behind it, as WCAG computes it. */
 async function contrast(page: Page, selector: string): Promise<number> {
@@ -114,7 +114,7 @@ test("?mode=tree round-trips through the toggle, its key, links, Back and Forwar
   await expect(tree(page)).toBeVisible();
   // Back to the tree without the issue, back to the list, and forward again.
   await page.goBack();
-  await expect(page).toHaveURL((u) => u.pathname === "/" && u.searchParams.get("mode") === "tree");
+  await expect(page).toHaveURL((u) => u.pathname === "/issues" && u.searchParams.get("mode") === "tree");
   await expect(tree(page)).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL((u) => u.searchParams.get("mode") === null);

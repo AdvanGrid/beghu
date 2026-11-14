@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
 
 test("a body renders allowlisted DOM only, and its references link in-app or to GitHub", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const [t, x] = [list.rows[0]!, list.rows.find((r, i) => i > 0 && r.owner === list.rows[0]!.owner && r.repo === list.rows[0]!.repo)!];
   const key = `${t.owner}/${t.repo}#${x.number}`.toLowerCase();
@@ -117,7 +117,7 @@ test("a body nested far deeper than the server sends renders, flattened past the
   const errors: Error[] = [];
   page.on("pageerror", (e) => errors.push(e));
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const t = list.rows[0]!;
   const depth = 100_000;
@@ -148,7 +148,7 @@ test("a body nested far deeper than the server sends renders, flattened past the
 
 test("hovering a reference shows its card, and outlines its row in the list in green while the pointer is on it", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const [t, x] = [list.rows[0]!, list.rows[1]!];
   await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
@@ -185,7 +185,7 @@ test("hovering a reference shows its card, and outlines its row in the list in g
 
 test("a link to a comment on the open issue scrolls to it, a reference or a link with its own text", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   // An issue whose first page of comments holds some.
   let t: Row | undefined;
@@ -248,7 +248,7 @@ const RUST = "pub fn apply(&mut self) -> Result<(), Error> {\n    // already app
  */
 async function openWithBody(page: Page, body: unknown[], index = 0): Promise<Row> {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const t = list.rows[index]!;
   await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {

@@ -547,7 +547,7 @@ function Form() {
         <div {...stylex.attrs(s.top)}>
           <h2 {...stylex.attrs(s.heading)}>New issue</h2>
           <span {...stylex.attrs(s.spacer)} />
-          <a href={`/${location.search}`} noscroll {...stylex.attrs(s.close)} aria-label="Close the form" title="Close">
+          <a href={`/issues${location.search}`} noscroll {...stylex.attrs(s.close)} aria-label="Close the form" title="Close">
             ×
           </a>
         </div>

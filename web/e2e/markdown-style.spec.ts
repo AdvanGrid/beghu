@@ -151,7 +151,7 @@ test.beforeEach(async ({ page }) => {
   // The corpus's images live on the web: nothing here goes there.
   await page.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, (route) => route.abort());
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
 });
 
 test.afterEach(() => release());

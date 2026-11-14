@@ -21,7 +21,7 @@
 
 use crate::App;
 use axum::extract::{OriginalUri, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::path::Path;
 
@@ -179,6 +179,12 @@ pub async fn shell(State(app): State<App>, OriginalUri(uri): OriginalUri) -> Res
     res.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=300"),
+    );
+    // The app is behind sign-in: a search engine has nothing to index here (the public site,
+    // `site.rs`, is what it should find).
+    res.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex"),
     );
     res
 }

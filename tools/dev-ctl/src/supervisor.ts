@@ -273,7 +273,7 @@ export async function superviseGitHub(): Promise<void> {
   const deadline = Date.now() + 60_000;
   for (const [name, url] of [
     ["server", `${URLS.server}/healthz`],
-    ["vite", `${URLS.app}/`],
+    ["vite", `${URLS.app}/issues`],
   ] as const) {
     while (!(await up(url))) {
       if (Date.now() > deadline || !stack.running(name)) {
@@ -711,7 +711,7 @@ async function waitUntilUp(ms: number, running: (name: Proc) => boolean): Promis
   const checks: [Proc, string][] = [
     ["fake", `${URLS.control}/state`],
     ["server", `${URLS.server}/healthz`],
-    ["vite", `${URLS.app}/`],
+    ["vite", `${URLS.app}/issues`],
   ];
   const deadline = Date.now() + ms;
   for (const [name, url] of checks) {

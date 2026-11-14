@@ -1,13 +1,14 @@
 // The dev server and the production build. `./dev-ctl start` runs Vite with BEGHU_SERVER pointing
 // at the beghu server, which answers everything that isn't the web app.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import solid from "@solidjs/vite-plugin";
 import stylex from "@stylexjs/unplugin";
+import { writeCompressedSiblings } from "./compress.ts";
 import { parserIn } from "./markdown-parsers.ts";
+import { sitePlugin } from "./site/build.ts";
 
 const server = process.env.BEGHU_SERVER ?? "http://localhost:3000";
 const proxy = Object.fromEntries(
@@ -100,11 +101,7 @@ function unchangedUpdatesNothing(): Plugin {
   };
 }
 
-/**
- * `.br` and `.gz` next to each built asset, at maximum compression, for the server to send as
- * they are (crates/server/src/lib.rs). The edge passes encodings through, so these are the bytes
- * on the wire. A sibling that wouldn't be smaller isn't written.
- */
+/** `.br` and `.gz` next to each built asset (compress.ts). */
 function precompress(): Plugin {
   return {
     name: "beghu-precompress",
@@ -113,16 +110,7 @@ function precompress(): Plugin {
       const dir = options.dir ?? "dist";
       for (const name of Object.keys(bundle)) {
         if (!name.startsWith("assets/") || !/\.(js|css|svg|json|txt)$/.test(name)) continue;
-        const raw = readFileSync(join(dir, name));
-        const br = brotliCompressSync(raw, {
-          params: {
-            [constants.BROTLI_PARAM_QUALITY]: constants.BROTLI_MAX_QUALITY,
-            [constants.BROTLI_PARAM_SIZE_HINT]: raw.length,
-          },
-        });
-        const gz = gzipSync(raw, { level: constants.Z_BEST_COMPRESSION });
-        if (br.length < raw.length) writeFileSync(join(dir, `${name}.br`), br);
-        if (gz.length < raw.length) writeFileSync(join(dir, `${name}.gz`), gz);
+        writeCompressedSiblings(join(dir, name));
       }
     },
   };
@@ -218,7 +206,7 @@ const BUILD = process.env.BEGHU_BUILD_ID;
 const banner = (chunk: { isEntry: boolean }) => (BUILD && chunk.isEntry ? `/*! beghu ${BUILD.replace(/[^\w.-]/g, "")} */` : "");
 
 export default defineConfig({
-  plugins: [unchangedUpdatesNothing(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser()],
+  plugins: [unchangedUpdatesNothing(), sitePlugin(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser()],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
   // out of first-load JS (see src/no-server-functions.ts). Exact match only, so the router's
   // lazy `…/server-functions/server` import is untouched.

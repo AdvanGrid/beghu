@@ -79,7 +79,7 @@ function Picker() {
     try {
       await putRepos([...picked()]);
       void revalidate(getRepos.key);
-      navigate("/");
+      navigate("/issues");
     } catch (e) {
       // The pick stays as ticked, for Retry.
       if (e instanceof SessionEnded) signIn();
@@ -92,7 +92,7 @@ function Picker() {
     <div {...stylex.attrs(s.scroller)}>
       <div {...stylex.attrs(s.head)}>
         <h2 {...stylex.attrs(s.title)}>Synced repos</h2>
-        <a href="/" {...stylex.attrs(s.close)} aria-label="Close" title="Close">
+        <a href="/issues" {...stylex.attrs(s.close)} aria-label="Close" title="Close">
           ×
         </a>
       </div>
@@ -136,7 +136,7 @@ function Picker() {
         <button type="button" {...stylex.attrs(s.save)} disabled={saving() || !changed() || writesPaused()} onClick={() => void save()}>
           {saving() ? "Saving…" : "Save"}
         </button>
-        <a href="/" {...stylex.attrs(s.link)}>
+        <a href="/issues" {...stylex.attrs(s.link)}>
           Cancel
         </a>
         <Show when={failed()}>

@@ -334,7 +334,7 @@ pub async fn disconnect(
         .map(|all| all.iter().any(|a| a.github_user_id == account));
     match here {
         Ok(true) => {}
-        Ok(false) => return see_other("/", []),
+        Ok(false) => return see_other("/issues", []),
         Err(e) => return failed(e),
     }
 
@@ -402,8 +402,8 @@ pub async fn disconnect(
     lost_access(&app, account).await;
     let (to, cookies): (&str, Vec<HeaderValue>) = match mine {
         Left::Ended => (SIGNED_OUT, auth::cleared_cookies().into()),
-        Left::Switched(to) => ("/", auth::session_cookies(&sid, to).into()),
-        Left::Same => ("/", Vec::new()),
+        Left::Switched(to) => ("/issues", auth::session_cookies(&sid, to).into()),
+        Left::Same => ("/issues", Vec::new()),
     };
     if revoked {
         return see_other(to, cookies);

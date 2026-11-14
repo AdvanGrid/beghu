@@ -43,7 +43,7 @@ test("a user with no installation installs the App, comes back to pick repos, an
     await expect(notes.getByRole("checkbox")).not.toBeChecked();
     await notes.getByRole("checkbox").check();
     await page.getByRole("button", { name: "Save" }).click();
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
 
     // The status slot names the phase and counts the import, every view ends with the note (the
     // picker's too), and rows arrive.
@@ -53,7 +53,7 @@ test("a user with no installation installs the App, comes back to pick repos, an
     await page.locator('[data-perf="repos-link"]').click();
     await expect(page.locator('[data-perf="repo-picker"] [data-perf="still-importing"]')).toBeVisible();
     await page.getByRole("link", { name: "Cancel" }).click();
-    await page.waitForURL((u) => u.pathname === "/");
+    await page.waitForURL((u) => u.pathname === "/issues");
     await expect(page.locator('[data-perf="row"]')).toHaveCount(5, { timeout: 20_000 });
     await expect(page.getByText("Plan the garden beds")).toBeVisible();
     // Then it's done, and says so by saying nothing.
@@ -66,7 +66,7 @@ test("a user with no installation installs the App, comes back to pick repos, an
 
 test("the picker lists every visible repo, ticked as synced, and shows in both themes", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await page.locator('[data-perf="repos-link"]').click();
   await page.waitForURL((u) => u.pathname === "/repos");
   const repos = page.locator('[data-perf="pick-repo"]');

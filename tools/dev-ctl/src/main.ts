@@ -376,7 +376,7 @@ async function status(args: string[], extra: Record<string, unknown> = {}): Prom
   }
   const s = r.state;
   const [app, server, fakeUp, fake] = await Promise.all([
-    up(`${urls().app}/`),
+    up(`${urls().app}/issues`),
     up(`${urls().server}/healthz`),
     up(`${urls().control}/state`),
     fakeState(urls().control),
@@ -810,10 +810,10 @@ async function fake(args: string[]): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // deploy
 
-/** The web app's sources: a build made from other contents is rebuilt. */
+/** The web app's and the public site's sources: a build made from other contents is rebuilt. */
 function webSources(): string {
   const web = join(ROOT, "web");
-  const files = ["index.html", "theme.js", "vite.config.ts", "package-lock.json", "markdown-parsers.ts"].map((f) => join(web, f));
+  const files = ["index.html", "theme.js", "favicon.svg", "vite.config.ts", "compress.ts", "package-lock.json", "markdown-parsers.ts"].map((f) => join(web, f));
   const walk = (dir: string): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
@@ -822,6 +822,7 @@ function webSources(): string {
     }
   };
   walk(join(web, "src"));
+  walk(join(web, "site"));
   const h = createHash("sha256");
   for (const f of files.sort()) {
     if (!existsSync(f)) continue;

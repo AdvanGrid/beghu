@@ -29,7 +29,7 @@ test.beforeEach(async ({ page }) => {
   release = await shared();
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
 });
 
 test.afterEach(() => release());

@@ -17,7 +17,7 @@ const rows = (page: Page) => page.locator('[data-perf="row"]');
 test("Back to the list after the order changed meanwhile shows the new order at once, with no cue", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(rows(page).first()).toBeVisible();
   const issue = (await listed(page))[5]!;
   await page.mouse.move(5, 5);

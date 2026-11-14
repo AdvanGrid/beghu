@@ -51,7 +51,7 @@ test.beforeEach(async ({ page }) => {
   // only one.
   const live = liveRefetch(page);
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
   await live;
 });
@@ -162,7 +162,7 @@ test("a push refetches a filtered, sorted view through its last loaded row, in i
   // Bugs, oldest first: an edit moves nothing in this sort, and the label decides membership.
   const q = "label:bug sort:created-asc";
   const live = liveRefetch(page);
-  await page.goto(`/?${new URLSearchParams({ q })}`);
+  await page.goto(`/issues?${new URLSearchParams({ q })}`);
   await live;
   const rows = page.locator('[data-perf="row"]');
   await expect(rows.first()).toBeVisible();
@@ -212,7 +212,7 @@ test("a change between the data response and the stream opening shows within 2 s
     await route.continue();
   });
   const firstPage = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/issues" && !r.url().includes("through="));
-  await page.goto("/");
+  await page.goto("/issues");
   await firstPage;
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
   const { repo, number, id } = await rowRef(page, 3);

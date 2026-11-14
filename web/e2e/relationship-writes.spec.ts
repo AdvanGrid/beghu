@@ -47,7 +47,7 @@ test.beforeAll(async () => {
 /** Signed in as tomsj (admin everywhere), at issue `id`'s panel. */
 async function openIssue(page: Page, id: number): Promise<void> {
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await page.goto(`/issues/${id}`);
   await expect(page.locator('[data-perf="detail"]')).toHaveAttribute("data-id", String(id));
   // The writes code (with the composer) is in.

@@ -90,7 +90,7 @@ async fn api_responses_are_compressed_with_the_encoding_the_browser_accepts() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_is_compressed_too() {
     let s = start().await;
-    let (status, enc, vary, body) = fetch(&s, &Browser::default(), "/", "gzip").await;
+    let (status, enc, vary, body) = fetch(&s, &Browser::default(), "/issues", "gzip").await;
     assert_eq!((status, enc.as_deref()), (200, Some("gzip")));
     assert!(vary.contains("accept-encoding"), "vary: {vary}");
     let html = String::from_utf8(gunzip(&body)).unwrap();

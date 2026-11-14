@@ -81,7 +81,7 @@ test.beforeEach(async ({ page }, info) => {
   faulted.clear();
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
 });
 

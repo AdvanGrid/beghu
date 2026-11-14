@@ -41,7 +41,7 @@ const build = (page: Page) => page.locator('meta[name="beghu-build"]').getAttrib
 async function signIn(context: BrowserContext): Promise<Page> {
   const page = await context.newPage();
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   return page;
 }
 
@@ -63,7 +63,7 @@ function reconnected(page: Page): Promise<unknown> {
 async function oldTab(context: BrowserContext, prune: boolean): Promise<Page> {
   await deploy("A");
   const page = await signIn(context);
-  await page.goto(`${status().urls.server}/`);
+  await page.goto(`${status().urls.server}/issues`);
   await expect(rows(page).first()).toBeVisible();
   expect(await build(page)).toBe("A");
   await mark(page);

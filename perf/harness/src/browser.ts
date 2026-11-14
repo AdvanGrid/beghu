@@ -143,6 +143,11 @@ export interface BrowserCtx {
   session: Session;
   state: Awaited<ReturnType<BrowserContext["storageState"]>>;
   warm: BrowserContext;
+  /**
+   * The list's path on this stack, where sign-in lands: `/issues`, or `/` on a build from before
+   * the public site took `/` (main, when this tree is compared with it).
+   */
+  list: string;
 }
 
 /** A signed-in browser for `stack`: its storage, to start cold contexts from, and a warm context. */
@@ -152,14 +157,15 @@ export async function prepare(browser: Browser, stack: Stack, opts: { quick?: bo
   const login = await browser.newContext({ viewport: VIEWPORT, baseURL: stack.url });
   const page = await login.newPage();
   await page.goto("/auth/login?login=tomsj");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues" || u.pathname === "/");
+  const list = new URL(page.url()).pathname;
   const state = await login.storageState();
   await login.close();
   const warm = await browser.newContext({ viewport: VIEWPORT, baseURL: stack.url, storageState: state });
   await warm.addInitScript(probe, null);
   // An unmeasured visit fills the warm context's cache.
   const prime = await warm.newPage();
-  await prime.goto("/");
+  await prime.goto(list);
   // The first visit to fresh data can wait on the server's first reads of the mirrors.
   await prime
     .locator('[data-perf="row"]')
@@ -172,7 +178,7 @@ export async function prepare(browser: Browser, stack: Stack, opts: { quick?: bo
   await prime.close();
   // Quick mode makes no writes: a shorter hold only has the events poller's first pass to wait out.
   await settle(session, opts.quick ? 1000 : 3000);
-  return { browser, stack, session, state, warm };
+  return { browser, stack, session, state, warm, list };
 }
 
 /** A new tab in the warm context on `path`, once its list shows `ids`. */
@@ -208,7 +214,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
         const api = watchApi(page);
         const all: { url: string; type: string }[] = [];
         page.on("request", (r) => all.push({ url: r.url(), type: r.resourceType() }));
-        await page.goto("/");
+        await page.goto(c.list);
         const at = await outcome(page);
         const values: Record<string, number> = { "browser.cold.ms": at.t };
         const evidence: Record<string, string[]> = {};
@@ -255,7 +261,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
         const reqs = await network(cdp);
         const api = watchApi(page);
         await page.addInitScript((ids) => window.__perf.arm({ kind: "rows", ids }), top.ids);
-        await page.goto("/");
+        await page.goto(c.list);
         const at = await outcome(page);
         const values: Record<string, number> = { "browser.warm.ms": at.t };
         const evidence: Record<string, string[]> = {};
@@ -284,7 +290,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     gates: ["browser.filter.ms", "browser.filter.round-trips"],
     async sample(): Promise<Sample> {
       const [mine, open] = await views();
-      const page = await warmPage(c.warm, "/", open!.ids);
+      const page = await warmPage(c.warm, c.list, open!.ids);
       try {
         const values: Record<string, number> = {};
         const trips: number[] = [];
@@ -318,7 +324,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     async sample(): Promise<Sample> {
       const dar = await expected(c.session, "is:open dar");
       const dark = await expected(c.session, "is:open dark");
-      const page = await warmPage(c.warm, `/?q=${encodeURIComponent("is:open dar")}`, dar.ids);
+      const page = await warmPage(c.warm, `${c.list}?q=${encodeURIComponent("is:open dar")}`, dar.ids);
       try {
         const box = page.getByRole("combobox", { name: "Filter issues" });
         await box.click();
@@ -338,7 +344,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     gates: ["browser.open-issue.ms", "browser.open-issue.round-trips"],
     async sample(): Promise<Sample> {
       const top = await expected(c.session);
-      const page = await warmPage(c.warm, "/", top.ids);
+      const page = await warmPage(c.warm, c.list, top.ids);
       try {
         // An issue, as the gate is named: PRs list beside them.
         const row = top.rows.filter((r) => r.kind === "issue")[1 + (open++ % 10)]!;
@@ -371,7 +377,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     name: "browser.next-page",
     gates: ["browser.next-page.ms"],
     async sample(): Promise<Sample> {
-      const page = await warmPage(c.warm, "/", (await expected(c.session)).ids);
+      const page = await warmPage(c.warm, c.list, (await expected(c.session)).ids);
       try {
         const loaded = Number(await page.locator('[data-perf="list"]').getAttribute("data-perf-rows"));
         await page.locator('[data-perf="row"]').first().hover();
@@ -388,7 +394,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     name: "browser.scroll",
     gates: ["browser.scroll.rows", "browser.scroll.long-tasks"],
     async sample(): Promise<Sample> {
-      const page = await warmPage(c.warm, "/", (await expected(c.session)).ids);
+      const page = await warmPage(c.warm, c.list, (await expected(c.session)).ids);
       try {
         await page.locator('[data-perf="row"]').first().hover();
         await page.evaluate(() => window.__perf.startFrames());
@@ -421,7 +427,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     gates: ["browser.live.ms", "browser.live.refetch-batches"],
     async sample(): Promise<Sample> {
       const now = await expected(c.session);
-      const page = await warmPage(c.warm, "/", now.ids);
+      const page = await warmPage(c.warm, c.list, now.ids);
       try {
         const row = now.rows.filter((r) => r.kind === "issue")[4]!;
         const title = `${row.title.replace(/ · perf \d+$/, "")} · perf ${Date.now() % 1e6}${edits++}`;

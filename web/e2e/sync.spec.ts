@@ -70,7 +70,7 @@ test("a missed change says sync degraded, Resync repairs it, and is offered agai
   // A Resync sweeps every repo the account syncs, one after another, writing each page as it reads.
   test.setTimeout(120_000);
   await page.goto("/auth/login?login=ilze-k");
-  await page.waitForURL((u) => u.pathname === "/");
+  await page.waitForURL((u) => u.pathname === "/issues");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
   const status = page.locator('[data-perf="status"]');
 

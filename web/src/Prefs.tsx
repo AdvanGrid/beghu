@@ -45,7 +45,7 @@ function Prefs() {
     <div {...stylex.attrs(s.scroller)}>
       <div {...stylex.attrs(s.head)}>
         <h2 {...stylex.attrs(s.title)}>Preferences</h2>
-        <a href="/" {...stylex.attrs(s.close)} aria-label="Close" title="Close">
+        <a href="/issues" {...stylex.attrs(s.close)} aria-label="Close" title="Close">
           ×
         </a>
       </div>
