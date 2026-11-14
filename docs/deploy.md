@@ -26,8 +26,11 @@ The `Dockerfile` has three stages:
 2. `rust:1-slim-bookworm` runs `cargo build --release --locked -p beghu`. It's glibc, not musl,
    because musl's allocator is slow under multi-threaded tokio and SQLite. The bundled SQLite gets
    its pinned flags from `.cargo/config.toml`, and the migrations are compiled in.
-3. `gcr.io/distroless/cc-debian12:nonroot` holds `/app/beghu` and the web build in `/app/web`. It
-   runs as `nonroot` (uid 65532), has `/data` as its volume and serves plain HTTP on 8080.
+3. `gcr.io/distroless/cc-debian13:nonroot` holds `/app/beghu` and the web build in `/app/web`. It
+   runs as `nonroot` (uid 65532), has `/data` as its volume and serves plain HTTP on 8080. It's
+   Debian 13 while the build stages are 12: a binary linked against the older glibc runs on the
+   newer one. `cc-debian12` lagged Debian's libssl3 fix for CVE-2026-84782, which fails
+   deployers' image scans even though beghu (rustls) never loads libssl.
 
 Each base image is pinned by the digest of its multi-arch index. Bump a tag and its digest
 together (`skopeo inspect --raw docker://<image:tag> | sha256sum`). The npm and cargo caches are
