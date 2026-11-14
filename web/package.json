@@ -12,11 +12,11 @@
   },
   "dependencies": {
     "@solidjs/router": "2.0.0-next.41",
-    "@solidjs/web": "2.0.0-rc.15",
+    "@solidjs/web": "2.0.0-rc.21",
     "@stylexjs/stylex": "^0.19.1",
     "@tanstack/virtual-core": "^3.19.4",
     "highlight.js": "^11.12.0",
-    "solid-js": "2.0.0-rc.15"
+    "solid-js": "2.0.0-rc.21"
   },
   "devDependencies": {
     "@eslint/css": "^2.0.1",
