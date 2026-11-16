@@ -139,6 +139,22 @@ export function withToken(query: string, token: string, on: boolean, clashes: re
   return [...rest, ...(on ? [token] : []), ...sorts].join(" ");
 }
 
+/** `query` without its search text: every token but the qualifiers (`key:value`, `-key:value`). */
+export function withoutText(query: string): string {
+  return tokenize(query)
+    .filter((t) => /^-?[A-Za-z]+:/.test(t.text))
+    .map((t) => t.text)
+    .join(" ");
+}
+
+/** The event a view sends the filter bar when it sets the URL's query itself (`setQueryFrom`). */
+export const QUERY_SET = "beghu:query-set";
+
+/** Tells the filter bar a view set the URL's query to `query` (not typing, a pick or Back). */
+export function setQueryFrom(query: string): void {
+  window.dispatchEvent(new CustomEvent(QUERY_SET, { detail: query }));
+}
+
 /** The Match modes, in the dropdown's order, each with its label. */
 export const MATCHES: readonly { value: MatchMode; label: string }[] = [
   { value: "blend", label: "Blend" },

@@ -31,8 +31,8 @@
 // the tab closed it. An issue reached again is a repeat, marked "shown above", with nothing under
 // it; its row has a key of its own (`keyOf`). Opening an issue that isn't on screen in the tree (a
 // parent, a blocker, a ref in a post) puts it in focus, replacing the history entry the click
-// made, so Back goes to the focus before; one on screen just opens. The drag works on sub-issues
-// only: a blocking chain has none.
+// made, so Back goes to the focus before, and drops the search's words (its qualifiers stay); one
+// on screen just opens. The drag works on sub-issues only: a blocking chain has none.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
@@ -47,7 +47,7 @@ import { applyNextAtOnce, createHeld } from "./held";
 import { touch } from "./keys";
 import { coalesced, onPush, writesPaused } from "./live";
 import { overlay, type SubMove } from "./overlay";
-import { chainOf, focusOf, modeOf, queryOf, sortOf, takeModeSwitch, withMode, type SortKey } from "./query";
+import { chainOf, focusOf, modeOf, queryOf, sortOf, setQueryFrom, takeModeSwitch, withMode, withoutText, withQuery, type SortKey } from "./query";
 import { endOf, refOf } from "./related";
 import { createVirtualizer } from "./virtual";
 import { StillImporting } from "./WhileImporting";
@@ -417,7 +417,15 @@ export function IssueTree(props: { search: string; openId?: number }) {
       if (root === undefined || now.open === root) return;
       if (shown?.view === now.view && shown.page.nodes.some((n) => n.row.id === now.open)) return;
       const to = now.open;
-      queueMicrotask(() => navigate(`/issues/${to}${withMode(now.view, "focus", to)}`, { replace: true, scroll: false }));
+      // The search's words go: they found the way here, and would hide the new root's other
+      // sub-issues (the focus shows only what leads to a match). Its qualifiers stay.
+      const q = queryOf(now.view);
+      const kept = withoutText(q);
+      const view = kept === q ? now.view : withQuery(now.view, kept);
+      queueMicrotask(() => {
+        navigate(`/issues/${to}${withMode(view, "focus", to)}`, { replace: true, scroll: false });
+        if (kept !== q) setQueryFrom(kept);
+      });
     },
   );
   const focused = () => focusIn(props.search) !== undefined;

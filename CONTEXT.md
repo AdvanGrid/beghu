@@ -133,7 +133,7 @@ In Tree mode, an ancestor shown only because one of the view's matches is below 
 _Avoid_: Dimmed ancestor, filler node
 
 **Focus view**:
-The list's third mode: a tree with one root, the issue in focus, and what's reached down from it along one chain, its sub-issues (parent-child) or what it blocks and what those block (blocking), with each issue's linked PRs as leaves. Opening an issue that isn't on screen in it puts that issue in focus; one that is only opens.
+The list's third mode: a tree with one root, the issue in focus, and what's reached down from it along one chain, its sub-issues (parent-child) or what it blocks and what those block (blocking), with each issue's linked PRs as leaves. Opening an issue that isn't on screen in it puts that issue in focus and clears the search's words, keeping its qualifiers; one that is only opens.
 _Avoid_: Zoom, drill-down, subtree view
 
 **Repeat**:
