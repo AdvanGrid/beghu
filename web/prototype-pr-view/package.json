@@ -1,0 +1,9 @@
+{
+  "name": "beghu-prototype-pr-view",
+  "private": true,
+  "type": "module",
+  "description": "PROTOTYPE: the PR view's own dependencies, kept out of web/'s lockfile.",
+  "dependencies": {
+    "elkjs": "0.12.1"
+  }
+}

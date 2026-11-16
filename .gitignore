@@ -6,3 +6,4 @@ node_modules/
 /web/test-results
 /web/playwright-report
 /deploy/secrets
+/web/prototype-pr-view/data/
