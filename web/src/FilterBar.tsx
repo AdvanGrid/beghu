@@ -77,7 +77,8 @@ export function FilterBar() {
     if (c === chain()) return;
     navigate(window.location.pathname + withChain(window.location.search, c), { scroll: false });
   };
-  // Filled from the URL once; after that only typing, picks and Back/Forward change it.
+  // Filled from the URL once; after that only typing, picks, Back/Forward and a view's
+  // `setQueryFrom` change it.
   const initial = untrack(() => queryOf(location.search));
   const [text, setText] = createSignal(initial);
   const [caret, setCaret] = createSignal(initial.length);
