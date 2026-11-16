@@ -6,7 +6,7 @@ import { touch } from "./keys";
 import { coalesced, onPush } from "./live";
 import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./Suggestions";
 import type { MatchMode } from "./bindings/MatchMode";
-import { applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withChain, withMatch, withMode, withQuery, withSort, withToken, chainOf, type Chain, type Mode, type SortValue } from "./query";
+import { QUERY_SET, applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withChain, withMatch, withMode, withQuery, withSort, withToken, chainOf, type Chain, type Mode, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
 
 const MODES: { value: Mode; label: string }[] = [
@@ -128,18 +128,24 @@ export function FilterBar() {
     );
   };
 
-  // Back and Forward refill the box from the URL.
+  // Back and Forward refill the box from the URL, and so does a view that sets the query itself
+  // (`setQueryFrom`: Focus view drops the search's words as it moves its focus).
   onSettled(() => {
-    const refill = () => {
+    const fill = (q: string) => {
       editing = undefined;
-      const q = queryOf(window.location.search);
       setCurrent(q);
       box.value = q;
       setText(q);
       setCaret(q.length);
     };
+    const refill = () => fill(queryOf(window.location.search));
+    const set = (e: Event) => fill((e as CustomEvent<string>).detail);
     window.addEventListener("popstate", refill);
-    return () => window.removeEventListener("popstate", refill);
+    window.addEventListener(QUERY_SET, set);
+    return () => {
+      window.removeEventListener("popstate", refill);
+      window.removeEventListener(QUERY_SET, set);
+    };
   });
 
   /** Points the URL at `query`, unless it's there already. */

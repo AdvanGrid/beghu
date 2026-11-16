@@ -101,6 +101,35 @@ test("Focus issue roots a tree at the open issue, and an issue outside it become
   }
 });
 
+test("A new focus drops the search's words, so the root's other sub-issues show", async ({ page }) => {
+  const [top, child, sibling] = [web[3]!, web[4]!, web[5]!];
+  await page.goto("/auth/login?login=tomsj");
+  await page.waitForURL((u) => u.pathname === "/issues");
+  devCtl(["fake", "edit", ref(top), "--add-sub-issue", ref(child)]);
+  devCtl(["fake", "edit", ref(top), "--add-sub-issue", ref(sibling)]);
+  await expect.poll(async () => (await rel(page, child)).parent?.id ?? null, { timeout: 15_000 }).toBe(top.id);
+  await expect.poll(async () => (await rel(page, sibling)).parent?.id ?? null, { timeout: 15_000 }).toBe(top.id);
+  try {
+    // Found by its number, then put in focus: the search stays.
+    await page.goto(`/issues/${child.id}?q=${encodeURIComponent(`is:open ${child.number}`)}`);
+    await panel(page).locator('[data-perf="focus-issue"]').click();
+    await expect(page).toHaveURL(new RegExp(`mode=focus&focus=${child.id}`));
+    await expect.poll(() => shown(page)).toEqual([child.id]);
+
+    // Up to its parent: the number goes, is:open stays, and the sibling shows beside it.
+    await panel(page).locator(`a[href^="/issues/${top.id}?"]`).first().click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?.*focus=${top.id}`));
+    expect(new URL(page.url()).searchParams.get("q")).toBe("is:open");
+    await expect(page.locator('[data-perf="filter"]')).toHaveValue("is:open");
+    await expect.poll(() => shown(page)).toEqual([top.id, child.id, sibling.id]);
+  } finally {
+    devCtl(["fake", "edit", ref(top), "--remove-sub-issue", ref(child)]);
+    devCtl(["fake", "edit", ref(top), "--remove-sub-issue", ref(sibling)]);
+    await expect.poll(async () => (await rel(page, child)).parent, { timeout: 15_000 }).toBeNull();
+    await expect.poll(async () => (await rel(page, sibling)).parent, { timeout: 15_000 }).toBeNull();
+  }
+});
+
 test("Focus view with no issue in focus says how to pick one", async ({ page }) => {
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/issues");
