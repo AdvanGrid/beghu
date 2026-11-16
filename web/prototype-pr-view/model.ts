@@ -71,6 +71,32 @@ export class Model {
     }
   }
 
+  /** TOP-LEVEL VARIANTS (#144): the synthetic node standing for a group of external systems or stores. */
+  groupNode(facet: string, value: string, members: string[]): string {
+    const id = `__grp:${facet}:${value}`;
+    if (!this.nodes.has(id)) {
+      const def = this.facets.get(facet);
+      const kinds = new Set(members.map((m) => this.nodes.get(m)!.kind));
+      const node: Node = {
+        id,
+        name: def?.values.find((v) => v.id === value)?.label ?? value,
+        kind: kinds.size === 1 && kinds.has("store") ? "store" : "external",
+        paths: [],
+        summary: members.map((m) => this.name(m)).join(", "),
+        change: "unchanged",
+        responsibilities: [],
+        facets: [{ facet, values: [value], claims: [] }],
+        questions: [],
+        files: [],
+      };
+      this.nodes.set(id, node);
+      this.children.set(id, members.map((m) => this.nodes.get(m)!));
+      this.synthetic.add(id);
+    }
+    return id;
+  }
+  readonly synthetic = new Set<string>();
+
   /** Nodes the analysis marked changed whose own code the PR didn't touch: only their connections are new. */
   readonly connectedOnly = new Set<string>();
 
@@ -193,8 +219,22 @@ export class Model {
     return true;
   }
 
-  view(focus: string | null, lens: Lens, changedOnly: boolean): { nodes: VisNode[]; edges: VisEdge[] } {
-    const inside = this.children.get(focus) ?? [];
+  /**
+   * TOP-LEVEL VARIANTS (#144). `rollup` maps an external system or store to the synthetic group
+   * node it's drawn as (or undefined to draw it on its own); `shelve` takes parts that are
+   * neither changed nor connected to a change out of the graph, into `shelf`.
+   */
+  view(
+    focus: string | null,
+    lens: Lens,
+    changedOnly: boolean,
+    opts: { rollup?: (id: string) => string | undefined; shelve?: boolean } = {},
+  ): { nodes: VisNode[]; edges: VisEdge[]; shelf: Node[] } {
+    const up = (id: string) => (this.isUsed(id) ? (opts.rollup?.(id) ?? id) : id);
+    const seen = new Set<string>();
+    const inside = (this.children.get(focus) ?? [])
+      .map((n) => this.nodes.get(up(n.id))!)
+      .filter((n) => !seen.has(n.id) && !!seen.add(n.id));
     const shown = new Map<string, VisNode>();
     // The modules lens is the code's structure: people, external systems and stores stay out.
     const fits = (id: string) => lens !== "modules" || this.isCode(id);
@@ -209,6 +249,8 @@ export class Model {
       if (changedOnly && e.change === "unchanged") continue;
       const a = this.rep(e.from, focus);
       const b = this.rep(e.to, focus);
+      if (a) a.id = up(a.id);
+      if (b) b.id = up(b.id);
       if (!a || !b || a.id === b.id) continue; // inside one visible node
       if (a.context && b.context) continue; // entirely outside the zoomed-into node
       if (!fits(a.id) || !fits(b.id)) continue;
@@ -246,7 +288,27 @@ export class Model {
       }
       for (const s of shown.values()) s.dim = !EXTERNAL_KINDS.has(s.node.kind) && !onCrossing.has(s.node.id);
     }
-    return { nodes: [...shown.values()], edges: [...rolled.values()] };
+    let nodes = [...shown.values()];
+    let edges = [...rolled.values()];
+    const shelf: Node[] = [];
+    if (opts.shelve) {
+      // Near the change: changed itself, or at the end of a changed connection or of one to a changed part.
+      const near = new Set<string>();
+      // A rolled-up group isn't changed for this: its own connection says whether it touches the change.
+      for (const n of nodes) if (n.touched && !this.synthetic.has(n.node.id)) near.add(n.node.id);
+      const touched = new Set(near);
+      for (const e of edges) {
+        if (e.change !== "unchanged" || touched.has(e.from) || touched.has(e.to)) {
+          near.add(e.from);
+          near.add(e.to);
+        }
+      }
+      for (const n of nodes) if (!near.has(n.node.id) && !n.context) shelf.push(n.node);
+      const off = new Set(shelf.map((n) => n.id));
+      nodes = nodes.filter((n) => !off.has(n.node.id));
+      edges = edges.filter((e) => !off.has(e.from) && !off.has(e.to));
+    }
+    return { nodes, edges, shelf };
   }
 
   /** The overview's order: a stated rule, not a severity score. */

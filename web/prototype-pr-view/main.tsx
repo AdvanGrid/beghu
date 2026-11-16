@@ -2,16 +2,20 @@
 // `?a=<name>`: a graph with four lenses (modules, data flow, external, order of actions), zoom
 // along the node hierarchy, colour by a facet, and a drill-down panel from questions to claims to
 // the exact lines. Dev only: Vite serves /prototype-pr-view/index.html.
-import { render } from "@solidjs/web";
+import { render, type JSX } from "@solidjs/web";
 import { createMemo, createSignal, flush, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
 import { arrow, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
 import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
+import { Explore, type Api, type ExploreKind } from "./explore.tsx";
 import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
+// TOP-LEVEL VARIANTS (#144): made-up edges laid over an analysis (data/overlays/, gitignored), to
+// see the layout at a realistic density. Not from the agent; ?overlay=0 leaves them out.
+const overlays = import.meta.glob<{ edges: Edge[] }>("./data/overlays/*.json", { import: "default" });
 const names = Object.keys(loaders).map((k) => k.replace("./data/", "").replace(/\.json$/, ""));
 
 // ---------------------------------------------------------------------------------------------
@@ -30,6 +34,10 @@ const [focus, setFocusRaw] = createSignal<string | null>(params.get("focus"));
 const [lens, setLensRaw] = createSignal<Lens>((params.get("lens") as Lens) ?? "modules");
 const [colorBy, setColorByRaw] = createSignal<string>(params.get("color") ?? "change");
 const [changedOnly, setChangedOnly] = createSignal(params.get("changed") === "1");
+/** What the graph shows: the whole system, the change and what it connects to, or changed parts only. */
+type Scope = "all" | "near" | "changed";
+const [scope, setScopeRaw] = createSignal<Scope>(params.get("changed") === "1" ? "changed" : ((params.get("scope") as Scope) ?? "all"));
+const setScope = (x: Scope) => (setScopeRaw(x), setChangedOnly(x === "changed"), setZoom(null), sync());
 const [sel, setSel] = createSignal<Sel>(null);
 /** What the pointer is over in the graph: a node's id or an edge bundle's key. */
 const [hover, setHover] = createSignal<{ node?: string; edge?: string; ids?: string[] } | null>(null);
@@ -43,6 +51,36 @@ const [scenario, setScenario] = createSignal<string | null>(params.get("scenario
 const [groupBy, setGroupBy] = createSignal<string | null>(params.get("group"));
 const [overlap, setOverlap] = createSignal<string | null>(params.get("overlap"));
 
+// TOP-LEVEL VARIANTS (#144): the ways the top level is drawn, switched with ?v= and the bar at the bottom.
+const VARIANTS = [
+  // A: the layout settled in the first round (changed and unchanged groups side by side, changed
+  // top left, no line labels, U-turns flattened), kept as the reference.
+  { key: "A", name: "Locked layout: changed | not changed", fix: true, rollup: false, nolabels: true, pack: true, split: "RIGHT", explore: undefined },
+  { key: "B", name: "Neighbourhood: one part at a time", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "neighbourhood" },
+  { key: "C", name: "Columns: trace a path", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "columns" },
+  { key: "D", name: "Matrix: every connection, no lines", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "matrix" },
+  { key: "E", name: "Clusters: open a block in place", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "clusters" },
+  { key: "F", name: "Rings: how far the change reaches", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "rings" },
+  { key: "G", name: "Path: columns of nodes (C's mechanics, B's look)", fix: false, rollup: false, nolabels: false, pack: false, split: undefined, explore: "path" },
+] as const;
+const [variant, setVariantRaw] = createSignal(VARIANTS.find((x) => x.key === params.get("v")) ?? VARIANTS[0]);
+const setVariant = (step: number) => {
+  const i = (VARIANTS.indexOf(variant()) + step + VARIANTS.length) % VARIANTS.length;
+  setVariantRaw(VARIANTS[i]!);
+  setZoom(null);
+  sync();
+};
+/** Rolled-up groups the engineer opened in place ("facet:value"). */
+/** Parts with no lines in the current lens: hidden unless ?lone=1. */
+const [showLone, setShowLone] = createSignal(params.get("lone") === "1");
+const [opened, setOpened] = createSignal<Set<string>>(new Set());
+const toggleOpened = (k: string) =>
+  setOpened((o) => {
+    const n = new Set(o);
+    if (!n.delete(k)) n.add(k);
+    return n;
+  });
+
 function sync() {
   // Solid batches signal writes: apply them, so the URL gets the new values, not the old ones.
   flush();
@@ -51,10 +89,13 @@ function sync() {
   put("focus", focus());
   put("lens", lens() === "modules" ? null : lens());
   put("color", colorBy() === "change" ? null : colorBy());
-  put("changed", changedOnly() ? "1" : null);
+  put("changed", null);
+  put("scope", scope() === "all" ? null : scope());
   put("scenario", scenario());
   put("group", groupBy());
   put("overlap", overlap());
+  put("v", variant().key === "A" ? null : variant().key);
+  put("lone", showLone() ? "1" : null);
   history.replaceState(null, "", `?${p}`);
 }
 const setFocus = (f: string | null) => (setFocusRaw(f ?? home), setZoom(null), setHover(null), sync());
@@ -64,6 +105,8 @@ let home: string | null = null;
 let goUp: () => void = () => {};
 const setLens = (l: Lens) => (setLensRaw(l), setZoom(null), setHover(null), sync());
 
+/** The glide under way (flyTo); bumping it stops the glide. */
+let flight = 0;
 // The view's zoom: null is the default (the graph's width fitted to the canvas, 70–100%).
 const [zoom, setZoom] = createSignal<number | null>(null);
 /** The scrolling canvas, and the drawing's natural size and default scale, for zooming. */
@@ -72,6 +115,7 @@ let drawing = { width: 1, height: 1, scale: 1 };
 const scaleNow = () => zoom() ?? drawing.scale;
 /** Zooms to `next`, keeping the point under (ax, ay) in the canvas (default its centre) still. */
 function zoomTo(next: number, ax?: number, ay?: number) {
+  flight++; // the reader's own zoom stops a glide under way
   const el = scroller;
   const cur = scaleNow();
   next = Math.min(3, Math.max(0.15, next));
@@ -84,6 +128,38 @@ function zoomTo(next: number, ax?: number, ay?: number) {
   requestAnimationFrame(() => el.scrollTo(x * next - ax, y * next - ay));
 }
 const zoomBy = (f: number) => zoomTo(scaleNow() * f);
+
+/**
+ * TOP-LEVEL VARIANTS (#144): glide the view so (tx, ty), in drawing coordinates, ends in the middle
+ * of the canvas. The pan eases in and out and takes longer the further it goes; a long one also
+ * zooms out part-way and back, so the reader sees where they're going from where they were.
+ */
+function flyTo(tx: number, ty: number, done?: () => void) {
+  const el = scroller;
+  if (!el) return;
+  const id = ++flight;
+  const s0 = scaleNow();
+  const w = el.clientWidth, h = el.clientHeight;
+  const x0 = (el.scrollLeft + w / 2) / s0, y0 = (el.scrollTop + h / 2) / s0;
+  const dist = Math.hypot(tx - x0, ty - y0) * s0;
+  const far = dist / Math.hypot(w, h);
+  const dip = far > 0.6 ? Math.max(0.45, 1 / (1 + (far - 0.6) * 0.8)) : 1;
+  const dur = Math.min(1200, 380 + dist * 0.35);
+  const t0 = performance.now();
+  const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+  const frame = (now: number) => {
+    if (id !== flight) return;
+    const t = Math.min(1, (now - t0) / dur);
+    const e = ease(t);
+    const sc = s0 * (1 - (1 - dip) * Math.sin(Math.PI * t));
+    setZoom(sc);
+    flush();
+    el.scrollTo((x0 + (tx - x0) * e) * sc - w / 2, (y0 + (ty - y0) * e) * sc - h / 2);
+    if (t < 1) requestAnimationFrame(frame);
+    else done?.();
+  };
+  requestAnimationFrame(frame);
+}
 /** The whole drawing in the canvas, never above 100%. */
 function zoomFit() {
   if (!scroller) return;
@@ -216,7 +292,10 @@ const s = stylex.create({
     fontSize: 13,
     padding: 0,
   },
-  legend: { alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10, paddingBottom: 6, paddingInline: 14 },
+  legend: { alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10, paddingBottom: 6, paddingInline: 14, rowGap: 4 },
+  legendHead: { color: colors.fg, fontWeight: 650 },
+  legendBreak: { flexBasis: "100%", height: 0 },
+  sample: { flexShrink: 0, overflow: "visible" },
   canvas: { flexGrow: 1, minHeight: 0, overflow: "auto" },
   grab: { cursor: "grab", userSelect: "none" },
   grabbing: { cursor: "grabbing" },
@@ -326,6 +405,27 @@ const s = stylex.create({
   valueBoxOn: { stroke: colors.accent, strokeWidth: 2.5 },
   valueTitle: { fill: colors.muted, fontFamily: fonts.ui, fontSize: 12, fontWeight: 650, pointerEvents: "none" },
   overlapFill: { cursor: "pointer", opacity: 0.12 },
+  // TOP-LEVEL VARIANTS (#144)
+  region: { fill: colors.bgRaised, stroke: colors.muted, strokeDasharray: "6 4", strokeWidth: 1.5 },
+  regionChanged: { fill: pal.modifiedTint, stroke: pal.modified, strokeDasharray: "none", strokeWidth: 2 },
+  shelfChip: { cursor: "pointer", fill: pal.nodeBg, stroke: colors.line, strokeWidth: 1 },
+  switcher: {
+    alignItems: "center",
+    backgroundColor: colors.fg,
+    borderRadius: 999,
+    bottom: 16,
+    boxShadow: `0 4px 16px ${colors.popShadow}`,
+    color: colors.bg,
+    display: "flex",
+    gap: 10,
+    left: "calc((100vw - 460px) / 2)",
+    paddingBlock: 6,
+    paddingInline: 10,
+    position: "fixed",
+    transform: "translateX(-50%)",
+    zIndex: 10,
+  },
+  switcherButton: { backgroundColor: "transparent", borderStyle: "none", color: colors.bg, cursor: "pointer", fontSize: 16, paddingInline: 6 },
   overlapFillOn: { opacity: 0.28 },
   overlapLabel: { fontFamily: fonts.ui, fontSize: 10, fontWeight: 650, pointerEvents: "none", stroke: "none" },
   groupBox: { fill: colors.bgRaised, stroke: colors.line, strokeWidth: 1.5 },
@@ -418,7 +518,10 @@ async function start() {
     render(() => <Pick />, root);
     return;
   }
-  const m = new Model(await loaders[`./data/${name}.json`]!());
+  const analysis = await loaders[`./data/${name}.json`]!();
+  const overlay = overlays[`./data/overlays/${name}.json`];
+  if (overlay && params.get("overlay") !== "0") analysis.edges.push(...(await overlay()).edges);
+  const m = new Model(analysis);
   document.title = `#${m.a.pr.number} ${m.a.pr.title} · PR view`;
   // One node at the top (the whole repo) is nothing to look at: start inside it.
   const roots = m.children.get(null) ?? [];
@@ -439,6 +542,8 @@ async function start() {
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
     if (e.key === "0") zoomFit();
+    if (e.key === "ArrowLeft") setVariant(-1);
+    if (e.key === "ArrowRight") setVariant(1);
   });
   goUp = () => {
     const from = focus();
@@ -545,9 +650,32 @@ function App(props: { m: Model }) {
           </label>
         </Show>
         <label {...stylex.attrs(s.label)}>
-          <input type="checkbox" checked={changedOnly()} onChange={(e) => (setChangedOnly(e.currentTarget.checked), sync())} />
-          <span>Changed only</span>
+          <span>Show</span>
+          <select value={scope()} onChange={(e) => setScope(e.currentTarget.value as Scope)} {...stylex.attrs(s.select)}>
+            <option value="all">The whole system</option>
+            <option value="near">The change and what it connects to</option>
+            <option value="changed">Changed parts only</option>
+          </select>
         </label>
+        <label {...stylex.attrs(s.label)}>
+          <input type="checkbox" checked={showLone()} onChange={(e) => (setShowLone(e.currentTarget.checked), setZoom(null), sync())} />
+          <span>Parts with no lines</span>
+        </label>
+        <Show when={Object.keys(overlays).length > 0}>
+          <label {...stylex.attrs(s.label)} title="Edges made up from the head's imports to see a realistic density; not from the agent">
+            <input
+              type="checkbox"
+              checked={params.get("overlay") !== "0"}
+              onChange={(e) => {
+                const p = new URLSearchParams(location.search);
+                if (e.currentTarget.checked) p.delete("overlay");
+                else p.set("overlay", "0");
+                location.search = `?${p}`;
+              }}
+            />
+            <span>Made-up import edges</span>
+          </label>
+        </Show>
         <button onClick={() => select(null)} {...stylex.attrs(s.button)}>
           Overview
         </button>
@@ -587,6 +715,7 @@ function App(props: { m: Model }) {
             el.addEventListener("mousedown", (e) => {
               if (!spaceHeld() || e.button !== 0) return;
               e.preventDefault();
+              flight++; // panning by hand stops a glide
               drag = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop, moved: false };
               setPanning(true);
             });
@@ -610,12 +739,19 @@ function App(props: { m: Model }) {
           }}
           {...stylex.attrs(s.canvas, spaceHeld() && s.grab, panning() && s.grabbing)}
         >
-          <Show when={lens() === "order"} fallback={<Graph m={m} colour={colour} />}>
+          <Show when={lens() === "order"} fallback={variant().explore ? <Explorer m={m} kind={variant().explore!} /> : <Graph m={m} colour={colour} />}>
             <Sequence m={m} colour={colour} />
           </Show>
         </div>
         <ZoomBar m={m} />
         <HoverCard m={m} />
+        <div {...stylex.attrs(s.switcher)}>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setVariant(-1)}>←</button>
+          <span>
+            <b>{variant().key}</b> — {variant().name}
+          </span>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setVariant(1)}>→</button>
+        </div>
       </div>
 
       <aside {...stylex.attrs(s.panel)}>
@@ -737,13 +873,23 @@ function overlapFacet(m: Model): string {
 function valueLabel(m: Model, facet: string, value: string): string {
   return m.facets.get(facet)?.values.find((v) => v.id === value)?.label ?? value;
 }
+/**
+ * TOP-LEVEL VARIANTS (#144): which side of the drawing a node belongs on, left to right. With the
+ * groups split: people, then changed parts, then unchanged parts, then external systems.
+ */
+function side(m: Model, id: string, split: boolean, touched: (id: string) => boolean): number {
+  const k = m.nodes.get(id)!.kind;
+  if (split) return k === "actor" ? 0 : k === "external" ? 3 : touched(id) ? 1 : 2;
+  return k === "actor" ? 0 : k === "store" ? 2 : k === "external" ? 3 : 1;
+}
+
 /** Each external system or store in `ids` with a value for the box facet, mapped to that value. */
 function boxesFor(m: Model, ids: string[]): Map<string, string> {
   const f = groupFacet(m);
   const out = new Map<string, string>();
   if (!f) return out;
   for (const id of ids) {
-    if (!m.isUsed(id)) continue;
+    if (!m.isUsed(id) || m.synthetic.has(id)) continue;
     const v = m.valueOf(id, f);
     if (v !== undefined) out.set(id, v);
   }
@@ -931,10 +1077,88 @@ function Crumbs(props: { m: Model }) {
   );
 }
 
+/** A small drawn sample for the legend. */
+function Sample(props: { children: JSX.Element; text: string; w?: number }) {
+  return (
+    <span {...stylex.attrs(s.label)}>
+      <svg width={props.w ?? 36} height={16} viewBox={`0 0 ${props.w ?? 36} 16`} {...stylex.attrs(s.sample)}>
+        {props.children}
+      </svg>
+      {props.text}
+    </span>
+  );
+}
+
+/** What each kind of line and box means: always shown, so no style is left to guess. */
+function LineKey() {
+  const head = (x: number) => `M${x},8 L${x - 7},4 L${x - 7},12 Z`;
+  const tail = (x: number) => `M${x},8 L${x + 7},4 L${x + 7},12 Z`;
+  return (
+    <>
+      <span {...stylex.attrs(s.legendBreak)} />
+      <span {...stylex.attrs(s.legendHead)}>Lines</span>
+      <Sample text="solid: a connection, arrow at the receiver">
+        <path d="M2,8 L28,8" {...stylex.attrs(s.edge, stroke.unchanged)} />
+        <path d={head(34)} {...stylex.attrs(swatch.unchanged)} />
+      </Sample>
+      <Sample text="dashed: crosses a boundary (trust, process, network, tenant)">
+        <path d="M2,8 L28,8" {...stylex.attrs(s.edge, stroke.unchanged, s.crossing)} />
+        <path d={head(34)} {...stylex.attrs(swatch.unchanged)} />
+      </Sample>
+      <Sample text="colour: how the PR changed it" w={56}>
+        <path d="M2,4 L54,4" {...stylex.attrs(s.edge, stroke.added)} />
+        <path d="M2,8 L54,8" {...stylex.attrs(s.edge, stroke.modified)} />
+        <path d="M2,12 L54,12" {...stylex.attrs(s.edge, stroke.removed)} />
+      </Sample>
+      <Sample text="thick: several connections">
+        <path d="M2,8 L28,8" stroke-width={4} {...stylex.attrs(s.edge, stroke.unchanged)} />
+        <path d={head(34)} {...stylex.attrs(swatch.unchanged)} />
+      </Sample>
+      <Sample text="both ends: two-way">
+        <path d="M8,8 L28,8" {...stylex.attrs(s.edge, stroke.unchanged)} />
+        <path d={head(34)} {...stylex.attrs(swatch.unchanged)} />
+        <path d={tail(2)} {...stylex.attrs(swatch.unchanged)} />
+      </Sample>
+      <Show when={variant().nolabels}>
+        <span {...stylex.attrs(s.muted)}>· no line labels: hover a line</span>
+      </Show>
+      <span {...stylex.attrs(s.legendBreak)} />
+      <span {...stylex.attrs(s.legendHead)}>Boxes</span>
+      <Sample text="frame: inside what you opened">
+        <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.groupBox)} />
+      </Sample>
+      <Sample text="dashed node: outside it, shown for its connections">
+        <rect x={1} y={2} width={34} height={12} rx={3} {...stylex.attrs(s.nodeBox, stroke.unchanged, s.contextBox)} />
+      </Sample>
+      <Sample text="grey box: a “Boxes” group">
+        <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.valueBox)} />
+      </Sample>
+      <Sample text="coloured outline: an “Outlines” group">
+        <rect x={1} y={1} width={34} height={14} rx={4} fill="none" stroke-width={1.5} {...stylex.attrs(stroke.added)} />
+      </Sample>
+      <Show when={variant().split}>
+        <Sample text="tinted group: parts this PR changed">
+          <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.region, s.regionChanged)} />
+        </Sample>
+        <Sample text="dashed group: parts it didn't change">
+          <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.region)} />
+        </Sample>
+      </Show>
+      <Show when={variant().rollup}>
+        <span {...stylex.attrs(s.muted)}>· an outside node with “N inside” is a whole group: double-click to open, double-click its box to close</span>
+      </Show>
+      <Show when={variant().pack && showLone()}>
+        <span {...stylex.attrs(s.muted)}>· the grid in the frame: parts with no lines in this lens</span>
+      </Show>
+    </>
+  );
+}
+
 function Legend(props: { m: Model }) {
   const facet = createMemo(() => props.m.facets.get(colorBy()));
   return (
     <div {...stylex.attrs(s.legend)}>
+      <span {...stylex.attrs(s.legendHead)}>{facet() ? "Nodes" : "Nodes and lines"}</span>
       <Show
         when={facet()}
         fallback={
@@ -968,7 +1192,7 @@ function Legend(props: { m: Model }) {
           </>
         )}
       </Show>
-      <span {...stylex.attrs(s.muted)}>· dashed edges cross a boundary · the framed area is inside the node you opened; boxes outside it are what it connects to</span>
+      <LineKey />
     </div>
   );
 }
@@ -976,9 +1200,52 @@ function Legend(props: { m: Model }) {
 // ---------------------------------------------------------------------------------------------
 // The graph.
 
+/** TOP-LEVEL VARIANTS (#144): the explorers, on the same view the graph draws. */
+function Explorer(props: { m: Model; kind: ExploreKind }) {
+  const m = props.m;
+  const view = createMemo(() => {
+    const v = m.view(focus(), lens(), changedOnly(), { shelve: scope() === "near" });
+    if (showLone()) return v;
+    const linked = new Set(v.edges.flatMap((e) => [e.from, e.to]));
+    return { ...v, nodes: v.nodes.filter((n) => linked.has(n.node.id)) };
+  });
+  const api: Api = {
+    selected: () => {
+      const x = sel();
+      return x?.kind === "node" ? x.id : null;
+    },
+    select: (id) => setSel({ kind: "node", id }),
+    selectEdges: (ids) => setSel({ kind: "edge", ids }),
+    open: (id) => (m.children.get(id) ?? []).length > 0 && (setFocus(id), setSel({ kind: "node", id })),
+    hoverNode: (id) => setHover(id ? { node: id } : null),
+    hoverEdge: (key, ids) => setHover(key ? { edge: key, ids } : null),
+    groupOf: (id) => {
+      const f = groupFacet(m);
+      const v = f ? m.valueOf(id, f) : undefined;
+      return v ? valueLabel(m, f, v) : undefined;
+    },
+  };
+  return <Explore kind={props.kind} m={m} view={view()} api={api} />;
+}
+
 function Graph(props: { m: Model; colour: ColourFn }) {
   const m = props.m;
-  const view = createMemo(() => m.view(focus(), lens(), changedOnly()));
+  const view = createMemo(() => {
+    const x = variant();
+    const f = groupFacet(m);
+    const open = opened();
+    const rollup = (id: string) => {
+      if (m.synthetic.has(id) || !f) return undefined;
+      const v = m.valueOf(id, f);
+      if (v === undefined || open.has(`${f}:${v}`)) return undefined;
+      const members = m.a.nodes.filter((n) => m.isUsed(n.id) && m.valueOf(n.id, f) === v).map((n) => n.id);
+      return m.groupNode(f, v, members);
+    };
+    const v = m.view(focus(), lens(), changedOnly(), { shelve: scope() === "near", rollup: x.rollup ? rollup : undefined });
+    if (showLone()) return v;
+    const linked = new Set(v.edges.flatMap((e) => [e.from, e.to]));
+    return { ...v, nodes: v.nodes.filter((n) => linked.has(n.node.id)) };
+  });
   /** Each bundle's label: its main edge's, the boundaries it crosses in the external lens, and how many more it carries. */
   const labelOf = (e: VisEdge) => {
     // A line carrying several connections says so and how they changed, without naming one of
@@ -999,11 +1266,24 @@ function Graph(props: { m: Model; colour: ColourFn }) {
     const mine = ++ticket;
     // Inside nodes first, in the analysis's order, then the context around them.
     const ids = [...v.nodes.filter((n) => !n.context), ...v.nodes.filter((n) => n.context)].map((n) => n.node.id);
+    const x = variant();
+    const split = x.split;
+    const touchedSet = new Set(v.nodes.filter((n) => n.touched && !m.synthetic.has(n.node.id)).map((n) => n.node.id));
+    const touched = (id: string) => touchedSet.has(id);
     void layout(
       ids,
-      v.edges.map((e) => ({ key: e.key, from: e.from, to: e.to, label: labelOf(e) })),
+      v.edges.map((e) => ({ key: e.key, from: e.from, to: e.to, label: variant().nolabels ? "" : labelOf(e), reverse: variant().fix && side(m, e.from, !!split, touched) > side(m, e.to, !!split, touched) })),
       new Set(v.nodes.filter((n) => !n.context && !m.isExternal(n.node.id)).map((n) => n.node.id)),
       boxesFor(m, v.nodes.map((n) => n.node.id)),
+      variant().pack,
+      split
+        ? new Map(
+            v.nodes
+              .filter((n) => !n.context && !m.isExternal(n.node.id))
+              .map((n) => [n.node.id, touched(n.node.id) ? ("C" as const) : ("U" as const)]),
+          )
+        : undefined,
+      split ?? "RIGHT",
     ).then((at) => {
       if (mine === ticket) setLaid({ view: v, at });
     });
@@ -1062,10 +1342,35 @@ function Drawing(props: {
   });
   const width = (e: VisEdge) => 1.3 + Math.log2(e.edges.length) * 0.9;
 
+  // TOP-LEVEL VARIANTS (#144): the shelf, a grid of small chips under the drawing, one row of
+  // headings per kind, for the parts neither changed nor connected to a change.
+  const shelf = createMemo(() => {
+    const items = props.view.shelf;
+    const CW = 176, CH = 28, GAP = 8, TOP = 56, HEAD = 22;
+    const cols = Math.max(4, Math.floor((props.at.width - 48 + GAP) / (CW + GAP)));
+    const byKind = new Map<string, typeof items>();
+    for (const n of items) {
+      const k = m.kindLabel(n.id);
+      byKind.set(k, [...(byKind.get(k) ?? []), n]);
+    }
+    let y = props.at.height + TOP;
+    const heads: { x: number; y: number; text: string }[] = [];
+    const chips: { n: (typeof items)[number]; x: number; y: number }[] = [];
+    for (const [k, ns] of byKind) {
+      heads.push({ x: 24, y: y + 14, text: `${k} · ${ns.length}` });
+      y += HEAD;
+      ns.forEach((n, i) => chips.push({ n, x: 24 + (i % cols) * (CW + GAP), y: y + Math.floor(i / cols) * (CH + GAP) }));
+      y += Math.ceil(ns.length / cols) * (CH + GAP) + 6;
+    }
+    return { CW, CH, heads, chips, top: props.at.height + 16, height: items.length ? y - props.at.height + 16 : 0 };
+  });
+  const totalH = () => props.at.height;
+
   // Fit the drawing's width to the canvas (no smaller than 70%; scroll for the rest), and start
   // each layout scrolled to its top left.
   const fit = createMemo(() => {
-    const { width: w, height: h } = props.at;
+    const { width: w } = props.at;
+    const h = totalH();
     const avail = (scroller?.clientWidth ?? window.innerWidth - 480) - 8;
     scroller?.scrollTo(0, 0);
     drawing = { width: w, height: h, scale: Math.min(1, Math.max(0.7, avail / w)) };
@@ -1075,7 +1380,35 @@ function Drawing(props: {
   const select = (e: VisEdge) => setSel({ kind: "edge", ids: e.edges.map((x) => x.id) });
 
   return (
-    <svg width={props.at.width * scale()} height={props.at.height * scale()} viewBox={`0 0 ${props.at.width} ${props.at.height}`}>
+    <svg width={props.at.width * scale()} height={totalH() * scale()} viewBox={`0 0 ${props.at.width} ${totalH()}`}>
+      <Show when={false}>
+        <text x={24} y={shelf().top + 20} {...stylex.attrs(s.groupTitle)}>
+          Not changed, and not connected to anything changed · {props.view.shelf.length}
+        </text>
+        <For each={shelf().heads}>
+          {(h) => (
+            <text x={h.x} y={h.y} {...stylex.attrs(s.svgSmall)}>
+              {h.text}
+            </text>
+          )}
+        </For>
+        <For each={shelf().chips}>
+          {(c) => (
+            <g
+              transform={`translate(${c.x},${c.y})`}
+              data-hit
+              onClick={() => setSel({ kind: "node", id: c.n.id })}
+              onMouseEnter={() => setHover({ node: c.n.id })}
+              onMouseLeave={() => setHover(null)}
+            >
+              <rect width={shelf().CW} height={shelf().CH} rx={5} {...stylex.attrs(s.shelfChip, sel()?.kind === "node" && (sel() as { id: string }).id === c.n.id && s.selectedBox)} />
+              <text x={10} y={18} {...stylex.attrs(s.svgSmall)}>
+                {clip(c.n.name, 26)}
+              </text>
+            </g>
+          )}
+        </For>
+      </Show>
       {/* What's inside the zoomed-into node sits in this box; anything outside it is a connection elsewhere. */}
       <Show when={props.at.group}>
         {(g) => (
@@ -1090,6 +1423,23 @@ function Drawing(props: {
           </g>
         )}
       </Show>
+      <For each={props.at.regions}>
+        {(r) => (
+          <g>
+            <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={10} {...stylex.attrs(s.region, r.key === "C" && s.regionChanged)} />
+            <text x={r.x + 14} y={r.y + 24} {...stylex.attrs(s.valueTitle)}>
+              {r.key === "C" ? "Changed by this PR" : "Not changed"}
+            </text>
+          </g>
+        )}
+      </For>
+      <Show when={props.at.pack}>
+        {(p) => (
+          <text x={p().x} y={p().y - 10} {...stylex.attrs(s.svgSmall)}>
+            No lines in this lens · {p().n}
+          </text>
+        )}
+      </Show>
       <For each={props.at.boxes}>
         {(b) => {
           const f = groupFacet(m);
@@ -1098,7 +1448,12 @@ function Drawing(props: {
             return x?.kind === "group" && x.facet === f && x.value === b.value;
           };
           return (
-            <g data-hit onClick={() => setSel({ kind: "group", facet: f, value: b.value })} {...stylex.attrs(s.clickable)}>
+            <g
+              data-hit
+              onClick={() => setSel({ kind: "group", facet: f, value: b.value })}
+              onDblClick={() => variant().rollup && toggleOpened(`${f}:${b.value}`)}
+              {...stylex.attrs(s.clickable)}
+            >
               <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={10} {...stylex.attrs(s.valueBox, on() && s.valueBoxOn)} />
               <text x={b.x + 12} y={b.y + 19} {...stylex.attrs(s.valueTitle)}>
                 {valueLabel(m, f, b.value)}
@@ -1131,6 +1486,21 @@ function Drawing(props: {
             <g
               data-hit
               onClick={() => select(e)}
+              onDblClick={(ev) => {
+                // Go to the end of the line furthest from the click, keeping the line lit on the way.
+                const svg = (ev.currentTarget as SVGGElement).ownerSVGElement!;
+                const box = svg.getBoundingClientRect();
+                const k = box.width / props.at.width;
+                const cx = (ev.clientX - box.left) / k, cy = (ev.clientY - box.top) / k;
+                const centre = (id: string) => {
+                  const p = props.at.at.get(id)!;
+                  return { id, x: p.x + NODE_W / 2, y: p.y + NODE_H / 2 };
+                };
+                const [a, b] = [centre(e.from), centre(e.to)];
+                const far = Math.hypot(a.x - cx, a.y - cy) > Math.hypot(b.x - cx, b.y - cy) ? a : b;
+                setSel({ kind: "edge", ids: e.edges.map((x) => x.id) });
+                flyTo(far.x, far.y, () => setSel({ kind: "node", id: far.id }));
+              }}
               onMouseEnter={() => setHover({ edge: e.key, ids: e.edges.map((x) => x.id) })}
               onMouseLeave={() => setHover(null)}
               {...stylex.attrs(lit().size > 0 && !lit().has(e.key) && s.faded)}
@@ -1194,7 +1564,11 @@ function NodeBox(props: { m: Model; v: ReturnType<Model["view"]>["nodes"][number
       transform={`translate(${props.at.x},${props.at.y})`}
       data-hit
       onClick={() => setSel({ kind: "node", id: n.id })}
-      onDblClick={() => kids > 0 && (setFocus(n.id), setSel({ kind: "node", id: n.id }))}
+      onDblClick={() =>
+        props.m.synthetic.has(n.id)
+          ? toggleOpened(`${n.facets[0]!.facet}:${n.facets[0]!.values[0]}`)
+          : kids > 0 && (setFocus(n.id), setSel({ kind: "node", id: n.id }))
+      }
       {...stylex.attrs(s.clickable, props.v.dim && s.dim)}
     >
       <rect
