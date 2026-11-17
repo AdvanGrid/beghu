@@ -3,14 +3,14 @@
 // along the node hierarchy, colour by a facet, and a drill-down panel from questions to claims to
 // the exact lines. Dev only: Vite serves /prototype-pr-view/index.html.
 import { render, type JSX } from "@solidjs/web";
-import { createMemo, createSignal, flush, For, Show } from "solid-js";
+import { createMemo, createSignal, flush, For, Match, Show, Switch } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
 import { arrow, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
 import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
 import { Explore, type Api, type ExploreKind } from "./explore.tsx";
-import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
+import type { Analysis, Boundary, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
 // TOP-LEVEL VARIANTS (#144): made-up edges laid over an analysis (data/overlays/, gitignored), to
@@ -70,6 +70,19 @@ const setVariant = (step: number) => {
   setZoom(null);
   sync();
 };
+// OVERVIEW VARIANTS (#145): how the "Boundary crossings" group is shown, switched with ?ov= and [ ].
+const OV = [
+  { key: "A", name: "Flat list (as is)" },
+  { key: "B", name: "By boundary, folded" },
+  { key: "C", name: "By line (top-level pair), folded" },
+  { key: "D", name: "Boundary, then its lines" },
+  { key: "E", name: "One sentence per boundary" },
+] as const;
+const [ov, setOvRaw] = createSignal(OV.find((x) => x.key === params.get("ov")) ?? OV[0]);
+const setOv = (step: number) => {
+  setOvRaw(OV[(OV.indexOf(ov()) + step + OV.length) % OV.length]!);
+  sync();
+};
 /** Rolled-up groups the engineer opened in place ("facet:value"). */
 /** Parts with no lines in the current lens: hidden unless ?lone=1. */
 const [showLone, setShowLone] = createSignal(params.get("lone") === "1");
@@ -96,6 +109,7 @@ function sync() {
   put("overlap", overlap());
   put("v", variant().key === "A" ? null : variant().key);
   put("lone", showLone() ? "1" : null);
+  put("ov", ov().key === "A" ? null : ov().key);
   history.replaceState(null, "", `?${p}`);
 }
 const setFocus = (f: string | null) => (setFocusRaw(f ?? home), setZoom(null), setHover(null), sync());
@@ -337,6 +351,11 @@ const s = stylex.create({
     textAlign: "start",
   },
   row: { alignItems: "baseline", display: "flex", gap: 8, paddingBlock: 3 },
+  ovBar: { alignItems: "center", borderColor: colors.accent, borderRadius: 6, borderStyle: "dashed", borderWidth: 1, display: "flex", fontSize: 12, gap: 8, marginTop: 12, padding: 4 },
+  ovButton: { backgroundColor: "transparent", borderColor: colors.accent, borderRadius: 4, borderStyle: "solid", borderWidth: 1, color: colors.accent, cursor: "pointer", fontSize: 12, paddingBlock: 2, paddingInline: 8 },
+  ovSub: { paddingInlineStart: 18 },
+  ovHead: { fontWeight: 600 },
+  ovSentence: { lineHeight: 1.6, marginBlock: 6 },
   list: { listStyle: "none", margin: 0, padding: 0 },
   details: { borderTopColor: colors.line, borderTopStyle: "solid", borderTopWidth: 1, paddingBlock: 6 },
   summary: { cursor: "pointer", lineHeight: 1.4 },
@@ -538,6 +557,9 @@ async function start() {
     }
     if (e.key === "Escape") setSel(null);
     if (e.key === "Backspace") goUp();
+    // OVERVIEW VARIANTS (#145): the two keys right of P, whatever the layout types there.
+    if (e.code === "BracketLeft") return setOv(-1);
+    if (e.code === "BracketRight") return setOv(1);
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
@@ -1730,6 +1752,173 @@ function Panel(props: { m: Model; reveal: (x: Sel) => void; colour: ColourFn; ed
   );
 }
 
+// OVERVIEW VARIANTS (#145). Every variant keeps the same stated order: boundary kind (trust,
+// tenant, process, network, other), then name; pairs by their parts' names. Never by count.
+const KIND_ORDER = ["trust", "tenant", "process", "network", "other"];
+
+function countLine(edges: Edge[]): string {
+  const c = { added: 0, modified: 0, removed: 0 };
+  for (const e of edges) if (e.change !== "unchanged") c[e.change]++;
+  const parts = [c.added && `${c.added} added`, c.modified && `${c.modified} changed`, c.removed && `${c.removed} removed`].filter(Boolean);
+  return edges.length === 1 ? parts.join("").replace(/^1 /, "") : `${edges.length} connections: ${parts.join(", ")}`;
+}
+
+function Crossings(props: { m: Model; reveal: (x: Sel) => void }) {
+  const m = props.m;
+  const a = m.a;
+  const top = (id: string): string => {
+    let n = m.nodes.get(id)!;
+    while (n.parent && m.nodes.get(n.parent) && m.nodes.get(n.parent)!.kind !== "system") n = m.nodes.get(n.parent)!;
+    return n.id;
+  };
+  const xs = a.edges.filter((e) => e.crosses.length > 0 && e.change !== "unchanged");
+  const bounds = a.boundaries
+    .map((b) => ({ b, edges: xs.filter((e) => e.crosses.includes(b.id)) }))
+    .filter((x) => x.edges.length > 0 || x.b.change !== "unchanged")
+    .sort((x, y) => KIND_ORDER.indexOf(x.b.kind) - KIND_ORDER.indexOf(y.b.kind) || x.b.name.localeCompare(y.b.name));
+  type Pair = { from: string; to: string; edges: Edge[] };
+  const pairsOf = (edges: Edge[]): Pair[] => {
+    const map = new Map<string, Pair>();
+    for (const e of edges) {
+      const f = top(e.from), t = top(e.to);
+      const k = `${f}>${t}`;
+      if (!map.has(k)) map.set(k, { from: f, to: t, edges: [] });
+      map.get(k)!.edges.push(e);
+    }
+    return [...map.values()].sort((x, y) => m.name(x.from).localeCompare(m.name(y.from)) || m.name(x.to).localeCompare(m.name(y.to)));
+  };
+  const bname = (id: string) => m.boundaries.get(id)?.name ?? id;
+  const EdgeRows = (p: { edges: Edge[] }) => (
+    <ul {...stylex.attrs(s.list, s.ovSub)}>
+      <For each={p.edges}>
+        {(e) => (
+          <li {...stylex.attrs(s.row)}>
+            <span {...stylex.attrs(s.mono, text[e.change])}>{SIGN[e.change] || "·"}</span>
+            <button onClick={() => props.reveal({ kind: "edge", ids: [e.id] })} {...stylex.attrs(s.textButton)}>
+              {m.name(e.from)} → {m.name(e.to)}: {e.label}
+            </button>
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+  const PairRow = (p: { pair: Pair; crosses?: boolean }) => (
+    <details {...stylex.attrs(s.details)}>
+      <summary {...stylex.attrs(s.summary)}>
+        <button onClick={(ev) => (ev.preventDefault(), props.reveal({ kind: "edge", ids: p.pair.edges.map((e) => e.id) }))} {...stylex.attrs(s.textButton)}>
+          {m.name(p.pair.from)} → {m.name(p.pair.to)}
+        </button>{" "}
+        <span {...stylex.attrs(s.muted)}>
+          · {countLine(p.pair.edges)}
+          {p.crosses ? ` · ⟂ ${[...new Set(p.pair.edges.flatMap((e) => e.crosses))].map(bname).join(", ")}` : ""}
+        </span>
+      </summary>
+      <EdgeRows edges={p.pair.edges} />
+    </details>
+  );
+  const changedBadge = (b: Boundary) => (b.change !== "unchanged" ? <span {...stylex.attrs(text[b.change])}> · the boundary itself {b.change === "modified" ? "changed" : b.change}</span> : null);
+  const BoundaryName = (p: { b: Boundary }) => (
+    <button onClick={(ev) => (ev.preventDefault(), props.reveal({ kind: "boundary", id: p.b.id }))} {...stylex.attrs(s.textButton, s.ovHead)}>
+      ⟂ {p.b.name}
+    </button>
+  );
+  const head = (n: number) => (
+    <>
+      <h3 {...stylex.attrs(s.h3)}>Boundary crossings ({n})</h3>
+      <p {...stylex.attrs(s.p, s.muted)}>
+        {xs.length} new or changed connections cross a trust, tenant, process or network boundary. Listed by boundary kind, then name.
+      </p>
+    </>
+  );
+  return (
+    <Switch>
+      <Match when={ov().key === "B"}>
+        {head(bounds.length)}
+        <For each={bounds}>
+          {({ b, edges }) => (
+            <details {...stylex.attrs(s.details)}>
+              <summary {...stylex.attrs(s.summary)}>
+                <BoundaryName b={b} /> <span {...stylex.attrs(s.muted)}>({b.kind}) · {edges.length ? countLine(edges) : "no connections changed"}</span>
+                {changedBadge(b)}
+              </summary>
+              <EdgeRows edges={edges} />
+            </details>
+          )}
+        </For>
+      </Match>
+      <Match when={ov().key === "C"}>
+        {(() => {
+          const pairs = pairsOf(xs);
+          const changedB = bounds.filter((x) => x.b.change !== "unchanged");
+          return (
+            <>
+              {head(pairs.length + changedB.length)}
+              <For each={changedB}>
+                {({ b }) => (
+                  <div {...stylex.attrs(s.row)}>
+                    <BoundaryName b={b} /> {changedBadge(b)}
+                  </div>
+                )}
+              </For>
+              <For each={pairs}>{(p) => <PairRow pair={p} crosses />}</For>
+            </>
+          );
+        })()}
+      </Match>
+      <Match when={ov().key === "D"}>
+        {head(bounds.length)}
+        <For each={bounds}>
+          {({ b, edges }) => (
+            <div {...stylex.attrs(s.ovSentence)}>
+              <div>
+                <BoundaryName b={b} /> <span {...stylex.attrs(s.muted)}>({b.kind}) · {b.description}</span>
+                {changedBadge(b)}
+              </div>
+              <div {...stylex.attrs(s.ovSub)}>
+                <For each={pairsOf(edges)}>{(p) => <PairRow pair={p} />}</For>
+              </div>
+            </div>
+          )}
+        </For>
+      </Match>
+      <Match when={ov().key === "E"}>
+        {head(bounds.length)}
+        <For each={bounds}>
+          {({ b, edges }) => {
+            const pairs = pairsOf(edges);
+            const NodeLink = (p: { id: string }) => (
+              <button onClick={() => props.reveal({ kind: "node", id: p.id })} {...stylex.attrs(s.textButton, s.ovHead)}>
+                {m.name(p.id)}
+              </button>
+            );
+            return (
+              <p {...stylex.attrs(s.p, s.ovSentence)}>
+                <BoundaryName b={b} />
+                {changedBadge(b)}
+                <span {...stylex.attrs(s.muted)}>: </span>
+                <Show when={edges.length} fallback={<span {...stylex.attrs(s.muted)}>no connections across it changed.</span>}>
+                  <For each={pairs}>
+                    {(p, i) => (
+                      <>
+                        {i() > 0 ? "; " : ""}
+                        <NodeLink id={p.from} /> → <NodeLink id={p.to} />{" "}
+                        <button onClick={() => props.reveal({ kind: "edge", ids: p.edges.map((e) => e.id) })} {...stylex.attrs(s.textButton, s.muted)}>
+                          ({countLine(p.edges)})
+                        </button>
+                      </>
+                    )}
+                  </For>
+                  .
+                </Show>
+              </p>
+            );
+          }}
+        </For>
+      </Match>
+    </Switch>
+  );
+}
+
 function Overview(props: { m: Model; reveal: (x: Sel) => void }) {
   const m = props.m;
   const a = m.a;
@@ -1758,9 +1947,17 @@ function Overview(props: { m: Model; reveal: (x: Sel) => void }) {
           <For each={a.coverage.notes}>{(n) => <li {...stylex.attrs(s.row)}>{n}</li>}</For>
         </ul>
       </details>
+      <div {...stylex.attrs(s.ovBar)}>
+        <button {...stylex.attrs(s.ovButton)} onClick={() => setOv(-1)}>← prev</button>
+        <span>
+          overview <b>{ov().key}</b> of {OV.length} — {ov().name}
+        </span>
+        <button {...stylex.attrs(s.ovButton)} onClick={() => setOv(1)}>next →</button>
+      </div>
       <For each={groups}>
-        {(g) => (
+        {(g, gi) => (
           <Show when={g.items.length > 0}>
+           <Show when={gi() > 0 || ov().key === "A"} fallback={<Crossings m={m} reveal={props.reveal} />}>
             <h3 {...stylex.attrs(s.h3)}>
               {g.title} ({g.items.length})
             </h3>
@@ -1777,6 +1974,7 @@ function Overview(props: { m: Model; reveal: (x: Sel) => void }) {
                 )}
               </For>
             </ul>
+           </Show>
           </Show>
         )}
       </For>
