@@ -149,6 +149,18 @@ for (const s of a.scenarios) {
     change(w, st.change);
     refs(w, st.claims);
   });
+  // Chapters cover every step, in order, starting at the first.
+  const cs = s.chapters ?? [];
+  if (cs.length === 0) err(`scenario ${s.id}: no chapters`);
+  cs.forEach((c, i) => {
+    const w = `scenario ${s.id} chapter ${i + 1}`;
+    const end = cs[i + 1]?.from ?? s.steps.length;
+    if (i === 0 && c.from !== 0) err(`${w}: the first chapter must start at step 0`);
+    if (!Number.isInteger(c.from) || c.from < 0 || c.from >= s.steps.length) err(`${w}: from ${c.from} is not a step`);
+    else if (end <= c.from) err(`${w}: chapters must start in order, each after the last`);
+    else if (end - c.from > 6) warnings.push(`${w}: ${end - c.from} steps; a chapter over 6 steps usually holds two moments`);
+    words(`${w} title`, c.title);
+  });
 }
 
 const files = new Map<string, string[] | null>();

@@ -153,7 +153,20 @@ export interface Scenario {
   /** What starts it ("an admin starts a probe from the audit page"). */
   trigger: string;
   change: Change;
+  /** Every hop, in order, each naming the deepest node it happens in. No limit on the count: the
+   * view folds steps inside a part and folds chapters. */
   steps: Step[];
+  /** The flow cut into moments, in order, covering every step. The first starts at step 0. */
+  chapters: Chapter[];
+}
+
+/** One moment of a flow: it ends where the flow hands over (a person acts, a write is picked up
+ * later by another part, a deploy stage ends). Usually 2–6 steps. */
+export interface Chapter {
+  /** What happens in it, as a short sentence ("advagent-v3 takes the message and replies"). */
+  title: string;
+  /** The 0-based index of its first step; each chapter runs to the next one's `from`. */
+  from: number;
 }
 
 export interface Step {

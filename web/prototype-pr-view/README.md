@@ -33,6 +33,11 @@ page lists the analyses in `data/`.
   up to what's visible. Dashed boxes are outside the current zoom.
 - **Colour by:** how the PR changed each node, or any facet the agent found. Each node also shows
   every facet as a text prefix, with the coloured facet's in brackets.
+- **Order of actions (#146):** `?sq=A`–`F` or the `,` `.` keys switch the scenario views. D (time
+  runs down) and F (time runs across, parts down the left) are the chosen pair, with a switch
+  between them; both fold chapters and roll lifelines up to a zoom level. Chapters come from the
+  analysis (`chapters` in `schema.ts`); older analyses can take hand-written ones from
+  `data/chapters/<name>.json` (gitignored).
 - **Panel:** with nothing selected, the overview, ordered by a stated rule (boundary crossings,
   then new and removed parts, then changed responsibilities, then edits inside parts). Select a
   node, edge or step to get its questions. Open a question for its answer and claims, and a claim

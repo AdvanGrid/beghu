@@ -141,6 +141,17 @@ message, a deploy) through the nodes to its end. Steps name nodes and, where one
 Prefer the flows a reviewer would trace by hand. Include unchanged steps where the flow passes
 through existing code, marked `unchanged`.
 
+- **Write every hop, and don't shorten a flow by dropping steps.** There is no step limit. Each
+  step names the deepest node it happens in (a module, not its service); the page rolls steps up
+  to the zoom level the reader picks and folds steps that stay inside one part.
+- **Cut each flow into chapters,** one per moment. A chapter ends where the flow hands over: a
+  person acts, a part writes something another part picks up later (a queued row, a message), a
+  deploy stage ends. A synchronous request is one chapter even when it crosses services. Most
+  chapters are 2–6 steps; a longer one usually holds two moments. A flow with one moment has one
+  chapter.
+- **A chapter's title says what happens in it,** as a short sentence of fact ("advagent-v3 takes
+  the message and replies"), never a verdict.
+
 ### Questions (the drill-down)
 
 Answer these per element, skipping any that don't apply, plus up to three more the element calls

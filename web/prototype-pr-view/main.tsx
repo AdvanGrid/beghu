@@ -10,7 +10,7 @@ import { pal } from "./tokens.stylex.ts";
 import { arrow, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
 import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
 import { Explore, type Api, type ExploreKind } from "./explore.tsx";
-import type { Analysis, Boundary, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
+import type { Analysis, Boundary, Change, Claim, Edge, FacetAssignment, Node, Question, Scenario, Topic } from "./schema.ts";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
 // TOP-LEVEL VARIANTS (#144): made-up edges laid over an analysis (data/overlays/, gitignored), to
@@ -185,6 +185,7 @@ const setColorBy = (c: string) => (setColorByRaw(c), sync());
 // ---------------------------------------------------------------------------------------------
 // Styles.
 
+const fadeIn = stylex.keyframes({ from: { opacity: 0 } });
 const s = stylex.create({
   app: {
     backgroundColor: colors.bg,
@@ -192,11 +193,11 @@ const s = stylex.create({
     display: "grid",
     fontFamily: fonts.ui,
     fontSize: 13,
-    gridTemplateColumns: "minmax(0, 1fr) 460px",
-    gridTemplateRows: "auto minmax(0, 1fr)",
-    height: "100vh",
+    gridTemplateColumns: { default: "minmax(0, 1fr) 460px", "@media (max-width: 720px)": "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "auto minmax(0, 1fr)", "@media (max-width: 720px)": "auto auto auto" },
+    height: { default: "100vh", "@media (max-width: 720px)": "auto" },
     inset: 0,
-    position: "fixed",
+    position: { default: "fixed", "@media (max-width: 720px)": "static" },
   },
   bar: {
     alignItems: "center",
@@ -250,7 +251,7 @@ const s = stylex.create({
     borderWidth: 1,
     bottom: 14,
     boxShadow: `0 2px 8px ${colors.popShadow}`,
-    display: "flex",
+    display: { default: "flex", "@media (max-width: 720px)": "none" },
     gap: 4,
     paddingBlock: 4,
     paddingInline: 6,
@@ -306,11 +307,11 @@ const s = stylex.create({
     fontSize: 13,
     padding: 0,
   },
-  legend: { alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10, paddingBottom: 6, paddingInline: 14, rowGap: 4 },
+  legend: { display: { default: "flex", "@media (max-width: 720px)": "none" }, alignItems: "center", flexWrap: "wrap", gap: 10, paddingBottom: 6, paddingInline: 14, rowGap: 4 },
   legendHead: { color: colors.fg, fontWeight: 650 },
   legendBreak: { flexBasis: "100%", height: 0 },
   sample: { flexShrink: 0, overflow: "visible" },
-  canvas: { flexGrow: 1, minHeight: 0, overflow: "auto" },
+  canvas: { flexGrow: 1, minHeight: 0, overflow: { default: "auto", "@media (max-width: 720px)": "visible" } },
   grab: { cursor: "grab", userSelect: "none" },
   grabbing: { cursor: "grabbing" },
   panel: {
@@ -435,7 +436,7 @@ const s = stylex.create({
     bottom: 16,
     boxShadow: `0 4px 16px ${colors.popShadow}`,
     color: colors.bg,
-    display: "flex",
+    display: { default: "flex", "@media (max-width: 720px)": "none" },
     gap: 10,
     left: "calc((100vw - 460px) / 2)",
     paddingBlock: 6,
@@ -458,6 +459,28 @@ const s = stylex.create({
   countBg: { fill: colors.bg, strokeWidth: 1.2 },
   countText: { fontFamily: fonts.ui, fontSize: 10.5, fontWeight: 600, pointerEvents: "none" },
   lifeline: { stroke: colors.line, strokeDasharray: "4 4" },
+  chapterBand: { cursor: "pointer", fill: pal.contextBg, stroke: colors.line, strokeWidth: 1 },
+  chapterSpan: { fill: "none", strokeDasharray: "3 3", strokeWidth: 1.5 },
+  tFrame: { display: "flex", maxWidth: "100%", overflowX: "auto", paddingInlineEnd: 14 },
+  tLeft: { backgroundColor: colors.bg, flexShrink: 0, left: 0, position: "sticky", zIndex: 1 },
+  tRight: { flexShrink: 0, transition: { default: "width 320ms cubic-bezier(.4,0,.2,1)", "@media (prefers-reduced-motion: reduce)": "none" }, width: "var(--w)" },
+  tCol: {
+    opacity: 1,
+    transform: "translateX(var(--tx)) scaleX(var(--sx, 1))",
+    transformOrigin: "0 0",
+    transition: { default: "transform 320ms cubic-bezier(.4,0,.2,1), opacity 240ms", "@media (prefers-reduced-motion: reduce)": "none" },
+  },
+  tColIn: { animationDuration: "240ms", animationFillMode: "backwards", animationName: fadeIn },
+  dSvg: { height: "var(--h)", transition: { default: "height 320ms cubic-bezier(.4,0,.2,1)", "@media (prefers-reduced-motion: reduce)": "none" } },
+  dRow: {
+    opacity: 1,
+    transform: "translateY(var(--ty)) scaleY(var(--sy, 1))",
+    transformOrigin: "0 0",
+    transition: { default: "transform 320ms cubic-bezier(.4,0,.2,1), opacity 240ms", "@media (prefers-reduced-motion: reduce)": "none" },
+  },
+  tColHidden: { opacity: 0, pointerEvents: "none" },
+  tHead: { transition: { default: "width 320ms cubic-bezier(.4,0,.2,1)", "@media (prefers-reduced-motion: reduce)": "none" }, width: "var(--hw)" },
+  foldPill: { cursor: "pointer", fill: pal.nodeBg, strokeDasharray: "4 3", strokeWidth: 1.4 },
   clickable: { cursor: "pointer" },
 });
 
@@ -540,6 +563,8 @@ async function start() {
   const analysis = await loaders[`./data/${name}.json`]!();
   const overlay = overlays[`./data/overlays/${name}.json`];
   if (overlay && params.get("overlay") !== "0") analysis.edges.push(...(await overlay()).edges);
+  const chapterFile = chapterLoaders[`./data/chapters/${name}.json`];
+  if (chapterFile) chapters = await chapterFile();
   const m = new Model(analysis);
   document.title = `#${m.a.pr.number} ${m.a.pr.title} · PR view`;
   // One node at the top (the whole repo) is nothing to look at: start inside it.
@@ -560,6 +585,9 @@ async function start() {
     // OVERVIEW VARIANTS (#145): the two keys right of P, whatever the layout types there.
     if (e.code === "BracketLeft") return setOv(-1);
     if (e.code === "BracketRight") return setOv(1);
+    // SCENARIO VARIANTS (#146).
+    if (e.code === "Comma") return setSq(-1);
+    if (e.code === "Period") return setSq(1);
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
@@ -1624,25 +1652,474 @@ function NodeBox(props: { m: Model; v: ReturnType<Model["view"]>["nodes"][number
 
 // ---------------------------------------------------------------------------------------------
 // Order of actions: one scenario as a sequence diagram.
+//
+// SCENARIO VARIANTS (#146): how a long flow is kept readable, switched with ?sq= and the , . keys.
+// Lifelines can be drawn at a zoom level (steps inside one part fold into a row you can unfold),
+// and a flow can be cut into chapters (hand-written in data/chapters/, standing in for the agent).
+const SQ = [
+  { key: "A", name: "As written", level: false, chapters: "none" },
+  { key: "B", name: "Parts at a zoom level, steps inside a part folded", level: true, chapters: "none" },
+  { key: "C", name: "Chapters, folded, in one diagram", level: false, chapters: "bands" },
+  { key: "D", name: "Chapters + parts at a zoom level", level: true, chapters: "bands" },
+  { key: "E", name: "Chapters as separate diagrams", level: false, chapters: "split" },
+  { key: "F", name: "D on its side: parts down the left, time across", level: true, chapters: "bands" },
+] as const;
+const [sq, setSqRaw] = createSignal(SQ.find((x) => x.key === params.get("sq")) ?? SQ[0]);
+const setSq = (step: number) => {
+  setSqRaw(SQ[(SQ.indexOf(sq()) + step + SQ.length) % SQ.length]!);
+  sync2();
+};
+/** The zoom level lifelines are drawn at: 1 is the system's top-level parts, 0 as the agent wrote them. */
+const [sqLevel, setSqLevelRaw] = createSignal(Number(params.get("sql") ?? 1));
+const setSqLevel = (l: number) => (setSqLevelRaw(l), setSqOpen(new Set<string>()), sync2());
+/** Lifelines opened one level further (double-click a head), folds unfolded, chapters opened. */
+const [sqOpen, setSqOpen] = createSignal(new Set<string>());
+const [sqUnfold, setSqUnfold] = createSignal(new Set<string>());
+const [sqChap, setSqChap] = createSignal(new Set<number>());
+const flip = <T,>(set: (f: (o: Set<T>) => Set<T>) => void, k: T) =>
+  set((o) => {
+    const n = new Set(o);
+    if (!n.delete(k)) n.add(k);
+    return n;
+  });
+function sync2() {
+  sync();
+  const p = new URLSearchParams(location.search);
+  p[sq().key === "A" ? "delete" : "set"]("sq", sq().key);
+  p[sqLevel() === 1 ? "delete" : "set"]("sql", String(sqLevel()));
+  history.replaceState(null, "", `?${p}`);
+}
+type Chapter = { title: string; from: number };
+let chapters: Record<string, Chapter[]> = {};
+const chapterLoaders = import.meta.glob<Record<string, Chapter[]>>("./data/chapters/*.json", { import: "default" });
+
+type Row =
+  | { t: "step"; i: number; from: string; to: string }
+  | { t: "fold"; key: string; at: string; steps: number[]; open: boolean }
+  | { t: "inner"; i: number; at: string }
+  | { t: "chapter"; c: number; title: string; steps: number[]; open: boolean };
+const ROW_H: Record<Row["t"], number> = { step: 46, fold: 34, inner: 28, chapter: 46 };
+
+/** A scenario's chapters: the agent's (here, hand-written), or one chapter holding every step. */
+function chaptersOf(sc: Scenario): { title: string; steps: number[] }[] {
+  // The agent's chapters; hand-written ones (data/chapters/) for analyses made before the rule.
+  const cs = sc.chapters?.length ? sc.chapters : chapters[sc.id];
+  const all = sc.steps.map((_, i) => i);
+  if (!cs?.length) return [{ title: sc.name, steps: all }];
+  return cs.map((c, k) => ({ title: c.title, steps: all.slice(c.from, cs[k + 1]?.from ?? all.length) }));
+}
 
 function Sequence(props: { m: Model; colour: ColourFn }) {
   const m = props.m;
   const current = createMemo(() => m.a.scenarios.find((x) => x.id === scenario()) ?? m.a.scenarios[0]);
+  // A new scenario starts folded again.
+  createMemo(() => (current(), setSqOpen(new Set<string>()), setSqUnfold(new Set<string>()), setSqChap(new Set<number>())));
   const COL = 190;
-  const ROW = 46;
   const TOP = 92;
-  const actors = createMemo(() => {
-    const out: string[] = [];
-    for (const st of current()?.steps ?? []) for (const id of [st.from, st.to]) if (!out.includes(id)) out.push(id);
-    return out;
+  const levelOn = () => sq().level && sqLevel() > 0;
+  /** The lifeline a node is drawn on: its ancestor at the chosen level, or deeper where opened. */
+  const shown = (id: string) => {
+    if (!levelOn()) return id;
+    const ch = m.chain(id);
+    let k = Math.min(ch.length - 1, sqLevel());
+    while (k < ch.length - 1 && sqOpen().has(ch[k]!)) k++;
+    return ch[k]!;
+  };
+  const rowsOf = (sc: Scenario, idx: number[]): Row[] => {
+    const out: Row[] = [];
+    for (const i of idx) {
+      const st = sc.steps[i]!;
+      const f = shown(st.from);
+      const t = shown(st.to);
+      if (f === t && st.from !== st.to) {
+        const last = out.at(-1);
+        if (last?.t === "fold" && last.at === f) last.steps.push(i);
+        else out.push({ t: "fold", key: `${f}:${i}`, at: f, steps: [i], open: false });
+      } else out.push({ t: "step", i, from: f, to: t });
+    }
+    // Unfold the opened folds; a fold of one step is just that step on its lifeline.
+    return out.flatMap((r): Row[] => {
+      if (r.t !== "fold") return [r];
+      const open = r.steps.length === 1 || sqUnfold().has(r.key);
+      const inner = r.steps.map((i): Row => ({ t: "inner", i, at: r.at }));
+      return r.steps.length === 1 ? inner : open ? [{ ...r, open: true }, ...inner] : [r];
+    });
+  };
+  /** One diagram: its lifelines (in order of first appearance) and its rows. */
+  const diagrams = createMemo(() => {
+    const sc = current();
+    if (!sc) return [];
+    const cs = chaptersOf(sc);
+    const actorsOf = (idx: number[]) => {
+      const a: string[] = [];
+      for (const i of idx) for (const id of [sc.steps[i]!.from, sc.steps[i]!.to]) if (!a.includes(shown(id))) a.push(shown(id));
+      return a;
+    };
+    const mode = sq().chapters;
+    if (mode === "split") return cs.map((c, k) => ({ title: `${k + 1}. ${c.title}`, actors: actorsOf(c.steps), rows: rowsOf(sc, c.steps) }));
+    const all = sc.steps.map((_, i) => i);
+    if (mode === "none" || cs.length === 1) return [{ title: "", actors: actorsOf(all), rows: rowsOf(sc, all) }];
+    const rows = cs.flatMap((c, k): Row[] => {
+      const open = sqChap().has(k);
+      return [{ t: "chapter", c: k, title: c.title, steps: c.steps, open }, ...(open ? rowsOf(sc, c.steps) : [])];
+    });
+    return [{ title: "", actors: actorsOf(all), rows }];
   });
-  const x = (id: string) => 30 + actors().indexOf(id) * COL + COL / 2;
-  const seqW = () => 60 + actors().length * COL;
-  const seqH = () => TOP + (current()?.steps.length ?? 0) * ROW + 40;
   const seqScale = createMemo(() => {
-    drawing = { width: seqW(), height: seqH(), scale: 1 };
+    const ds = diagrams();
+    const w = Math.max(...ds.map((d) => 60 + d.actors.length * COL), 400);
+    const h = ds.reduce((n, d) => n + TOP + d.rows.reduce((a, r) => a + ROW_H[r.t], 0) + 70, 0);
+    drawing = { width: w, height: h, scale: 1 };
     return zoom() ?? 1;
   });
+  const changeOf = (sc: Scenario, idx: number[]): Change => {
+    const cs = new Set(idx.map((i) => sc.steps[i]!.change));
+    return cs.size === 1 ? [...cs][0]! : cs.has("added") ? "added" : "modified";
+  };
+  /** One row of the across-the-page diagram (C and D), drawn at `y0`. */
+  const drawRow = (r: Row, y0: () => number, open: () => boolean, x: (id: string) => number, seqW: number): JSX.Element => {
+    const sc = () => current()!;
+    if (r.t === "chapter") {
+      const parts = [...new Set(r.steps.flatMap((i) => [shown(sc().steps[i]!.from), shown(sc().steps[i]!.to)]))];
+      const ch = changeOf(sc(), r.steps);
+      const xs = parts.map(x);
+      const x1 = Math.min(...xs);
+      const x2 = Math.max(...xs);
+      return (
+        <g data-hit onClick={() => flip(setSqChap, r.c)} {...stylex.attrs(s.clickable)}>
+          <rect x={10} y={y0() + 2} width={seqW - 20} height={ROW_H.chapter - 4} rx={6} {...stylex.attrs(s.chapterBand)} />
+          <Show when={!open()}>
+            {/* Which lifelines the folded chapter touches: a rail along the band's foot. */}
+            <line x1={x1} x2={x2} y1={y0() + ROW_H.chapter - 7} y2={y0() + ROW_H.chapter - 7} {...stylex.attrs(s.chapterSpan, stroke[ch])} />
+            <For each={xs}>{(cx) => <circle cx={cx} cy={y0() + ROW_H.chapter - 7} r={3.5} {...stylex.attrs(swatch[ch])} />}</For>
+          </Show>
+          <text x={20} y={y0() + 21} {...stylex.attrs(s.svgText)}>
+            {open() ? "▾" : "▸"} {r.c + 1}. {SIGN[ch]} {r.title}
+          </text>
+          <text x={seqW - 20} y={y0() + 21} text-anchor="end" {...stylex.attrs(s.svgSmall)}>
+            steps {r.steps[0]! + 1}–{r.steps.at(-1)! + 1}
+          </text>
+        </g>
+      );
+    }
+    if (r.t === "fold") {
+      const ch = changeOf(sc(), r.steps);
+      return (
+        <g data-hit onClick={() => flip(setSqUnfold, r.key)} {...stylex.attrs(s.clickable)}>
+          <rect x={x(r.at) - COL / 2 + 14} y={y0() + 5} width={COL - 28} height={24} rx={12} {...stylex.attrs(s.foldPill, stroke[ch])} />
+          <text x={x(r.at)} y={y0() + 21} text-anchor="middle" {...stylex.attrs(s.svgLabel)}>
+            {open() ? "▾" : "▸"} {SIGN[ch]} {r.steps.length} steps inside
+          </text>
+          <title>{r.steps.map((i) => `${i + 1}. ${m.name(sc().steps[i]!.from)} → ${m.name(sc().steps[i]!.to)}: ${sc().steps[i]!.action}`).join("\n")}</title>
+        </g>
+      );
+    }
+    const st = sc().steps[r.i]!;
+    const on = () => {
+      const v = sel();
+      return v?.kind === "step" && v.scenario === sc().id && v.i === r.i;
+    };
+    const pick = () => setSel({ kind: "step", scenario: sc().id, i: r.i });
+    if (r.t === "inner") {
+      // A step inside one lifeline: a short loop on it, labelled with the parts it joins.
+      const y = () => y0() + 14;
+      // Near the right edge the loop and its label go to the lifeline's left.
+      const label = `${r.i + 1}. ${SIGN[st.change]} ${m.name(st.from)} → ${m.name(st.to)}: ${st.action}`;
+      const w = Math.min(label.length, 70) * 6 + 8;
+      const side = x(r.at) + 30 + w > seqW ? -1 : 1;
+      const lx = side > 0 ? x(r.at) + 30 : x(r.at) - 30 - w + 6;
+      return (
+        <g data-hit onClick={pick} {...stylex.attrs(s.clickable)}>
+          <path d={`M${x(r.at)},${y() - 6} h${22 * side} v12 h${-22 * side}`} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />
+          <rect x={lx - 3} y={y() - 11} width={w} height={18} rx={3} {...stylex.attrs(s.labelBg)} />
+          <text x={lx} y={y() + 3} {...stylex.attrs(s.svgLabel, text[st.change])}>
+            {clip(label, 70)}
+          </text>
+          <title>{`${st.action}${st.data ? `\n${st.data}` : ""}`}</title>
+        </g>
+      );
+    }
+    const y = () => y0() + 24;
+    const self = r.from === r.to;
+    const x1 = x(r.from);
+    const x2 = x(r.to);
+    const dir = x2 >= x1 ? 1 : -1;
+    const lx = self ? x1 + 8 : Math.min(x1, x2) + 6;
+    return (
+      <g data-hit onClick={pick} {...stylex.attrs(s.clickable)}>
+        <Show
+          when={!self}
+          fallback={<path d={`M${x1},${y()} h40 v16 h-40`} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />}
+        >
+          <line x1={x1} x2={x2} y1={y()} y2={y()} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />
+          <path d={`M${x2},${y()} l${-9 * dir},-5 l0,10 z`} {...stylex.attrs(swatch[st.change])} />
+        </Show>
+        <rect x={Math.min(x1, x2) - 6} y={y() - 20} width={Math.abs(x2 - x1) + (self ? 260 : 12)} height={30} {...stylex.attrs(s.rowHit)} />
+        <text x={lx} y={y() - 6} {...stylex.attrs(s.svgLabel, text[st.change])}>
+          {r.i + 1}. {SIGN[st.change]} {clip(st.action, self ? 40 : Math.max(12, Math.floor(Math.abs(x2 - x1) / 6.4)))}
+        </text>
+        <title>{`${m.name(st.from)} → ${m.name(st.to)}\n${st.action}${st.data ? `\n${st.data}` : ""}`}</title>
+      </g>
+    );
+  };
+  // SCENARIO VARIANTS (#146), D animated: every row stays mounted in a fixed order, so opening a
+  // chapter grows its steps out from under its band and slides the chapters below it down.
+  type DItem = { key: string; r: Row; y: number; show: boolean };
+  const dl = createMemo(() => {
+    const sc = current();
+    const actors = diagrams()[0]?.actors ?? [];
+    if (!sc) return { items: [] as DItem[], bottom: TOP, actors };
+    const cs = chaptersOf(sc);
+    const one = cs.length === 1;
+    const items: DItem[] = [];
+    let y = TOP;
+    cs.forEach((c, k) => {
+      const open = one || sqChap().has(k);
+      if (!one) {
+        items.push({ key: `c:${k}`, r: { t: "chapter", c: k, title: c.title, steps: c.steps, open }, y, show: true });
+        y += ROW_H.chapter;
+      }
+      const at = y;
+      for (const r of rowsOf(sc, c.steps)) {
+        const key = r.t === "fold" ? `f:${r.key}` : r.t === "chapter" ? "c?" : `s:${r.i}`;
+        items.push({ key, r, y: open ? y : Math.max(TOP, at - ROW_H.chapter), show: open });
+        if (open) y += ROW_H[r.t];
+      }
+    });
+    return { items, bottom: y + 10, actors };
+  });
+  const Down = (props2: { colour: ColourFn }) => {
+    const x = (id: string) => 30 + dl().actors.indexOf(id) * COL + COL / 2;
+    const seqW = () => 60 + dl().actors.length * COL;
+    const canOpen = (id: string) => levelOn() && (m.children.get(id)?.length ?? 0) > 0;
+    return (
+      <svg width={seqW()} style={{ "--h": `${dl().bottom + 20}px` }} {...stylex.attrs(s.dSvg)}>
+        <For each={dl().actors}>
+          {(id) => {
+            const n = m.nodes.get(id)!;
+            const band = (): Swatch => {
+              const c = colorBy();
+              if (c === "change") return n.change;
+              return props2.colour(
+                n.facets.find((f) => f.facet === c),
+                c,
+              )[0]!;
+            };
+            return (
+              <g data-hit onClick={() => setSel({ kind: "node", id })} onDblClick={() => canOpen(id) && flip(setSqOpen, id)} {...stylex.attrs(s.clickable)}>
+                <line x1={x(id)} x2={x(id)} y1={TOP - 20} y2={6000} {...stylex.attrs(s.lifeline)} />
+                <rect x={x(id) - COL / 2 + 8} y={10} width={COL - 16} height={52} rx={6} {...stylex.attrs(s.nodeBox, stroke[n.change])} />
+                <rect x={x(id) - COL / 2 + 8} y={10} width={7} height={52} {...stylex.attrs(swatch[band()])} />
+                <text x={x(id) - COL / 2 + 22} y={30} {...stylex.attrs(s.svgSmall, text[n.change])}>
+                  {m.kindLabel(id)} {m.showsChange(id) ? SIGN[n.change] : ""}
+                </text>
+                <text x={x(id) - COL / 2 + 22} y={49} {...stylex.attrs(s.svgText)}>
+                  {clip(n.name, canOpen(id) ? 16 : 19)}
+                </text>
+                <Show when={canOpen(id)}>
+                  <text x={x(id) + COL / 2 - 26} y={49} {...stylex.attrs(s.svgSmall)}>
+                    ⊞
+                  </text>
+                </Show>
+                <title>{`${n.summary}${canOpen(id) ? "\nDouble-click to open its parts as lifelines" : ""}`}</title>
+              </g>
+            );
+          }}
+        </For>
+        <For each={dl().items} keyed={(it) => it.key}>
+          {(it) => (
+            <g style={{ "--ty": `${it().y}px`, "--sy": it().show ? "1" : "0.1" }} {...stylex.attrs(s.dRow, s.tColIn, !it().show && s.tColHidden)}>
+              {drawRow(it().r, () => 0, () => (it().r as { open?: boolean }).open ?? false, x, seqW())}
+            </g>
+          )}
+        </For>
+      </svg>
+    );
+  };
+  // SCENARIO VARIANTS (#146), F: D turned on its side. The parts stack down the first column (it
+  // stays put while the rest scrolls sideways), time runs left to right, and each step is a
+  // vertical line between the two parts' rows. Every column stays mounted in a fixed order, so
+  // opening a chapter grows its steps out of it and slides the columns after it along.
+  const LEFT = 136;
+  const RH = 58;
+  const HEAD = 84;
+  const W = { step: 128, inner: 128, fold: 104, chapter: 160 } as const;
+  type Item = { key: string; r: Row; x: number; show: boolean };
+  const tl = createMemo(() => {
+    const sc = current();
+    const actors = diagrams()[0]?.actors ?? [];
+    if (!sc) return { items: [] as Item[], heads: [], width: 0, actors };
+    const cs = chaptersOf(sc);
+    const one = cs.length === 1;
+    const items: Item[] = [];
+    const heads: { key: string; c: number; title: string; x: number; w: number; open: boolean; change: Change }[] = [];
+    let x = 10;
+    cs.forEach((c, k) => {
+      const open = one || sqChap().has(k);
+      const start = x;
+      if (!one) {
+        items.push({ key: `c:${k}`, r: { t: "chapter", c: k, title: c.title, steps: c.steps, open }, x: start, show: !open });
+        if (!open) x += W.chapter;
+      }
+      for (const r of rowsOf(sc, c.steps)) {
+        const key = r.t === "fold" ? `f:${r.key}` : r.t === "chapter" ? `c?` : `s:${r.i}`;
+        items.push({ key, r, x: open ? x : start, show: open });
+        if (open) x += W[r.t];
+      }
+      if (!one) heads.push({ key: `h:${k}`, c: k, title: c.title, x: start, w: open ? x - start : W.chapter, open, change: changeOf(sc, c.steps) });
+    });
+    return { items, heads, width: x + 10, actors };
+  });
+  const Transposed = () => {
+    const sc = () => current()!;
+    const cy = (id: string) => HEAD + tl().actors.indexOf(id) * RH + RH / 2;
+    const H = () => HEAD + tl().actors.length * RH + 12;
+    /** Words wrapped into lines of at most `n` characters. */
+    const wrap = (t: string, n: number, max = 4) => {
+      const out: string[] = [];
+      for (const w of t.split(/\s+/)) {
+        const last = out.at(-1);
+        if (last !== undefined && last.length + 1 + w.length <= n) out[out.length - 1] = `${last} ${w}`;
+        else out.push(w);
+      }
+      return out.length > max ? [...out.slice(0, max - 1), clip(out.slice(max - 1).join(" "), n)] : out;
+    };
+    const lines = (ls: string[], lx: number, ly: number, style: object) => (
+      <For each={ls}>
+        {(l, k) => (
+          <text x={lx} y={ly + k() * 13} {...(style as Record<string, string>)}>
+            {l}
+          </text>
+        )}
+      </For>
+    );
+    /** One column's drawing, at x = 0; the column's group moves it into place. */
+    const column = (it: () => Item) => {
+      const r = it().r;
+      const w = W[r.t];
+      if (r.t === "chapter") {
+        const ch = changeOf(sc(), r.steps);
+        const parts = [...new Set(r.steps.flatMap((i) => [shown(sc().steps[i]!.from), shown(sc().steps[i]!.to)]))];
+        const rx = w / 2;
+        return (
+          <g data-hit onClick={() => flip(setSqChap, r.c)} {...stylex.attrs(s.clickable)}>
+            <rect x={4} y={4} width={w - 8} height={H() - 8} rx={6} {...stylex.attrs(s.chapterBand)} />
+            {lines(wrap(`▸ ${r.c + 1}. ${SIGN[ch]} ${r.title}`, 20, 5), 12, 22, stylex.attrs(s.svgText))}
+            <line x1={rx} x2={rx} y1={Math.min(...parts.map(cy))} y2={Math.max(...parts.map(cy))} {...stylex.attrs(s.chapterSpan, stroke[ch])} />
+            <For each={parts}>{(id) => <circle cx={rx} cy={cy(id)} r={4} {...stylex.attrs(swatch[ch])} />}</For>
+            <text x={rx} y={H() - 14} text-anchor="middle" {...stylex.attrs(s.svgSmall)}>
+              steps {r.steps[0]! + 1}–{r.steps.at(-1)! + 1}
+            </text>
+          </g>
+        );
+      }
+      if (r.t === "fold") {
+        const ch = changeOf(sc(), r.steps);
+        return (
+          <g data-hit onClick={() => flip(setSqUnfold, r.key)} {...stylex.attrs(s.clickable)}>
+            <rect x={6} y={cy(r.at) - 12} width={w - 12} height={24} rx={12} {...stylex.attrs(s.foldPill, stroke[ch])} />
+            <text x={w / 2} y={cy(r.at) + 4} text-anchor="middle" {...stylex.attrs(s.svgLabel)}>
+              {(it().r as { open: boolean }).open ? "▾" : "▸"} {SIGN[ch]} {r.steps.length} steps
+            </text>
+            <title>{r.steps.map((i) => `${i + 1}. ${m.name(sc().steps[i]!.from)} → ${m.name(sc().steps[i]!.to)}: ${sc().steps[i]!.action}`).join("\n")}</title>
+          </g>
+        );
+      }
+      const st = sc().steps[r.i]!;
+      const on = () => {
+        const v = sel();
+        return v?.kind === "step" && v.scenario === sc().id && v.i === r.i;
+      };
+      const pick = () => setSel({ kind: "step", scenario: sc().id, i: r.i });
+      const lx = 14;
+      if (r.t === "inner" || r.from === r.to) {
+        // A step inside one part: a small loop on its row, the label under it.
+        const y = cy(r.t === "inner" ? r.at : r.from);
+        const label = r.t === "inner" ? `${r.i + 1}. ${SIGN[st.change]} ${m.name(st.from)} → ${m.name(st.to)}: ${st.action}` : `${r.i + 1}. ${SIGN[st.change]} ${st.action}`;
+        return (
+          <g data-hit onClick={pick} {...stylex.attrs(s.clickable)}>
+            <rect x={0} y={y - 14} width={w} height={RH - 4} {...stylex.attrs(s.rowHit)} />
+            <path d={`M${lx},${y} v-10 h16 v10`} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />
+            <path d={`M${lx + 16},${y} l-4,-7 l8,0 z`} {...stylex.attrs(swatch[st.change])} />
+            {lines(wrap(label, 18, 2), lx - 6, y + 14, stylex.attrs(s.svgLabel, text[st.change]))}
+            <title>{`${m.name(st.from)} → ${m.name(st.to)}\n${st.action}${st.data ? `\n${st.data}` : ""}`}</title>
+          </g>
+        );
+      }
+      const y1 = cy(r.from);
+      const y2 = cy(r.to);
+      const dir = y2 >= y1 ? 1 : -1;
+      const ls = wrap(`${r.i + 1}. ${SIGN[st.change]} ${st.action}`, 17, 4);
+      // The label sits beside the line, in the middle of its run (or just past the receiver when
+      // the run is short).
+      const ly = Math.abs(y2 - y1) > ls.length * 13 + 16 ? (y1 + y2) / 2 - (ls.length * 13) / 2 + 10 : Math.max(y1, y2) + 16;
+      return (
+        <g data-hit onClick={pick} {...stylex.attrs(s.clickable)}>
+          <rect x={0} y={Math.min(y1, y2)} width={w} height={Math.abs(y2 - y1)} {...stylex.attrs(s.rowHit)} />
+          <line x1={lx} x2={lx} y1={y1} y2={y2 - 9 * dir} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />
+          <circle cx={lx} cy={y1} r={3} {...stylex.attrs(swatch[st.change])} />
+          <path d={`M${lx},${y2} l-5,${-9 * dir} l10,0 z`} {...stylex.attrs(swatch[st.change])} />
+          <rect x={lx + 5} y={ly - 11} width={w - 22} height={ls.length * 13 + 4} rx={3} {...stylex.attrs(s.labelBg)} />
+          {lines(ls, lx + 8, ly, stylex.attrs(s.svgLabel, text[st.change]))}
+          <title>{`${m.name(st.from)} → ${m.name(st.to)}\n${st.action}${st.data ? `\n${st.data}` : ""}`}</title>
+        </g>
+      );
+    };
+    return (
+      <div {...stylex.attrs(s.tFrame)}>
+        <svg width={LEFT} height={H()} {...stylex.attrs(s.tLeft)}>
+          <For each={tl().actors}>
+            {(id) => {
+              const n = m.nodes.get(id)!;
+              const open = levelOn() && (m.children.get(id)?.length ?? 0) > 0;
+              const y = () => cy(id) - 22;
+              return (
+                <g data-hit onClick={() => setSel({ kind: "node", id })} onDblClick={() => open && flip(setSqOpen, id)} {...stylex.attrs(s.clickable)}>
+                  <rect x={6} y={y()} width={LEFT - 12} height={44} rx={6} {...stylex.attrs(s.nodeBox, stroke[n.change])} />
+                  <rect x={6} y={y()} width={6} height={44} {...stylex.attrs(swatch[n.change])} />
+                  <text x={18} y={y() + 17} {...stylex.attrs(s.svgSmall, text[n.change])}>
+                    {m.kindLabel(id)} {m.showsChange(id) ? SIGN[n.change] : ""}
+                  </text>
+                  <text x={18} y={y() + 34} {...stylex.attrs(s.svgText)}>
+                    {clip(n.name, open ? 12 : 14)}
+                  </text>
+                  <Show when={open}>
+                    <text x={LEFT - 24} y={y() + 34} {...stylex.attrs(s.svgSmall)}>
+                      ⊞
+                    </text>
+                  </Show>
+                  <title>{`${n.name}\n${n.summary}${open ? "\nDouble-click to open its parts" : ""}`}</title>
+                </g>
+              );
+            }}
+          </For>
+        </svg>
+        <svg height={H()} style={{ "--w": `${tl().width}px` }} {...stylex.attrs(s.tRight)}>
+          <For each={tl().actors}>{(id) => <line x1={0} x2={6000} y1={cy(id)} y2={cy(id)} {...stylex.attrs(s.lifeline)} />}</For>
+          <For each={tl().heads} keyed={(h) => h.key}>
+            {(h) => (
+              <g
+                data-hit
+                onClick={() => flip(setSqChap, h().c)}
+                style={{ "--tx": `${h().x}px`, "--hw": `${Math.max(0, h().w - 4)}px` }}
+                {...stylex.attrs(s.clickable, s.tCol, !h().open && s.tColHidden)}
+              >
+                <rect x={2} y={4} height={HEAD - 10} rx={6} {...stylex.attrs(s.chapterBand, s.tHead)} />
+                {lines(wrap(`▾ ${h().c + 1}. ${SIGN[h().change]} ${h().title}`, 34, 3), 10, 22, stylex.attrs(s.svgText))}
+              </g>
+            )}
+          </For>
+          <For each={tl().items} keyed={(it) => it.key}>
+            {(it) => (
+              <g style={{ "--tx": `${it().x}px`, "--sx": it().show ? "1" : "0.1" }} {...stylex.attrs(s.tCol, s.tColIn, !it().show && s.tColHidden)}>
+                {column(it)}
+              </g>
+            )}
+          </For>
+        </svg>
+      </div>
+    );
+  };
   return (
     <div>
       <div {...stylex.attrs(s.crumbs)}>
@@ -1653,80 +2130,130 @@ function Sequence(props: { m: Model; colour: ColourFn }) {
               {...stylex.attrs(s.tab, current()?.id === sc.id && s.tabOn)}
               title={sc.trigger}
             >
-              {SIGN[sc.change]} {sc.name}
+              {SIGN[sc.change]} {sc.name} <span {...stylex.attrs(s.muted)}>({sc.steps.length})</span>
             </button>
           )}
         </For>
+      </div>
+      <div {...stylex.attrs(s.crumbs)}>
+        <span {...stylex.attrs(s.ovBar)}>
+          <button {...stylex.attrs(s.ovButton)} onClick={() => setSq(-1)}>← ,</button>
+          <span>
+            scenario view <b>{sq().key}</b> of {SQ.length} — {sq().name}
+          </span>
+          <button {...stylex.attrs(s.ovButton)} onClick={() => setSq(1)}>. →</button>
+        </span>
+        <Show when={sq().key === "D" || sq().key === "F"}>
+          <span {...stylex.attrs(s.tabs)}>
+            <button onClick={() => (setSqRaw(SQ[3]), sync2())} {...stylex.attrs(s.tab, sq().key === "D" && s.tabOn)} title="Parts across the top, time runs down">
+              Time runs ↓
+            </button>
+            <button onClick={() => (setSqRaw(SQ[5]), sync2())} {...stylex.attrs(s.tab, sq().key === "F" && s.tabOn)} title="Parts down the left, time runs across">
+              Time runs →
+            </button>
+          </span>
+        </Show>
+        <Show when={sq().level}>
+          <label {...stylex.attrs(s.label)}>
+            Lifelines:
+            <select value={String(sqLevel())} onChange={(e) => setSqLevel(Number(e.currentTarget.value))} {...stylex.attrs(s.select)}>
+              <option value="1">Top-level parts</option>
+              <option value="2">One level in</option>
+              <option value="3">Two levels in</option>
+              <option value="0">As the agent wrote them</option>
+            </select>
+          </label>
+          <For each={[...sqOpen()]}>
+            {(id) => (
+              <button {...stylex.attrs(s.crumb)} onClick={() => flip(setSqOpen, id)} title="Close it back into one lifeline">
+                {m.name(id)} opened ✕
+              </button>
+            )}
+          </For>
+        </Show>
+        <Show when={sq().chapters === "bands" && diagrams()[0]?.rows.some((r) => r.t === "chapter")}>
+          <button {...stylex.attrs(s.crumb)} onClick={() => setSqChap(new Set(chaptersOf(current()!).map((_, k) => k)))}>
+            Open all chapters
+          </button>
+          <button {...stylex.attrs(s.crumb)} onClick={() => setSqChap(new Set<number>())}>
+            Fold all
+          </button>
+        </Show>
       </div>
       <Show when={current()}>
         {(sc) => (
           <>
             <p {...stylex.attrs(s.p, s.muted)}>
-              <span>&nbsp;&nbsp;&nbsp;Starts when: {sc().trigger}</span>
+              <span>
+                &nbsp;&nbsp;&nbsp;Starts when: {sc().trigger} · {sc().steps.length} steps
+              </span>
             </p>
-            <svg
-              width={seqW() * seqScale()}
-              height={seqH() * seqScale()}
-              viewBox={`0 0 ${seqW()} ${seqH()}`}
-            >
-              <For each={actors()}>
-                {(id) => {
-                  const n = m.nodes.get(id)!;
-                  const band = (): Swatch => {
-                    const c = colorBy();
-                    if (c === "change") return n.change;
-                    return props.colour(
-                      n.facets.find((f) => f.facet === c),
-                      c,
-                    )[0]!;
-                  };
-                  return (
-                    <g data-hit onClick={() => setSel({ kind: "node", id })} {...stylex.attrs(s.clickable)}>
-                      <line x1={x(id)} x2={x(id)} y1={TOP - 20} y2={TOP + sc().steps.length * ROW} {...stylex.attrs(s.lifeline)} />
-                      <rect x={x(id) - COL / 2 + 8} y={10} width={COL - 16} height={52} rx={6} {...stylex.attrs(s.nodeBox, stroke[n.change])} />
-                      <rect x={x(id) - COL / 2 + 8} y={10} width={7} height={52} {...stylex.attrs(swatch[band()])} />
-                      <text x={x(id) - COL / 2 + 22} y={30} {...stylex.attrs(s.svgSmall, text[n.change])}>
-                        {m.kindLabel(id)} {m.showsChange(id) ? SIGN[n.change] : ""}
-                      </text>
-                      <text x={x(id) - COL / 2 + 22} y={49} {...stylex.attrs(s.svgText)}>
-                        {clip(n.name, 19)}
-                      </text>
-                      <title>{n.summary}</title>
-                    </g>
-                  );
-                }}
-              </For>
-              <For each={sc().steps}>
-                {(st, i) => {
-                  const y = () => TOP + i() * ROW + 24;
-                  const self = st.from === st.to;
-                  const x1 = () => x(st.from);
-                  const x2 = () => x(st.to);
-                  const dir = () => (x2() >= x1() ? 1 : -1);
-                  const on = () => {
-                    const v = sel();
-                    return v?.kind === "step" && v.scenario === sc().id && v.i === i();
-                  };
-                  const lx = () => (self ? x1() + 8 : Math.min(x1(), x2()) + 6);
-                  return (
-                    <g data-hit onClick={() => setSel({ kind: "step", scenario: sc().id, i: i() })} {...stylex.attrs(s.clickable)}>
-                      <Show
-                        when={!self}
-                        fallback={<path d={`M${x1()},${y()} h40 v16 h-40`} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />}
-                      >
-                        <line x1={x1()} x2={x2()} y1={y()} y2={y()} {...stylex.attrs(s.edge, stroke[st.change], on() && s.edgeSelected)} />
-                        <path d={`M${x2()},${y()} l${-9 * dir()},-5 l0,10 z`} {...stylex.attrs(swatch[st.change])} />
-                      </Show>
-                      <rect x={Math.min(x1(), x2()) - 6} y={y() - 20} width={Math.abs(x2() - x1()) + (self ? 260 : 12)} height={30} {...stylex.attrs(s.rowHit)} />
-                      <text x={lx()} y={y() - 6} {...stylex.attrs(s.svgLabel, text[st.change])}>
-                        {i() + 1}. {SIGN[st.change]} {clip(st.action, self ? 40 : Math.max(12, Math.floor(Math.abs(x2() - x1()) / 6.4)))}
-                      </text>
-                      <title>{`${st.action}${st.data ? `\n${st.data}` : ""}`}</title>
-                    </g>
-                  );
-                }}
-              </For>
-            </svg>
+            <Show when={sq().key === "F"}>
+              <Transposed />
+            </Show>
+            <Show when={sq().key === "D"}>
+              <Down colour={props.colour} />
+            </Show>
+            <For each={sq().key === "F" || sq().key === "D" ? [] : diagrams()}>
+              {(d) => {
+                const x = (id: string) => 30 + d.actors.indexOf(id) * COL + COL / 2;
+                const seqW = 60 + d.actors.length * COL;
+                const ys: number[] = [];
+                let yy = TOP;
+                for (const r of d.rows) (ys.push(yy), (yy += ROW_H[r.t]));
+                const bottom = yy + 10;
+                const canOpen = (id: string) => levelOn() && (m.children.get(id)?.length ?? 0) > 0 && d.rows.some((r) => r.t !== "chapter");
+                return (
+                  <>
+                    <Show when={d.title}>
+                      <h3 {...stylex.attrs(s.h3)}>&nbsp;&nbsp;&nbsp;{d.title}</h3>
+                    </Show>
+                    <svg width={seqW * seqScale()} height={(bottom + 20) * seqScale()} viewBox={`0 0 ${seqW} ${bottom + 20}`}>
+                      <For each={d.actors}>
+                        {(id) => {
+                          const n = m.nodes.get(id)!;
+                          const band = (): Swatch => {
+                            const c = colorBy();
+                            if (c === "change") return n.change;
+                            return props.colour(
+                              n.facets.find((f) => f.facet === c),
+                              c,
+                            )[0]!;
+                          };
+                          return (
+                            <g
+                              data-hit
+                              onClick={() => setSel({ kind: "node", id })}
+                              onDblClick={() => canOpen(id) && flip(setSqOpen, id)}
+                              {...stylex.attrs(s.clickable)}
+                            >
+                              <line x1={x(id)} x2={x(id)} y1={TOP - 20} y2={bottom} {...stylex.attrs(s.lifeline)} />
+                              <rect x={x(id) - COL / 2 + 8} y={10} width={COL - 16} height={52} rx={6} {...stylex.attrs(s.nodeBox, stroke[n.change])} />
+                              <rect x={x(id) - COL / 2 + 8} y={10} width={7} height={52} {...stylex.attrs(swatch[band()])} />
+                              <text x={x(id) - COL / 2 + 22} y={30} {...stylex.attrs(s.svgSmall, text[n.change])}>
+                                {m.kindLabel(id)} {m.showsChange(id) ? SIGN[n.change] : ""}
+                              </text>
+                              <text x={x(id) - COL / 2 + 22} y={49} {...stylex.attrs(s.svgText)}>
+                                {clip(n.name, canOpen(id) ? 16 : 19)}
+                              </text>
+                              <Show when={canOpen(id)}>
+                                <text x={x(id) + COL / 2 - 26} y={49} {...stylex.attrs(s.svgSmall)}>
+                                  ⊞
+                                </text>
+                              </Show>
+                              <title>{`${n.summary}${canOpen(id) ? "\nDouble-click to open its parts as lifelines" : ""}`}</title>
+                            </g>
+                          );
+                        }}
+                      </For>
+                      <For each={d.rows}>
+                        {(r, k) => drawRow(r, () => ys[k()]!, () => (r as { open?: boolean }).open ?? false, x, seqW)}
+                      </For>
+                    </svg>
+                  </>
+                );
+              }}
+            </For>
           </>
         )}
       </Show>
@@ -2388,17 +2915,31 @@ function StepPanel(props: { m: Model; scenario: string; i: number; reveal: (x: S
       <Claims m={m} ids={st.claims} />
       <h3 {...stylex.attrs(s.h3)}>The whole flow</h3>
       <p {...stylex.attrs(s.p, s.muted)}>Starts when: {sc.trigger}</p>
-      <ol>
-        <For each={sc.steps}>
-          {(x, i) => (
-            <li>
-              <button onClick={() => go(i())} {...stylex.attrs(s.textButton, i() === props.i && text.modified)}>
-                {SIGN[x.change]} {m.name(x.from)} → {m.name(x.to)}: {x.action}
-              </button>
-            </li>
-          )}
-        </For>
-      </ol>
+      <For each={sq().chapters === "none" ? [{ title: "", steps: sc.steps.map((_, i) => i) }] : chaptersOf(sc)}>
+        {(c, k) => (
+          <>
+            <Show when={c.title}>
+              <p {...stylex.attrs(s.p, s.ovHead)}>
+                {k() + 1}. {c.title}
+              </p>
+            </Show>
+            <ol start={c.steps[0]! + 1}>
+              <For each={c.steps}>
+                {(i) => {
+                  const x = sc.steps[i]!;
+                  return (
+                    <li>
+                      <button onClick={() => go(i)} {...stylex.attrs(s.textButton, i === props.i && text.modified)}>
+                        {SIGN[x.change]} {m.name(x.from)} → {m.name(x.to)}: {x.action}
+                      </button>
+                    </li>
+                  );
+                }}
+              </For>
+            </ol>
+          </>
+        )}
+      </For>
     </div>
   );
 }
