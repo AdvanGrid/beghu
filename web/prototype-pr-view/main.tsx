@@ -10,6 +10,7 @@ import { pal } from "./tokens.stylex.ts";
 import { arrow, labelWidth, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
 import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
 import { Explore, type Api, type ExploreKind } from "./explore.tsx";
+import { Phone, phoneWanted, type PhoneCtx, type PhoneSel } from "./mobile.tsx";
 import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
@@ -644,6 +645,41 @@ function App(props: { m: Model }) {
     }
     select(x);
   };
+
+  // PHONE VARIANTS (#158): a narrow window, or ?phone=1..3, gets the phone shell instead.
+  if (phoneWanted()) {
+    const ctx: PhoneCtx = {
+      m,
+      view: () => {
+        const v = m.view(focus(), lens(), changedOnly(), { shelve: scope() === "near" });
+        if (showLone()) return v;
+        const linked = new Set(v.edges.flatMap((e) => [e.from, e.to]));
+        return { ...v, nodes: v.nodes.filter((n) => linked.has(n.node.id)) };
+      },
+      focus,
+      setFocus: (id) => setFocus(id),
+      home: () => home,
+      lens,
+      setLens,
+      lenses: LENSES,
+      scope,
+      setScope,
+      colorBy,
+      setColorBy,
+      nodeFacets,
+      sel: () => sel() as PhoneSel,
+      setSel: (x) => setSel(x as Sel),
+      panel: () => <Panel m={m} reveal={reveal} colour={colour} edgeFacets={edgeFacets} />,
+      nodeCard: (id) => <NodeCard m={m} n={m.nodes.get(id)!} />,
+      edgeCard: (ids) => <EdgeCard m={m} edges={ids.map((id) => m.edges.get(id)!)} />,
+      groupOf: (id) => {
+        const f = groupFacet(m);
+        const v = f ? m.valueOf(id, f) : undefined;
+        return v ? valueLabel(m, f, v) : undefined;
+      },
+    };
+    return <Phone c={ctx} />;
+  }
 
   return (
     <div {...stylex.attrs(s.app)}>

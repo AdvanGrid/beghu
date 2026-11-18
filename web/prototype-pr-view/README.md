@@ -39,3 +39,10 @@ page lists the analyses in `data/`.
   for its lines, linked to GitHub. Escape goes back to the overview.
 
 Typecheck: `cd web/prototype-pr-view && ../node_modules/.bin/tsc -p tsconfig.json`.
+
+## On a phone (#158)
+
+`mobile.tsx` holds three phone variants of the explorers, switched with `?phone=1|2|3` and the bar
+at the bottom (a window under 720 px gets 1 by default, `?phone=0` keeps the desktop page);
+`?x=clusters` picks Clusters over Path. To try them on a real phone, run Vite with `--host` and open
+the page at the machine's address.
