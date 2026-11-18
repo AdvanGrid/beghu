@@ -325,6 +325,7 @@ const s = stylex.create({
   keySampleCell: { display: "inline-flex", flexShrink: 0, width: 40 },
   keyCount: { color: colors.muted, fontVariantNumeric: "tabular-nums", marginInlineStart: "auto" },
   keyButtonOn: { backgroundColor: colors.selected },
+  noFill: { fill: "none" },
   pin: { pointerEvents: "none" },
   pinLine: { fill: "none", stroke: colors.accent, strokeWidth: 1.2 },
   pinDot: { fill: colors.accent },
@@ -1441,10 +1442,24 @@ function keyItems(m: Model): KeyItem[] {
     for (const x of at.boxes) for (const id of inside(x)) nodes.add(id);
     items.push({ id: "boxes", section: A, text: `grey box: ${f?.name ?? "a group"}`, sample: <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.valueBox)} />, nodes, edges: new Set(), pts: [{ x: b.x + 40, y: b.y + 4 }] });
   }
+  // Outlines: one row per value drawn, in that value's colour (the same palette place Overlaps uses).
   const of = overlapFacet(m);
-  if (of) {
-    const nodes = new Set(view.nodes.filter((v) => m.isUsed(v.node.id) && m.valueOf(v.node.id, of) !== undefined && m.valueOf(v.node.id, of) !== "unknown").map((v) => v.node.id));
-    add({ id: "outlines", section: A, text: `coloured outline: ${m.facets.get(of)?.name ?? "a group"}`, sample: <rect x={1} y={1} width={34} height={14} rx={4} fill="none" stroke-width={1.5} {...stylex.attrs(stroke.added)} />, nodes, edges: new Set() });
+  const odef = m.facets.get(of);
+  if (odef) {
+    odef.values
+      .filter((x) => x.id !== "unknown")
+      .forEach((val, i) => {
+        const sw = PALETTE[i % PALETTE.length]!;
+        const nodes = new Set(view.nodes.filter((v) => m.isUsed(v.node.id) && m.valueOf(v.node.id, of) === val.id).map((v) => v.node.id));
+        add({
+          id: `outline:${val.id}`,
+          section: `Outlines: ${odef.name}`,
+          text: val.label,
+          sample: <rect x={1} y={1} width={34} height={14} rx={4} stroke-width={1.5} {...stylex.attrs(swatch[sw], s.noFill)} />,
+          nodes,
+          edges: new Set(),
+        });
+      });
   }
   if (at.pack) items.push({ id: "pack", section: A, text: "grid: parts with no lines in this lens", sample: null, nodes: new Set(), edges: new Set(), pts: [{ x: at.pack.x, y: at.pack.y - 14 }] });
   return items;
