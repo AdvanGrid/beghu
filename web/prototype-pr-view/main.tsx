@@ -7,7 +7,7 @@ import { createMemo, createSignal, flush, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
-import { arrow, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
+import { arrow, labelWidth, layout, NODE_H, NODE_W, type Laid, type Placed } from "./layout.ts";
 import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
 import { Explore, type Api, type ExploreKind } from "./explore.tsx";
 import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
@@ -96,6 +96,8 @@ function sync() {
   put("overlap", overlap());
   put("v", variant().key === "A" ? null : variant().key);
   put("lone", showLone() ? "1" : null);
+  put("key", keyV().key === "1" ? null : keyV().key);
+  put("keyopen", keyOpen() ? null : "0");
   history.replaceState(null, "", `?${p}`);
 }
 const setFocus = (f: string | null) => (setFocusRaw(f ?? home), setZoom(null), setHover(null), sync());
@@ -296,6 +298,38 @@ const s = stylex.create({
   legendHead: { color: colors.fg, fontWeight: 650 },
   legendBreak: { flexBasis: "100%", height: 0 },
   sample: { flexShrink: 0, overflow: "visible" },
+  // LEGEND VARIANTS (#155)
+  keyGroup: { alignItems: "center", display: "inline-flex", flexWrap: "wrap", gap: 8, marginInlineEnd: 8 },
+  keyFloat: {
+    backgroundColor: colors.pop,
+    borderColor: colors.line,
+    borderRadius: 8,
+    borderStyle: "solid",
+    borderWidth: 1,
+    bottom: 14,
+    boxShadow: `0 2px 8px ${colors.popShadow}`,
+    fontSize: 12,
+    left: 14,
+    maxHeight: "55%",
+    overflowY: "auto",
+    padding: 8,
+    position: "absolute",
+    width: 300,
+    zIndex: 5,
+  },
+  keyFloatHead: { alignItems: "center", display: "flex", gap: 8, marginBottom: 2 },
+  keyClose: { backgroundColor: "transparent", borderStyle: "none", color: colors.muted, cursor: "pointer", fontSize: 16, marginInlineStart: "auto" },
+  keySection: { color: colors.muted, fontSize: 11, letterSpacing: "0.04em", marginTop: 6, textTransform: "uppercase" },
+  keyRow: { alignItems: "center", borderRadius: 4, cursor: "default", display: "flex", fontSize: 12, gap: 8, paddingBlock: 2, paddingInline: 4 },
+  keyRowOn: { backgroundColor: colors.hover },
+  keySampleCell: { display: "inline-flex", flexShrink: 0, width: 40 },
+  keyCount: { color: colors.muted, fontVariantNumeric: "tabular-nums", marginInlineStart: "auto" },
+  keyButtonOn: { backgroundColor: colors.selected },
+  pin: { pointerEvents: "none" },
+  pinLine: { fill: "none", stroke: colors.accent, strokeWidth: 1.2 },
+  pinDot: { fill: colors.accent },
+  pinBox: { fill: colors.pop, stroke: colors.accent, strokeWidth: 1.2 },
+  pinText: { fill: colors.fg, fontFamily: fonts.ui, fontSize: 11 },
   canvas: { flexGrow: 1, minHeight: 0, overflow: "auto" },
   grab: { cursor: "grab", userSelect: "none" },
   grabbing: { cursor: "grabbing" },
@@ -542,8 +576,10 @@ async function start() {
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
     if (e.key === "0") zoomFit();
-    if (e.key === "ArrowLeft") setVariant(-1);
-    if (e.key === "ArrowRight") setVariant(1);
+    // Arrows switch the legend; Shift + arrows the layout (#144).
+    if (e.key === "ArrowLeft") (e.shiftKey ? setVariant(-1) : setKeyV(-1));
+    if (e.key === "ArrowRight") (e.shiftKey ? setVariant(1) : setKeyV(1));
+    if ((e.key === "?" || e.key === "k") && keyV().key === "4") setCallouts((x) => !x);
   });
   goUp = () => {
     const from = focus();
@@ -685,7 +721,17 @@ function App(props: { m: Model }) {
         <Show when={lens() !== "order"}>
           <Crumbs m={m} />
         </Show>
-        <Legend m={m} />
+        <Show when={lens() !== "order"} fallback={<Legend m={m} />}>
+          <Show when={keyV().key === "0"}>
+            <Legend m={m} />
+          </Show>
+          <Show when={keyV().key === "1"}>
+            <KeyStrip m={m} />
+          </Show>
+          <Show when={keyV().key === "2"}>
+            <KeyFloat m={m} />
+          </Show>
+        </Show>
         <div
           ref={(el: HTMLDivElement) => {
             scroller = el;
@@ -703,6 +749,12 @@ function App(props: { m: Model }) {
               { passive: false },
             );
             el.addEventListener("mousemove", (e) => setPointer({ x: e.clientX, y: e.clientY }));
+            let pending = false;
+            el.addEventListener("scroll", () => {
+              if (pending) return;
+              pending = true;
+              setTimeout(() => ((pending = false), setScrollTick((x) => x + 1)), 120);
+            });
             // A click on the background (nothing that selects) clears the selection. Buttons
             // (the scenario picker) and links keep their own clicks.
             el.addEventListener("click", (e) => {
@@ -746,11 +798,11 @@ function App(props: { m: Model }) {
         <ZoomBar m={m} />
         <HoverCard m={m} />
         <div {...stylex.attrs(s.switcher)}>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setVariant(-1)}>←</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setKeyV(-1)}>←</button>
           <span>
-            <b>{variant().key}</b> — {variant().name}
+            Legend <b>{keyV().key}</b> — {keyV().name}
           </span>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setVariant(1)}>→</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setKeyV(1)}>→</button>
         </div>
       </div>
 
@@ -775,6 +827,9 @@ function HoverCard(props: { m: Model }) {
         <div {...stylex.attrs(s.card)} style={place()}>
           <Show when={h().node ? m.nodes.get(h().node!) : undefined}>{(n) => <NodeCard m={m} n={n()} />}</Show>
           <Show when={h().ids}>{(ids) => <EdgeCard m={m} edges={ids().map((id) => m.edges.get(id)!)} />}</Show>
+          <Show when={(keyV().key === "3" || keyV().key === "4") && lens() !== "order"}>
+            <DrawnAs m={m} node={h().node} edge={h().edge} />
+          </Show>
         </div>
       )}
     </Show>
@@ -1049,6 +1104,12 @@ function ZoomBar(props: { m: Model }) {
       <button onClick={zoomFit} title="Fit the whole view (0)" {...stylex.attrs(s.button)}>
         Fit
       </button>
+      <Show when={keyV().key === "4" && lens() !== "order"}>
+        <span {...stylex.attrs(s.zoomSep)} />
+        <button onClick={() => setCallouts((x) => !x)} title="Label each kind of line and box on the drawing (?)" {...stylex.attrs(s.button, callouts() && s.keyButtonOn)}>
+          ? Key
+        </button>
+      </Show>
     </div>
   );
 }
@@ -1198,6 +1259,375 @@ function Legend(props: { m: Model }) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// LEGEND VARIANTS (#155): what the legend shows, how it follows the drawing, and where it sits.
+// Switched with ?key= and the bar at the bottom (the layout stays on ?v=, A by default).
+
+const KEYS = [
+  { key: "0", name: "First draft: every style, always above the graph" },
+  { key: "1", name: "Strip: only what's drawn, folds to one line" },
+  { key: "2", name: "Floating key: over the canvas, hover a row to find it" },
+  { key: "3", name: "In the panel, plus “Drawn as” on hover" },
+  { key: "4", name: "On demand: labels pinned to the drawing (? key)" },
+] as const;
+const [keyV, setKeyVRaw] = createSignal<(typeof KEYS)[number]>(KEYS.find((x) => x.key === params.get("key")) ?? KEYS[1]);
+const setKeyV = (step: number) => {
+  const i = (KEYS.indexOf(keyV()) + step + KEYS.length) % KEYS.length;
+  setKeyVRaw(KEYS[i]!);
+  setKeyMatch(null);
+  sync();
+};
+/** What the canvas draws right now: the Graph publishes each layout it lands. */
+const [drawn, setDrawn] = createSignal<{ view: ReturnType<Model["view"]>; at: Laid } | null>(null);
+/** The legend row under the pointer: the drawing fades everything not drawn in its style. */
+const [keyMatch, setKeyMatch] = createSignal<KeyItem | null>(null);
+/** Strip and floating key: shown or folded. On demand: labels on or off. */
+const [keyOpen, setKeyOpen] = createSignal(params.get("keyopen") !== "0");
+const [callouts, setCallouts] = createSignal(false);
+/** Bumped as the canvas scrolls, so pinned labels move to examples on screen. */
+const [scrollTick, setScrollTick] = createSignal(0);
+
+interface KeyItem {
+  id: string;
+  section: string;
+  text: string;
+  sample: JSX.Element | null;
+  w?: number;
+  /** The drawn parts and lines (VisEdge keys) in this style. */
+  nodes: Set<string>;
+  edges: Set<string>;
+  /** Where one of them is, in drawing coordinates, for a pinned label. */
+  pts: { x: number; y: number }[];
+}
+
+const CHANGE_TEXT: Record<string, string> = {
+  added: "added by this PR",
+  modified: "changed by this PR",
+  inside: "changed inside: a part within it changed",
+  removed: "removed by this PR",
+  unchanged: "not changed",
+  outside: "no change word: a person or outside system",
+};
+
+function miniNode(sw: Swatch | Swatch[], opts: { dashed?: boolean; faded?: boolean } = {}) {
+  const bands = Array.isArray(sw) ? sw : [sw];
+  const edge = Array.isArray(sw) ? "unchanged" : (sw as Change | "mixed");
+  return (
+    <g {...stylex.attrs(opts.faded && s.dim)}>
+      <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.nodeBox, (stroke as Record<string, stylex.StyleXStyles>)[edge] ?? stroke.unchanged, opts.dashed && s.contextBox)} />
+      <For each={bands}>{(b, i) => <rect x={1} y={1 + (i() * 14) / bands.length} width={4} height={14 / bands.length} {...stylex.attrs(swatch[b])} />}</For>
+    </g>
+  );
+}
+const head = (x: number) => `M${x},8 L${x - 7},4 L${x - 7},12 Z`;
+const tail = (x: number) => `M${x},8 L${x + 7},4 L${x + 7},12 Z`;
+function miniLine(c: Change | "mixed", o: { dashed?: boolean; thick?: boolean; both?: boolean } = {}) {
+  const sw: Swatch = c === "mixed" ? "modified" : c;
+  return (
+    <>
+      <path d={`M${o.both ? 8 : 2},8 L28,8`} stroke-width={o.thick ? 4 : undefined} {...stylex.attrs(s.edge, stroke[c], o.dashed && s.crossing)} />
+      <path d={head(34)} {...stylex.attrs(swatch[sw])} />
+      <Show when={o.both}>
+        <path d={tail(2)} {...stylex.attrs(swatch[sw])} />
+      </Show>
+    </>
+  );
+}
+
+/** The styles the current drawing uses, each with the parts and lines drawn in it. */
+function keyItems(m: Model): KeyItem[] {
+  const d = drawn();
+  if (!d) return [];
+  const { view, at } = d;
+  const items: KeyItem[] = [];
+  const centre = (id: string) => {
+    const p = at.at.get(id);
+    return p ? { x: p.x + NODE_W, y: p.y + NODE_H / 2 } : null;
+  };
+  const lineAt = (key: string) => {
+    const r = at.routes.get(key);
+    return r ? { x: r.end.x - r.end.dx * 26, y: r.end.y - r.end.dy * 26 } : null;
+  };
+  const add = (it: Omit<KeyItem, "pts">) => {
+    if (it.nodes.size === 0 && it.edges.size === 0) return;
+    // A style worn by parts and lines both is pinned to a part: a line's midpoint sits too near other parts.
+    const ok = (p: { x: number; y: number } | null): p is { x: number; y: number } => !!p;
+    const onNodes = [...it.nodes].map(centre).filter(ok);
+    const pts = onNodes.length ? onNodes : [...it.edges].map(lineAt).filter(ok);
+    items.push({ ...it, pts });
+  };
+  const inside = (r: { x: number; y: number; w: number; h: number }) =>
+    new Set(view.nodes.filter((v) => {
+      const p = at.at.get(v.node.id);
+      return p && p.x >= r.x && p.y >= r.y && p.x + NODE_W <= r.x + r.w && p.y + NODE_H <= r.y + r.h;
+    }).map((v) => v.node.id));
+  const area = (it: Omit<KeyItem, "pts" | "edges" | "nodes">, r: { x: number; y: number; w: number; h: number }) =>
+    items.push({ ...it, nodes: inside(r), edges: new Set(), pts: [{ x: r.x + 40, y: r.y + 6 }] });
+
+  const c = colorBy();
+  const def = m.facets.get(c);
+  if (!def) {
+    // Colour by change: parts and lines share the colours, so one row explains both.
+    const PARTS = "Colour: how the PR changed it";
+    for (const k of ["added", "modified", "inside", "removed", "unchanged", "outside"] as const) {
+      const nodes = new Set(view.nodes.filter((v) => {
+        const n = v.node;
+        const kk = !m.showsChange(n.id) ? "outside" : n.change === "unchanged" && v.touched ? "inside" : n.change;
+        return kk === k;
+      }).map((v) => v.node.id));
+      const edges = new Set(view.edges.filter((e) => (e.change === "mixed" ? "modified" : e.change) === k).map((e) => e.key));
+      const sw: Swatch = k === "inside" ? "modified" : k === "outside" ? "unchanged" : k;
+      add({ id: `c:${k}`, section: PARTS, text: k === "outside" || k === "inside" ? CHANGE_TEXT[k]! : `${MARK[k]}`, sample: k === "outside" ? miniNode("unchanged") : miniNode(sw), nodes, edges });
+    }
+  } else {
+    const PARTS = `Colour: ${def.name}`;
+    const real = def.values.filter((x) => x.id !== "unknown");
+    let multi = new Set<string>();
+    const none = new Set<string>();
+    for (const v of view.nodes) {
+      const f = v.node.facets.find((x) => x.facet === c);
+      if (!f || f.values.length === 0) none.add(v.node.id);
+      else if (f.values.length > 1) multi.add(v.node.id);
+    }
+    real.forEach((val, i) => {
+      const nodes = new Set(view.nodes.filter((v) => v.node.facets.find((x) => x.facet === c)?.values.includes(val.id)).map((v) => v.node.id));
+      add({ id: `f:${val.id}`, section: PARTS, text: val.label, sample: miniNode(PALETTE[i % PALETTE.length]!), nodes, edges: new Set() });
+    });
+    add({ id: "f:multi", section: PARTS, text: "split bar: several values", sample: miniNode(["c0", "c1", "c2"]), nodes: multi, edges: new Set() });
+    add({ id: "f:none", section: PARTS, text: "grey bar: no value found", sample: miniNode("none"), nodes: none, edges: new Set() });
+    multi = new Set();
+    // Lines keep the change colours when parts are coloured by a facet.
+    for (const k of ["added", "modified", "removed", "unchanged"] as const) {
+      const edges = new Set(view.edges.filter((e) => (e.change === "mixed" ? "modified" : e.change) === k).map((e) => e.key));
+      add({ id: `lc:${k}`, section: "Lines", text: `${MARK[k]} connection`, sample: miniLine(k), nodes: new Set(), edges });
+    }
+  }
+  const PARTS2 = "Parts";
+  add({ id: "context", section: PARTS2, text: "dashed: outside what you opened, here for its lines", sample: miniNode("unchanged", { dashed: true }), nodes: new Set(view.nodes.filter((v) => v.context).map((v) => v.node.id)), edges: new Set() });
+  add({
+    id: "kids",
+    section: PARTS2,
+    text: "double-click to open",
+    w: 54,
+    sample: (
+      <text x={0} y={12} {...stylex.attrs(s.svgSmall)}>
+        3 inside ▸
+      </text>
+    ),
+    nodes: new Set(view.nodes.filter((v) => (m.children.get(v.node.id) ?? []).length > 0 && !v.context).map((v) => v.node.id)),
+    edges: new Set(),
+  });
+  add({ id: "dim", section: PARTS2, text: "faded: not on a line that crosses a boundary", sample: miniNode("unchanged", { faded: true }), nodes: new Set(view.nodes.filter((v) => v.dim).map((v) => v.node.id)), edges: new Set() });
+
+  const L = "Lines";
+  add({ id: "solid", section: L, text: "solid: a connection, arrow at the receiver", sample: miniLine("unchanged"), nodes: new Set(), edges: new Set(view.edges.filter((e) => e.crosses.length === 0).map((e) => e.key)) });
+  add({ id: "dashed", section: L, text: "dashed: crosses a boundary", sample: miniLine("unchanged", { dashed: true }), nodes: new Set(), edges: new Set(view.edges.filter((e) => e.crosses.length > 0).map((e) => e.key)) });
+  add({ id: "thick", section: L, text: "thicker: several connections", sample: miniLine("unchanged", { thick: true }), nodes: new Set(), edges: new Set(view.edges.filter((e) => e.edges.length > 1).map((e) => e.key)) });
+  add({ id: "both", section: L, text: "both ends: two-way", sample: miniLine("unchanged", { both: true }), nodes: new Set(), edges: new Set(view.edges.filter((e) => e.both).map((e) => e.key)) });
+  if (variant().nolabels && view.edges.length > 0) items.push({ id: "nolabels", section: L, text: "no labels: hover or select a line", sample: null, nodes: new Set(), edges: new Set(), pts: [] });
+
+  const A = "Areas";
+  if (at.group) area({ id: "frame", section: A, text: `frame: inside ${focus() ? m.name(focus()!) : "the system"}`, sample: <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.groupBox)} /> }, at.group);
+  for (const r of at.regions)
+    area(
+      r.key === "C"
+        ? { id: "regionC", section: A, text: "tinted: parts this PR changed", sample: <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.region, s.regionChanged)} /> }
+        : { id: "regionU", section: A, text: "dashed: parts it didn't change", sample: <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.region)} /> },
+      r,
+    );
+  if (at.boxes.length) {
+    const f = m.facets.get(groupFacet(m));
+    const b = at.boxes[0]!;
+    const nodes = new Set<string>();
+    for (const x of at.boxes) for (const id of inside(x)) nodes.add(id);
+    items.push({ id: "boxes", section: A, text: `grey box: ${f?.name ?? "a group"}`, sample: <rect x={1} y={1} width={34} height={14} rx={3} {...stylex.attrs(s.valueBox)} />, nodes, edges: new Set(), pts: [{ x: b.x + 40, y: b.y + 4 }] });
+  }
+  const of = overlapFacet(m);
+  if (of) {
+    const nodes = new Set(view.nodes.filter((v) => m.isUsed(v.node.id) && m.valueOf(v.node.id, of) !== undefined && m.valueOf(v.node.id, of) !== "unknown").map((v) => v.node.id));
+    add({ id: "outlines", section: A, text: `coloured outline: ${m.facets.get(of)?.name ?? "a group"}`, sample: <rect x={1} y={1} width={34} height={14} rx={4} fill="none" stroke-width={1.5} {...stylex.attrs(stroke.added)} />, nodes, edges: new Set() });
+  }
+  if (at.pack) items.push({ id: "pack", section: A, text: "grid: parts with no lines in this lens", sample: null, nodes: new Set(), edges: new Set(), pts: [{ x: at.pack.x, y: at.pack.y - 14 }] });
+  return items;
+}
+
+const bySection = (items: KeyItem[]) => {
+  const out = new Map<string, KeyItem[]>();
+  for (const it of items) out.set(it.section, [...(out.get(it.section) ?? []), it]);
+  return [...out];
+};
+
+function KeySample(props: { it: KeyItem }) {
+  return (
+    <Show when={props.it.sample}>
+      <svg width={props.it.w ?? 36} height={16} viewBox={`0 0 ${props.it.w ?? 36} 16`} {...stylex.attrs(s.sample)}>
+        {props.it.sample}
+      </svg>
+    </Show>
+  );
+}
+
+/** K1: a strip above the canvas, only what's drawn, sections inline; folds to one line. */
+function KeyStrip(props: { m: Model }) {
+  const items = createMemo(() => keyItems(props.m));
+  return (
+    <div {...stylex.attrs(s.legend)}>
+      <Show
+        when={keyOpen()}
+        fallback={
+          <button onClick={() => (setKeyOpen(true), sync())} {...stylex.attrs(s.crumb)}>
+            Key ▸ <span {...stylex.attrs(s.muted)}>· {items().length} styles in this drawing</span>
+          </button>
+        }
+      >
+        <For each={bySection(items())}>
+          {([sec, its]) => (
+            <span {...stylex.attrs(s.keyGroup)}>
+              <span {...stylex.attrs(s.legendHead)}>{sec}</span>
+              <For each={its}>
+                {(it) => (
+                  <span {...stylex.attrs(s.label)} onMouseEnter={() => setKeyMatch(it)} onMouseLeave={() => setKeyMatch(null)}>
+                    <KeySample it={it} />
+                    <span {...stylex.attrs(!it.sample && s.muted)}>{it.text}</span>
+                  </span>
+                )}
+              </For>
+            </span>
+          )}
+        </For>
+        <button onClick={() => (setKeyOpen(false), setKeyMatch(null), sync())} {...stylex.attrs(s.crumb)}>
+          Hide key
+        </button>
+      </Show>
+    </div>
+  );
+}
+
+/** K2: a card floating over the canvas's bottom left; each row counts its matches and lights them on hover. */
+function KeyFloat(props: { m: Model }) {
+  const items = createMemo(() => keyItems(props.m));
+  return (
+    <div {...stylex.attrs(s.keyFloat)}>
+      <Show
+        when={keyOpen()}
+        fallback={
+          <button onClick={() => (setKeyOpen(true), sync())} {...stylex.attrs(s.button)}>
+            Key
+          </button>
+        }
+      >
+        <div {...stylex.attrs(s.keyFloatHead)}>
+          <span {...stylex.attrs(s.legendHead)}>Key</span>
+          <span {...stylex.attrs(s.muted)}>hover a row to find it</span>
+          <button onClick={() => (setKeyOpen(false), setKeyMatch(null), sync())} {...stylex.attrs(s.keyClose)} title="Fold the key">
+            ×
+          </button>
+        </div>
+        <KeyRows items={items()} />
+      </Show>
+    </div>
+  );
+}
+
+function KeyRows(props: { items: KeyItem[] }) {
+  return (
+    <For each={bySection(props.items)}>
+      {([sec, its]) => (
+        <>
+          <div {...stylex.attrs(s.keySection)}>{sec}</div>
+          <For each={its}>
+            {(it) => (
+              <div
+                {...stylex.attrs(s.keyRow, keyMatch()?.id === it.id && s.keyRowOn)}
+                onMouseEnter={() => setKeyMatch(it)}
+                onMouseLeave={() => setKeyMatch(null)}
+              >
+                <span {...stylex.attrs(s.keySampleCell)}>
+                  <KeySample it={it} />
+                </span>
+                <span {...stylex.attrs(!it.sample && s.muted)}>{it.text}</span>
+                <span {...stylex.attrs(s.keyCount)}>{it.nodes.size + it.edges.size || ""}</span>
+              </div>
+            )}
+          </For>
+        </>
+      )}
+    </For>
+  );
+}
+
+/** K3: the key as the overview's first section. */
+function KeyPanel(props: { m: Model }) {
+  const items = createMemo(() => keyItems(props.m));
+  return (
+    <details open={keyOpen()} onToggle={(e) => (setKeyOpen(e.currentTarget.open), sync())} {...stylex.attrs(s.details)}>
+      <summary {...stylex.attrs(s.summary)}>How to read the drawing</summary>
+      <KeyRows items={items()} />
+    </details>
+  );
+}
+
+/** K3 and K4: what the hovered thing's own style means, in the hover card. */
+function DrawnAs(props: { m: Model; node?: string; edge?: string }) {
+  const lines = createMemo(() => {
+    const items = keyItems(props.m).filter((it) => it.sample && (props.node ? it.nodes.has(props.node) && !["frame", "regionC", "regionU", "boxes"].includes(it.id) : it.edges.has(props.edge ?? "")));
+    return items;
+  });
+  return (
+    <Show when={lines().length > 0}>
+      <div {...stylex.attrs(s.cardEdge)}>
+        <span {...stylex.attrs(s.cardKind)}>Drawn as</span>
+        <For each={lines()}>
+          {(it) => (
+            <div {...stylex.attrs(s.label)}>
+              <KeySample it={it} />
+              {it.text}
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+}
+
+/** K4: each style's meaning pinned to one example of it on the drawing, the one nearest the top left of what's on screen. */
+function Callouts(props: { m: Model; scale: number }) {
+  const pins = createMemo(() => {
+    if (!callouts()) return [];
+    scrollTick();
+    const k = props.scale;
+    const vx = (scroller?.scrollLeft ?? 0) / k, vy = (scroller?.scrollTop ?? 0) / k;
+    const vw = (scroller?.clientWidth ?? 800) / k, vh = (scroller?.clientHeight ?? 600) / k;
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    const out: { it: KeyItem; p: { x: number; y: number }; box: { x: number; y: number; w: number; h: number } }[] = [];
+    for (const it of keyItems(props.m)) {
+      const seen = it.pts.filter((p) => p.x >= vx && p.y >= vy && p.x <= vx + vw - 40 && p.y <= vy + vh - 40);
+      const p = (seen.length ? seen : it.pts).reduce<{ x: number; y: number } | null>((a, q) => (!a || q.y + q.x * 0.3 < a.y + a.x * 0.3 ? q : a), null);
+      if (!p) continue;
+      const w = labelWidth(it.text) + 16, h = 20;
+      const box = { x: p.x + 14, y: p.y - 30, w, h };
+      while (placed.some((r) => box.x < r.x + r.w && r.x < box.x + box.w && box.y < r.y + r.h + 4 && r.y < box.y + box.h + 4)) box.y += h + 4;
+      placed.push(box);
+      out.push({ it, p, box });
+    }
+    return out;
+  });
+  return (
+    <For each={pins()}>
+      {(x) => (
+        <g {...stylex.attrs(s.pin)}>
+          <path d={`M${x.p.x},${x.p.y} L${x.box.x},${x.box.y + x.box.h / 2}`} {...stylex.attrs(s.pinLine)} />
+          <circle cx={x.p.x} cy={x.p.y} r={3} {...stylex.attrs(s.pinDot)} />
+          <rect x={x.box.x} y={x.box.y} width={x.box.w} height={x.box.h} rx={10} {...stylex.attrs(s.pinBox)} />
+          <text x={x.box.x + 8} y={x.box.y + 14} {...stylex.attrs(s.pinText)}>
+            {x.it.text}
+          </text>
+        </g>
+      )}
+    </For>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The graph.
 
 /** TOP-LEVEL VARIANTS (#144): the explorers, on the same view the graph draws. */
@@ -1285,7 +1715,7 @@ function Graph(props: { m: Model; colour: ColourFn }) {
         : undefined,
       split ?? "RIGHT",
     ).then((at) => {
-      if (mine === ticket) setLaid({ view: v, at });
+      if (mine === ticket) (setLaid({ view: v, at }), setDrawn({ view: v, at }));
     });
   });
 
@@ -1470,7 +1900,7 @@ function Drawing(props: {
             <g
               onMouseEnter={() => setHover({ node: v.node.id })}
               onMouseLeave={() => setHover(null)}
-              {...stylex.attrs(activeNode() !== null && !neighbours().has(v.node.id) && s.fadedNode)}
+              {...stylex.attrs(((activeNode() !== null && !neighbours().has(v.node.id)) || (keyMatch() !== null && !keyMatch()!.nodes.has(v.node.id))) && s.fadedNode)}
             >
               <NodeBox m={m} v={v} at={p()} colour={props.colour} />
             </g>
@@ -1503,7 +1933,7 @@ function Drawing(props: {
               }}
               onMouseEnter={() => setHover({ edge: e.key, ids: e.edges.map((x) => x.id) })}
               onMouseLeave={() => setHover(null)}
-              {...stylex.attrs(lit().size > 0 && !lit().has(e.key) && s.faded)}
+              {...stylex.attrs(((lit().size > 0 && !lit().has(e.key)) || (keyMatch() !== null && !keyMatch()!.edges.has(e.key))) && s.faded)}
             >
               <path d={r.d} stroke-width={width(e) + (on() ? 1.5 : 0)} {...stylex.attrs(s.edge, stroke[e.change], e.crosses.length > 0 && s.crossing)} />
               <path d={arrow(r.end)} {...stylex.attrs(swatch[e.change === "mixed" ? "modified" : e.change])} />
@@ -1525,6 +1955,9 @@ function Drawing(props: {
           );
         }}
       </For>
+      <Show when={keyV().key === "4"}>
+        <Callouts m={m} scale={scale()} />
+      </Show>
     </svg>
   );
 }
@@ -1737,6 +2170,9 @@ function Overview(props: { m: Model; reveal: (x: Sel) => void }) {
   const pick = (it: RankItem): Sel => (it.kind === "edge" ? { kind: "edge", ids: [it.id] } : it.kind === "node" ? { kind: "node", id: it.id } : { kind: "boundary", id: it.id });
   return (
     <div>
+      <Show when={keyV().key === "3" && lens() !== "order"}>
+        <KeyPanel m={m} />
+      </Show>
       <h2 {...stylex.attrs(s.h2)}>What this PR changes</h2>
       <p {...stylex.attrs(s.p, s.muted)}>{a.coverage.summary}</p>
       <details {...stylex.attrs(s.details)}>
