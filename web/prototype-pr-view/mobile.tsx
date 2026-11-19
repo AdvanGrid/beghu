@@ -682,6 +682,7 @@ const s = stylex.create({
   },
   sheetDragging: { transitionDuration: "0ms" },
   grip: { flexShrink: 0, paddingBottom: 4, paddingTop: 8, touchAction: "none" },
+  gripTall: { paddingBottom: 10, paddingTop: 12 },
   gripBar: {
     backgroundColor: colors.line,
     borderRadius: 3,
@@ -2482,32 +2483,42 @@ function MapAndList(props: { c: PhoneCtx }) {
     [DRAWER_PEEK, half(), full()].reduce((a, b) =>
       Math.abs(b - x) < Math.abs(a - x) ? b : a,
     );
-  let drag: { y: number; h: number; moved: boolean } | null = null;
+  // The handle and the tabs both drag the drawer. A press on a tab only becomes a drag once the
+  // finger has moved; until then it's still a tap on the tab.
+  let drag: { y: number; h: number; moved: boolean; id: number } | null = null;
+  let swallow = false;
+  const end = () => {
+    if (!drag) return;
+    setDragging(false);
+    swallow = drag.moved;
+    setH(drag.moved ? snapTo(h()) : h());
+    drag = null;
+  };
   const grip = {
     onPointerDown: (e: PointerEvent) => {
-      if ((e.target as Element).closest("button")) return;
-      (e.currentTarget as Element).setPointerCapture(e.pointerId);
-      drag = { y: e.clientY, h: h(), moved: false };
-      setDragging(true);
+      drag = { y: e.clientY, h: h(), moved: false, id: e.pointerId };
+      swallow = false;
     },
     onPointerMove: (e: PointerEvent) => {
-      if (!drag) return;
-      if (Math.abs(e.clientY - drag.y) > 6) drag.moved = true;
+      if (!drag || e.pointerId !== drag.id) return;
+      if (!drag.moved && Math.abs(e.clientY - drag.y) > 6) {
+        drag.moved = true;
+        setDragging(true);
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      }
       if (drag.moved)
         setH(Math.max(60, Math.min(full(), drag.h - (e.clientY - drag.y))));
     },
-    onPointerUp: () => {
-      if (!drag) return;
-      setDragging(false);
-      setH(
-        drag.moved
-          ? snapTo(h())
-          : h() <= DRAWER_PEEK + 4
-            ? half()
-            : DRAWER_PEEK,
-      );
-      drag = null;
+    onPointerUp: end,
+    onPointerCancel: end,
+    onClickCapture: (e: MouseEvent) => {
+      if (swallow) (e.stopPropagation(), e.preventDefault(), (swallow = false));
     },
+  };
+  /** A tap on the handle toggles between peek and half. */
+  const gripTap = () => {
+    if (swallow) return void (swallow = false);
+    setH(h() <= DRAWER_PEEK + 4 ? half() : DRAWER_PEEK);
   };
   /** The drawer at least half open, to show what was just picked. */
   const atLeastHalf = () => setH((v) => Math.max(v, half()));
@@ -2822,7 +2833,7 @@ function MapAndList(props: { c: PhoneCtx }) {
         style={{ "--sheet-h": `${h()}px` }}
         {...stylex.attrs(s.sheet, dragging() && s.sheetDragging)}
       >
-        <div {...stylex.attrs(s.grip)} {...grip}>
+        <div {...stylex.attrs(s.grip, s.gripTall)} {...grip} onClick={gripTap}>
           <div {...stylex.attrs(s.gripBar)} />
         </div>
         <div {...stylex.attrs(s.tabs)} {...grip}>
