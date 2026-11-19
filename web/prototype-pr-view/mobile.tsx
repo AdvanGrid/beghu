@@ -2398,11 +2398,16 @@ function MapAndList(props: { c: PhoneCtx }) {
   let keepT = false;
   let app: HTMLDivElement | undefined;
   const here = () => path()[path().length - 1] ?? null;
+  /** The block the drawer shows, after the reader opened it on the map (or in the list). */
+  const [block, setBlock] = createSignal<string | null>(null);
 
-  // Back: every pick, every zoom into a part and every jump to Details is a step.
+  // Back: everything the reader does on the map or in the drawer is a step: a pick, opening or
+  // folding a block, a zoom into a part, a jump to Details.
   type Snap = {
     focus: string | null;
     path: string[];
+    block: string | null;
+    manual: Set<string>;
     tab: Tab;
     lineSel: string[] | null;
     sel: PhoneSel;
@@ -2412,6 +2417,8 @@ function MapAndList(props: { c: PhoneCtx }) {
     () => ({
       focus: c.focus(),
       path: path(),
+      block: block(),
+      manual: manual(),
       tab: tab(),
       lineSel: lineSel(),
       sel: c.sel(),
@@ -2419,9 +2426,14 @@ function MapAndList(props: { c: PhoneCtx }) {
     }),
     (s) => {
       // A different path or zoom lays the map out again; a tab change doesn't.
-      const relayout = s.focus !== c.focus() || s.path.join() !== path().join();
+      const relayout =
+        s.focus !== c.focus() ||
+        s.path.join() !== path().join() ||
+        [...s.manual].join() !== [...manual()].join();
       if (s.focus !== c.focus()) c.setFocus(s.focus);
       setPath(s.path);
+      setBlock(s.block);
+      setManual(s.manual);
       setTab(s.tab);
       setLineSel(s.lineSel);
       c.setSel(s.sel);
@@ -2436,6 +2448,8 @@ function MapAndList(props: { c: PhoneCtx }) {
     () => {
       setPath([]);
       setLineSel(null);
+      setBlock(null);
+      setManual(new Set<string>());
     },
   );
 
@@ -2501,6 +2515,17 @@ function MapAndList(props: { c: PhoneCtx }) {
       y: 34 + Math.max(8, (vh - at.height * sc) / 2),
     });
   };
+  /** Zooms to a block's box: its width fills the map, never below a readable scale. */
+  const fitBox = (b: { x: number; y: number; w: number; h: number }) => {
+    if (!mapHost) return;
+    const w = mapHost.clientWidth;
+    const sc = Math.max(0.4, Math.min(1, (w - 16) / b.w));
+    setMt({
+      s: sc,
+      x: 8 - b.x * sc,
+      y: 34 + 8 - b.y * sc,
+    });
+  };
   const centreOn = (x: number, y: number, sc: number) => {
     if (!mapHost) return;
     const vh = mapHost.clientHeight - h() - 34;
@@ -2535,6 +2560,10 @@ function MapAndList(props: { c: PhoneCtx }) {
         }
         // A new layout keeps the reader's zoom and brings what's picked to the middle; with
         // nothing picked, the whole drawing fits.
+        const box = block()
+          ? at.boxes.find((b) => b.value === block())
+          : undefined;
+        if (box) return fitBox(box);
         const p = here() ? at.at.get(here()!) : undefined;
         if (p)
           centreOn(p.x + NODE_W / 2, p.y + NODE_H / 2, Math.max(mt().s, 0.45));
@@ -2542,28 +2571,58 @@ function MapAndList(props: { c: PhoneCtx }) {
       });
     },
   );
-  const toggleBlock = (k: string) =>
-    setManual((o) => {
-      const n = new Set(o);
-      if (!n.delete(k)) n.add(k);
-      return n;
-    });
-
-  const go = (id: string) => {
-    if (id === here()) return;
+  /** Opens a folded block (the drawer shows it), or folds an open one (and drops picks inside it). */
+  const toggleBlock = (k: string) => {
     nav.step();
+    if (open().has(k)) {
+      setManual((o) => {
+        const n = new Set(o);
+        n.delete(k);
+        return n;
+      });
+      const base = clusters(c, c.view(), new Set());
+      setPath((p) => p.filter((id) => base.blockOf.get(id) !== k));
+      if (block() === k) setBlock(null);
+      setLineSel(null);
+      c.setSel(here() ? { kind: "node", id: here()! } : null);
+    } else {
+      setManual((o) => new Set([...o, k]));
+      setBlock(k);
+      setLineSel(null);
+      c.setSel(null);
+      atLeastHalf();
+    }
+  };
+  /** Shows an open block in the drawer again, without folding it. */
+  const showBlock = (k: string) => {
+    if (block() === k) return;
+    nav.step();
+    setManual((o) => new Set([...o, k]));
+    setBlock(k);
+    setLineSel(null);
+    c.setSel(null);
+    setTab("elements");
+    atLeastHalf();
+  };
+
+  /** Picks a part: the drawer shows it in whichever tab is open. */
+  const go = (id: string) => {
+    if (id === here() && !block()) return;
+    nav.step();
+    setBlock(null);
     setPath((p) =>
       p.includes(id) ? p.slice(0, p.indexOf(id) + 1) : [...p, id],
     );
     setLineSel(null);
     c.setSel({ kind: "node", id });
-    setTab("elements");
     atLeastHalf();
   };
   const zoomInto = (id: string) => {
     nav.step();
     c.setFocus(id);
     setPath([]);
+    setBlock(null);
+    setManual(new Set<string>());
     setLineSel(null);
     c.setSel(null);
     setTab("elements");
@@ -2575,6 +2634,7 @@ function MapAndList(props: { c: PhoneCtx }) {
     setTab("details");
     atLeastHalf();
   };
+  let lastTap = { id: "", at: 0 };
   const mapGestures = panZoom({
     host: () => mapHost,
     t: mt,
@@ -2585,7 +2645,25 @@ function MapAndList(props: { c: PhoneCtx }) {
         ?.getAttribute("data-id");
       if (!id) return;
       if (id.startsWith(CL)) return toggleBlock(id.slice(CL.length));
-      if (id.startsWith("box:")) return toggleBlock(id.slice(4));
+      if (id.startsWith("box:")) {
+        // The box's title folds it; anywhere else in the box shows the block in the drawer.
+        const k = id.slice(4);
+        return (target as Element).closest("text")
+          ? toggleBlock(k)
+          : showBlock(k);
+      }
+      // Two quick taps on a part with parts inside open it, as the drawer's "Open inside" does.
+      const now = performance.now();
+      if (
+        lastTap.id === id &&
+        now - lastTap.at < 350 &&
+        (m.children.get(id) ?? []).length
+      ) {
+        lastTap = { id: "", at: 0 };
+        // The first tap picked it (a step of its own), so back from inside lands on it picked.
+        return zoomInto(id);
+      }
+      lastTap = { id, at: now };
       go(id);
     },
   });
@@ -2618,12 +2696,15 @@ function MapAndList(props: { c: PhoneCtx }) {
     );
   };
   const title = () =>
-    here()
-      ? m.name(here()!)
-      : c.focus() && c.focus() !== c.home()
-        ? m.name(c.focus()!)
-        : "Whole system";
+    block()
+      ? block()!
+      : here()
+        ? m.name(here()!)
+        : c.focus() && c.focus() !== c.home()
+          ? m.name(c.focus()!)
+          : "Whole system";
   const detailsTitle = () => {
+    if (block()) return `${block()}: pick a part for its details`;
     const x = c.sel();
     if (x?.kind === "node") return m.name((x as { id: string }).id);
     if (x?.kind === "edge")
@@ -2735,27 +2816,104 @@ function MapAndList(props: { c: PhoneCtx }) {
                 </For>
               </div>
             </Show>
-            <Show
-              when={here()}
-              fallback={
-                <>
-                  <For each={cl().keys}>
-                    {(k) => (
-                      <>
-                        <div {...stylex.attrs(s.section)}>
-                          {k} ({cl().members.get(k)?.length ?? 0})
+            <Show when={block()}>
+              {(k) => {
+                const ms = () => cl().members.get(k()) ?? [];
+                const changed = () =>
+                  ms().filter((id) => cl().vs.get(id)?.touched).length;
+                return (
+                  <>
+                    <div {...stylex.attrs(s.head)}>
+                      <div
+                        {...stylex.attrs(
+                          s.rowKind,
+                          textOf(changed() ? "modified" : "unchanged"),
+                        )}
+                      >
+                        block · {ms().length} parts
+                        {changed() ? ` · ${changed()} changed` : ""}
+                      </div>
+                      <div {...stylex.attrs(s.headName)}>{k()}</div>
+                      <div {...stylex.attrs(s.actions)}>
+                        <button
+                          {...stylex.attrs(s.btn)}
+                          onClick={() => toggleBlock(k())}
+                        >
+                          Fold it on the map
+                        </button>
+                      </div>
+                    </div>
+                    <div {...stylex.attrs(s.section)}>
+                      Parts ({ms().length})
+                    </div>
+                    <For each={ms()}>
+                      {(id) => <PartRow c={c} id={id} onTap={() => go(id)} />}
+                    </For>
+                    <div {...stylex.attrs(s.section)}>
+                      Lines to other blocks
+                    </div>
+                    <For
+                      each={blockLines(
+                        clusters(c, c.view(), new Set()),
+                        c.view(),
+                        k(),
+                      )}
+                    >
+                      {([o, es]) => (
+                        <div {...stylex.attrs(s.row)}>
+                          <span
+                            {...stylex.attrs(s.rowBar, barOf(lineChange(es)))}
+                          />
+                          <button
+                            {...stylex.attrs(s.rowMain)}
+                            onClick={() =>
+                              showDetails(
+                                { kind: "edge", ids: edgeIds(es) },
+                                edgeIds(es),
+                              )
+                            }
+                          >
+                            <span {...stylex.attrs(s.rowKind)}>
+                              {edgeIds(es).length} connections
+                            </span>
+                            <span {...stylex.attrs(s.rowName)}>↔ {o}</span>
+                          </button>
+                          <span {...stylex.attrs(s.rowEnd)}>ⓘ</span>
                         </div>
-                        <For each={cl().members.get(k) ?? []}>
-                          {(id) => (
-                            <PartRow c={c} id={id} onTap={() => go(id)} />
-                          )}
-                        </For>
-                      </>
-                    )}
-                  </For>
-                  <div {...stylex.attrs(s.section)}>View</div>
-                  <ViewControls c={c} />
-                </>
+                      )}
+                    </For>
+                  </>
+                );
+              }}
+            </Show>
+            <Show
+              when={block() ? null : here()}
+              fallback={
+                !block() && (
+                  <>
+                    <For each={cl().keys}>
+                      {(k) => (
+                        <>
+                          <div
+                            {...stylex.attrs(s.section)}
+                            role="button"
+                            onClick={() => showBlock(k)}
+                          >
+                            {k} ({cl().members.get(k)?.length ?? 0}) · show on
+                            map ›
+                          </div>
+                          <For each={cl().members.get(k) ?? []}>
+                            {(id) => (
+                              <PartRow c={c} id={id} onTap={() => go(id)} />
+                            )}
+                          </For>
+                        </>
+                      )}
+                    </For>
+                    <div {...stylex.attrs(s.section)}>View</div>
+                    <ViewControls c={c} />
+                  </>
+                )
               }
             >
               {(id) => (
