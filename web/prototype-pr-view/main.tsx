@@ -12,11 +12,16 @@ import { Model, type Lens, type RankItem, type VisEdge } from "./model.ts";
 import { Explore, type Api, type ExploreKind } from "./explore.tsx";
 import { Phone, phoneWanted, type PhoneCtx, type PhoneSel } from "./mobile.tsx";
 import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
+import type { Purposes } from "./purpose.ts";
+import { purposeLit, Walkthrough, WT_VARIANTS, type WalkCtx, type WSel, type WtKey } from "./walkthrough.tsx";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
 // TOP-LEVEL VARIANTS (#144): made-up edges laid over an analysis (data/overlays/, gitignored), to
 // see the layout at a realistic density. Not from the agent; ?overlay=0 leaves them out.
 const overlays = import.meta.glob<{ edges: Edge[] }>("./data/overlays/*.json", { import: "default" });
+// WALKTHROUGH (#159): the hand-written purpose data, one file per analysis (gitignored).
+const purposeLoaders = import.meta.glob<Purposes>("./data/purposes/*.json", { import: "default" });
+let purposes: Purposes | null = null;
 const names = Object.keys(loaders).map((k) => k.replace("./data/", "").replace(/\.json$/, ""));
 
 // ---------------------------------------------------------------------------------------------
@@ -28,6 +33,7 @@ type Sel =
   | { kind: "step"; scenario: string; i: number }
   | { kind: "boundary"; id: string }
   | { kind: "group"; facet: string; value: string }
+  | { kind: "purpose"; id: string }
   | null;
 
 const params = new URLSearchParams(location.search);
@@ -73,6 +79,21 @@ const setVariant = (step: number) => {
 };
 /** Rolled-up groups the engineer opened in place ("facet:value"). */
 /** Parts with no lines in the current lens: hidden unless ?lone=1. */
+// WALKTHROUGH (#159): which panel layout; ← → in the bottom bar switch it.
+const [wt, setWtRaw] = createSignal<(typeof WT_VARIANTS)[number]>(WT_VARIANTS.find((x) => x.key === params.get("wt")) ?? WT_VARIANTS[1]);
+const setWt = (step: number) => {
+  const i = (WT_VARIANTS.indexOf(wt()) + step + WT_VARIANTS.length) % WT_VARIANTS.length;
+  setWtRaw(WT_VARIANTS[i]!);
+  sync();
+};
+/** Parts and lines the walkthrough lights (the rest fades): a hovered stop, else the place you stand on. */
+const [hoverSpot, setHoverSpot] = createSignal<{ nodes: string[]; edges: string[] } | null>(null);
+const spot = () => {
+  const h = hoverSpot();
+  if (h) return h;
+  const x = sel();
+  return x?.kind === "purpose" && purposes ? purposeLit(purposes, x.id) : null;
+};
 const [showLone, setShowLone] = createSignal(params.get("lone") === "1");
 const [opened, setOpened] = createSignal<Set<string>>(new Set());
 const toggleOpened = (k: string) =>
@@ -97,7 +118,8 @@ function sync() {
   put("overlap", overlap());
   put("v", variant().key === "A" ? null : variant().key);
   put("lone", showLone() ? "1" : null);
-  put("key", keyV().key === "1" ? null : keyV().key);
+  put("key", keyV().key === "2" ? null : keyV().key);
+  put("wt", wt().key === "A" ? null : wt().key);
   put("keyopen", keyOpen() ? null : "0");
   history.replaceState(null, "", `?${p}`);
 }
@@ -558,6 +580,8 @@ async function start() {
   const overlay = overlays[`./data/overlays/${name}.json`];
   if (overlay && params.get("overlay") !== "0") analysis.edges.push(...(await overlay()).edges);
   const m = new Model(analysis);
+  const pl = purposeLoaders[`./data/purposes/${name}.json`];
+  if (pl) purposes = await pl();
   document.title = `#${m.a.pr.number} ${m.a.pr.title} · PR view`;
   // One node at the top (the whole repo) is nothing to look at: start inside it.
   const roots = m.children.get(null) ?? [];
@@ -578,9 +602,11 @@ async function start() {
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
     if (e.key === "0") zoomFit();
-    // Arrows switch the legend; Shift + arrows the layout (#144).
-    if (e.key === "ArrowLeft") (e.shiftKey ? setVariant(-1) : setKeyV(-1));
-    if (e.key === "ArrowRight") (e.shiftKey ? setVariant(1) : setKeyV(1));
+    // Arrows switch the walkthrough (#159); Shift + arrows the layout (#144).
+    if (e.key === "ArrowLeft") (e.shiftKey ? setVariant(-1) : setWt(-1));
+    if (e.key === "ArrowRight") (e.shiftKey ? setVariant(1) : setWt(1));
+    if (e.key === "[") setKeyV(-1);
+    if (e.key === "]") setKeyV(1);
     if ((e.key === "?" || e.key === "k") && keyV().key === "4") setCallouts((x) => !x);
   });
   goUp = () => {
@@ -835,11 +861,11 @@ function App(props: { m: Model }) {
         <ZoomBar m={m} />
         <HoverCard m={m} />
         <div {...stylex.attrs(s.switcher)}>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setKeyV(-1)}>←</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setWt(-1)}>←</button>
           <span>
-            Legend <b>{keyV().key}</b> — {keyV().name}
+            Panel <b>{wt().key}</b> — {wt().name}
           </span>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setKeyV(1)}>→</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setWt(1)}>→</button>
         </div>
       </div>
 
@@ -1306,7 +1332,7 @@ const KEYS = [
   { key: "3", name: "In the panel, plus “Drawn as” on hover" },
   { key: "4", name: "On demand: labels pinned to the drawing (? key)" },
 ] as const;
-const [keyV, setKeyVRaw] = createSignal<(typeof KEYS)[number]>(KEYS.find((x) => x.key === params.get("key")) ?? KEYS[1]);
+const [keyV, setKeyVRaw] = createSignal<(typeof KEYS)[number]>(KEYS.find((x) => x.key === params.get("key")) ?? KEYS[2]);
 const setKeyV = (step: number) => {
   const i = (KEYS.indexOf(keyV()) + step + KEYS.length) % KEYS.length;
   setKeyVRaw(KEYS[i]!);
@@ -1822,6 +1848,22 @@ function Drawing(props: {
     return out;
   });
   const width = (e: VisEdge) => 1.3 + Math.log2(e.edges.length) * 0.9;
+  /** The walkthrough's lit parts and lines (#159), as drawn here: a part is lit when it, a part inside it or its ancestor is named. */
+  const spotMatch = createMemo(() => {
+    const sp = spot();
+    if (!sp) return null;
+    const nodes = new Set<string>();
+    for (const v of props.view.nodes) {
+      const chain = m.chain(v.node.id);
+      if (sp.nodes.some((id) => chain.includes(id) || m.chain(id).includes(v.node.id))) nodes.add(v.node.id);
+    }
+    const ids = new Set(sp.edges);
+    const edges = new Set(props.view.edges.filter((e) => e.edges.some((x) => ids.has(x.id))).map((e) => e.key));
+    return { nodes, edges };
+  });
+  function fade() {
+    return keyMatch() ?? spotMatch();
+  }
 
   // TOP-LEVEL VARIANTS (#144): the shelf, a grid of small chips under the drawing, one row of
   // headings per kind, for the parts neither changed nor connected to a change.
@@ -1951,7 +1993,7 @@ function Drawing(props: {
             <g
               onMouseEnter={() => setHover({ node: v.node.id })}
               onMouseLeave={() => setHover(null)}
-              {...stylex.attrs(((activeNode() !== null && !neighbours().has(v.node.id)) || (keyMatch() !== null && !keyMatch()!.nodes.has(v.node.id))) && s.fadedNode)}
+              {...stylex.attrs(((activeNode() !== null && !neighbours().has(v.node.id)) || (fade() !== null && !fade()!.nodes.has(v.node.id))) && s.fadedNode)}
             >
               <NodeBox m={m} v={v} at={p()} colour={props.colour} />
             </g>
@@ -1984,7 +2026,7 @@ function Drawing(props: {
               }}
               onMouseEnter={() => setHover({ edge: e.key, ids: e.edges.map((x) => x.id) })}
               onMouseLeave={() => setHover(null)}
-              {...stylex.attrs(((lit().size > 0 && !lit().has(e.key)) || (keyMatch() !== null && !keyMatch()!.edges.has(e.key))) && s.faded)}
+              {...stylex.attrs(((lit().size > 0 && !lit().has(e.key)) || (fade() !== null && !fade()!.edges.has(e.key))) && s.faded)}
             >
               <path d={r.d} stroke-width={width(e) + (on() ? 1.5 : 0)} {...stylex.attrs(s.edge, stroke[e.change], e.crosses.length > 0 && s.crossing)} />
               <path d={arrow(r.end)} {...stylex.attrs(swatch[e.change === "mixed" ? "modified" : e.change])} />
@@ -2201,6 +2243,50 @@ function Sequence(props: { m: Model; colour: ColourFn }) {
 
 function Panel(props: { m: Model; reveal: (x: Sel) => void; colour: ColourFn; edgeFacets: unknown[] }) {
   const m = props.m;
+  // WALKTHROUGH (#159): the whole PR, a purpose, a node or an edge get the walkthrough; a step, a
+  // boundary or a group keep the old panel.
+  const walkable = () => {
+    const x = sel();
+    return wt().key !== "0" && purposes !== null && (x === null || x.kind === "purpose" || x.kind === "node" || x.kind === "edge");
+  };
+  const ctx = (): WalkCtx => ({
+    m,
+    p: purposes!,
+    sel: () => sel() as WSel,
+    pick: (x) => (setHoverSpot(null), x?.kind === "purpose" ? setSel(x) : props.reveal(x as Sel)),
+    light: (x) => setHoverSpot(x),
+    show: (x) => {
+      if (x.node) setFocus(m.nodes.get(x.node)?.parent ?? null);
+      if (x.edge) {
+        const e = m.edges.get(x.edge)!;
+        const a = m.chain(e.from), b = m.chain(e.to);
+        let i = 0;
+        while (i < a.length && i < b.length && a[i] === b[i]) i++;
+        setFocus(i > 0 ? a[i - 1]! : null);
+      }
+    },
+    reference: () => (
+      <Show when={sel()} keyed>
+        {(x) =>
+          x.kind === "node" ? <NodePanel m={m} n={m.nodes.get(x.id)!} reveal={props.reveal} colour={props.colour} /> : x.kind === "edge" ? <EdgesPanel m={m} edges={x.ids.map((id) => m.edges.get(id)!)} reveal={props.reveal} colour={props.colour} /> : null
+        }
+      </Show>
+    ),
+    allChanges: () => <Overview m={m} reveal={props.reveal} />,
+    codeClaim: (id) => {
+      const c = m.claims.get(id);
+      return c ? <ClaimBox m={m} c={c} /> : <span>{id}</span>;
+    },
+  });
+  return (
+    <Show when={!walkable()} fallback={<Walkthrough c={ctx()} variant={wt().key as Exclude<WtKey, "0">} />}>
+      <PanelOld m={m} reveal={props.reveal} colour={props.colour} />
+    </Show>
+  );
+}
+
+function PanelOld(props: { m: Model; reveal: (x: Sel) => void; colour: ColourFn }) {
+  const m = props.m;
   return (
     <Show when={sel()} keyed fallback={<Overview m={m} reveal={props.reveal} />}>
       {(x) => {
@@ -2208,6 +2294,7 @@ function Panel(props: { m: Model; reveal: (x: Sel) => void; colour: ColourFn; ed
         if (x.kind === "edge") return <EdgesPanel m={m} edges={x.ids.map((id) => m.edges.get(id)!)} reveal={props.reveal} colour={props.colour} />;
         if (x.kind === "boundary") return <BoundaryPanel m={m} id={x.id} reveal={props.reveal} />;
         if (x.kind === "group") return <GroupPanel m={m} facet={x.facet} value={x.value} reveal={props.reveal} />;
+        if (x.kind === "purpose") return null;
         return <StepPanel m={m} scenario={x.scenario} i={x.i} reveal={props.reveal} />;
       }}
     </Show>

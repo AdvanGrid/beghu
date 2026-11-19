@@ -46,3 +46,17 @@ Typecheck: `cd web/prototype-pr-view && ../node_modules/.bin/tsc -p tsconfig.jso
 at the bottom (a window under 720 px gets 1 by default, `?phone=0` keeps the desktop page);
 `?x=clusters` picks Clusters over Path. To try them on a real phone, run Vite with `--host` and open
 the page at the machine's address.
+
+## The panel's walkthrough of purposes (#159)
+
+`walkthrough.tsx` holds three layouts of the panel, switched with `?wt=A|B|C` or ← → (the bar at the
+bottom; `?wt=0` is the old stated-rule panel, `[` `]` now switch the legend). They read
+`purpose.ts`-shaped data from `data/purposes/<name>.json` (gitignored: it quotes the PR and its
+issues), hand-written for #2627, beside the code view's analysis.
+
+- **A, Reader:** three sentences (intro, journey, destination), then the next level as a list.
+- **B, Tour:** one step at a time; each step lights and moves the canvas, "Go in" stands on it.
+- **C, Crossing:** one sentence, then tables of purposes × parts.
+
+A purpose lights the parts and lines that serve it (the rest fades); hovering a stop, a role or a
+conflict lights what it names. Conflicts marked "made up" are invented where #2627 had none of that kind.
