@@ -810,6 +810,15 @@ const s = stylex.create({
     zIndex: 7,
   },
   chipFit: { right: 10, top: 44 },
+  chipUp: {
+    fontWeight: 600,
+    left: 10,
+    maxWidth: "calc(100% - 90px)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    top: 44,
+    whiteSpace: "nowrap",
+  },
   tabs: {
     display: "flex",
     gap: 4,
@@ -2617,6 +2626,24 @@ function MapAndList(props: { c: PhoneCtx }) {
     c.setSel({ kind: "node", id });
     atLeastHalf();
   };
+  /** Out one level: to the opened part's parent, with the part you came out of picked. */
+  const parentOf = () => {
+    const f = c.focus();
+    if (!f || f === c.home()) return undefined;
+    return m.nodes.get(f)?.parent ?? null;
+  };
+  const upOne = () => {
+    const from = c.focus();
+    const to = parentOf();
+    if (!from || to === undefined) return;
+    nav.step();
+    c.setFocus(to);
+    setManual(new Set<string>());
+    setBlock(null);
+    setLineSel(null);
+    setPath([from]);
+    c.setSel({ kind: "node", id: from });
+  };
   const zoomInto = (id: string) => {
     nav.step();
     c.setFocus(id);
@@ -2701,7 +2728,7 @@ function MapAndList(props: { c: PhoneCtx }) {
       : here()
         ? m.name(here()!)
         : c.focus() && c.focus() !== c.home()
-          ? m.name(c.focus()!)
+          ? `Inside ${m.name(c.focus()!)}`
           : "Whole system";
   const detailsTitle = () => {
     if (block()) return `${block()}: pick a part for its details`;
@@ -2770,6 +2797,18 @@ function MapAndList(props: { c: PhoneCtx }) {
           >
             <Key drawing />
           </div>
+        </Show>
+        <Show when={parentOf() !== undefined}>
+          <button
+            {...stylex.attrs(s.chip, s.chipUp)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={upOne}
+          >
+            ↑ Up to{" "}
+            {parentOf() && parentOf() !== c.home()
+              ? m.name(parentOf()!)
+              : "whole system"}
+          </button>
         </Show>
         <button
           {...stylex.attrs(s.chip, s.chipFit)}
