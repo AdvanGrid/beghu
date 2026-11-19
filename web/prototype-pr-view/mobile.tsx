@@ -11,8 +11,9 @@
 //     among several lines asks which one. Path pages sideways, one column at a time with the
 //     previous one peeking. Key and pickers are chips that open the sheet.
 //   3 Map and list: the two explorers merge. The top of the screen is a small Clusters map, the
-//     bottom is Path's list for whatever is picked. Lines are never touched on the drawing: they
-//     are rows in the list, lit on the map. The key is a strip under the map.
+//     bottom is Path's list for whatever is picked. The map pinches and drags like 2's drawing;
+//     tap a part on it to pick it, a block to open it. Lines are never touched on the drawing:
+//     they are rows in the list, lit on the map. The key is a strip under the map.
 import type { JSX } from "@solidjs/web";
 import {
   createEffect,
@@ -747,6 +748,7 @@ const s = stylex.create({
     paddingInline: 14,
   },
   map: {
+    touchAction: "none",
     backgroundColor: colors.bgRaised,
     flexShrink: 0,
     height: "38dvh",
@@ -1778,143 +1780,52 @@ function ClusterCanvas(props: {
 
   // Gestures: one finger drags, two pinch around their midpoint, a still tap selects, a still
   // hold peeks, two quick taps on a part open it.
-  const pts = new Map<number, { x: number; y: number }>();
-  let g: {
-    x: number;
-    y: number;
-    tx: number;
-    ty: number;
-    moved: boolean;
-    pinched: boolean;
-    target: EventTarget | null;
-    held: boolean;
-  } | null = null;
-  let pinch: {
-    d: number;
-    s: number;
-    mx: number;
-    my: number;
-    tx: number;
-    ty: number;
-  } | null = null;
-  let holdTimer = 0;
   let lastTap = { id: "", at: 0 };
-  const midDist = () => {
-    const [a, b] = [...pts.values()];
-    return {
-      mx: (a!.x + b!.x) / 2,
-      my: (a!.y + b!.y) / 2,
-      d: Math.hypot(a!.x - b!.x, a!.y - b!.y),
-    };
-  };
-  const onDown = (e: PointerEvent) => {
-    host!.setPointerCapture(e.pointerId);
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const r = host!.getBoundingClientRect();
-    if (pts.size === 1) {
-      g = {
-        x: e.clientX,
-        y: e.clientY,
-        tx: t().x,
-        ty: t().y,
-        moved: false,
-        pinched: false,
-        target: e.target,
-        held: false,
-      };
-      holdTimer = window.setTimeout(() => {
-        if (!g || g.moved) return;
-        g.held = true;
-        const id = thingAt(g.target);
-        if (id && !id.startsWith(CL)) props.peek({ node: id }, g.y);
-        else {
-          const near = linesNear(g.x, g.y);
-          if (near[0]) props.peek({ ids: edgeIds(near[0].edges) }, g.y);
-        }
-      }, 450);
-    }
-    if (pts.size === 2) {
-      clearTimeout(holdTimer);
-      const md = midDist();
-      pinch = {
-        d: md.d,
-        s: t().s,
-        mx: md.mx - r.left,
-        my: md.my - r.top,
-        tx: t().x,
-        ty: t().y,
-      };
-      if (g) g.pinched = true;
-    }
-  };
-  const onMove = (e: PointerEvent) => {
-    if (!pts.has(e.pointerId)) return;
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pinch && pts.size === 2) {
-      const r = host!.getBoundingClientRect();
-      const md = midDist();
-      const sc = Math.max(0.15, Math.min(2.5, (pinch.s * md.d) / pinch.d));
-      const k = sc / pinch.s;
-      const mx = md.mx - r.left,
-        my = md.my - r.top;
-      setT({
-        s: sc,
-        x: mx - (pinch.mx - pinch.tx) * k,
-        y: my - (pinch.my - pinch.ty) * k,
-      });
-      return;
-    }
-    if (!g || g.pinched) return;
-    if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 8) {
-      g.moved = true;
-      clearTimeout(holdTimer);
-    }
-    if (g.moved)
-      setT((o) => ({
-        ...o,
-        x: g!.tx + e.clientX - g!.x,
-        y: g!.ty + e.clientY - g!.y,
-      }));
-  };
-  const onUp = (e: PointerEvent) => {
-    pts.delete(e.pointerId);
-    if (pts.size < 2) pinch = null;
-    if (pts.size > 0 || !g) return;
-    clearTimeout(holdTimer);
-    const done = g;
-    g = null;
-    if (done.held) return props.unpeek();
-    if (done.moved || done.pinched) return;
-    const id = thingAt(done.target);
-    if (id?.startsWith(CL)) return toggle(id.slice(CL.length));
-    if (id?.startsWith("box:")) return toggle(id.slice(4));
-    if (id) {
-      const now = performance.now();
-      if (
-        lastTap.id === id &&
-        now - lastTap.at < 320 &&
-        (m.children.get(id) ?? []).length
-      ) {
-        lastTap = { id: "", at: 0 };
-        return c.setFocus(id);
+  const gestures = panZoom({
+    host: () => host,
+    t,
+    setT,
+    onHold: (target, x, y) => {
+      const id = thingAt(target);
+      if (id && !id.startsWith(CL)) props.peek({ node: id }, y);
+      else {
+        const near = linesNear(x, y);
+        if (near[0]) props.peek({ ids: edgeIds(near[0].edges) }, y);
       }
-      lastTap = { id, at: now };
-      return props.select({ kind: "node", id });
-    }
-    const near = linesNear(done.x, done.y);
-    if (near.length === 1)
-      props.select({ kind: "edge", ids: edgeIds(near[0]!.edges) });
-    else if (near.length > 1)
-      props.choose(
-        near.map((l) => ({
-          key: l.key,
-          label: linkLabel(l),
-          ids: edgeIds(l.edges),
-          change: lineChange(l.edges),
-        })),
-      );
-    else props.select(null);
-  };
+    },
+    onRelease: () => props.unpeek(),
+    onTap: (target, x, y) => {
+      const id = thingAt(target);
+      if (id?.startsWith(CL)) return toggle(id.slice(CL.length));
+      if (id?.startsWith("box:")) return toggle(id.slice(4));
+      if (id) {
+        const now = performance.now();
+        if (
+          lastTap.id === id &&
+          now - lastTap.at < 320 &&
+          (m.children.get(id) ?? []).length
+        ) {
+          lastTap = { id: "", at: 0 };
+          return c.setFocus(id);
+        }
+        lastTap = { id, at: now };
+        return props.select({ kind: "node", id });
+      }
+      const near = linesNear(x, y);
+      if (near.length === 1)
+        props.select({ kind: "edge", ids: edgeIds(near[0]!.edges) });
+      else if (near.length > 1)
+        props.choose(
+          near.map((l) => ({
+            key: l.key,
+            label: linkLabel(l),
+            ids: edgeIds(l.edges),
+            change: lineChange(l.edges),
+          })),
+        );
+      else props.select(null);
+    },
+  });
   const litNode = () => props.selNode;
   const lineOn = (l: Clustered["links"][number]) => {
     const es = props.selEdges;
@@ -1924,15 +1835,7 @@ function ClusterCanvas(props: {
   };
   const anySel = () => !!props.selEdges || !!litNode();
   return (
-    <div
-      ref={host}
-      {...stylex.attrs(s.canvas)}
-      onPointerDown={onDown}
-      onPointerMove={onMove}
-      onPointerUp={onUp}
-      onPointerCancel={onUp}
-      onContextMenu={(e) => e.preventDefault()}
-    >
+    <div ref={host} {...stylex.attrs(s.canvas)} {...gestures}>
       <Show when={laid()}>
         {(l) => (
           <div
@@ -1958,6 +1861,128 @@ function ClusterCanvas(props: {
       </Show>
     </div>
   );
+}
+
+/**
+ * Pan and pinch for a drawing: one finger drags, two pinch around their midpoint (the drawing
+ * under the fingers stays under them), a still tap is a tap, a still press of 450 ms is a hold.
+ */
+function panZoom(o: {
+  host: () => HTMLElement | undefined;
+  t: () => { x: number; y: number; s: number };
+  setT: (v: { x: number; y: number; s: number }) => void;
+  onTap: (target: EventTarget | null, x: number, y: number) => void;
+  onHold?: (target: EventTarget | null, x: number, y: number) => void;
+  onRelease?: () => void;
+}) {
+  const pts = new Map<number, { x: number; y: number }>();
+  let g: {
+    x: number;
+    y: number;
+    tx: number;
+    ty: number;
+    moved: boolean;
+    pinched: boolean;
+    target: EventTarget | null;
+    held: boolean;
+  } | null = null;
+  let pinch: {
+    d: number;
+    s: number;
+    mx: number;
+    my: number;
+    tx: number;
+    ty: number;
+  } | null = null;
+  let holdTimer = 0;
+  const midDist = () => {
+    const [a, b] = [...pts.values()];
+    return {
+      mx: (a!.x + b!.x) / 2,
+      my: (a!.y + b!.y) / 2,
+      d: Math.hypot(a!.x - b!.x, a!.y - b!.y),
+    };
+  };
+  const up = (e: PointerEvent) => {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (pts.size > 0 || !g) return;
+    clearTimeout(holdTimer);
+    const done = g;
+    g = null;
+    if (done.held) return o.onRelease?.();
+    if (done.moved || done.pinched) return;
+    o.onTap(done.target, done.x, done.y);
+  };
+  return {
+    onPointerDown: (e: PointerEvent) => {
+      const host = o.host()!;
+      host.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const r = host.getBoundingClientRect();
+      if (pts.size === 1) {
+        g = {
+          x: e.clientX,
+          y: e.clientY,
+          tx: o.t().x,
+          ty: o.t().y,
+          moved: false,
+          pinched: false,
+          target: e.target,
+          held: false,
+        };
+        if (o.onHold)
+          holdTimer = window.setTimeout(() => {
+            if (!g || g.moved) return;
+            g.held = true;
+            o.onHold!(g.target, g.x, g.y);
+          }, 450);
+      }
+      if (pts.size === 2) {
+        clearTimeout(holdTimer);
+        const md = midDist();
+        pinch = {
+          d: md.d,
+          s: o.t().s,
+          mx: md.mx - r.left,
+          my: md.my - r.top,
+          tx: o.t().x,
+          ty: o.t().y,
+        };
+        if (g) g.pinched = true;
+      }
+    },
+    onPointerMove: (e: PointerEvent) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pts.size === 2) {
+        const r = o.host()!.getBoundingClientRect();
+        const md = midDist();
+        const sc = Math.max(0.1, Math.min(2.5, (pinch.s * md.d) / pinch.d));
+        const k = sc / pinch.s;
+        o.setT({
+          s: sc,
+          x: md.mx - r.left - (pinch.mx - pinch.tx) * k,
+          y: md.my - r.top - (pinch.my - pinch.ty) * k,
+        });
+        return;
+      }
+      if (!g || g.pinched) return;
+      if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 8) {
+        g.moved = true;
+        clearTimeout(holdTimer);
+      }
+      if (g.moved)
+        o.setT({
+          ...o.t(),
+          x: g.tx + e.clientX - g.x,
+          y: g.ty + e.clientY - g.y,
+        });
+    },
+    onPointerUp: up,
+    onPointerCancel: up,
+    onContextMenu: (e: Event) => e.preventDefault(),
+  };
 }
 
 /** The Clusters drawing itself, shared by variants 2 and 3. */
@@ -2232,6 +2257,10 @@ function MapAndList(props: { c: PhoneCtx }) {
   const [showDetails, setShowDetails] = createSignal(false);
   const [keyOpen, setKeyOpen] = createSignal(false);
   const [bigMap, setBigMap] = createSignal(false);
+  /** Blocks the reader opened on the map by tapping them, on top of the ones the path opens. */
+  const [manual, setManual] = createSignal<Set<string>>(new Set());
+  const [mt, setMt] = createSignal({ x: 0, y: 0, s: 1 });
+  let mapHost: HTMLDivElement | undefined;
   const [lineSel, setLineSel] = createSignal<string[] | null>(null);
   const here = () => path()[path().length - 1] ?? null;
   createEffect(
@@ -2247,6 +2276,7 @@ function MapAndList(props: { c: PhoneCtx }) {
     const base = clusters(c, c.view(), new Set());
     const o = new Set<string>();
     for (const id of [here(), ...path()]) if (id) o.add(base.blockOf.get(id)!);
+    for (const k of manual()) o.add(k);
     return o;
   });
   const cl = createMemo(() => clusters(c, c.view(), open()));
@@ -2266,9 +2296,53 @@ function MapAndList(props: { c: PhoneCtx }) {
         })),
         undefined,
         x.groups,
-      ).then((at) => mine === ticket && setLaid(at));
+      ).then((at) => {
+        if (mine !== ticket) return;
+        setLaid(at);
+        // A new layout keeps the reader's zoom and brings what's picked to the middle; with
+        // nothing picked, the whole drawing fits.
+        const p = here() ? at.at.get(here()!) : undefined;
+        if (p)
+          centreOn(p.x + NODE_W / 2, p.y + NODE_H / 2, Math.max(mt().s, 0.45));
+        else fit(at);
+      });
     },
   );
+  const fit = (at = laid()) => {
+    if (!at || !mapHost) return;
+    const w = mapHost.clientWidth,
+      h = mapHost.clientHeight;
+    const sc = Math.min(1, (w - 16) / at.width, (h - 16) / at.height);
+    setMt({ s: sc, x: (w - at.width * sc) / 2, y: (h - at.height * sc) / 2 });
+  };
+  const centreOn = (x: number, y: number, sc: number) => {
+    if (!mapHost) return;
+    setMt({
+      s: sc,
+      x: mapHost.clientWidth / 2 - x * sc,
+      y: mapHost.clientHeight / 2 - y * sc,
+    });
+  };
+  const toggleBlock = (k: string) =>
+    setManual((o) => {
+      const n = new Set(o);
+      if (!n.delete(k)) n.add(k);
+      return n;
+    });
+  const mapGestures = panZoom({
+    host: () => mapHost,
+    t: mt,
+    setT: setMt,
+    onTap: (target) => {
+      const id = (target as Element | null)
+        ?.closest?.("[data-id]")
+        ?.getAttribute("data-id");
+      if (!id) return;
+      if (id.startsWith(CL)) return toggleBlock(id.slice(CL.length));
+      if (id.startsWith("box:")) return toggleBlock(id.slice(4));
+      go(id);
+    },
+  });
   const go = (id: string) => {
     setPath((p) =>
       p.includes(id) ? p.slice(0, p.indexOf(id) + 1) : [...p, id],
@@ -2334,29 +2408,49 @@ function MapAndList(props: { c: PhoneCtx }) {
         }
       />
       <div
+        ref={mapHost}
         {...stylex.attrs(s.map, bigMap() && s.mapBig)}
-        onClick={(e) => {
-          const id = (e.target as Element)
-            .closest("[data-id]")
-            ?.getAttribute("data-id");
-          if (id && !id.startsWith(CL) && !id.startsWith("box:")) go(id);
-          else setBigMap((b) => !b);
-        }}
+        {...mapGestures}
       >
         <Show when={laid()}>
           {(l) => (
-            <ClusterSvg
-              cl={cl()}
-              l={l()}
-              m={m}
-              lineOn={lineOn}
-              nodeOn={(id) => id === here()}
-              faded={!!here()}
-              open={open()}
-              fit
-            />
+            <div
+              style={{
+                "--tx": `${mt().x}px`,
+                "--ty": `${mt().y}px`,
+                "--s": `${mt().s}`,
+              }}
+              {...stylex.attrs(s.stage)}
+            >
+              <ClusterSvg
+                cl={cl()}
+                l={l()}
+                m={m}
+                lineOn={lineOn}
+                nodeOn={(id) => id === here()}
+                faded={!!here()}
+                open={open()}
+              />
+            </div>
           )}
         </Show>
+        <button
+          {...stylex.attrs(s.chip, s.chipTR)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => fit()}
+        >
+          Fit
+        </button>
+        <button
+          {...stylex.attrs(s.chip, s.chipTR2)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => (
+            setBigMap((b) => !b),
+            requestAnimationFrame(() => fit())
+          )}
+        >
+          {bigMap() ? "Smaller" : "Bigger"}
+        </button>
       </div>
       <button {...stylex.attrs(s.strip)} onClick={() => setKeyOpen((k) => !k)}>
         <b>Key</b>
