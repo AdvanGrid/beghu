@@ -10,16 +10,21 @@
 //     selects and a bottom sheet peeks; press and hold shows the hover card while held; a tap
 //     among several lines asks which one. Path pages sideways, one column at a time with the
 //     previous one peeking. Key and pickers are chips that open the sheet.
-//   3 Map and list: the two explorers merge. The top of the screen is a small Clusters map, the
-//     bottom is Path's list for whatever is picked. The map pinches and drags like 2's drawing;
-//     tap a part on it to pick it, a block to open it. Lines are never touched on the drawing:
-//     they are rows in the list, lit on the map. The key is a strip under the map.
+//   3 Map and drawer: the two explorers merge. The Clusters map fills the screen and pinches and
+//     drags like 2's drawing; tap a part on it to pick it, a block to open it. A drawer over it
+//     has two tabs: Elements (Path's list for whatever is picked) and Details (the panel). Lines
+//     are never touched on the drawing: they are rows in Elements, lit on the map. The key is a
+//     strip along the map's top.
+//
+// In every variant the phone's back button (or the top bar's Back) steps back through what the
+// reader did: a pick, a screen, a zoom into a part, a jump to Details.
 import type { JSX } from "@solidjs/web";
 import {
   createEffect,
   createMemo,
   createSignal,
   For,
+  onCleanup,
   Show,
   untrack,
 } from "solid-js";
@@ -65,7 +70,7 @@ export interface PhoneCtx {
 const VARIANTS = [
   { key: "1", name: "Screens: one thing per screen, no drawing" },
   { key: "2", name: "Drawing and sheet: pinch, tap, hold" },
-  { key: "3", name: "Map and list: Clusters above, Path below" },
+  { key: "3", name: "Map and drawer: Elements and Details tabs" },
 ] as const;
 type Explorer = "path" | "clusters";
 
@@ -697,6 +702,7 @@ const s = stylex.create({
     minHeight: 0,
     overflowY: "auto",
     overscrollBehavior: "contain",
+    paddingBottom: 72,
   },
   peek: {
     animationDuration: "120ms",
@@ -786,6 +792,53 @@ const s = stylex.create({
     width: 10,
   },
   muted: { color: colors.muted },
+  mapBg: { backgroundColor: colors.bgRaised },
+  stripTop: { left: 0, position: "absolute", right: 0, top: 0, zIndex: 6 },
+  keyPop: {
+    backgroundColor: colors.pop,
+    borderBottomColor: colors.line,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+    boxShadow: `0 4px 12px ${colors.popShadow}`,
+    left: 0,
+    maxHeight: "50%",
+    overflowY: "auto",
+    paddingBottom: 10,
+    position: "absolute",
+    right: 0,
+    top: 34,
+    zIndex: 7,
+  },
+  chipFit: { right: 10, top: 44 },
+  tabs: {
+    display: "flex",
+    gap: 4,
+    paddingBottom: 6,
+    paddingInline: 10,
+    touchAction: "none",
+  },
+  tabBtn: {
+    backgroundColor: "transparent",
+    borderBottomColor: "transparent",
+    borderBottomStyle: "solid",
+    borderBottomWidth: 2,
+    borderLeftStyle: "none",
+    borderRightStyle: "none",
+    borderTopStyle: "none",
+    color: colors.muted,
+    flexGrow: 1,
+    fontFamily: fonts.ui,
+    fontSize: 15,
+    fontWeight: 600,
+    minHeight: 40,
+  },
+  tabOn: { borderBottomColor: colors.accent, color: colors.fg },
+  detailsHead: {
+    fontSize: 18,
+    fontWeight: 700,
+    paddingInline: 14,
+    paddingTop: 10,
+  },
   gap: { flexShrink: 0, width: 8 },
 });
 const bar = stylex.create({
@@ -1122,15 +1175,28 @@ function Screens(props: { c: PhoneCtx }) {
   const m = c.m;
   const [stack, setStack] = createSignal<Scr[]>([{ kind: "root" }]);
   const top = () => stack()[stack().length - 1]!;
+  // Back (the phone's, or the top bar's) returns to the screen before, zoom included.
+  const nav = backStack<{ stack: Scr[]; focus: string | null }>(
+    () => ({ stack: stack(), focus: c.focus() }),
+    (x) => {
+      if (x.focus !== c.focus()) c.setFocus(x.focus);
+      setStack(x.stack);
+    },
+  );
   const push = (x: Scr) => {
+    nav.step();
     setStack((st) => [...st, x]);
     body?.scrollTo(0, 0);
   };
-  const pop = () => setStack((st) => (st.length > 1 ? st.slice(0, -1) : st));
+  const zoomInto = (id: string) => {
+    nav.step();
+    c.setFocus(id);
+    setStack([{ kind: "root" }]);
+  };
   let body: HTMLDivElement | undefined;
-  // A new explorer, lens or zoom starts again from the top.
+  // A new explorer, lens or Show starts again from the top.
   createEffect(
-    () => [explorer(), c.lens(), c.focus(), c.scope()],
+    () => [explorer(), c.lens(), c.scope()],
     () => {
       setStack([{ kind: "root" }]);
     },
@@ -1159,13 +1225,7 @@ function Screens(props: { c: PhoneCtx }) {
       <Top
         c={c}
         title={title()}
-        back={
-          stack().length > 1
-            ? pop
-            : c.focus() !== c.home()
-              ? () => c.setFocus(c.m.nodes.get(c.focus()!)?.parent ?? null)
-              : undefined
-        }
+        back={nav.depth() ? nav.back : undefined}
         end={
           <Show when={top().kind !== "view"}>
             <button
@@ -1190,7 +1250,10 @@ function Screens(props: { c: PhoneCtx }) {
                   s.crumb,
                   t.i === stack().length - 1 && s.crumbOn,
                 )}
-                onClick={() => setStack((st) => st.slice(0, t.i + 1))}
+                onClick={() => (
+                  nav.step(),
+                  setStack((st) => st.slice(0, t.i + 1))
+                )}
               >
                 {m.name(t.id)}
               </button>
@@ -1311,6 +1374,7 @@ function Screens(props: { c: PhoneCtx }) {
               <Show when={t.kind === "part" ? t : undefined}>
                 {(p) => (
                   <PartScreen
+                    zoom={zoomInto}
                     c={c}
                     id={p().id}
                     follow={(id) => push({ kind: "part", id })}
@@ -1335,6 +1399,7 @@ function Screens(props: { c: PhoneCtx }) {
 
 /** One part, full screen: what it is, then its lines out and in, each a row to follow. */
 function PartScreen(props: {
+  zoom: (id: string) => void;
   c: PhoneCtx;
   id: string;
   follow: (id: string) => void;
@@ -1364,7 +1429,7 @@ function PartScreen(props: {
           <Show when={kids()}>
             <button
               {...stylex.attrs(s.btn)}
-              onClick={() => c.setFocus(props.id)}
+              onClick={() => props.zoom(props.id)}
             >
               Open inside ({kids()} parts)
             </button>
@@ -1456,11 +1521,50 @@ function DrawingAndSheet(props: { c: PhoneCtx }) {
     setMode(md),
     setH(Math.max(untrack(h), height ?? half()))
   );
-  const select = (x: PhoneSel) => (
-    c.setSel(x),
-    setMode("details"),
-    setH((v) => (v < PEEK ? PEEK : v))
+  /** Path's columns, kept here so back can restore them. */
+  const [path, setPath] = createSignal<string[]>([]);
+  createEffect(
+    () => [c.lens(), c.scope()],
+    () => {
+      setPath([]);
+    },
   );
+  // Back (the phone's, or the top bar's) undoes the last selection, pick or zoom.
+  const nav = backStack<{
+    focus: string | null;
+    sel: PhoneSel;
+    path: string[];
+    mode: SheetMode;
+    h: number;
+  }>(
+    () => ({
+      focus: c.focus(),
+      sel: c.sel(),
+      path: path(),
+      mode: mode(),
+      h: h(),
+    }),
+    (x) => {
+      if (x.focus !== c.focus()) c.setFocus(x.focus);
+      c.setSel(x.sel);
+      setPath(x.path);
+      setMode(x.mode);
+      setH(x.h);
+    },
+  );
+  const select = (x: PhoneSel) => {
+    if (JSON.stringify(x) !== JSON.stringify(c.sel())) nav.step();
+    c.setSel(x);
+    setMode("details");
+    setH((v) => (v < PEEK ? PEEK : v));
+  };
+  const zoomInto = (id: string | null) => {
+    nav.step();
+    c.setFocus(id);
+    c.setSel(null);
+    setPath([]);
+    setH(PEEK);
+  };
 
   // Drag the sheet by its grip or head; a tap on them toggles peek and half.
   let drag: { y: number; h: number; moved: boolean } | null = null;
@@ -1514,11 +1618,7 @@ function DrawingAndSheet(props: { c: PhoneCtx }) {
             ? m.name(c.focus()!)
             : "Whole system"
         }
-        back={
-          c.focus() !== c.home()
-            ? () => c.setFocus(m.nodes.get(c.focus()!)?.parent ?? null)
-            : undefined
-        }
+        back={nav.depth() ? nav.back : undefined}
         end={<ExplorerSwitch />}
       />
       <div {...stylex.attrs(s.canvas)}>
@@ -1531,11 +1631,14 @@ function DrawingAndSheet(props: { c: PhoneCtx }) {
             unpeek={() => setPeekCard(null)}
             selNode={selNode()}
             selEdges={selEdges()}
+            zoom={zoomInto}
           />
         </Show>
         <Show when={explorer() === "path"}>
           <PathPager
             c={c}
+            path={path()}
+            setPath={setPath}
             select={select}
             peek={showPeek}
             unpeek={() => setPeekCard(null)}
@@ -1597,7 +1700,7 @@ function DrawingAndSheet(props: { c: PhoneCtx }) {
                 <div {...stylex.attrs(s.actions, s.actionsPad)}>
                   <button
                     {...stylex.attrs(s.btn)}
-                    onClick={() => (c.setFocus(selNode()), setH(PEEK))}
+                    onClick={() => zoomInto(selNode())}
                   >
                     Open inside ({(m.children.get(selNode()!) ?? []).length}{" "}
                     parts)
@@ -1701,6 +1804,7 @@ function ClusterCanvas(props: {
   unpeek: () => void;
   selNode: string | null;
   selEdges: Set<string> | null;
+  zoom: (id: string) => void;
 }) {
   const c = props.c;
   const m = c.m;
@@ -1806,7 +1910,7 @@ function ClusterCanvas(props: {
           (m.children.get(id) ?? []).length
         ) {
           lastTap = { id: "", at: 0 };
-          return c.setFocus(id);
+          return props.zoom(id);
         }
         lastTap = { id, at: now };
         return props.select({ kind: "node", id });
@@ -2141,23 +2245,19 @@ function ClusterSvg(props: {
 /** Path on a phone: one column per page, paged sideways; the previous column peeks on the left. */
 function PathPager(props: {
   c: PhoneCtx;
+  path: string[];
+  setPath: (p: string[]) => void;
   select: (x: PhoneSel) => void;
   peek: (p: { node?: string; ids?: string[] }, y: number) => void;
   unpeek: () => void;
 }) {
   const c = props.c;
   const m = c.m;
-  const [path, setPath] = createSignal<string[]>([]);
+  const path = () => props.path;
   let pager: HTMLDivElement | undefined;
-  createEffect(
-    () => [c.lens(), c.focus(), c.scope()],
-    () => {
-      setPath([]);
-    },
-  );
   const pick = (k: number, id: string) => {
-    setPath((p) => [...p.slice(0, k), id]);
     props.select({ kind: "node", id });
+    props.setPath([...path().slice(0, k), id]);
     requestAnimationFrame(() =>
       pager?.scrollTo({ left: pager.scrollWidth, behavior: "smooth" }),
     );
@@ -2248,39 +2348,168 @@ function PathPager(props: {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Variant 3: Map and list. The map is Clusters; the list is Path's column for what's picked.
+// The phone's back button (and the Back in the top bar) steps back through what the reader did.
+
+/**
+ * A stack of snapshots: each step pushes one browser history entry; the browser's back (the
+ * phone's back button or gesture) pops the entry and restores the snapshot taken before it.
+ */
+function backStack<T>(snap: () => T, restore: (s: T) => void) {
+  const stack: T[] = [];
+  const [depth, setDepth] = createSignal(0);
+  const onPop = () => {
+    const s = stack.pop();
+    setDepth(stack.length);
+    if (s !== undefined) restore(s);
+  };
+  window.addEventListener("popstate", onPop);
+  onCleanup(() => window.removeEventListener("popstate", onPop));
+  return {
+    /** Call before changing what's shown: the current state is what back returns to. */
+    step: () => {
+      stack.push(snap());
+      setDepth(stack.length);
+      history.pushState(null, "", location.href);
+    },
+    back: () => history.back(),
+    depth,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Variant 3: Map and drawer. The map is Clusters and fills the screen; a drawer over it has two
+// tabs, Elements (Path's list for what's picked) and Details (the panel).
+
+type Tab = "elements" | "details";
+const DRAWER_PEEK = 150;
 
 function MapAndList(props: { c: PhoneCtx }) {
   const c = props.c;
   const m = c.m;
   const [path, setPath] = createSignal<string[]>([]);
-  const [showDetails, setShowDetails] = createSignal(false);
+  const [tab, setTab] = createSignal<Tab>("elements");
   const [keyOpen, setKeyOpen] = createSignal(false);
-  const [bigMap, setBigMap] = createSignal(false);
+  const [lineSel, setLineSel] = createSignal<string[] | null>(null);
   /** Blocks the reader opened on the map by tapping them, on top of the ones the path opens. */
   const [manual, setManual] = createSignal<Set<string>>(new Set());
   const [mt, setMt] = createSignal({ x: 0, y: 0, s: 1 });
   let mapHost: HTMLDivElement | undefined;
-  const [lineSel, setLineSel] = createSignal<string[] | null>(null);
+  /** Set by back: the next layout leaves the map where back put it. */
+  let keepT = false;
+  let app: HTMLDivElement | undefined;
   const here = () => path()[path().length - 1] ?? null;
+
+  // Back: every pick, every zoom into a part and every jump to Details is a step.
+  type Snap = {
+    focus: string | null;
+    path: string[];
+    tab: Tab;
+    lineSel: string[] | null;
+    sel: PhoneSel;
+    mt: { x: number; y: number; s: number };
+  };
+  const nav = backStack<Snap>(
+    () => ({
+      focus: c.focus(),
+      path: path(),
+      tab: tab(),
+      lineSel: lineSel(),
+      sel: c.sel(),
+      mt: mt(),
+    }),
+    (s) => {
+      // A different path or zoom lays the map out again; a tab change doesn't.
+      const relayout = s.focus !== c.focus() || s.path.join() !== path().join();
+      if (s.focus !== c.focus()) c.setFocus(s.focus);
+      setPath(s.path);
+      setTab(s.tab);
+      setLineSel(s.lineSel);
+      c.setSel(s.sel);
+      // The map goes back to where it was, and the layout that follows keeps it there.
+      setMt(s.mt);
+      keepT = relayout;
+    },
+  );
+  // A new lens or Show starts again from the top (not a step: the pickers say what changed).
   createEffect(
-    () => [c.lens(), c.focus(), c.scope()],
+    () => [c.lens(), c.scope()],
     () => {
       setPath([]);
       setLineSel(null);
-      setShowDetails(false);
     },
   );
+
   /** The map opens the block holding what's picked, so it can be seen. */
   const open = createMemo(() => {
     const base = clusters(c, c.view(), new Set());
     const o = new Set<string>();
-    for (const id of [here(), ...path()]) if (id) o.add(base.blockOf.get(id)!);
+    for (const id of path()) o.add(base.blockOf.get(id)!);
     for (const k of manual()) o.add(k);
     return o;
   });
   const cl = createMemo(() => clusters(c, c.view(), open()));
   const [laid, setLaid] = createSignal<Laid | null>(null);
+
+  // The drawer: drag its grip or tabs between peek, half and nearly full.
+  const [h, setH] = createSignal(0);
+  const [dragging, setDragging] = createSignal(false);
+  const full = () => (app?.clientHeight ?? 700) - 48 - 40;
+  const half = () => Math.round((app?.clientHeight ?? 700) * 0.5);
+  const snapTo = (x: number) =>
+    [DRAWER_PEEK, half(), full()].reduce((a, b) =>
+      Math.abs(b - x) < Math.abs(a - x) ? b : a,
+    );
+  let drag: { y: number; h: number; moved: boolean } | null = null;
+  const grip = {
+    onPointerDown: (e: PointerEvent) => {
+      if ((e.target as Element).closest("button")) return;
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      drag = { y: e.clientY, h: h(), moved: false };
+      setDragging(true);
+    },
+    onPointerMove: (e: PointerEvent) => {
+      if (!drag) return;
+      if (Math.abs(e.clientY - drag.y) > 6) drag.moved = true;
+      if (drag.moved)
+        setH(Math.max(60, Math.min(full(), drag.h - (e.clientY - drag.y))));
+    },
+    onPointerUp: () => {
+      if (!drag) return;
+      setDragging(false);
+      setH(
+        drag.moved
+          ? snapTo(h())
+          : h() <= DRAWER_PEEK + 4
+            ? half()
+            : DRAWER_PEEK,
+      );
+      drag = null;
+    },
+  };
+  /** The drawer at least half open, to show what was just picked. */
+  const atLeastHalf = () => setH((v) => Math.max(v, half()));
+
+  // The map: the part of it above the drawer is what counts as "on screen".
+  const fit = (at = laid()) => {
+    if (!at || !mapHost) return;
+    const w = mapHost.clientWidth,
+      vh = mapHost.clientHeight - (h() || half()) - 34;
+    const sc = Math.min(1, (w - 16) / at.width, (vh - 16) / at.height);
+    setMt({
+      s: sc,
+      x: (w - at.width * sc) / 2,
+      y: 34 + Math.max(8, (vh - at.height * sc) / 2),
+    });
+  };
+  const centreOn = (x: number, y: number, sc: number) => {
+    if (!mapHost) return;
+    const vh = mapHost.clientHeight - h() - 34;
+    setMt({
+      s: sc,
+      x: mapHost.clientWidth / 2 - x * sc,
+      y: 34 + vh / 2 - y * sc,
+    });
+  };
   let ticket = 0;
   createEffect(
     () => cl(),
@@ -2298,7 +2527,12 @@ function MapAndList(props: { c: PhoneCtx }) {
         x.groups,
       ).then((at) => {
         if (mine !== ticket) return;
+        if (!h()) setH(half());
         setLaid(at);
+        if (keepT) {
+          keepT = false;
+          return;
+        }
         // A new layout keeps the reader's zoom and brings what's picked to the middle; with
         // nothing picked, the whole drawing fits.
         const p = here() ? at.at.get(here()!) : undefined;
@@ -2308,27 +2542,39 @@ function MapAndList(props: { c: PhoneCtx }) {
       });
     },
   );
-  const fit = (at = laid()) => {
-    if (!at || !mapHost) return;
-    const w = mapHost.clientWidth,
-      h = mapHost.clientHeight;
-    const sc = Math.min(1, (w - 16) / at.width, (h - 16) / at.height);
-    setMt({ s: sc, x: (w - at.width * sc) / 2, y: (h - at.height * sc) / 2 });
-  };
-  const centreOn = (x: number, y: number, sc: number) => {
-    if (!mapHost) return;
-    setMt({
-      s: sc,
-      x: mapHost.clientWidth / 2 - x * sc,
-      y: mapHost.clientHeight / 2 - y * sc,
-    });
-  };
   const toggleBlock = (k: string) =>
     setManual((o) => {
       const n = new Set(o);
       if (!n.delete(k)) n.add(k);
       return n;
     });
+
+  const go = (id: string) => {
+    if (id === here()) return;
+    nav.step();
+    setPath((p) =>
+      p.includes(id) ? p.slice(0, p.indexOf(id) + 1) : [...p, id],
+    );
+    setLineSel(null);
+    c.setSel({ kind: "node", id });
+    setTab("elements");
+    atLeastHalf();
+  };
+  const zoomInto = (id: string) => {
+    nav.step();
+    c.setFocus(id);
+    setPath([]);
+    setLineSel(null);
+    c.setSel(null);
+    setTab("elements");
+  };
+  const showDetails = (x: PhoneSel, lines?: string[]) => {
+    nav.step();
+    c.setSel(x);
+    setLineSel(lines ?? null);
+    setTab("details");
+    atLeastHalf();
+  };
   const mapGestures = panZoom({
     host: () => mapHost,
     t: mt,
@@ -2343,14 +2589,7 @@ function MapAndList(props: { c: PhoneCtx }) {
       go(id);
     },
   });
-  const go = (id: string) => {
-    setPath((p) =>
-      p.includes(id) ? p.slice(0, p.indexOf(id) + 1) : [...p, id],
-    );
-    setLineSel(null);
-    c.setSel({ kind: "node", id });
-    setShowDetails(false);
-  };
+
   const ls = createMemo(() => (here() ? linesOf(m, c.view(), here()!) : null));
   const lineOn = (l: Clustered["links"][number]) => {
     const ls0 = lineSel();
@@ -2363,55 +2602,40 @@ function MapAndList(props: { c: PhoneCtx }) {
     arrowText: string,
   ) => {
     const ids = edgeIds([n.e]);
-    const on = () => !!lineSel() && lineSel()!.join() === ids.join();
     return (
       <PartRow
         c={c}
         id={n.other}
-        on={on()}
+        on={!!lineSel() && lineSel()!.join() === ids.join()}
         via={{
           text: `${arrowText} ${bundleText(n.e)}`,
           change: n.e.change,
-          onTap: () => {
-            setLineSel(on() ? null : ids);
-            c.setSel(
-              on() ? { kind: "node", id: here()! } : { kind: "edge", ids },
-            );
-          },
+          onTap: () => showDetails({ kind: "edge", ids }, ids),
         }}
         end="Go ›"
         onTap={() => go(n.other)}
       />
     );
   };
+  const title = () =>
+    here()
+      ? m.name(here()!)
+      : c.focus() && c.focus() !== c.home()
+        ? m.name(c.focus()!)
+        : "Whole system";
+  const detailsTitle = () => {
+    const x = c.sel();
+    if (x?.kind === "node") return m.name((x as { id: string }).id);
+    if (x?.kind === "edge")
+      return (x as { ids: string[] }).ids.length === 1
+        ? "1 connection"
+        : `${(x as { ids: string[] }).ids.length} connections`;
+    return "What this PR changes";
+  };
   return (
-    <div {...stylex.attrs(s.app)}>
-      <Top
-        c={c}
-        title={
-          here()
-            ? m.name(here()!)
-            : c.focus() && c.focus() !== c.home()
-              ? m.name(c.focus()!)
-              : "Whole system"
-        }
-        back={
-          path().length
-            ? () => (
-                setPath((p) => p.slice(0, -1)),
-                setLineSel(null),
-                setShowDetails(false)
-              )
-            : c.focus() !== c.home()
-              ? () => c.setFocus(m.nodes.get(c.focus()!)?.parent ?? null)
-              : undefined
-        }
-      />
-      <div
-        ref={mapHost}
-        {...stylex.attrs(s.map, bigMap() && s.mapBig)}
-        {...mapGestures}
-      >
+    <div ref={app} {...stylex.attrs(s.app)}>
+      <Top c={c} title={title()} back={nav.depth() ? nav.back : undefined} />
+      <div ref={mapHost} {...stylex.attrs(s.canvas, s.mapBg)} {...mapGestures}>
         <Show when={laid()}>
           {(l) => (
             <div
@@ -2435,134 +2659,172 @@ function MapAndList(props: { c: PhoneCtx }) {
           )}
         </Show>
         <button
-          {...stylex.attrs(s.chip, s.chipTR)}
+          {...stylex.attrs(s.strip, s.stripTop)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setKeyOpen((k) => !k)}
+        >
+          <b>Key</b>
+          <span>
+            <span {...stylex.attrs(s.dot, barOf("added"))} />
+            added
+          </span>
+          <span>
+            <span {...stylex.attrs(s.dot, barOf("modified"))} />
+            changed
+          </span>
+          <span>
+            <span {...stylex.attrs(s.dot, barOf("removed"))} />
+            removed
+          </span>
+          <span>
+            <span {...stylex.attrs(s.dot, barOf("unchanged"))} />
+            not changed
+          </span>
+          <span {...stylex.attrs(s.muted)}>{keyOpen() ? "▴" : "more ▾"}</span>
+        </button>
+        <Show when={keyOpen()}>
+          <div
+            {...stylex.attrs(s.keyPop)}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <Key drawing />
+          </div>
+        </Show>
+        <button
+          {...stylex.attrs(s.chip, s.chipFit)}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => fit()}
         >
           Fit
         </button>
-        <button
-          {...stylex.attrs(s.chip, s.chipTR2)}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => (
-            setBigMap((b) => !b),
-            requestAnimationFrame(() => fit())
-          )}
-        >
-          {bigMap() ? "Smaller" : "Bigger"}
-        </button>
       </div>
-      <button {...stylex.attrs(s.strip)} onClick={() => setKeyOpen((k) => !k)}>
-        <b>Key</b>
-        <span>
-          <span {...stylex.attrs(s.dot, barOf("added"))} />
-          added
-        </span>
-        <span>
-          <span {...stylex.attrs(s.dot, barOf("modified"))} />
-          changed
-        </span>
-        <span>
-          <span {...stylex.attrs(s.dot, barOf("removed"))} />
-          removed
-        </span>
-        <span>
-          <span {...stylex.attrs(s.dot, barOf("unchanged"))} />
-          not changed
-        </span>
-        <span {...stylex.attrs(s.muted)}>{keyOpen() ? "▴" : "more ▾"}</span>
-      </button>
-      <div {...stylex.attrs(s.body)}>
-        <Show when={keyOpen()}>
-          <Key drawing />
-        </Show>
-        <Show when={!keyOpen()}>
-          <Show when={path().length > 1}>
-            <div {...stylex.attrs(s.crumbs)}>
-              <For each={path()}>
-                {(id, i) => (
-                  <button
-                    {...stylex.attrs(
-                      s.crumb,
-                      i() === path().length - 1 && s.crumbOn,
-                    )}
-                    onClick={() => setPath((p) => p.slice(0, i() + 1))}
-                  >
-                    {m.name(id)}
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-          <Show
-            when={here()}
-            fallback={
-              <>
-                <ViewControls c={c} />
-                <For each={cl().keys}>
-                  {(k) => (
-                    <>
-                      <div {...stylex.attrs(s.section)}>
-                        {k} ({cl().members.get(k)?.length ?? 0})
-                      </div>
-                      <For each={cl().members.get(k) ?? []}>
-                        {(id) => <PartRow c={c} id={id} onTap={() => go(id)} />}
-                      </For>
-                    </>
+      <div
+        style={{ "--sheet-h": `${h()}px` }}
+        {...stylex.attrs(s.sheet, dragging() && s.sheetDragging)}
+      >
+        <div {...stylex.attrs(s.grip)} {...grip}>
+          <div {...stylex.attrs(s.gripBar)} />
+        </div>
+        <div {...stylex.attrs(s.tabs)} {...grip}>
+          <button
+            {...stylex.attrs(s.tabBtn, tab() === "elements" && s.tabOn)}
+            onClick={() => (setTab("elements"), atLeastHalf())}
+          >
+            Elements
+          </button>
+          <button
+            {...stylex.attrs(s.tabBtn, tab() === "details" && s.tabOn)}
+            onClick={() => (setTab("details"), atLeastHalf())}
+          >
+            Details
+          </button>
+        </div>
+        <div {...stylex.attrs(s.sheetBody)}>
+          <Show when={tab() === "elements"}>
+            <Show when={path().length > 1}>
+              <div {...stylex.attrs(s.crumbs)}>
+                <For each={path()}>
+                  {(id) => (
+                    <button
+                      {...stylex.attrs(s.crumb, id === here() && s.crumbOn)}
+                      onClick={() => go(id)}
+                    >
+                      {m.name(id)}
+                    </button>
                   )}
                 </For>
-              </>
-            }
-          >
-            {(id) => (
-              <>
-                <div {...stylex.attrs(s.actions, s.actionsPad)}>
-                  <button
-                    {...stylex.attrs(s.btn, showDetails() && s.btnMain)}
-                    onClick={() => setShowDetails((d) => !d)}
-                  >
-                    {showDetails()
-                      ? "Lines"
-                      : lineSel()
-                        ? "Details of this line"
-                        : "Details"}
-                  </button>
-                  <Show when={(m.children.get(id()) ?? []).length}>
-                    <button
-                      {...stylex.attrs(s.btn)}
-                      onClick={() => c.setFocus(id())}
-                    >
-                      Open inside
-                    </button>
-                  </Show>
-                </div>
-                <Show when={showDetails()}>
-                  <div {...stylex.attrs(s.panelWrap)}>{c.panel()}</div>
-                </Show>
-                <Show when={!showDetails() && ls()}>
-                  {(l) => (
-                    <>
-                      <Show when={l().out.length}>
+              </div>
+            </Show>
+            <Show
+              when={here()}
+              fallback={
+                <>
+                  <For each={cl().keys}>
+                    {(k) => (
+                      <>
                         <div {...stylex.attrs(s.section)}>
-                          Uses or sends to ({l().out.length})
+                          {k} ({cl().members.get(k)?.length ?? 0})
                         </div>
-                        <For each={l().out}>
-                          {(n) => row(n, n.dir === "both" ? "↔" : "→")}
+                        <For each={cl().members.get(k) ?? []}>
+                          {(id) => (
+                            <PartRow c={c} id={id} onTap={() => go(id)} />
+                          )}
                         </For>
+                      </>
+                    )}
+                  </For>
+                  <div {...stylex.attrs(s.section)}>View</div>
+                  <ViewControls c={c} />
+                </>
+              }
+            >
+              {(id) => (
+                <>
+                  <div {...stylex.attrs(s.head)}>
+                    <div
+                      {...stylex.attrs(
+                        s.rowKind,
+                        textOf(
+                          changeOf(
+                            c.view().nodes.find((v) => v.node.id === id()),
+                          ),
+                        ),
+                      )}
+                    >
+                      {headline(
+                        m,
+                        c.view().nodes.find((v) => v.node.id === id()),
+                        id(),
+                      )}
+                    </div>
+                    <div {...stylex.attrs(s.headName)}>{m.name(id())}</div>
+                    <div {...stylex.attrs(s.actions)}>
+                      <button
+                        {...stylex.attrs(s.btn)}
+                        onClick={() => showDetails({ kind: "node", id: id() })}
+                      >
+                        Details
+                      </button>
+                      <Show when={(m.children.get(id()) ?? []).length}>
+                        <button
+                          {...stylex.attrs(s.btn)}
+                          onClick={() => zoomInto(id())}
+                        >
+                          Open inside ({(m.children.get(id()) ?? []).length}{" "}
+                          parts)
+                        </button>
                       </Show>
-                      <Show when={l().inn.length}>
-                        <div {...stylex.attrs(s.section)}>
-                          Uses it or sends to it ({l().inn.length})
-                        </div>
-                        <For each={l().inn}>{(n) => row(n, "←")}</For>
-                      </Show>
-                    </>
-                  )}
-                </Show>
-              </>
-            )}
+                    </div>
+                  </div>
+                  <Show when={ls()}>
+                    {(l) => (
+                      <>
+                        <Show when={l().out.length}>
+                          <div {...stylex.attrs(s.section)}>
+                            Uses or sends to ({l().out.length})
+                          </div>
+                          <For each={l().out}>
+                            {(n) => row(n, n.dir === "both" ? "↔" : "→")}
+                          </For>
+                        </Show>
+                        <Show when={l().inn.length}>
+                          <div {...stylex.attrs(s.section)}>
+                            Uses it or sends to it ({l().inn.length})
+                          </div>
+                          <For each={l().inn}>{(n) => row(n, "←")}</For>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                </>
+              )}
+            </Show>
           </Show>
-        </Show>
+          <Show when={tab() === "details"}>
+            <div {...stylex.attrs(s.detailsHead)}>{detailsTitle()}</div>
+            <div {...stylex.attrs(s.panelWrap)}>{c.panel()}</div>
+          </Show>
+        </div>
       </div>
     </div>
   );
