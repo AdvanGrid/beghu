@@ -80,6 +80,16 @@ export function purposeLit(p: Purposes, id: string) {
   };
 }
 
+// PURPOSE CANVAS (#160): each top-level purpose has a colour, its place in reading order; a
+// sub-purpose takes its purpose's. The canvas's dots and the panel's use this one rule.
+export const PURPOSE_SW = ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"] as const;
+export function purposeSwatch(p: Purposes, id: string): (typeof PURPOSE_SW)[number] {
+  let q = p.purposes.find((x) => x.id === id);
+  while (q?.parent) q = p.purposes.find((x) => x.id === q!.parent);
+  const i = p.purposes.filter((x) => !x.parent).findIndex((x) => x.id === q?.id);
+  return PURPOSE_SW[(i < 0 ? 0 : i) % PURPOSE_SW.length]!;
+}
+
 function placeOf(c: WalkCtx, x: WSel): Place {
   const { m, p } = c;
   const pr = m.a.pr;
@@ -432,6 +442,23 @@ function stopLit(c: WalkCtx, s: Stop) {
 
 const STOP_ICON = { purpose: "◆", node: "▢", edge: "→" } as const;
 
+const pdot = stylex.create({
+  c0: { backgroundColor: pal.c0 },
+  c1: { backgroundColor: pal.c1 },
+  c2: { backgroundColor: pal.c2 },
+  c3: { backgroundColor: pal.c3 },
+  c4: { backgroundColor: pal.c4 },
+  c5: { backgroundColor: pal.c5 },
+  c6: { backgroundColor: pal.c6 },
+  c7: { backgroundColor: pal.c7 },
+  dot: { borderRadius: 999, display: "inline-block", flexShrink: 0, height: 9, marginInlineEnd: 5, verticalAlign: "baseline", width: 9 },
+});
+
+/** A purpose's colour, as the canvas draws it on the parts that serve it. */
+function PDot(props: { c: WalkCtx; id: string }) {
+  return <span {...stylex.attrs(pdot.dot, pdot[purposeSwatch(props.c.p, props.id)])} />;
+}
+
 function Trail(props: { c: WalkCtx; place: Place }) {
   return (
     <div {...stylex.attrs(st.trail)}>
@@ -441,6 +468,7 @@ function Trail(props: { c: WalkCtx; place: Place }) {
             <Show when={i() > 0}>›</Show>
             <Show when={i() < props.place.trail.length - 1} fallback={<span>{t.label}</span>}>
               <button onClick={() => props.c.pick(t.to)} {...stylex.attrs(st.crumb)}>
+                <Show when={t.to?.kind === "purpose" ? (t.to as { id: string }).id : null}>{(id) => <PDot c={props.c} id={id()} />}</Show>
                 {t.label}
               </button>
             </Show>
@@ -504,7 +532,10 @@ function ConflictCard(props: { c: WalkCtx; k: Conflict }) {
   const row = (f: Fact, which: "a" | "b") => (
     <>
       <button onClick={() => setOpen(open() === which ? null : which)} {...stylex.attrs(st.cfRow, open() === which && st.cfRowOn)}>
-        <span {...stylex.attrs(st.cfWho)}>{sayer(f, props.c, props.k.kind === "purpose-outside")}</span>
+        <span {...stylex.attrs(st.cfWho)}>
+          <Show when={f.purpose}>{(id) => <PDot c={props.c} id={id()} />}</Show>
+          {sayer(f, props.c, props.k.kind === "purpose-outside")}
+        </span>
         <span>{f.says}</span>
         <span {...stylex.attrs(st.muted)}>{open() === which ? "▾" : "▸"}</span>
       </button>
@@ -556,7 +587,10 @@ function StopList(props: { c: WalkCtx; stops: Stop[] }) {
               <span {...stylex.attrs(st.num)}>{i() + 1}</span>
               <span>
                 <span {...stylex.attrs(st.stopName)}>
-                  {STOP_ICON[s.kind]} {stopName(props.c, s)}
+                  <Show when={s.kind === "purpose"} fallback={`${STOP_ICON[s.kind]} `}>
+                    <PDot c={props.c} id={s.id} />
+                  </Show>
+                  {stopName(props.c, s)}
                 </span>
                 <br />
                 <span {...stylex.attrs(st.muted)}>{s.line}</span>
@@ -580,6 +614,7 @@ function Roles(props: { c: WalkCtx; place: Place }) {
             onMouseEnter={() => props.c.light(purposeLit(props.c.p, r.purpose.id))}
             onMouseLeave={() => props.c.light(null)}
           >
+            <PDot c={props.c} id={r.purpose.id} />
             <button onClick={() => props.c.pick({ kind: "purpose", id: r.purpose.id })} {...stylex.attrs(st.link)}>
               {r.purpose.name}
             </button>
@@ -682,7 +717,10 @@ function Title(props: { place: Place; c: WalkCtx }) {
     <>
       <Trail c={props.c} place={props.place} />
       <div {...stylex.attrs(st.kind)}>{kind()}</div>
-      <h2 {...stylex.attrs(st.h2)}>{props.place.title}</h2>
+      <h2 {...stylex.attrs(st.h2)}>
+        <Show when={props.place.kind === "purpose" ? props.c.p.purposes.find((x) => x.name === props.place.title)?.id : null}>{(id) => <PDot c={props.c} id={id()} />}</Show>
+        {props.place.title}
+      </h2>
     </>
   );
 }

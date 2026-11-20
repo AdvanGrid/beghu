@@ -19,7 +19,7 @@ import { layout, NODE_H, NODE_W, type Laid } from "./layout.ts";
 import type { Model } from "./model.ts";
 import type { Change, Node } from "./schema.ts";
 import type { Conflict, Purpose, Purposes } from "./purpose.ts";
-import type { WSel } from "./walkthrough.tsx";
+import { purposeSwatch, type WSel } from "./walkthrough.tsx";
 
 const sws = stylex.create({
   c0: { backgroundColor: pal.c0 },
@@ -260,8 +260,7 @@ class PData {
     return q.id;
   }
   sw(pid: string): Sw {
-    const i = this.subs(null).findIndex((x) => x.id === this.topPurpose(pid));
-    return SW[(i < 0 ? 0 : i) % SW.length]!;
+    return purposeSwatch(this.p, pid);
   }
   /** Parts a purpose names itself (not its sub-purposes). */
   direct(pid: string): string[] {
@@ -275,9 +274,9 @@ class PData {
     const ps = this.tree(pid).map((x) => this.purpose(x));
     return new Set(ps.flatMap((q) => [...q.edges.map((e) => e.edge), ...q.stops.filter((s) => s.kind === "edge").map((s) => s.id)]).filter((id) => this.m.edges.has(id)));
   }
-  /** Top-level purposes a part serves: it, a part inside it, or a part it sits in. */
+  /** Top-level purposes a part serves: it, or a part inside it (as the panel's "In this PR's purposes" counts). */
   servedBy(id: string): string[] {
-    const inside = (x: string) => this.up(x).includes(id) || this.up(id).includes(x);
+    const inside = (x: string) => this.up(x).includes(id);
     return this.subs(null)
       .filter((q) => [...this.nodes(q.id)].some(inside))
       .map((q) => q.id);
