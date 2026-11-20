@@ -29,6 +29,8 @@ export interface Link {
 export interface Routed {
   /** The rounded orthogonal path. */
   d: string;
+  /** OWN LAYOUT (#163): the points it was drawn from, for counting crossings and bends. */
+  pts: { x: number; y: number }[];
   /** Arrowheads: the tip and the direction the line arrives in, at the end and (for two-way) the start. */
   end: { x: number; y: number; dx: number; dy: number };
   start: { x: number; y: number; dx: number; dy: number };
@@ -365,6 +367,7 @@ export async function layout(
     const lab = e.labels?.[0];
     routes.set(e.id, {
       d: rounded(pts),
+      pts,
       end: tip(pts[pts.length - 2]!, pts[pts.length - 1]!),
       start: tip(pts[1]!, pts[0]!),
       label: lab ? { x: lab.x ?? 0, y: lab.y ?? 0, w: lab.width ?? 0, h: lab.height ?? LABEL_H } : undefined,
@@ -381,7 +384,7 @@ function tip(from: { x: number; y: number }, to: { x: number; y: number }) {
 }
 
 /** An orthogonal polyline with each corner rounded (never more than half the shorter segment). */
-function rounded(pts: { x: number; y: number }[]): string {
+export function rounded(pts: { x: number; y: number }[]): string {
   let d = `M${pts[0]!.x},${pts[0]!.y}`;
   for (let i = 1; i < pts.length - 1; i++) {
     const a = pts[i - 1]!, b = pts[i]!, c = pts[i + 1]!;

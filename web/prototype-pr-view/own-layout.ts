@@ -1,0 +1,743 @@
+// PROTOTYPE (PR view, #163): a layout we write ourselves for the locked top level, to compare with
+// ELK's. Three modes:
+//
+// - Lanes: the locked rules by construction. Columns in a fixed order (people, the changed group,
+//   the unchanged group, outside systems); each group layered by its own lines, at most `width`
+//   parts a column. Rows ordered by barycentre sweeps, y placed by isotonic regression (so
+//   everything packs from the top and no part overlaps), and lines routed through the gutters
+//   between columns, each vertical on its own track, ordered to cross least. Every line runs
+//   left to right, so there are no U-turns to flatten and no groups to lift.
+// - Highway, pull together: long lines whose spans share at least `threshold` of the shorter's
+//   gutters, and that run near each other, share one row (a trunk) through the columns they share.
+//   Placement then runs again with the trunks, so they pull their members together. Short lines
+//   (fewer than `minGutters` gutters) never join one.
+// - Highway, merge as found: Lanes as it is, then lines that already run side by side (same gap
+//   in a column, close enough, for at least `threshold` of the shorter's gutters) snap onto one
+//   trunk. Nothing else moves.
+//
+// Coordinates are the drawing's; each route is in laid direction (lower column to higher), and
+// `flipped` lists the lines laid to → from (their arrows stay as they are).
+
+export type P = { x: number; y: number };
+export interface LNode {
+  id: string;
+  /** 0 people, 1 the changed group, 2 the unchanged group, 3 outside systems. */
+  side: 0 | 1 | 2 | 3;
+  w: number;
+  h: number;
+}
+export interface LLink {
+  key: string;
+  from: string;
+  to: string;
+}
+export type Mode = "lanes" | "pull" | "found";
+export interface Opts {
+  mode: Mode;
+  /** Most parts in one column of a group. */
+  width?: number;
+  /** A trunk needs the lines to share this share of the shorter one's gutters. */
+  threshold?: number;
+  /** Lines spanning fewer gutters than this stay local. */
+  minGutters?: number;
+  /** Pull together: how many rows apart two lines may run and still be pulled into one trunk. */
+  reach?: number;
+  /** Merge as found: how close (px) two lines must run to count as following each other. */
+  close?: number;
+  /** Y placement: Brandes–Köpf alignment (default), or per-column isotonic regression. */
+  placement?: "bk" | "iso";
+}
+export interface Trunk {
+  key: string;
+  members: string[];
+  pts: P[];
+  width: number;
+}
+export interface Own {
+  at: Map<string, P>;
+  regions: { key: "C" | "U"; x: number; y: number; w: number; h: number }[];
+  routes: Map<string, P[]>;
+  flipped: Set<string>;
+  trunks: Trunk[];
+  /** For each line, the trunk it rides (if any). */
+  rides: Map<string, string>;
+  width: number;
+  height: number;
+}
+
+const PAD = 24;
+const FRAME_TOP = 44;
+const FRAME_PAD = 20;
+const GAP_NN = 28;
+const GAP_ND = 16;
+const GAP_DD = 10;
+const TRACK = 10;
+const GUT_PAD = 14;
+const GUT_MIN = 44;
+/** A trunk's drawn width, from how many lines it carries. */
+export const trunkWidth = (n: number) => Math.min(3 + 1.5 * n, 12);
+
+interface Item {
+  id: string;
+  col: number;
+  w: number;
+  h: number;
+  node?: LNode;
+  /** The laid lines through this item (a dummy carries one, a trunk several). */
+  links: string[];
+  trunk?: number;
+  ord: number;
+  y: number;
+}
+
+interface Laid {
+  key: string;
+  a: string;
+  b: string;
+}
+
+export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
+  const thr = o.threshold ?? 0.8;
+  const minG = o.minGutters ?? 3;
+  const reach = o.reach ?? 6;
+  const close = o.close ?? 34;
+  const W = o.width ?? Math.max(5, Math.ceil(Math.sqrt(nodes.length / 1.4)));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+
+  // 1. Columns: each side's layers, then one global column index.
+  const layer = new Map<string, number>();
+  const sideLayers = [0, 0, 0, 0];
+  for (const side of [0, 1, 2, 3] as const) {
+    const ids = nodes.filter((n) => n.side === side).map((n) => n.id);
+    if (ids.length === 0) continue;
+    if (side === 0 || side === 3) {
+      const per = Math.max(W, Math.ceil(ids.length / 2));
+      ids.forEach((id, i) => layer.set(id, Math.floor(i / per)));
+    } else {
+      const mine = new Set(ids);
+      const adj = new Map<string, string[]>(ids.map((id) => [id, []]));
+      const intra = links.filter((l) => mine.has(l.from) && mine.has(l.to) && l.from !== l.to);
+      for (const l of intra) adj.get(l.from)!.push(l.to);
+      // Reverse postorder: a topological order once the lines that close a cycle are turned round.
+      const pos = new Map<string, number>();
+      const seen = new Set<string>();
+      const post: string[] = [];
+      const visit = (id: string) => {
+        seen.add(id);
+        for (const t of adj.get(id)!) if (!seen.has(t)) visit(t);
+        post.push(id);
+      };
+      for (const id of ids) if (!seen.has(id)) visit(id);
+      post.reverse().forEach((id, i) => pos.set(id, i));
+      const preds = new Map<string, string[]>(ids.map((id) => [id, []]));
+      for (const l of intra) {
+        const [a, b] = pos.get(l.from)! < pos.get(l.to)! ? [l.from, l.to] : [l.to, l.from];
+        preds.get(b)!.push(a);
+      }
+      const count: number[] = [];
+      for (const id of [...ids].sort((a, b) => pos.get(a)! - pos.get(b)!)) {
+        let L = Math.max(0, ...preds.get(id)!.map((p) => layer.get(p)! + 1));
+        while ((count[L] ?? 0) >= W) L++;
+        count[L] = (count[L] ?? 0) + 1;
+        layer.set(id, L);
+      }
+    }
+    sideLayers[side] = Math.max(...ids.map((id) => layer.get(id)!)) + 1;
+  }
+  const offset = [0, sideLayers[0]!, sideLayers[0]! + sideLayers[1]!, sideLayers[0]! + sideLayers[1]! + sideLayers[2]!];
+  const nCols = offset[3]! + sideLayers[3]!;
+  const colOf = new Map(nodes.map((n) => [n.id, offset[n.side]! + layer.get(n.id)!]));
+  const sideOfCol = (c: number) => (c < offset[1]! ? 0 : c < offset[2]! ? 1 : c < offset[3]! ? 2 : 3);
+
+  // Every line laid from the lower column to the higher.
+  const flipped = new Set<string>();
+  const laid: Laid[] = [];
+  for (const l of links) {
+    if (l.from === l.to || !byId.has(l.from) || !byId.has(l.to)) continue;
+    const flip = colOf.get(l.from)! > colOf.get(l.to)!;
+    if (flip) flipped.add(l.key);
+    laid.push({ key: l.key, a: flip ? l.to : l.from, b: flip ? l.from : l.to });
+  }
+  const span = (l: Laid) => colOf.get(l.b)! - colOf.get(l.a)!;
+  const laidBy = new Map(laid.map((l) => [l.key, l]));
+
+  // 2. Items: the parts, plus a dummy per line per column it passes through; a trunk shares one.
+  type Cluster = { members: string[]; from: number; to: number };
+  const build = (clusters: Cluster[]) => {
+    const items = new Map<string, Item>();
+    const cols: Item[][] = Array.from({ length: nCols }, () => []);
+    const add = (it: Item) => (items.set(it.id, it), cols[it.col]!.push(it), it);
+    for (const n of nodes) add({ id: n.id, col: colOf.get(n.id)!, w: n.w, h: n.h, node: n, links: [], ord: 0, y: 0 });
+    const inCluster = new Map<string, number>();
+    clusters.forEach((c, k) => c.members.forEach((m) => inCluster.set(m, k)));
+    const chains = new Map<string, Item[]>();
+    for (const l of laid) {
+      const chain = [items.get(l.a)!];
+      for (let c = colOf.get(l.a)! + 1; c < colOf.get(l.b)!; c++) {
+        const k = inCluster.get(l.key);
+        const cl = k === undefined ? undefined : clusters[k]!;
+        let it: Item;
+        if (cl && c >= cl.from && c <= cl.to) {
+          const id = `t:${k}:${c}`;
+          it = items.get(id) ?? add({ id, col: c, w: 0, h: 0, links: [], trunk: k, ord: 0, y: 0 });
+        } else it = add({ id: `d:${l.key}:${c}`, col: c, w: 0, h: 0, links: [], ord: 0, y: 0 });
+        it.links.push(l.key);
+        chain.push(it);
+      }
+      chain.push(items.get(l.b)!);
+      chains.set(l.key, chain);
+    }
+    for (const it of items.values()) if (it.trunk !== undefined) it.h = trunkWidth(it.links.length);
+    // Neighbours across each gutter, weighted by how many lines join them.
+    const left = new Map<Item, Map<Item, number>>();
+    const right = new Map<Item, Map<Item, number>>();
+    for (const it of items.values()) (left.set(it, new Map()), right.set(it, new Map()));
+    for (const chain of chains.values()) {
+      for (let i = 0; i + 1 < chain.length; i++) {
+        const [p, q] = [chain[i]!, chain[i + 1]!];
+        right.get(p)!.set(q, (right.get(p)!.get(q) ?? 0) + 1);
+        left.get(q)!.set(p, (left.get(q)!.get(p) ?? 0) + 1);
+      }
+    }
+    return { items, cols, chains, left, right };
+  };
+  type Built = ReturnType<typeof build>;
+
+  // 3. Order each column: barycentre sweeps, keeping the order with the fewest crossings.
+  const crossings = (B: Built) => {
+    let n = 0;
+    for (let c = 0; c + 1 < nCols; c++) {
+      const es: [number, number, number][] = [];
+      for (const p of B.cols[c]!) for (const [q, w] of B.right.get(p)!) es.push([p.ord, q.ord, w]);
+      for (let i = 0; i < es.length; i++)
+        for (let j = i + 1; j < es.length; j++) {
+          const [a, b, w] = es[i]!, [x, y, v] = es[j]!;
+          if ((a - x) * (b - y) < 0) n += w * v;
+        }
+    }
+    return n;
+  };
+  const renumber = (B: Built) => B.cols.forEach((col) => col.forEach((it, i) => (it.ord = i)));
+  const order = (B: Built, seeded: boolean) => {
+    if (!seeded) {
+      // Parts in the order given, dummies after; the first sweep places them.
+      for (const col of B.cols) col.sort((a, b) => (a.node ? 0 : 1) - (b.node ? 0 : 1));
+    } else for (const col of B.cols) col.sort((a, b) => a.ord - b.ord);
+    renumber(B);
+    const bary = (it: Item, side: Map<Item, Map<Item, number>>) => {
+      let s = 0, w = 0;
+      for (const [q, k] of side.get(it)!) (s += q.ord * k, (w += k));
+      return w ? s / w : it.ord;
+    };
+    let best = crossings(B);
+    let snap = B.cols.map((col) => [...col]);
+    for (let it = 0; it < 10; it++) {
+      for (let c = 1; c < nCols; c++) {
+        const col = B.cols[c]!;
+        const k = new Map(col.map((x) => [x, bary(x, B.left)]));
+        col.sort((a, b) => k.get(a)! - k.get(b)! || a.ord - b.ord);
+        col.forEach((x, i) => (x.ord = i));
+      }
+      for (let c = nCols - 2; c >= 0; c--) {
+        const col = B.cols[c]!;
+        const k = new Map(col.map((x) => [x, bary(x, B.right)]));
+        col.sort((a, b) => k.get(a)! - k.get(b)! || a.ord - b.ord);
+        col.forEach((x, i) => (x.ord = i));
+      }
+      const n = crossings(B);
+      if (n < best) (best = n, (snap = B.cols.map((col) => [...col])));
+    }
+    B.cols.splice(0, B.cols.length, ...snap);
+    renumber(B);
+  };
+
+  // 4. Y: everything packs from the top; each item pulled toward its neighbours' middle, in order
+  // and never overlapping (weighted isotonic regression per column).
+  const TOP = PAD + FRAME_TOP;
+  const gap = (a: Item, b: Item) => (a.node && b.node ? GAP_NN : a.node || b.node ? GAP_ND : GAP_DD);
+  const place = (B: Built) => {
+    const packed = new Map<Item, number>();
+    for (const col of B.cols) {
+      let y = TOP;
+      col.forEach((it, i) => {
+        if (i > 0) y += gap(col[i - 1]!, it);
+        it.y = y;
+        packed.set(it, y);
+        y += it.h;
+      });
+    }
+    const mid = (it: Item) => it.y + it.h / 2;
+    for (let pass = 0; pass < 8; pass++) {
+      const cs = pass % 2 ? [...B.cols.keys()].reverse() : [...B.cols.keys()];
+      for (const c of cs) {
+        const col = B.cols[c]!;
+        if (col.length === 0) continue;
+        const off: number[] = [];
+        let acc = 0;
+        col.forEach((it, i) => {
+          if (i > 0) acc += col[i - 1]!.h + gap(col[i - 1]!, it);
+          off.push(acc);
+        });
+        const target: number[] = [];
+        const weight: number[] = [];
+        col.forEach((it) => {
+          let s = 0, w = 0;
+          for (const side of [B.left, B.right]) for (const [q, k] of side.get(it)!) (s += mid(q) * k, (w += k));
+          // A light pull back to the packed place keeps the groups' tops full.
+          const anchor = packed.get(it)!;
+          const want = w ? s / w - it.h / 2 : anchor;
+          // Dummies follow their line only; parts also feel the pull to the top.
+          const pull = it.node ? 0.6 : 0.05;
+          target.push(w ? (want * w + anchor * pull) / (w + pull) : anchor);
+          weight.push(w + pull);
+        });
+        const z = isotonic(
+          target.map((t, i) => t - off[i]!),
+          weight,
+        );
+        col.forEach((it, i) => (it.y = Math.max(TOP, z[i]!) + off[i]!));
+      }
+    }
+    // Straighten: each run of dummies (a long line, or a trunk, between two parts) takes one
+    // height wherever its neighbours in every column it passes leave room, longest runs first.
+    const runs: Item[][] = [];
+    const seenRun = new Set<string>();
+    for (const chain of B.chains.values()) {
+      let run: Item[] = [];
+      for (const it of chain) {
+        if (!it.node) run.push(it);
+        else if (run.length) (runs.push(run), (run = []));
+      }
+    }
+    runs.sort((a, b) => b.length - a.length);
+    for (let pass = 0; pass < 2; pass++)
+      for (const run of runs) {
+        const id = run.map((r) => r.id).join();
+        if (pass === 0 && seenRun.has(id)) continue;
+        seenRun.add(id);
+        let lo = TOP, hi = Infinity;
+        for (const it of run) {
+          const col = B.cols[it.col]!;
+          const p = col[it.ord - 1], q = col[it.ord + 1];
+          if (p) lo = Math.max(lo, p.y + p.h + gap(p, it));
+          if (q) hi = Math.min(hi, q.y - gap(it, q) - it.h);
+        }
+        if (lo > hi) continue;
+        const ys = run.map((it) => it.y).sort((a, b) => a - b);
+        const want = ys[Math.floor(ys.length / 2)]!;
+        const y = Math.min(hi, Math.max(lo, want));
+        for (const it of run) it.y = y;
+      }
+  };
+
+  // 4b. Y by Brandes–Köpf: chains of items (a long line's dummies first) aligned into blocks that
+  // share one height, then blocks packed as tight as their order allows. Four runs (aligning to
+  // the left or right neighbours, packing from the top or the bottom); the shortest wins.
+  const bk = (B: Built) => {
+    const items = [...B.items.values()];
+    const sep = (a: Item, b: Item) => a.h / 2 + gap(a, b) + b.h / 2;
+    const isDummy = (it: Item) => !it.node;
+    const run = (fromRight: boolean, fromBottom: boolean) => {
+      const cols = (fromRight ? [...B.cols].reverse() : B.cols).map((c) => (fromBottom ? [...c].reverse() : [...c]));
+      const pos = new Map<Item, number>();
+      cols.forEach((c) => c.forEach((it, i) => pos.set(it, i)));
+      const upper = (it: Item) => [...(fromRight ? B.right : B.left).get(it)!.keys()].sort((a, b) => pos.get(a)! - pos.get(b)!);
+      // Type-1 conflicts: a line between a part and a dummy that crosses a dummy–dummy segment.
+      const marked = new Set<string>();
+      for (let i = 1; i + 1 < cols.length; i++) {
+        const next = cols[i + 1]!;
+        let k0 = 0, l = 0;
+        for (let l1 = 0; l1 < next.length; l1++) {
+          const v = next[l1]!;
+          const inner = isDummy(v) ? upper(v).find((u) => isDummy(u)) : undefined;
+          if (l1 === next.length - 1 || inner) {
+            const k1 = inner ? pos.get(inner)! : cols[i]!.length - 1;
+            for (; l <= l1; l++) {
+              const w = next[l]!;
+              for (const u of upper(w)) {
+                const pu = pos.get(u)!;
+                if ((pu < k0 || pu > k1) && !(isDummy(u) && isDummy(w))) marked.add(`${u.id}|${w.id}`);
+              }
+            }
+            k0 = k1;
+          }
+        }
+      }
+      const root = new Map<Item, Item>(items.map((it) => [it, it]));
+      const align = new Map<Item, Item>(items.map((it) => [it, it]));
+      for (let i = 1; i < cols.length; i++) {
+        let r = -1;
+        for (const v of cols[i]!) {
+          const d = upper(v);
+          if (!d.length) continue;
+          for (const m of [...new Set([Math.floor((d.length - 1) / 2), Math.ceil((d.length - 1) / 2)])]) {
+            if (align.get(v) !== v) continue;
+            const u = d[m]!;
+            if (!marked.has(`${u.id}|${v.id}`) && r < pos.get(u)!) {
+              align.set(u, v);
+              root.set(v, root.get(u)!);
+              align.set(v, root.get(v)!);
+              r = pos.get(u)!;
+            }
+          }
+        }
+      }
+      // Block graph: an edge from the block above to the block below, weighted by separation.
+      const below = new Map<Item, Map<Item, number>>();
+      const above = new Map<Item, Map<Item, number>>();
+      for (const c of cols)
+        for (let i = 1; i < c.length; i++) {
+          const [a, b] = [root.get(c[i - 1]!)!, root.get(c[i]!)!];
+          const w = sep(c[i - 1]!, c[i]!);
+          if (!below.has(a)) below.set(a, new Map());
+          if (!above.has(b)) above.set(b, new Map());
+          below.get(a)!.set(b, Math.max(below.get(a)!.get(b) ?? 0, w));
+          above.get(b)!.set(a, Math.max(above.get(b)!.get(a) ?? 0, w));
+        }
+      const roots = [...new Set(root.values())];
+      const ys = new Map<Item, number>();
+      const visit1 = (b: Item): number => {
+        if (ys.has(b)) return ys.get(b)!;
+        let y = 0;
+        for (const [a, w] of above.get(b) ?? []) y = Math.max(y, visit1(a) + w);
+        ys.set(b, y);
+        return y;
+      };
+      roots.forEach(visit1);
+      // Pull blocks with room below them down toward their lower neighbours, keeping the order.
+      const done = new Set<Item>();
+      const visit2 = (b: Item) => {
+        if (done.has(b)) return;
+        done.add(b);
+        const out = below.get(b);
+        if (!out || out.size === 0) return;
+        let y = Infinity;
+        for (const [c, w] of out) (visit2(c), (y = Math.min(y, ys.get(c)! - w)));
+        if (y > ys.get(b)!) ys.set(b, y);
+      };
+      if (!fromBottom) roots.forEach(visit2);
+      const at = new Map<Item, number>();
+      for (const it of items) at.set(it, fromBottom ? -ys.get(root.get(it)!)! : ys.get(root.get(it)!)!);
+      let lo = Infinity, hi = -Infinity;
+      for (const it of items) (lo = Math.min(lo, at.get(it)! - it.h / 2), (hi = Math.max(hi, at.get(it)! + it.h / 2)));
+      return { at, lo, hi };
+    };
+    const runs = [run(false, false), run(true, false), run(false, true), run(true, true)];
+    const best = runs.reduce((a, b) => (b.hi - b.lo < a.hi - a.lo ? b : a));
+    for (const it of items) it.y = best.at.get(it)! - it.h / 2 - best.lo + TOP;
+  };
+
+  // Clusters of lines that follow each other, longest first; each later line joins the first
+  // cluster it shares enough of its span with, within `near`.
+  const clusterBy = (near: (a: string, b: string, c: number) => boolean): Cluster[] => {
+    const longs = laid.filter((l) => span(l) >= minG).sort((a, b) => span(b) - span(a) || (a.key < b.key ? -1 : 1));
+    const clusters: (Cluster & { anchor: Laid })[] = [];
+    for (const l of longs) {
+      const [lo, hi] = [colOf.get(l.a)! + 1, colOf.get(l.b)! - 1];
+      let joined = false;
+      for (const cl of clusters) {
+        // The longest run of columns inside the cluster's core where the two run near.
+        let bestFrom = 0, bestTo = -1, run = 0;
+        for (let c = Math.max(lo, cl.from); c <= Math.min(hi, cl.to); c++) {
+          if (near(cl.anchor.key, l.key, c)) {
+            run++;
+            if (run > bestTo - bestFrom + 1) (bestFrom = c - run + 1, (bestTo = c));
+          } else run = 0;
+        }
+        const shared = bestTo - bestFrom + 1;
+        // Shared gutters: the shared columns plus one.
+        if (shared >= 1 && shared + 1 >= thr * span(l) && cl.members.every((m) => shared + 1 >= thr * Math.min(span(laidBy.get(m)!), span(l)) || m === cl.anchor.key)) {
+          cl.members.push(l.key);
+          cl.from = bestFrom;
+          cl.to = bestTo;
+          joined = true;
+          break;
+        }
+      }
+      if (!joined) clusters.push({ members: [l.key], from: lo, to: hi, anchor: l });
+    }
+    return clusters.filter((c) => c.members.length > 1).map(({ members, from, to }) => ({ members, from, to }));
+  };
+
+  let B = build([]);
+  order(B, false);
+  (o.placement === "iso" ? place : bk)(B);
+  let clusters: Cluster[] = [];
+  if (o.mode === "pull") {
+    const ordAt = (key: string, c: number) => B.items.get(`d:${key}:${c}`)?.ord;
+    clusters = clusterBy((a, b, c) => {
+      const x = ordAt(a, c), y = ordAt(b, c);
+      return x !== undefined && y !== undefined && Math.abs(x - y) <= reach;
+    });
+    const prev = B;
+    B = build(clusters);
+    // Seed the order with the first run's: a trunk takes its members' mean row.
+    for (const it of B.items.values()) {
+      const old = it.links.map((k) => prev.items.get(`d:${k}:${it.col}`)?.ord).filter((v) => v !== undefined);
+      it.ord = it.node ? prev.items.get(it.id)!.ord : old.reduce((s, v) => s + v, 0) / Math.max(1, old.length);
+    }
+    order(B, true);
+    (o.placement === "iso" ? place : bk)(B);
+  } else if (o.mode === "found") {
+    const nodeYs = B.cols.map((col) => col.filter((it) => it.node).map((it) => [it.y, it.y + it.h] as const));
+    const yAt = (key: string, c: number) => B.items.get(`d:${key}:${c}`)?.y;
+    clusters = clusterBy((a, b, c) => {
+      const x = yAt(a, c), y = yAt(b, c);
+      if (x === undefined || y === undefined || Math.abs(x - y) > close) return false;
+      const [lo, hi] = [Math.min(x, y), Math.max(x, y)];
+      return !nodeYs[c]!.some(([t, b2]) => b2 > lo && t < hi);
+    });
+    const prev = B;
+    B = build(clusters);
+    // Nothing moves but the merged lines: a trunk sits at its members' mean height.
+    for (const it of B.items.values()) {
+      if (it.node) {
+        const p = prev.items.get(it.id)!;
+        (it.y = p.y, (it.ord = p.y));
+      } else {
+        const ys = it.links.map((k) => prev.items.get(`d:${k}:${it.col}`)!.y);
+        it.y = ys.reduce((s, v) => s + v, 0) / ys.length - it.h / 2;
+        it.ord = it.y + it.h / 2;
+      }
+    }
+    for (const col of B.cols) col.sort((a, b) => a.ord - b.ord);
+    renumber(B);
+  }
+
+  // 5. Ports: a part's lines leave (and arrive) spread down its side, ordered by the other end.
+  const mid = (it: Item) => it.y + it.h / 2;
+  const portR = new Map<string, number>(); // `${item}|${link}` → y
+  const portL = new Map<string, number>();
+  const spread = (it: Item, keys: { key: string; toward: number }[], into: Map<string, number>) => {
+    keys.sort((a, b) => a.toward - b.toward || (a.key < b.key ? -1 : 1));
+    const n = keys.length;
+    const step = n > 1 ? Math.min(12, (it.h - 16) / (n - 1)) : 0;
+    keys.forEach((k, i) => into.set(`${it.id}|${k.key}`, it.node ? mid(it) + (i - (n - 1) / 2) * step : mid(it)));
+  };
+  {
+    const outs = new Map<Item, { key: string; toward: number }[]>();
+    const ins = new Map<Item, { key: string; toward: number }[]>();
+    for (const [key, chain] of B.chains) {
+      for (let i = 0; i + 1 < chain.length; i++) {
+        const [p, q] = [chain[i]!, chain[i + 1]!];
+        outs.set(p, [...(outs.get(p) ?? []), { key, toward: mid(q) }]);
+        ins.set(q, [...(ins.get(q) ?? []), { key, toward: mid(p) }]);
+      }
+    }
+    for (const [it, ks] of outs) spread(it, ks, portR);
+    for (const [it, ks] of ins) spread(it, ks, portL);
+  }
+
+  // 6. Each gutter: one vertical per line (one per trunk), on tracks ordered to cross least.
+  type Seg = { keys: string[]; y1: number; y2: number; thick: number; track: number; x: number };
+  const gutters: Seg[][] = Array.from({ length: Math.max(0, nCols - 1) }, () => []);
+  const segOf = new Map<string, Seg>(); // `${gutter}|${link}`
+  for (const [key, chain] of B.chains) {
+    for (let i = 0; i + 1 < chain.length; i++) {
+      const [p, q] = [chain[i]!, chain[i + 1]!];
+      const g = p.col;
+      const shared = p.trunk !== undefined && p.trunk === q.trunk;
+      const sid = shared ? `${g}|t${p.trunk}` : `${g}|${key}`;
+      let s = segOf.get(sid);
+      if (!s) {
+        s = { keys: [], y1: portR.get(`${p.id}|${key}`)!, y2: portL.get(`${q.id}|${key}`)!, thick: shared ? p.h : 1.5, track: -1, x: 0 };
+        segOf.set(sid, s);
+        gutters[g]!.push(s);
+      }
+      s.keys.push(key);
+      segOf.set(`${g}|${key}`, s);
+    }
+  }
+  const trackCount: number[] = [];
+  const trackW: number[][] = [];
+  gutters.forEach((segs, g) => {
+    const bends = segs.filter((s) => Math.abs(s.y1 - s.y2) >= 1);
+    const lo = (s: Seg) => Math.min(s.y1, s.y2) - 5, hi = (s: Seg) => Math.max(s.y1, s.y2) + 5;
+    const inside = (y: number, s: Seg) => y > Math.min(s.y1, s.y2) && y < Math.max(s.y1, s.y2);
+    // a left of b crosses when b's incoming level cuts a's vertical, or a's outgoing level cuts b's.
+    const cost = (a: Seg, b: Seg) => (inside(b.y1, a) ? 1 : 0) + (inside(a.y2, b) ? 1 : 0);
+    const prefs: { a: Seg; b: Seg; gain: number }[] = [];
+    for (let i = 0; i < bends.length; i++)
+      for (let j = i + 1; j < bends.length; j++) {
+        const [a, b] = [bends[i]!, bends[j]!];
+        if (hi(a) <= lo(b) || hi(b) <= lo(a)) continue;
+        const ab = cost(a, b), ba = cost(b, a);
+        // Ties: lines going down nest outside-in, so the longer drop sits further out.
+        const tie = Math.sign(a.y2 - a.y1) >= 0 ? (a.y1 < b.y1 ? 0.1 : -0.1) : a.y1 > b.y1 ? 0.1 : -0.1;
+        prefs.push(ab < ba || (ab === ba && tie > 0) ? { a, b, gain: Math.abs(ab - ba) } : { a: b, b: a, gain: Math.abs(ab - ba) });
+      }
+    // Keep the strongest preferences that leave no cycle, then a track is a longest path.
+    prefs.sort((x, y) => y.gain - x.gain);
+    const after = new Map<Seg, Seg[]>(bends.map((s) => [s, []]));
+    const reaches = (from: Seg, to: Seg) => {
+      const stack = [from];
+      const seen = new Set<Seg>();
+      while (stack.length) {
+        const s = stack.pop()!;
+        if (s === to) return true;
+        if (seen.has(s)) continue;
+        seen.add(s);
+        stack.push(...after.get(s)!);
+      }
+      return false;
+    };
+    for (const p of prefs) if (!reaches(p.b, p.a)) after.get(p.a)!.push(p.b);
+    const indeg = new Map(bends.map((s) => [s, 0]));
+    for (const ss of after.values()) for (const s of ss) indeg.set(s, indeg.get(s)! + 1);
+    const queue = bends.filter((s) => indeg.get(s) === 0);
+    for (const s of bends) s.track = 0;
+    while (queue.length) {
+      const s = queue.shift()!;
+      for (const t of after.get(s)!) {
+        t.track = Math.max(t.track, s.track + 1);
+        indeg.set(t, indeg.get(t)! - 1);
+        if (indeg.get(t) === 0) queue.push(t);
+      }
+    }
+    // Two lines on one track must not overlap: push the later one right.
+    const byTrack = [...bends].sort((a, b) => a.track - b.track);
+    for (let i = 0; i < byTrack.length; i++)
+      for (let j = 0; j < i; j++) {
+        const [a, b] = [byTrack[j]!, byTrack[i]!];
+        if (a.track === b.track && !(hi(a) <= lo(b) || hi(b) <= lo(a))) b.track++;
+      }
+    const n = bends.length ? Math.max(...bends.map((s) => s.track)) + 1 : 0;
+    trackCount[g] = n;
+    trackW[g] = Array.from({ length: n }, (_, k) => Math.max(1.5, ...bends.filter((s) => s.track === k).map((s) => s.thick)));
+  });
+
+  // 7. X: columns left to right; a gutter as wide as its tracks, plus the frames' padding.
+  const colW = B.cols.map((col) => Math.max(0, ...col.map((it) => it.w)));
+  const colX: number[] = [];
+  const framed = (c: number) => sideOfCol(c) === 1 || sideOfCol(c) === 2;
+  let x = PAD;
+  for (let c = 0; c < nCols; c++) {
+    colX[c] = x;
+    x += colW[c]!;
+    if (c + 1 === nCols) break;
+    const crossing = sideOfCol(c) !== sideOfCol(c + 1);
+    const padL = crossing && framed(c) ? FRAME_PAD : 0;
+    const padR = crossing && framed(c + 1) ? FRAME_PAD : 0;
+    const tw = trackW[c]!;
+    const inner = tw.reduce((s, w) => s + w, 0) + Math.max(0, tw.length - 1) * TRACK;
+    const width = Math.max(GUT_MIN, inner + 2 * GUT_PAD) + (crossing ? 24 : 0);
+    // The tracks sit in the middle of the gutter, between the frames.
+    let tx = x + padL + (width - inner) / 2;
+    const xs = tw.map((w) => {
+      const at = tx + w / 2;
+      tx += w + TRACK;
+      return at;
+    });
+    for (const s of gutters[c]!) s.x = s.track >= 0 && Math.abs(s.y1 - s.y2) >= 1 ? xs[s.track]! : 0;
+    x += padL + width + padR;
+  }
+
+  // 8. Routes, trunks, frames.
+  const at = new Map<string, P>();
+  for (const it of B.items.values()) if (it.node) at.set(it.id, { x: colX[it.col]!, y: it.y });
+  const routes = new Map<string, P[]>();
+  for (const [key, chain] of B.chains) {
+    const pts: P[] = [];
+    for (let i = 0; i + 1 < chain.length; i++) {
+      const [p, q] = [chain[i]!, chain[i + 1]!];
+      const s = segOf.get(`${p.col}|${key}`)!;
+      if (i === 0) pts.push({ x: colX[p.col]! + colW[p.col]!, y: s.y1 });
+      if (Math.abs(s.y1 - s.y2) >= 1) pts.push({ x: s.x, y: s.y1 }, { x: s.x, y: s.y2 });
+      if (i + 2 === chain.length) pts.push({ x: colX[q.col]!, y: s.y2 });
+    }
+    routes.set(key, tidy(pts));
+  }
+  const trunks: Trunk[] = [];
+  const rides = new Map<string, string>();
+  clusters.forEach((cl, k) => {
+    const pts: P[] = [];
+    for (let c = cl.from; c <= cl.to; c++) {
+      const it = B.items.get(`t:${k}:${c}`);
+      if (!it) continue;
+      pts.push({ x: colX[c]!, y: mid(it) }, { x: colX[c]! + colW[c]!, y: mid(it) });
+      if (c < cl.to) {
+        const s = segOf.get(`${c}|t${k}`);
+        if (s && Math.abs(s.y1 - s.y2) >= 1) pts.push({ x: s.x, y: s.y1 }, { x: s.x, y: s.y2 });
+      }
+    }
+    if (pts.length < 2) return;
+    const key = `trunk:${k}`;
+    trunks.push({ key, members: cl.members, pts: tidy(pts), width: trunkWidth(cl.members.length) });
+    for (const m of cl.members) rides.set(m, key);
+  });
+  const regions: Own["regions"] = [];
+  for (const [side, key] of [[1, "C"], [2, "U"]] as const) {
+    if (!sideLayers[side]) continue;
+    const c0 = offset[side]!, c1 = offset[side]! + sideLayers[side]! - 1;
+    let bottom = TOP;
+    for (let c = c0; c <= c1; c++) for (const it of B.cols[c]!) bottom = Math.max(bottom, it.y + it.h);
+    regions.push({ key, x: colX[c0]! - FRAME_PAD, y: PAD, w: colX[c1]! + colW[c1]! + FRAME_PAD - (colX[c0]! - FRAME_PAD), h: bottom + FRAME_PAD - PAD });
+  }
+  let height = 0;
+  for (const it of B.items.values()) height = Math.max(height, it.y + it.h);
+  for (const r of regions) height = Math.max(height, r.y + r.h);
+  return { at, regions, routes, flipped, trunks, rides, width: x + PAD, height: height + PAD };
+}
+
+/** Drops repeated and collinear points. */
+export function tidy(pts: P[]): P[] {
+  const out: P[] = [];
+  for (const p of pts) {
+    const a = out[out.length - 1];
+    if (a && Math.abs(a.x - p.x) < 0.5 && Math.abs(a.y - p.y) < 0.5) continue;
+    const b = out[out.length - 2];
+    if (a && b && ((Math.abs(b.x - a.x) < 0.5 && Math.abs(a.x - p.x) < 0.5) || (Math.abs(b.y - a.y) < 0.5 && Math.abs(a.y - p.y) < 0.5))) out.pop();
+    out.push(p);
+  }
+  return out;
+}
+
+/** Weighted isotonic regression (pool adjacent violators): the non-decreasing fit closest to `t`. */
+function isotonic(t: number[], w: number[]): number[] {
+  const blocks: { v: number; w: number; n: number }[] = [];
+  t.forEach((v, i) => {
+    blocks.push({ v, w: w[i]!, n: 1 });
+    while (blocks.length > 1 && blocks[blocks.length - 2]!.v > blocks[blocks.length - 1]!.v) {
+      const b = blocks.pop()!, a = blocks.pop()!;
+      blocks.push({ v: (a.v * a.w + b.v * b.w) / (a.w + b.w), w: a.w + b.w, n: a.n + b.n });
+    }
+  });
+  return blocks.flatMap((b) => Array.from({ length: b.n }, () => b.v));
+}
+
+/**
+ * Each orthogonal line's segments, for counting crossings and bends the same way for every
+ * engine. `group` lines (a trunk's members) don't count as crossing each other.
+ */
+export function measure(routes: Map<string, P[]>, rides: Map<string, string> = new Map()) {
+  type S = { k: string; h: boolean; a: number; b: number; c: number };
+  const segs: S[] = [];
+  let bends = 0;
+  let length = 0;
+  for (const [k, pts] of routes) {
+    bends += Math.max(0, pts.length - 2);
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [p, q] = [pts[i]!, pts[i + 1]!];
+      length += Math.abs(p.x - q.x) + Math.abs(p.y - q.y);
+      if (Math.abs(p.y - q.y) < 0.5) segs.push({ k, h: true, a: Math.min(p.x, q.x), b: Math.max(p.x, q.x), c: p.y });
+      else if (Math.abs(p.x - q.x) < 0.5) segs.push({ k, h: false, a: Math.min(p.y, q.y), b: Math.max(p.y, q.y), c: p.x });
+    }
+  }
+  const hs = segs.filter((s) => s.h), vs = segs.filter((s) => !s.h);
+  let crossings = 0;
+  const seen = new Set<string>();
+  for (const h of hs)
+    for (const v of vs) {
+      if (h.k === v.k) continue;
+      const g1 = rides.get(h.k), g2 = rides.get(v.k);
+      if (g1 && g1 === g2) continue;
+      if (v.c > h.a + 0.5 && v.c < h.b - 0.5 && h.c > v.a + 0.5 && h.c < v.b - 0.5) {
+        // A trunk's members cross a line once between them, not once each.
+        const id = `${g1 ?? h.k}|${g2 ?? v.k}|${Math.round(v.c)}|${Math.round(h.c)}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        crossings++;
+      }
+    }
+  return { crossings, bends, length: Math.round(length) };
+}
