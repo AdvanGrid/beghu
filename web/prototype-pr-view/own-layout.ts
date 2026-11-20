@@ -633,60 +633,119 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
   }
   const trackCount: number[] = [];
   const trackW: number[][] = [];
+  // A track unit: one line's vertical, or (Highway) several verticals sharing one track, joining
+  // and leaving it at their own heights.
+  type V = { segs: Seg[]; ins: number[]; outs: number[]; lo: number; hi: number; thick: number; track: number };
+  const vunits: V[][] = [];
+  const highway = o.mode !== "lanes";
+  /** Verticals shorter than this never share a track. */
+  const SHORT = 40;
+  /** Per stretch: verticals that run together this far share a track. */
+  const STRETCH_PX = 120;
+  const unit = (segs: Seg[]): V => {
+    const ys = segs.flatMap((x) => [x.y1, x.y2]);
+    const keys = segs.reduce((n, x) => n + x.keys.length, 0);
+    return {
+      segs,
+      ins: segs.map((x) => x.y1),
+      outs: segs.map((x) => x.y2),
+      lo: Math.min(...ys),
+      hi: Math.max(...ys),
+      thick: segs.length > 1 ? Math.max(trunkWidth(keys), ...segs.map((x) => x.thick)) : segs[0]!.thick,
+      track: 0,
+    };
+  };
+  const overlap = (a: { lo: number; hi: number }, b: { lo: number; hi: number }) => Math.max(0, Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo));
   gutters.forEach((segs, g) => {
-    const bends = segs.filter((s) => Math.abs(s.y1 - s.y2) >= 1);
-    const lo = (s: Seg) => Math.min(s.y1, s.y2) - 5, hi = (s: Seg) => Math.max(s.y1, s.y2) + 5;
-    const inside = (y: number, s: Seg) => y > Math.min(s.y1, s.y2) && y < Math.max(s.y1, s.y2);
-    // a left of b crosses when b's incoming level cuts a's vertical, or a's outgoing level cuts b's.
-    const cost = (a: Seg, b: Seg) => (inside(b.y1, a) ? 1 : 0) + (inside(a.y2, b) ? 1 : 0);
-    const prefs: { a: Seg; b: Seg; gain: number }[] = [];
-    for (let i = 0; i < bends.length; i++)
-      for (let j = i + 1; j < bends.length; j++) {
-        const [a, b] = [bends[i]!, bends[j]!];
-        if (hi(a) <= lo(b) || hi(b) <= lo(a)) continue;
+    const bends = segs.filter((x) => Math.abs(x.y1 - x.y2) >= 1);
+    let units: V[];
+    if (!highway) units = bends.map((x) => unit([x]));
+    else {
+      // Longest first; each joins the first group it runs along far enough (the merge rule).
+      const span1 = (x: Seg) => ({ lo: Math.min(x.y1, x.y2), hi: Math.max(x.y1, x.y2) });
+      const len = (r: { lo: number; hi: number }) => r.hi - r.lo;
+      const groups: { segs: Seg[]; anchor: { lo: number; hi: number }; all: { lo: number; hi: number } }[] = [];
+      for (const x of [...bends].sort((p, q) => len(span1(q)) - len(span1(p)))) {
+        const r = span1(x);
+        const fits = (gr: (typeof groups)[number]) =>
+          len(r) >= SHORT &&
+          (o.merge === "stretch" ? overlap(r, gr.all) >= STRETCH_PX : overlap(r, gr.anchor) >= thr * Math.min(len(r), len(gr.anchor)));
+        const gr = groups.find(fits);
+        if (gr) (gr.segs.push(x), (gr.all = { lo: Math.min(gr.all.lo, r.lo), hi: Math.max(gr.all.hi, r.hi) }));
+        else groups.push({ segs: [x], anchor: r, all: r });
+      }
+      // Trunks too: groups merge with groups by the same rule, counted on their whole stretch.
+      if (o.merge === "trunks")
+        for (let merged = true; merged; ) {
+          merged = false;
+          for (let i = 0; i < groups.length && !merged; i++)
+            for (let j = i + 1; j < groups.length && !merged; j++) {
+              const [A, Bg] = [groups[i]!, groups[j]!];
+              if (A.segs.length + Bg.segs.length < 3 || len(A.all) < SHORT || len(Bg.all) < SHORT) continue;
+              if (overlap(A.all, Bg.all) >= thr * Math.min(len(A.all), len(Bg.all))) {
+                A.segs.push(...Bg.segs);
+                A.all = { lo: Math.min(A.all.lo, Bg.all.lo), hi: Math.max(A.all.hi, Bg.all.hi) };
+                groups.splice(j, 1);
+                merged = true;
+              }
+            }
+        }
+      units = groups.map((gr) => unit(gr.segs));
+    }
+    vunits[g] = units;
+    const inside = (y: number, v: V) => y > v.lo + 0.5 && y < v.hi - 0.5;
+    // a left of b crosses where b's lines come in across a's vertical, or a's go out across b's.
+    const cost = (a: V, b: V) => b.ins.filter((y) => inside(y, a)).length + a.outs.filter((y) => inside(y, b)).length;
+    const prefs: { a: V; b: V; gain: number }[] = [];
+    const clash = (a: V, b: V) => !(a.hi + 5 <= b.lo - 5 || b.hi + 5 <= a.lo - 5);
+    for (let i = 0; i < units.length; i++)
+      for (let j = i + 1; j < units.length; j++) {
+        const [a, b] = [units[i]!, units[j]!];
+        if (!clash(a, b)) continue;
         const ab = cost(a, b), ba = cost(b, a);
         // Ties: lines going down nest outside-in, so the longer drop sits further out.
-        const tie = Math.sign(a.y2 - a.y1) >= 0 ? (a.y1 < b.y1 ? 0.1 : -0.1) : a.y1 > b.y1 ? 0.1 : -0.1;
+        const down = (v: V) => v.outs[0]! - v.ins[0]! >= 0;
+        const tie = down(a) ? (a.ins[0]! < b.ins[0]! ? 0.1 : -0.1) : a.ins[0]! > b.ins[0]! ? 0.1 : -0.1;
         prefs.push(ab < ba || (ab === ba && tie > 0) ? { a, b, gain: Math.abs(ab - ba) } : { a: b, b: a, gain: Math.abs(ab - ba) });
       }
     // Keep the strongest preferences that leave no cycle, then a track is a longest path.
     prefs.sort((x, y) => y.gain - x.gain);
-    const after = new Map<Seg, Seg[]>(bends.map((s) => [s, []]));
-    const reaches = (from: Seg, to: Seg) => {
+    const after = new Map<V, V[]>(units.map((v) => [v, []]));
+    const reaches = (from: V, to: V) => {
       const stack = [from];
-      const seen = new Set<Seg>();
+      const seen = new Set<V>();
       while (stack.length) {
-        const s = stack.pop()!;
-        if (s === to) return true;
-        if (seen.has(s)) continue;
-        seen.add(s);
-        stack.push(...after.get(s)!);
+        const v = stack.pop()!;
+        if (v === to) return true;
+        if (seen.has(v)) continue;
+        seen.add(v);
+        stack.push(...after.get(v)!);
       }
       return false;
     };
     for (const p of prefs) if (!reaches(p.b, p.a)) after.get(p.a)!.push(p.b);
-    const indeg = new Map(bends.map((s) => [s, 0]));
-    for (const ss of after.values()) for (const s of ss) indeg.set(s, indeg.get(s)! + 1);
-    const queue = bends.filter((s) => indeg.get(s) === 0);
-    for (const s of bends) s.track = 0;
+    const indeg = new Map(units.map((v) => [v, 0]));
+    for (const vs of after.values()) for (const v of vs) indeg.set(v, indeg.get(v)! + 1);
+    const queue = units.filter((v) => indeg.get(v) === 0);
     while (queue.length) {
-      const s = queue.shift()!;
-      for (const t of after.get(s)!) {
-        t.track = Math.max(t.track, s.track + 1);
+      const v = queue.shift()!;
+      for (const t of after.get(v)!) {
+        t.track = Math.max(t.track, v.track + 1);
         indeg.set(t, indeg.get(t)! - 1);
         if (indeg.get(t) === 0) queue.push(t);
       }
     }
-    // Two lines on one track must not overlap: push the later one right.
-    const byTrack = [...bends].sort((a, b) => a.track - b.track);
+    // Two units on one track must not overlap: push the later one right.
+    const byTrack = [...units].sort((a, b) => a.track - b.track);
     for (let i = 0; i < byTrack.length; i++)
       for (let j = 0; j < i; j++) {
         const [a, b] = [byTrack[j]!, byTrack[i]!];
-        if (a.track === b.track && !(hi(a) <= lo(b) || hi(b) <= lo(a))) b.track++;
+        if (a.track === b.track && clash(a, b)) b.track++;
       }
-    const n = bends.length ? Math.max(...bends.map((s) => s.track)) + 1 : 0;
+    for (const v of units) for (const x of v.segs) x.track = v.track;
+    const n = units.length ? Math.max(...units.map((v) => v.track)) + 1 : 0;
     trackCount[g] = n;
-    trackW[g] = Array.from({ length: n }, (_, k) => Math.max(1.5, ...bends.filter((s) => s.track === k).map((s) => s.thick)));
+    trackW[g] = Array.from({ length: n }, (_, k) => Math.max(1.5, ...units.filter((v) => v.track === k).map((v) => v.thick)));
   });
 
   // 7. X: columns left to right; a gutter as wide as its tracks, plus the frames' padding.
@@ -747,6 +806,31 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     const key = `trunk:${k}`;
     trunks.push({ key, members: cl.members, pts: tidy(pts), width: trunkWidth(cl.members.length) });
     for (const m of cl.members) rides.set(m, [...(rides.get(m) ?? []), key]);
+  });
+  // Vertical trunks: where two or more lines share a track, each stretch drawn as one.
+  vunits.forEach((units, g) => {
+    units.forEach((v, i) => {
+      if (v.segs.length < 2) return;
+      const x = v.segs[0]!.x;
+      const cuts = [...new Set(v.segs.flatMap((sg) => [sg.y1, sg.y2]))].sort((p, q) => p - q);
+      let piece: { from: number; to: number; members: string[] } | null = null;
+      const flush = () => {
+        if (piece && piece.members.length > 1 && piece.to - piece.from >= 1) {
+          const key = `vtrunk:${g}:${i}:${Math.round(piece.from)}`;
+          trunks.push({ key, members: piece.members, pts: [{ x, y: piece.from }, { x, y: piece.to }], width: trunkWidth(piece.members.length) });
+          for (const m of piece.members) rides.set(m, [...(rides.get(m) ?? []), key]);
+        }
+        piece = null;
+      };
+      for (let k = 0; k + 1 < cuts.length; k++) {
+        const [ya, yb] = [cuts[k]!, cuts[k + 1]!];
+        const members = v.segs.filter((sg) => Math.min(sg.y1, sg.y2) <= ya + 0.5 && Math.max(sg.y1, sg.y2) >= yb - 0.5).flatMap((sg) => sg.keys);
+        const same = piece && piece.members.length === members.length && piece.members.every((m) => members.includes(m));
+        if (same) piece!.to = yb;
+        else (flush(), (piece = { from: ya, to: yb, members }));
+      }
+      flush();
+    });
   });
   const regions: Own["regions"] = [];
   for (const [side, key] of [[1, "C"], [2, "U"]] as const) {
