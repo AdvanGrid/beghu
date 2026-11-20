@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { claimBelowTheTop, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
+import { issueUrl } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const KITCHEN = readFileSync(`${ROOT}/web/e2e/kitchen-sink.md`, "utf8");
@@ -162,7 +163,7 @@ test("the kitchen sink renders in Markdown style B, in light and in dark", async
   const issue: Issue = await claimBelowTheTop(page);
   try {
     devCtl(["fake", "edit", issue.ref, "--body", KITCHEN]);
-    await page.goto(`/issues/${issue.id}`);
+    await page.goto(issueUrl(issue));
     await expect(body(page).locator("h1")).toContainText("the sync engine drops deltas", { timeout: SHOWS_WITHIN_MS });
     await expect(body(page).locator("pre").nth(1).locator("span").first()).toBeAttached();
     await page.getByRole("button", { name: "Light", exact: true }).click();

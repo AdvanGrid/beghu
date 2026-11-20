@@ -521,6 +521,7 @@ pub fn router(app: App) -> Router {
         .route("/facets", get(facets::facets))
         .route("/facets/{facet}/counts", get(facets::counts))
         .route("/issues/{id}", get(detail::issue))
+        .route("/at/{owner}/{repo}/{number}", get(detail::issue_at))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/issues/{id}/source", get(detail::source))
         .route(
@@ -554,7 +555,8 @@ pub fn router(app: App) -> Router {
     // pages (`/` among them); any other path is a plain 404 from the router's default fallback.
     let shell = Router::new()
         .route("/issues", get(shell::shell))
-        .route("/issues/{id}", get(shell::shell))
+        .route("/{owner}/{repo}/issues/{number}", get(shell::shell))
+        .route("/{owner}/{repo}/pull/{number}", get(shell::shell))
         .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))

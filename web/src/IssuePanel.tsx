@@ -1,6 +1,6 @@
-// The issue detail panel: the `/issues/:id` route, beside the list, or under it below 900 px. Its
-// own chunk, loaded lazily (router.tsx). The detail is a router `query` that a hover or tap on its
-// row preloads with this chunk, so a click shows it with no placeholder; after a hover longer than
+// The issue detail panel: an issue's route (`/acme/web/issues/12`, at.ts), beside the list, or
+// under it below 900 px. Its own chunk, loaded lazily (router.tsx). The detail is a router `query`
+// that a hover or tap on its row preloads with this chunk, so a click shows it with no placeholder; after a hover longer than
 // the router keeps a preload, the remembered detail (api.ts) shows at once while a refetch
 // replaces it, and if that refetch fails, the detail's failure replaces it instead.
 // Comments come newest first (or oldest, by the account's preference), 15 at a time: page 2 after
@@ -37,7 +37,7 @@ import {
   forgetPushed,
   getComments,
   getIssue,
-  issueId,
+  getIssueAt,
   mergeRefs,
   readAt,
   readBefore,
@@ -62,6 +62,7 @@ import { editorOf, openEditor, type Field } from "./editing";
 import { cantReach, coalesced, onPush, resetAt } from "./live";
 import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { focusOf, modeOf, queryOf, withMode } from "./query";
+import { at, atString, idAt, isAt, issuePath, parseAt } from "./at";
 import { ChunkFailure } from "./chunks";
 import { Blocks, Linked, LinksRow, ParentCrumb, RelatesTo, SubIssues } from "./Relationships";
 import { Markdown } from "./md/Markdown";
@@ -155,13 +156,14 @@ import.meta.hot?.dispose(unsubscribe);
 
 export function IssuePanel(props: RouteSectionProps) {
   const location = useLocation();
-  // A path id that isn't a number asks for an issue that can't exist; the server says Gone.
-  const id = () => issueId(props.params.id);
+  // Where the route's issue is (at.ts), as a string, so the detail reads afresh only for another
+  // issue. A number that isn't digits asks for an issue that can't exist; the server says Gone.
+  const where = createMemo(() => atString(at(props.params.owner ?? "", props.params.repo ?? "", props.params.number ?? "")));
   return (
     <Panel label="Issue" perf="panel">
-      <Errored fallback={(err, reset) => <DetailFailure error={err()} reset={reset} id={id()} search={location.search} />}>
+      <Errored fallback={(err, reset) => <DetailFailure error={err()} reset={reset} at={where()} search={location.search} />}>
         <Loading fallback={<div data-perf="detail-loading" {...stylex.attrs(s.loading)} aria-busy="true" />}>
-          <Detail id={id()} search={location.search} />
+          <Detail at={where()} search={location.search} />
         </Loading>
       </Errored>
     </Panel>
@@ -283,7 +285,13 @@ function keepSpot(id: number, spot: Spot): void {
   if (spots.size > SPOTS) spots.delete(spots.keys().next().value!);
 }
 
-function Detail(props: { id: number; search: string }) {
+/** The id of the issue `where` names (`atString`'s form), once the tab knows it. */
+function idOf(where: string): number | undefined {
+  const a = parseAt(where);
+  return a && idAt(a);
+}
+
+function Detail(props: { at: string; search: string }) {
   /** The issue showing a remembered detail, until its refetch is under way. */
   let fromMemory: number | undefined;
   /**
@@ -310,7 +318,14 @@ function Detail(props: { id: number; search: string }) {
       failure = undefined;
       throw error;
     }
-    const id = props.id;
+    const where = props.at;
+    const id = untrack(() => idOf(where));
+    // An issue the tab hasn't read a row or detail of: read by where it is (the router's preload
+    // began it).
+    if (id === undefined) {
+      fromMemory = undefined;
+      return untrack(() => getIssueAt(where));
+    }
     const remembered = takeRemembered(id);
     fromMemory = remembered && id;
     return remembered ?? untrack(() => getIssue(id));
@@ -589,7 +604,7 @@ function Detail(props: { id: number; search: string }) {
             scroller = el;
             userScrolls(el);
           }} onScroll={() => nearEnd() && void loadMore()} />}>
-      {(e) => <LostIssue error={e()} search={props.search} id={props.id} />}
+      {(e) => <LostIssue error={e()} search={props.search} id={current()?.id} />}
     </Show>
   );
 }
@@ -644,8 +659,8 @@ function Body(props: {
   // Into the issue from the list: the arrows and Page keys then scroll it.
   touch("openIssue", () => scroller.focus());
   // Focus view on this issue: the tree down from it, the chain kept if Focus view is on already.
-  const focusHref = () => `/issues/${d().id}${withMode(props.search, "focus", d().id)}`;
-  const focused = () => modeOf(props.search) === "focus" && focusOf(props.search) === d().id;
+  const focusHref = () => `${issuePath(d())}${withMode(props.search, "focus", atString(d()))}`;
+  const focused = () => modeOf(props.search) === "focus" && isAt(d().id, focusOf(props.search));
   const navigate = useNavigate();
   touch("focusIssue", () => {
     if (!untrack(focused)) navigate(untrack(focusHref), { scroll: false });
@@ -1358,15 +1373,19 @@ function githubUrl(i: Pick<IssueRef, "kind" | "owner" | "repo" | "number">): str
  * stale tab can't read, keeping the tab's text on it; anything else offers Retry. A new issue
  * opened from the list tries again, and so does a push naming this one.
  */
-function DetailFailure(props: { error: unknown; reset: () => void; id: number; search: string }) {
-  resetOnChange(() => props.id, props.reset);
+function DetailFailure(props: { error: unknown; reset: () => void; at: string; search: string }) {
+  resetOnChange(() => props.at, props.reset);
+  /** The issue's id, if the tab read it before (a read by where it is can fail first). */
+  const id = () => idOf(props.at);
   const retry = () => {
     // Drop the failed read from the query cache, so the retry fetches again.
-    void revalidate(getIssue.keyFor(props.id));
+    const known = untrack(id);
+    void revalidate(known === undefined ? getIssueAt.keyFor(props.at) : getIssue.keyFor(known));
     props.reset();
   };
   onSettled(() => {
-    const mine = { id: untrack(() => props.id), onPush: async () => retry() };
+    // An issue the tab never learned the id of no push names.
+    const mine = { id: untrack(id) ?? NaN, onPush: async () => retry() };
     openDetail = mine;
     return () => {
       if (openDetail === mine) openDetail = undefined;
@@ -1377,11 +1396,11 @@ function DetailFailure(props: { error: unknown; reset: () => void; id: number; s
       when={props.error instanceof Gone || props.error instanceof NoAccess}
       fallback={
         <Show when={stale() !== undefined || props.error instanceof Switched} fallback={<IssueNotice error={props.error} retry={retry} />}>
-          <StaleIssue id={props.id} />
+          <StaleIssue id={id()} />
         </Show>
       }
     >
-      <LostIssue error={props.error as Gone | NoAccess} search={props.search} id={props.id} />
+      <LostIssue error={props.error as Gone | NoAccess} search={props.search} id={id()} />
     </Show>
   );
 }
@@ -1390,7 +1409,7 @@ function DetailFailure(props: { error: unknown; reset: () => void; id: number; s
  * An issue or PR a stale tab couldn't read, in place of the panel: what the banner offers to see
  * it again, and any text the tab hadn't sent on it, to copy (a PR has none: it's read-only).
  */
-function StaleIssue(props: { id: number }) {
+function StaleIssue(props: { id: number | undefined }) {
   return (
     <div {...stylex.attrs(s.notice)} role="status" data-perf="detail-stale">
       <p {...stylex.attrs(s.lostTitle)}>
@@ -1398,7 +1417,7 @@ function StaleIssue(props: { id: number }) {
       </p>
       <Errored fallback={() => null}>
         <Loading>
-          <KeptText issue={props.id} />
+          <Show when={props.id}>{(id) => <KeptText issue={id()} />}</Show>
         </Loading>
       </Errored>
     </div>
@@ -1418,7 +1437,7 @@ function lostWhy(e: Gone | NoAccess): string {
  * a link out to GitHub), or one outside the synced repos, in place of the detail. Any text the tab
  * hadn't sent on it stays, to copy.
  */
-function LostIssue(props: { error: Gone | NoAccess; search: string; id: number }) {
+function LostIssue(props: { error: Gone | NoAccess; search: string; id: number | undefined }) {
   const elsewhere = () => {
     const e = props.error;
     if (e instanceof NoAccess) return e.issue;
@@ -1432,7 +1451,7 @@ function LostIssue(props: { error: Gone | NoAccess; search: string; id: number }
         {(m) => (
           <p {...stylex.attrs(s.elsewhere)}>
             It's {m().issue.owner}/{m().issue.repo}#{m().issue.number} now · {m().issue.title} ·{" "}
-            <a href={`/issues/${m().id}${props.search}`} noscroll {...stylex.attrs(s.link)}>
+            <a href={`${issuePath(m().issue)}${props.search}`} noscroll {...stylex.attrs(s.link)}>
               Open it
             </a>
           </p>
@@ -1452,7 +1471,7 @@ function LostIssue(props: { error: Gone | NoAccess; search: string; id: number }
           there's nothing of the tab's to show. */}
       <Errored fallback={() => null}>
         <Loading>
-          <KeptText issue={props.id} />
+          <Show when={props.id}>{(id) => <KeptText issue={id()} />}</Show>
         </Loading>
       </Errored>
       <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.link)}>

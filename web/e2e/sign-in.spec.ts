@@ -23,19 +23,19 @@ test("a signed-out visit gets a 401, goes to the signed-out page once, and signs
     if (r.isNavigationRequest() && path.startsWith("/auth/")) leaves.push(r.url());
   });
 
-  await page.goto("/issues/1?from=e2e");
+  await page.goto("/acme/web/issues/1?from=e2e");
   // Nothing is signed in on this browser: the page offers sign-in, and doesn't go to GitHub by
   // itself (GitHub would sign a browser still signed in there straight back in).
   await page.waitForURL((u) => u.pathname === "/auth/signed-out");
   await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
   await page.waitForTimeout(500);
   expect(leaves).toHaveLength(1);
-  expect(new URL(leaves[0]!).searchParams.get("next")).toBe("/issues/1?from=e2e");
+  expect(new URL(leaves[0]!).searchParams.get("next")).toBe("/acme/web/issues/1?from=e2e");
   expect(apiStatuses).toContain(401);
 
   await page.getByRole("link", { name: "Sign in", exact: true }).click();
   await pickAccount(page, "tomsj");
-  await page.waitForURL((u) => u.pathname === "/issues/1" && u.search === "?from=e2e");
+  await page.waitForURL((u) => u.pathname === "/acme/web/issues/1" && u.search === "?from=e2e");
   await expect(page.locator('[data-perf="account"]')).toHaveText("tomsj");
   await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
 

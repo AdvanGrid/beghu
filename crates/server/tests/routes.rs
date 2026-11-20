@@ -12,7 +12,15 @@ async fn an_unknown_path_outside_the_api_is_a_plain_404() {
     let mut signed_in = s.sign_in("tomsj").await;
     // `/robots.txt` and `/issues` are served now (the public site's and the list's), so neither is
     // here; a path under a site page isn't the page.
-    for path in ["/nope", "/favicon.ico", "/pricing/x", "/issues/1/extra"] {
+    // An issue is at its owner, repo and number, as on GitHub: `/issues/:id` is no route.
+    for path in [
+        "/nope",
+        "/favicon.ico",
+        "/pricing/x",
+        "/issues/1",
+        "/acme/web/issues/1/extra",
+        "/acme/web/tree/1",
+    ] {
         for b in [&mut Browser::default(), &mut signed_in] {
             let res = s.get(b, path).await;
             assert_eq!(res.status(), 404, "{path}");

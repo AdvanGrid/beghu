@@ -8,6 +8,7 @@ import type { Suggestions as SuggestionsComponent, SuggestionsControl } from "./
 import type { MatchMode } from "./bindings/MatchMode";
 import { QUERY_SET, applied, blendFits, effectiveMatch, hasText, markModeSwitch, MATCHES, hasToken, modeOf, queryOf, SORTS, sortValueOf, tokenAt, withChain, withMatch, withMode, withQuery, withSort, withToken, chainOf, type Chain, type Mode, type SortValue } from "./query";
 import { colors, fonts } from "./tokens.stylex";
+import { atOfPath, atString } from "./at";
 
 const MODES: { value: Mode; label: string }[] = [
   { value: "list", label: "List" },
@@ -66,8 +67,8 @@ export function FilterBar() {
   const setMode = (m: Mode) => {
     if (m === mode()) return;
     markModeSwitch();
-    const open = /^\/issues\/(\d+)/.exec(window.location.pathname)?.[1];
-    navigate(window.location.pathname + withMode(window.location.search, m, open === undefined ? undefined : Number(open)), { scroll: false });
+    const open = atOfPath(window.location.pathname);
+    navigate(window.location.pathname + withMode(window.location.search, m, open && atString(open)), { scroll: false });
   };
   // The key switches between List and Tree; from Focus view, back to the list.
   touch("toggleMode", () => setMode(mode() === "list" ? "tree" : "list"));

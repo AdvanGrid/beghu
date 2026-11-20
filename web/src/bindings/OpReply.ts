@@ -23,4 +23,8 @@ refs: { [key in string]: RefTarget },
  * What GitHub didn't apply of what the write asked, though the write itself was made: a
  * create's labels, assignees, milestone or parent, or a move's place among its new siblings.
  */
-unapplied?: Array<Unapplied>, };
+unapplied?: Array<Unapplied>, 
+/**
+ * A create's new issue's number, for its URL (`/acme/web/issues/12`).
+ */
+number?: number, };

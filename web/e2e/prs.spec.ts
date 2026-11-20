@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 import { status } from "./stack";
+import { issueUrl } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -155,7 +156,7 @@ test("a closing keyword added to a PR on GitHub shows it under the issue's Linke
   await open(page);
   const pr = await barePr(page);
   const issue = (await unlinked()).find((u) => u.repo === "web")!;
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl({ owner: "acme", ...issue }));
   const linked = page.locator('[data-perf="linked-prs"]');
   await expect(linked).toHaveText("None");
   // On screen as the shift cue on the Linked PRs row (#110), or once the row has it.
@@ -172,7 +173,7 @@ test("a closing keyword added to a PR on GitHub shows it under the issue's Linke
   } finally {
     await edit({ repo: "acme/web", number: pr.number, body: before ?? "" });
   }
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl({ owner: "acme", ...issue }));
   await expect(linked).toHaveText("None", { timeout: SHOWS_WITHIN_MS });
 });
 
@@ -180,7 +181,7 @@ test("a PR linked to an issue in GitHub's Development sidebar shows under its Li
   await open(page);
   const pr = await barePr(page);
   const issue = (await unlinked()).find((u) => u.repo === "web")!;
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl({ owner: "acme", ...issue }));
   const linked = page.locator('[data-perf="linked-prs"]');
   await expect(linked).toHaveText("None");
   // On screen as the shift cue on the Linked PRs row (#110), or once the row has it.

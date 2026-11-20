@@ -10,6 +10,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, listed, unique } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 import { devCtl } from "./stack";
+import { issueUrl, urlRe } from "./urls";
 
 test.describe.configure({ mode: "serial" });
 
@@ -289,20 +290,21 @@ test("when the selected issue is closed under is:open, the selection moves to th
   const count = async () => Number(await list(page).getAttribute("data-perf-rows"));
   // Below the top 40, in the first page.
   const issue = await claimBelowTheTop(page, (r) => r.index < 90);
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   await expect(rows(page).first()).toBeVisible();
   const ids = await listed(page);
-  const next = ids[ids.findIndex((r) => r.id === issue.id) + 1]!.id;
+  const nextRow = ids[ids.findIndex((r) => r.id === issue.id) + 1]!;
+  const next = nextRow.id;
   const loaded = await count();
   devCtl(["fake", "edit", issue.ref, "--close"]);
   await expect(detail(page)).toHaveAttribute("data-id", String(next), { timeout: SHOWS_WITHIN_MS });
-  await expect(page).toHaveURL(new RegExp(`/issues/${next}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(nextRow)}$`));
   expect(await count()).toBe(loaded - 1);
 
   // With a draft in the panel, it stays on the closed issue.
   const kept = await claimBelowTheTop(page, (r) => r.index < 90);
-  await page.goto(`/issues/${kept.id}`);
+  await page.goto(issueUrl(kept));
   await expect(detail(page)).toHaveAttribute("data-id", String(kept.id));
   await expect(rows(page).first()).toBeVisible();
   const draft = unique("Half a reply");
@@ -312,7 +314,7 @@ test("when the selected issue is closed under is:open, the selection moves to th
   await expect.poll(count, { timeout: SHOWS_WITHIN_MS }).toBe(now - 1);
   await page.waitForTimeout(1000);
   await expect(detail(page)).toHaveAttribute("data-id", String(kept.id));
-  await expect(page).toHaveURL(new RegExp(`/issues/${kept.id}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(kept)}$`));
   await expect(page.locator('[data-perf="composer"] textarea')).toHaveValue(draft);
 });
 
@@ -409,7 +411,7 @@ test("a change that arrives during the cue restarts it with both, and they apply
 
 test("when the selected issue's row is on screen and it's closed under is:open, the cue marks it and the selection goes to the row that took its place", async ({ page }) => {
   const issue = await claimBelowTheTop(page, (r) => r.index < 90);
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   await expect(rows(page).first()).toBeVisible();
   await pointerAway(page);
@@ -434,7 +436,7 @@ test("when the selected issue's row is on screen and it's closed under is:open, 
 
 test("j while the list checks a selected issue that left steps from where it was, not from an overscan row", async ({ page }) => {
   const issue = await claimBelowTheTop(page, (r) => r.index < 90);
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   await expect(rows(page).first()).toBeVisible();
   await pointerAway(page);
@@ -466,7 +468,7 @@ test("a parent set from an issue's panel is a write to the parent, yet the selec
   const child = await claimBelowTheTop(page, (r) => r.index < 90);
   // Any issue of its repo, from further down: the parent need not be on screen.
   const parent = await claimBelowTheTop(page, (r) => r.repo === child.repo && r.owner === child.owner, 600);
-  await page.goto(`/issues/${child.id}`);
+  await page.goto(issueUrl(child));
   await expect(detail(page)).toHaveAttribute("data-id", String(child.id));
   await expect(page.locator('[data-perf="composer"]')).toBeVisible();
   const setParent = page.locator('[data-perf="add-parent"]');
@@ -487,7 +489,7 @@ test("a parent set from an issue's panel is a write to the parent, yet the selec
     await page.waitForTimeout(1000);
     // The user acted on this issue from its panel: the selection stays on it.
     await expect(detail(page)).toHaveAttribute("data-id", String(child.id));
-    await expect(page).toHaveURL(new RegExp(`/issues/${child.id}$`));
+    await expect(page).toHaveURL(new RegExp(`${urlRe(child)}$`));
   } finally {
     devCtl(["fake", "edit", parent.ref, "--remove-sub-issue", child.ref]);
   }

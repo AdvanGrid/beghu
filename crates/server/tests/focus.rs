@@ -84,6 +84,11 @@ fn id(u: &Issue) -> i64 {
     u.2
 }
 
+/// Where an issue is, as Focus view's `?focus=` names it: `acme/web/12`.
+fn at(u: &Issue) -> String {
+    format!("acme/{}/{}", u.0, u.1)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_open() {
     let s = start().await;
@@ -95,7 +100,7 @@ async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_op
     nest(&s, &b, &web[1], &web[3]).await;
 
     // The root is the issue in focus, whatever its parent; it opens by default, the rest don't.
-    let page = focus(&s, &b, "", &format!("&focus={}", id(&web[1]))).await;
+    let page = focus(&s, &b, "", &format!("&focus={}", at(&web[1]))).await;
     assert_eq!(
         nodes(&page),
         vec![
@@ -113,7 +118,7 @@ async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_op
         &s,
         &b,
         "",
-        &format!("&focus={}&under={}&all=1", id(&web[0]), id(&web[0])),
+        &format!("&focus={}&under={}&all=1", at(&web[0]), id(&web[0])),
     )
     .await;
     assert_eq!(
@@ -131,7 +136,7 @@ async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_op
         "",
         &format!(
             "&focus={}&shut={}&sel={}",
-            id(&web[0]),
+            at(&web[0]),
             id(&web[0]),
             id(&web[3])
         ),
@@ -146,7 +151,7 @@ async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_op
         "",
         &format!(
             "&focus={}&open={}&sel={}",
-            id(&web[0]),
+            at(&web[0]),
             id(&web[1]),
             id(&web[3])
         ),
@@ -157,7 +162,7 @@ async fn a_parent_chain_is_the_focused_issue_and_its_sub_issues_with_the_root_op
         &s,
         &b,
         "",
-        &format!("&focus={}&sel={}", id(&web[0]), id(&web[5])),
+        &format!("&focus={}&sel={}", at(&web[0]), id(&web[5])),
     )
     .await;
     assert!(sel["selected"].is_null());
@@ -177,7 +182,7 @@ async fn a_blocking_chain_reads_in_the_order_of_the_work_and_an_issue_reached_tw
     // A sub-issue isn't on a blocking chain.
     nest(&s, &b, &web[0], &web[5]).await;
 
-    let chain = format!("&focus={}&chain=blocking", id(&web[0]));
+    let chain = format!("&focus={}&chain=blocking", at(&web[0]));
     let page = focus(&s, &b, "", &chain).await;
     let (lo, hi) = (id(&web[1]).min(id(&web[2])), id(&web[1]).max(id(&web[2])));
     assert_eq!(
@@ -215,7 +220,7 @@ async fn a_blocking_chain_reads_in_the_order_of_the_work_and_an_issue_reached_tw
         &s,
         &b,
         "",
-        &format!("&focus={}&chain=blocking", id(&web[3])),
+        &format!("&focus={}&chain=blocking", at(&web[3])),
     )
     .await;
     assert_eq!(
@@ -230,13 +235,22 @@ async fn a_blocking_chain_reads_in_the_order_of_the_work_and_an_issue_reached_tw
     let (status, _) = s
         .api(
             &mut b.clone(),
-            &format!("/api/tree?focus={}&chain=sideways", id(&web[0])),
+            &format!("/api/tree?focus={}&chain=sideways", at(&web[0])),
         )
         .await;
     assert_eq!(status, 400);
-    // A root the mirror doesn't hold is an empty tree.
-    let none = focus(&s, &b, "", "&focus=987654321").await;
-    assert_eq!(nodes(&none), vec![]);
+    // A root the mirror doesn't hold is an empty tree, as is anything that names no issue (an
+    // issue's id among them).
+    for root in [
+        "acme/web/987654321",
+        "nope/web/1",
+        "acme/web/x",
+        "acme/web",
+        "987654321",
+    ] {
+        let none = focus(&s, &b, "", &format!("&focus={root}")).await;
+        assert_eq!(nodes(&none), vec![], "{root}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -258,7 +272,7 @@ async fn the_view_filters_a_focus_as_it_does_the_tree_keeping_context_and_the_ro
     }
     // web2 is hidden; web1 is closed too but shows for web3 under it. Under the root, a match,
     // it isn't context (nothing above it is short of a match) but it isn't a match either.
-    let page = focus(&s, &b, "is:open", &format!("&focus={}", id(&web[0]))).await;
+    let page = focus(&s, &b, "is:open", &format!("&focus={}", at(&web[0]))).await;
     assert_eq!(
         nodes(&page),
         vec![
@@ -279,7 +293,7 @@ async fn the_view_filters_a_focus_as_it_does_the_tree_keeping_context_and_the_ro
         .collect();
     assert_eq!(look, vec![(false, true), (false, false)]);
     // A closed root shows all the same, as context, with its matches under it.
-    let closed = focus(&s, &b, "is:open", &format!("&focus={}", id(&web[1]))).await;
+    let closed = focus(&s, &b, "is:open", &format!("&focus={}", at(&web[1]))).await;
     assert_eq!(
         nodes(&closed),
         vec![
@@ -289,7 +303,7 @@ async fn the_view_filters_a_focus_as_it_does_the_tree_keeping_context_and_the_ro
     );
     assert_eq!(closed["nodes"][0]["context"], true);
     // With nothing under it, a root that doesn't match is all there is.
-    let alone = focus(&s, &b, "is:open", &format!("&focus={}", id(&web[2]))).await;
+    let alone = focus(&s, &b, "is:open", &format!("&focus={}", at(&web[2]))).await;
     assert_eq!(nodes(&alone), vec![(id(&web[2]), 0, None, 0, false, false)]);
 }
 
@@ -309,14 +323,22 @@ async fn linked_prs_are_leaves_under_their_issue_and_a_focused_pr_has_the_issues
         if let Some(issue) = d["closes"].as_array().and_then(|c| c.first())
             && issue["stub"] == false
         {
-            found = Some((pr, issue["id"].as_i64().unwrap()));
+            let at = |i: &Value| {
+                format!(
+                    "{}/{}/{}",
+                    i["owner"].as_str().unwrap(),
+                    i["repo"].as_str().unwrap(),
+                    i["number"]
+                )
+            };
+            found = Some((pr, at(&d), issue["id"].as_i64().unwrap(), at(issue)));
             break;
         }
     }
-    let (pr, issue) = found.expect("a fixture PR that closes a synced issue");
+    let (pr, pr_at, issue, issue_at) = found.expect("a fixture PR that closes a synced issue");
 
     for chain in ["parent", "blocking"] {
-        let page = focus(&s, &b, "", &format!("&focus={issue}&chain={chain}")).await;
+        let page = focus(&s, &b, "", &format!("&focus={issue_at}&chain={chain}")).await;
         let leaf = page["nodes"]
             .as_array()
             .unwrap()
@@ -328,7 +350,7 @@ async fn linked_prs_are_leaves_under_their_issue_and_a_focused_pr_has_the_issues
         assert_eq!(leaf["children"], 0);
     }
     // Focused on the PR: the issues it closes are under it.
-    let page = focus(&s, &b, "", &format!("&focus={pr}")).await;
+    let page = focus(&s, &b, "", &format!("&focus={pr_at}")).await;
     let n = nodes(&page);
     assert_eq!(n[0].0, pr);
     assert!(n.iter().any(|x| x.0 == issue && x.2 == Some(pr)), "{page}");

@@ -39,9 +39,9 @@ export default async function globalSetup(): Promise<void> {
     await page.waitForURL((u) => u.pathname === "/issues");
     // The first issue row (a PR's icon carries data-pr-status): a PR has no composer.
     const row = page.locator('[data-perf="row"]:not(:has([data-pr-status]))').first();
-    const id = await row.getAttribute("data-id");
+    const href = new URL((await row.getAttribute("href"))!, APP).pathname;
     // An issue, with its panel and the composer, both loaded lazily.
-    await page.goto(`/issues/${id}`);
+    await page.goto(href);
     await page.locator('[data-perf="detail"]').waitFor();
     await page.locator('[data-perf="composer"] textarea').waitFor();
     // The other lazily loaded modules, with everything they import.

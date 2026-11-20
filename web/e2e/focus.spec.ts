@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { devCtl, status } from "./stack";
+import { esc, focusOf, issueUrl, urlRe } from "./urls";
 
 test.describe.configure({ mode: "serial" });
 
@@ -42,6 +43,11 @@ async function shown(page: Page): Promise<number[]> {
   return (await rows(page).evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.id))).map(Number);
 }
 
+/** Where a fixture issue is (the fixture's repos are all acme's). */
+const acme = (u: Unlinked) => ({ owner: "acme", ...u });
+/** Focus view's `focus=` for it, as a RegExp source. */
+const focusRe = (u: Unlinked) => `focus=${esc(focusOf(acme(u)))}`;
+
 let web: Unlinked[];
 test.beforeAll(async () => {
   web = (await summary()).unlinked.filter((u) => u.repo === "web");
@@ -58,19 +64,19 @@ test("Focus issue roots a tree at the open issue, and an issue outside it become
   await expect.poll(async () => (await rel(page, top)).blocked_by.map((b) => b.id), { timeout: 15_000 }).toContain(blocker.id);
   try {
     // From the list: the child's detail, then Focus issue beside its number.
-    await page.goto(`/issues/${child.id}`);
+    await page.goto(issueUrl(acme(child)));
     await panel(page).locator('[data-perf="focus-issue"]').click();
-    await expect(page).toHaveURL(new RegExp(`mode=focus&focus=${child.id}`));
+    await expect(page).toHaveURL(new RegExp(`mode=focus&${focusRe(child)}`));
     await expect.poll(() => shown(page)).toEqual([child.id]);
     await expect(panel(page).locator('[data-perf="focus-issue"]')).toHaveAttribute("aria-current", "true");
 
     // Its parent, from the detail, isn't in the tree: it becomes the root, the child under it.
-    await panel(page).locator(`a[href^="/issues/${top.id}?"]`).first().click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?.*focus=${top.id}`));
+    await panel(page).locator(`a[href^="${issueUrl(acme(top))}?"]`).first().click();
+    await expect(page).toHaveURL(new RegExp(`${urlRe(acme(top))}\\?.*${focusRe(top)}`));
     await expect.poll(() => shown(page)).toEqual([top.id, child.id]);
     // The child is in the tree: a click on its row only opens it.
     await rows(page).nth(1).click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${child.id}\\?.*focus=${top.id}`));
+    await expect(page).toHaveURL(new RegExp(`${urlRe(acme(child))}\\?.*${focusRe(top)}`));
     await expect.poll(() => shown(page)).toEqual([top.id, child.id]);
 
     // The blocking chain from the top: it blocks nothing.
@@ -79,15 +85,15 @@ test("Focus issue roots a tree at the open issue, and an issue outside it become
     await expect.poll(() => shown(page)).toEqual([top.id]);
     await rows(page).first().click();
     // Its blocker, from the detail, becomes the root: the work reads top to bottom.
-    await panel(page).locator(`a[href^="/issues/${blocker.id}?"]`).first().click();
-    await expect(page).toHaveURL(new RegExp(`focus=${blocker.id}`));
+    await panel(page).locator(`a[href^="${issueUrl(acme(blocker))}?"]`).first().click();
+    await expect(page).toHaveURL(new RegExp(focusRe(blocker)));
     await expect.poll(() => shown(page)).toEqual([blocker.id, top.id]);
     // No drag in a blocking chain.
     await expect(page.locator('[data-perf="tree-grip"]')).toHaveCount(0);
 
     // Back: the focus before.
     await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?.*focus=${top.id}`));
+    await expect(page).toHaveURL(new RegExp(`${urlRe(acme(top))}\\?.*${focusRe(top)}`));
     await expect.poll(() => shown(page)).toEqual([top.id]);
 
     // List leaves Focus view, and its parameters with it.
@@ -111,14 +117,14 @@ test("A new focus drops the search's words, so the root's other sub-issues show"
   await expect.poll(async () => (await rel(page, sibling)).parent?.id ?? null, { timeout: 15_000 }).toBe(top.id);
   try {
     // Found by its number, then put in focus: the search stays.
-    await page.goto(`/issues/${child.id}?q=${encodeURIComponent(`is:open ${child.number}`)}`);
+    await page.goto(`${issueUrl(acme(child))}?q=${encodeURIComponent(`is:open ${child.number}`)}`);
     await panel(page).locator('[data-perf="focus-issue"]').click();
-    await expect(page).toHaveURL(new RegExp(`mode=focus&focus=${child.id}`));
+    await expect(page).toHaveURL(new RegExp(`mode=focus&${focusRe(child)}`));
     await expect.poll(() => shown(page)).toEqual([child.id]);
 
     // Up to its parent: the number goes, is:open stays, and the sibling shows beside it.
-    await panel(page).locator(`a[href^="/issues/${top.id}?"]`).first().click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?.*focus=${top.id}`));
+    await panel(page).locator(`a[href^="${issueUrl(acme(top))}?"]`).first().click();
+    await expect(page).toHaveURL(new RegExp(`${urlRe(acme(top))}\\?.*${focusRe(top)}`));
     expect(new URL(page.url()).searchParams.get("q")).toBe("is:open");
     await expect(page.locator('[data-perf="filter"]')).toHaveValue("is:open");
     await expect.poll(() => shown(page)).toEqual([top.id, child.id, sibling.id]);

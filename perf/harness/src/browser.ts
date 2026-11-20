@@ -464,7 +464,7 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     async sample(): Promise<Sample> {
       const page = await c.warm.newPage();
       try {
-        await page.goto(`/issues/${target.id}`);
+        await page.goto(`/${target.owner}/${target.repo}/issues/${target.number}`);
         await page.evaluate((x) => window.__perf.arm(x), { kind: "detail", id: target.id, comments: 0 } as Check);
         await outcome(page);
         const box = page.getByRole("textbox", { name: "Comment" });

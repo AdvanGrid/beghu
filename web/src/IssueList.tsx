@@ -25,6 +25,7 @@ import { cx, cxMap, cxTable } from "./cx";
 import { copied, copyRef } from "./copyRef";
 import { point, pointed, unpoint } from "./pointed";
 import { colors, fonts } from "./tokens.stylex";
+import { issuePath, pathOf } from "./at";
 
 /** Every row is exactly this tall, border included: the virtualizer's pitch. */
 export const ROW_HEIGHT = 34;
@@ -423,7 +424,8 @@ function Rows(props: {
   // rather than walking back through every issue the keys stepped past; the first open pushes.
   const go = (id: number) => {
     going = id;
-    navigate(`/issues/${id}${untrack(() => props.search)}`, { scroll: false, replace: untrack(() => props.openId) !== undefined });
+    const path = pathOf(id, untrack(() => props.search));
+    if (path !== undefined) navigate(path, { scroll: false, replace: untrack(() => props.openId) !== undefined });
   };
   createEffect(
     () => props.openId,
@@ -537,14 +539,14 @@ function Rows(props: {
   createEffect(
     () => {
       const i = index();
-      return i < 0 ? "" : [rows()[i - 1]?.id, rows()[i + 1]?.id].filter((id) => id !== undefined).join(",");
+      return i < 0 ? "" : [rows()[i - 1], rows()[i + 1]].flatMap((r) => (r ? [issuePath(r)] : [])).join(",");
     },
-    (ids) => {
+    (paths) => {
       clearTimeout(rest);
-      if (!ids) return;
+      if (!paths) return;
       const search = untrack(() => props.search);
       rest = setTimeout(() => {
-        for (const id of ids.split(",")) preload(`/issues/${id}${search}`, { preloadData: true });
+        for (const path of paths.split(",")) preload(`${path}${search}`, { preloadData: true });
       }, PRELOAD_REST_MS);
     },
   );
@@ -716,7 +718,7 @@ export function Row(props: {
   return (
     <a
       ref={el}
-      prop:href={`/issues/${r().id}${props.search}`}
+      prop:href={`${issuePath(r())}${props.search}`}
       noscroll
       role={props.tree ? "treeitem" : "option"}
       aria-level={props.tree?.level}

@@ -27,16 +27,18 @@ function preloads(url: string): string {
   const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
   const path = url.includes("?") ? url.slice(0, url.indexOf("?")) : url;
   const attr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  // In the canonical form the app fetches (leading zeros dropped), and only for an id in range.
-  const digits = /^\/issues\/(\d+)$/.exec(path)?.[1];
-  const id = digits === undefined ? undefined : BigInt(digits);
-  const issue = id !== undefined && id <= 2n ** 63n - 1n ? [`/api/issues/${id}`] : [];
+  // An issue's URL (`/acme/web/issues/12`, `/pull/` for a PR): its detail by where it is, in the
+  // canonical form the app fetches (leading zeros dropped), only for a number in range and an
+  // owner and repo GitHub would name.
+  const at = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/(?:issues|pull)\/(\d+)$/.exec(path);
+  const number = at ? BigInt(at[3]!) : undefined;
+  const issue = at && number! <= 2n ** 63n - 1n ? [`/api/at/${at[1]}/${at[2]}/${number}`] : [];
   // Tree mode (`mode=tree`) fetches the tree first, not the list.
   const tree = q.slice(1).split("&").includes("mode=tree");
   const data = ["/api/me", "/api/facets", `/api/${tree ? "tree" : "issues"}${q.length > 1 ? q : ""}`, ...issue]
     .map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`)
     .join("");
-  const panel = /^\/issues\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";
+  const panel = /^\/[^/]+\/[^/]+\/(?:issues|pull)\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";
   const treeCode = tree ? '<link rel="modulepreload" crossorigin href="/src/IssueTree.tsx">' : "";
   return data + panel + treeCode;
 }

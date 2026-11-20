@@ -71,7 +71,7 @@ export function queryOf(search: string): string {
 export function withQuery(search: string, query: string): string {
   const p = new URLSearchParams(search);
   p.set("q", query);
-  return `?${p}`;
+  return searchOf(p);
 }
 
 export type SortValue = `${SortKey}` | `${SortKey}-asc`;
@@ -248,28 +248,34 @@ export function modeOf(search: string): Mode {
  * `search` with the mode set to `mode`: the list is the default, so it drops `mode`. Focus view
  * goes to `focus` if given (else keeps the URL's); any other mode drops what Focus view adds.
  */
-export function withMode(search: string, mode: Mode, focus?: number): string {
+export function withMode(search: string, mode: Mode, focus?: string): string {
   const p = new URLSearchParams(search);
   if (mode === "list") p.delete("mode");
   else p.set("mode", mode);
   if (mode === "focus") {
-    if (focus !== undefined) p.set("focus", String(focus));
+    if (focus !== undefined) p.set("focus", focus);
   } else {
     p.delete("focus");
     p.delete("chain");
   }
-  const s = p.toString();
+  return searchOf(p);
+}
+
+/**
+ * `p` as a query string, `?` first, or empty: with Focus view's `focus=acme/web/12` kept readable,
+ * as a slash needs no escaping in a query string.
+ */
+function searchOf(p: URLSearchParams): string {
+  const s = p.toString().replaceAll("%2F", "/");
   return s ? `?${s}` : "";
 }
 
 /** What Focus view follows down from its root: sub-issues, or what each issue blocks. */
 export type Chain = "parent" | "blocking";
 
-/** The issue Focus view is on (`?focus=`), if any. */
-export function focusOf(search: string): number | undefined {
-  const v = new URLSearchParams(search).get("focus");
-  const n = v !== null && /^\d+$/.test(v) ? Number(v) : NaN;
-  return Number.isSafeInteger(n) ? n : undefined;
+/** The issue Focus view is on (`?focus=acme/web/12`, at.ts's `atString`), if any. */
+export function focusOf(search: string): string | undefined {
+  return new URLSearchParams(search).get("focus") ?? undefined;
 }
 
 /** Focus view's chain (`?chain=blocking`, or sub-issues). */
@@ -282,8 +288,7 @@ export function withChain(search: string, chain: Chain): string {
   const p = new URLSearchParams(search);
   if (chain === "blocking") p.set("chain", "blocking");
   else p.delete("chain");
-  const s = p.toString();
-  return s ? `?${s}` : "";
+  return searchOf(p);
 }
 
 /** Set by the List | Tree toggle as it switches: the view that opens next keeps the selection. */

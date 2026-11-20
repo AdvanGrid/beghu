@@ -25,18 +25,18 @@
 //   GitHub's order, or that a PR takes no sub-issues) and dropping does nothing. A drop is a write of the
 //   detail's own kinds (`sub_reorder`, `sub_add` moving it, `sub_remove`), shown at once.
 //
-// Focus view (`?mode=focus&focus=<id>`) is this tree with one root, the issue in focus, and what's
-// reached down from it (the server's `focus`): its sub-issues, or with `chain=blocking` what it
-// blocks, and what those block, each issue with its linked PRs as leaves. The root opens unless
-// the tab closed it. An issue reached again is a repeat, marked "shown above", with nothing under
-// it; its row has a key of its own (`keyOf`). Opening an issue that isn't on screen in the tree (a
-// parent, a blocker, a ref in a post) puts it in focus, replacing the history entry the click
-// made, so Back goes to the focus before, and drops the search's words (its qualifiers stay); one
-// on screen just opens. The drag works on sub-issues only: a blocking chain has none.
+// Focus view (`?mode=focus&focus=acme/web/12`) is this tree with one root, the issue in focus,
+// and what's reached down from it (the server's `focus`): its sub-issues, or with `chain=blocking`
+// what it blocks, and what those block, each issue with its linked PRs as leaves. The root opens
+// unless the tab closed it. An issue reached again is a repeat, marked "shown above", with nothing
+// under it; its row has a key of its own (`keyOf`). Opening an issue that isn't on screen in the
+// tree (a parent, a blocker, a ref in a post) puts it in focus, replacing the history entry the
+// click made, so Back goes to the focus before, and drops the search's words (its qualifiers
+// stay); one on screen just opens. The drag works on sub-issues only: a blocking chain has none.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Loading, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { useNavigate, usePreloadRoute } from "@solidjs/router";
-import { SessionEnded, checkDrop, getMe, fetchTree, getTree, readAt, signIn, stamp, treeUrl, type IssueOp, type IssueRow, type TreeNode, type TreePage } from "./api";
+import { SessionEnded, checkDrop, getMe, fetchTree, pathFor, getTree, readAt, signIn, stamp, treeUrl, type IssueOp, type IssueRow, type TreeNode, type TreePage } from "./api";
 import type { Related } from "./bindings/Related";
 import type { Repo } from "./bindings/Repo";
 import { createColumns } from "./columns";
@@ -52,6 +52,7 @@ import { endOf, refOf } from "./related";
 import { createVirtualizer } from "./virtual";
 import { StillImporting } from "./WhileImporting";
 import { colors, fonts } from "./tokens.stylex";
+import { atOf, isAt, issuePath, pathOf } from "./at";
 
 const OVERSCAN = 6;
 /** Load more roots when the last row on screen gets this close to the last loaded row (as the list's). */
@@ -86,8 +87,8 @@ const ROOTS_SORTED = "Top-level issues follow the view's sort; remove its parent
 const UNDER_PR = "A pull request can't have sub-issues";
 const BESIDE_FOCUS = "The issue in focus stays at the top";
 
-/** The issue Focus view is on, if the tree is Focus view's. */
-function focusIn(search: string): number | undefined {
+/** The issue Focus view is on (at.ts's `atString`), if the tree is Focus view's. */
+function focusIn(search: string): string | undefined {
   return modeOf(search) === "focus" ? focusOf(search) : undefined;
 }
 
@@ -239,8 +240,14 @@ export function IssueTree(props: { search: string; openId?: number }) {
       // The toggle's selection: it stays if it shows, or moves to the nearest ancestor that does.
       const open = now.open;
       if (prev === undefined && switched && now.page.selected !== null && open !== undefined && now.page.selected !== open) {
-        const to = now.page.selected;
-        queueMicrotask(() => navigate(`/issues/${to}${now.view}`, { replace: true, scroll: false }));
+        // The ancestor may be on a page the tree hasn't loaded: then its path comes with its detail.
+        const view = now.view;
+        void pathFor(now.page.selected, view).then(
+          (to) => {
+            if (view === untrack(() => props.search) && untrack(() => props.openId) === open) navigate(to, { replace: true, scroll: false });
+          },
+          () => {},
+        );
       }
     },
   );
@@ -414,16 +421,18 @@ export function IssueTree(props: { search: string; openId?: number }) {
     (now, prev) => {
       if (prev === undefined || now.open === undefined || now.open === prev.open || now.view !== prev.view) return;
       const root = focusIn(now.view);
-      if (root === undefined || now.open === root) return;
+      if (root === undefined || isAt(now.open, root)) return;
       if (shown?.view === now.view && shown.page.nodes.some((n) => n.row.id === now.open)) return;
-      const to = now.open;
+      const to = pathOf(now.open);
+      const focusAt = atOf(now.open);
+      if (to === undefined || focusAt === undefined) return;
       // The search's words go: they found the way here, and would hide the new root's other
       // sub-issues (the focus shows only what leads to a match). Its qualifiers stay.
       const q = queryOf(now.view);
       const kept = withoutText(q);
       const view = kept === q ? now.view : withQuery(now.view, kept);
       queueMicrotask(() => {
-        navigate(`/issues/${to}${withMode(view, "focus", to)}`, { replace: true, scroll: false });
+        navigate(`${to}${withMode(view, "focus", focusAt)}`, { replace: true, scroll: false });
         if (kept !== q) setQueryFrom(kept);
       });
     },
@@ -554,7 +563,8 @@ function Nodes(props: {
   let going: number | undefined;
   const go = (id: number) => {
     going = id;
-    navigate(`/issues/${id}${untrack(() => props.search)}`, { scroll: false, replace: untrack(() => props.openId) !== undefined });
+    const path = pathOf(id, untrack(() => props.search));
+    if (path !== undefined) navigate(path, { scroll: false, replace: untrack(() => props.openId) !== undefined });
   };
   createEffect(
     () => props.openId,
@@ -659,14 +669,14 @@ function Nodes(props: {
   createEffect(
     () => {
       const i = index();
-      return i < 0 ? "" : [nodes()[i - 1]?.row.id, nodes()[i + 1]?.row.id].filter((id) => id !== undefined).join(",");
+      return i < 0 ? "" : [nodes()[i - 1], nodes()[i + 1]].flatMap((n) => (n ? [issuePath(n.row)] : [])).join(",");
     },
-    (ids) => {
+    (paths) => {
       clearTimeout(rest);
-      if (!ids) return;
+      if (!paths) return;
       const search = untrack(() => props.search);
       rest = setTimeout(() => {
-        for (const id of ids.split(",")) preload(`/issues/${id}${search}`, { preloadData: true });
+        for (const path of paths.split(",")) preload(`${path}${search}`, { preloadData: true });
       }, PRELOAD_REST_MS);
     },
   );

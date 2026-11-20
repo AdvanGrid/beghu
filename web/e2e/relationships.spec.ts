@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 import { status } from "./stack";
+import { issueUrl, urlOf } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -26,6 +27,9 @@ interface Unlinked {
   number: number;
   id: number;
 }
+
+/** A fixture issue's URL in the app (the fixture's repos are all acme's). */
+const url = (u: Unlinked) => issueUrl({ owner: "acme", ...u });
 
 /** The fixture generator's summary, next to the fixture the stack's Fake GitHub serves. */
 async function summary(): Promise<{ unlinked: Unlinked[]; unlinked_closed: Unlinked[]; stub_numbers: number[]; unlinked_stubs: number[] }> {
@@ -97,7 +101,7 @@ test("a dependency made on GitHub marks the row and fills both ends' Blocks sect
     expect(loads).toBe(0);
 
     // The blocker's own detail shows what it blocks; the blocked issue's shows its blocker.
-    await page.goto(`/issues/${blocker.id}`);
+    await page.goto(url(blocker));
     const blocked = page.locator(`[data-perf="blocking"] [data-perf="block-item"][data-id="${id}"]`);
     await expect(blocked).toBeVisible();
     await blocked.locator("a").click();
@@ -156,7 +160,8 @@ test("the pointer on a blocker chip, or on its line in the hover card, outlines 
     await chip.hover();
     await expect(other).toHaveCSS("outline-style", "solid");
     // On to the card's line for it: still outlined; off the card: not.
-    const line = page.locator(`[data-perf="card"] [data-perf="card-blocker"][href^="/issues/${otherId}"]`);
+    const otherPath = await urlOf(page, Number(otherId));
+    const line = page.locator(`[data-perf="card"] [data-perf="card-blocker"][href^="${otherPath}"]`);
     await line.hover();
     await expect(other).toHaveCSS("outline-style", "solid");
     await page.mouse.move(1, 1);
@@ -174,11 +179,11 @@ test("the detail shows the parent with its progress, sub-issues with x of y done
     devCtl(["fake", "edit", ref(parent), "--add-sub-issue", ref(me)]);
     devCtl(["fake", "edit", ref(me), "--add-sub-issue", ref(child)]);
     devCtl(["fake", "edit", ref(me), "--add-sub-issue", ref(other), "--relate", sdk]);
-    await open(page, `/issues/${me.id}`);
+    await open(page, url(me));
     const crumb = page.locator('[data-perf="parent"]');
     // The parent's progress counts every descendant: me, child and the closed one.
     await expect(crumb).toContainText("1/3", { timeout: SHOWS_WITHIN_MS });
-    await expect(crumb.locator("a")).toHaveAttribute("href", `/issues/${parent.id}`);
+    await expect(crumb.locator("a")).toHaveAttribute("href", url(parent));
     const subs = page.locator('[data-perf="sub-issues"]');
     await expect(subs.locator('[data-perf="sub-progress"]')).toHaveText("1 of 2 done");
     await expect(subs.locator('[data-perf="rel-item"]')).toHaveCount(2);
@@ -196,7 +201,7 @@ test("the detail shows the parent with its progress, sub-issues with x of y done
 test("a cross-repo relationship shows on both ends within 2 s", async ({ page }) => {
   const me = unlinked.find((u) => u.repo === "web")!;
   const far = unlinked.find((u) => u.repo === "api")!;
-  await open(page, `/issues/${me.id}`);
+  await open(page, url(me));
   // On screen as the shift cue in the empty Blocks section's spot (#110), or once it has opened.
   const blockerShown = await timeFromPush(
     page,

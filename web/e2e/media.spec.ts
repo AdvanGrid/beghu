@@ -14,6 +14,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 import { devCtl, status } from "./stack";
+import { issueUrl } from "./urls";
 
 type Upload = { uuid: string; url: string; markdown: string };
 
@@ -83,7 +84,7 @@ test("images load through beghu at their size, a bad one says why, a video plays
         { timeout: SHOWS_WITHIN_MS },
       )
       .toEqual(expect.arrayContaining(["image/png 900", "too_large", "not_image", "video/webm 180"]));
-    await page.goto(`/issues/${issue.id}`);
+    await page.goto(issueUrl(issue));
     const c = thread(page, marker);
     await expect(c).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     const media = c.locator('img[data-perf="media"]');
@@ -223,7 +224,7 @@ test("text after an `align`ed image wraps beside it, in the next block too", asy
   const md = [`<img align="left" width="120" height="120" alt="floated" src="${fake}/ext/img/120x120.png">`, `${marker}: this paragraph wraps beside the image.`].join("\n\n");
   try {
     devCtl(["fake", "edit", issue.ref, "--comment", md]);
-    await page.goto(`/issues/${issue.id}`);
+    await page.goto(issueUrl(issue));
     const c = thread(page, marker);
     await expect(c).toBeVisible({ timeout: SHOWS_WITHIN_MS });
     // The image's box (or its placeholder's, sized the same) floats left; the paragraph after it,

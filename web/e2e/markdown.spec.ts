@@ -4,6 +4,7 @@
 // response is rewritten on its way to the page, to hand the walker an AST the server would never
 // send as well as the ones it does.
 import { expect, test, type Page } from "@playwright/test";
+import { atApi, esc, issueUrl, urlRe } from "./urls";
 
 // Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
 // this spec works on issues.
@@ -13,6 +14,9 @@ const rows = (page: Page) => page.locator('[data-perf="row"]:not(:has([data-pr-s
 const body = (page: Page) => page.locator('[data-perf="body"]');
 
 type Row = { id: number; owner: string; repo: string; number: number; title: string };
+
+/** Every read of an issue's detail: by its id, or by where it is (a cold URL's), refetches too. */
+const detailRe = (r: Row) => new RegExp(`(/api/issues/${r.id}|${esc(atApi(r))})(\\?.*)?$`);
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
@@ -26,7 +30,7 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
   const key = `${t.owner}/${t.repo}#${x.number}`.toLowerCase();
 
   // The detail, and its refetches (`?through=`).
-  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(t), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.body = [
@@ -44,14 +48,14 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
     d.refs = { [key]: { id: x.id, kind: "issue", title: "Stubbed title", state: "closed", state_reason: "not_planned" } };
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${t.id}`);
+  await page.goto(issueUrl(t));
   await expect(body(page)).toContainText("Heads up");
 
   // In the mirror: in-app, with its state icon, and its title and state for screen readers (the
   // hover card shows them on screen).
   const inApp = body(page).locator("p").first().locator('a[data-ref="notPlanned"]');
   await expect(inApp).toHaveText(`#${x.number}`);
-  await expect(inApp).toHaveAttribute("href", `/issues/${x.id}`);
+  await expect(inApp).toHaveAttribute("href", issueUrl(x));
   await expect(inApp).toHaveAttribute("aria-description", "Stubbed title · Closed as not planned");
   await expect(inApp.locator("svg")).toHaveCount(1);
   // Anything else: GitHub, marked ↗, which screen readers don't hear.
@@ -73,7 +77,7 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
   // A link to a comment names it, as GitHub does.
   const comments = body(page).locator("p").nth(1).locator("a");
   await expect(comments.nth(0)).toHaveText(`#${x.number} (comment)`);
-  await expect(comments.nth(0)).toHaveAttribute("href", `/issues/${x.id}`);
+  await expect(comments.nth(0)).toHaveAttribute("href", issueUrl(x));
   await expect(comments.nth(1)).toHaveText("else/where#7 (comment) ↗");
   await expect(comments.nth(1)).toHaveAccessibleName("else/where#7 (comment)");
   await expect(comments.nth(1)).toHaveAttribute("href", "https://github.com/else/where/issues/7#issuecomment-34");
@@ -108,7 +112,7 @@ test("a body renders allowlisted DOM only, and its references link in-app or to 
 
   // The in-app reference opens its issue in the panel.
   await inApp.click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${x.id}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(x)}$`));
   await expect(page.locator(`[data-perf="detail"][data-id="${x.id}"]`)).toBeVisible();
   await expect(rows(page).first()).toBeVisible();
 });
@@ -121,7 +125,7 @@ test("a body nested far deeper than the server sends renders, flattened past the
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const t = list.rows[0]!;
   const depth = 100_000;
-  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(t), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.body = "BODY";
@@ -129,7 +133,7 @@ test("a body nested far deeper than the server sends renders, flattened past the
     const deep = `[${'["blockquote",0,'.repeat(depth)}"deepest"${"]".repeat(depth)}, ["p", 0, "after"]]`;
     await route.fulfill({ response: res, body: JSON.stringify(d).replace('"BODY"', deep), contentType: "application/json" });
   });
-  await page.goto(`/issues/${t.id}`);
+  await page.goto(issueUrl(t));
   await expect(body(page)).toContainText("deepest");
   await expect(body(page)).toContainText("after");
   const nesting = await body(page).evaluate((root) => {
@@ -151,14 +155,14 @@ test("hovering a reference shows its card, and outlines its row in the list in g
   await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const [t, x] = [list.rows[0]!, list.rows[1]!];
-  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(t), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.body = [["p", 0, "See ", ["ref", { o: x.owner, r: x.repo, n: x.number }], " and ", ["ref", { o: "else", r: "where", n: 7 }]]];
     d.refs = { [`${x.owner}/${x.repo}#${x.number}`.toLowerCase()]: { id: x.id, kind: "issue", title: "Stubbed title", state: "open", state_reason: null } };
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${t.id}`);
+  await page.goto(issueUrl(t));
   const ref = body(page).locator('a[data-ref="open"]');
   const row = page.locator(`[data-perf="row"][data-id="${x.id}"]`);
   const card = page.locator('[data-perf="ref-card"]');
@@ -199,7 +203,7 @@ test("a link to a comment on the open issue scrolls to it, a reference or a link
   if (!t) throw new Error("no issue with comments in the list");
   const issue = t;
   const url = `https://github.com/${issue.owner}/${issue.repo}/issues/${issue.number}#issuecomment-${comment}`;
-  await page.route(new RegExp(`/api/issues/${issue.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(issue), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     // A body long enough to push the comments out of view, the links at its top.
@@ -210,18 +214,18 @@ test("a link to a comment on the open issue scrolls to it, a reference or a link
     d.refs = { [`${issue.owner}/${issue.repo}#${issue.number}`.toLowerCase()]: { id: issue.id, kind: "issue", title: issue.title, state: "open", state_reason: null } };
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   const target = page.locator(`[data-comment-id="${comment}"]`);
   for (const name of [`#${issue.number} (comment)`, "that comment"]) {
     const link = body(page).getByRole("link", { name, exact: true });
     // Back to the top: a refetch may swap the body's nodes as this runs, so it's retried.
     await expect(async () => link.scrollIntoViewIfNeeded({ timeout: 1000 })).toPass();
-    await expect(link).toHaveAttribute("href", `/issues/${issue.id}`);
+    await expect(link).toHaveAttribute("href", issueUrl(issue));
     await expect(target).toBeAttached();
     await expect(target).not.toBeInViewport();
     await link.click();
     await expect(target).toBeInViewport();
-    await expect(page).toHaveURL(new RegExp(`/issues/${issue.id}$`));
+    await expect(page).toHaveURL(new RegExp(`${urlRe(issue)}$`));
   }
 });
 
@@ -251,14 +255,14 @@ async function openWithBody(page: Page, body: unknown[], index = 0): Promise<Row
   await page.waitForURL((u) => u.pathname === "/issues");
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const t = list.rows[index]!;
-  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(t), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.body = body;
     for (const c of d.comments.comments) c.body = [["p", 0, "A comment."]];
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${t.id}`);
+  await page.goto(issueUrl(t));
   return t;
 }
 
@@ -346,7 +350,7 @@ test("a language chunk that fails to load leaves its block plain, the page in pl
   await page.unroute(chunk("rust"));
   const list = (await (await page.request.get(OPEN_ISSUES)).json()) as { rows: Row[] };
   const next = list.rows[1]!;
-  await page.route(new RegExp(`/api/issues/${next.id}(\\?.*)?$`), async (route) => {
+  await page.route(detailRe(next), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.body = [block("rust", RUST)];

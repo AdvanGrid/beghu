@@ -66,6 +66,7 @@ import type { Can } from "./bindings/Can";
 import type { RepoLabel } from "./bindings/RepoLabel";
 import { Avatar, link } from "./bits";
 import { applyNow } from "./held";
+import { issuePath, learn } from "./at";
 import { Panel } from "./IssuePanel";
 import { touch } from "./keys";
 import { writesPaused } from "./live";
@@ -133,7 +134,7 @@ const [creating, setCreating] = createSignal(false);
 const [slow, setSlow] = createSignal(false);
 const [error, setError] = createSignal<Error>();
 /** An issue created while the form was closed: where it went, until it's opened or dismissed. */
-const [made, setMade] = createSignal<{ id: number; repo: string }>();
+const [made, setMade] = createSignal<{ id: number; path: string; repo: string }>();
 /** Opens a path from the form while it's on screen (the panel is on `/new`); unset otherwise. */
 let openFromForm: ((path: string) => void) | undefined;
 
@@ -332,12 +333,15 @@ async function create(r: Repo, parentOk: boolean): Promise<void> {
       })
       .catch(() => {});
   }
+  // The new issue's URL (at.ts): the tab learns where it is, so the URL finds its id.
+  const made = { id: reply.issue, kind: "issue", owner: r.owner, repo: r.name, number: reply.number ?? NaN };
+  learn([made]);
   if (openFromForm) {
     applyNow(reply.issue);
-    openFromForm(`/issues/${reply.issue}`);
+    openFromForm(issuePath(made));
   }
   else {
-    setMade({ id: reply.issue, repo: r.name });
+    setMade({ id: reply.issue, path: issuePath(made), repo: r.name });
     setCreateNote({ failed: false, Note: CreateNote });
   }
 }
@@ -377,7 +381,7 @@ function CreateNote() {
           <>
             Created the issue in {m().repo} ·{" "}
             <a
-              href={`/issues/${m().id}${location.search}`}
+              href={`${m().path}${location.search}`}
               noscroll
               {...stylex.attrs(link.button)}
               onClick={() => {
@@ -653,7 +657,7 @@ function Form() {
             {(m) => (
               <span data-perf="create-made">
                 Created the issue in {m().repo} ·{" "}
-                <a href={`/issues/${m().id}${location.search}`} noscroll {...stylex.attrs(link.button)} onClick={() => setMade(undefined)}>
+                <a href={`${m().path}${location.search}`} noscroll {...stylex.attrs(link.button)} onClick={() => setMade(undefined)}>
                   Open
                 </a>
               </span>
