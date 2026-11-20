@@ -696,6 +696,8 @@ function App(props: { m: Model }) {
       sel: () => sel() as PhoneSel,
       setSel: (x) => setSel(x as Sel),
       panel: () => <Panel m={m} reveal={reveal} colour={colour} edgeFacets={edgeFacets} />,
+      wt,
+      setWt,
       nodeCard: (id) => <NodeCard m={m} n={m.nodes.get(id)!} />,
       edgeCard: (ids) => <EdgeCard m={m} edges={ids.map((id) => m.edges.get(id)!)} />,
       groupOf: (id) => {

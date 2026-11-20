@@ -62,6 +62,9 @@ export interface PhoneCtx {
   setSel: (x: PhoneSel) => void;
   /** The desktop panel: overview, or the selected thing's questions, claims and lines. */
   panel: () => JSX.Element;
+  /** The panel's walkthrough layout (#159): its key, its name, and a step to the next or previous. */
+  wt: () => { key: string; name: string };
+  setWt: (step: number) => void;
   nodeCard: (id: string) => JSX.Element;
   edgeCard: (ids: string[]) => JSX.Element;
   groupOf: (id: string) => string | undefined;
@@ -600,7 +603,8 @@ const s = stylex.create({
     whiteSpace: "nowrap",
     zIndex: 50,
   },
-  switcherLabel: { overflow: "hidden", textOverflow: "ellipsis" },
+  switcherLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  switcherRule: { alignSelf: "stretch", backgroundColor: colors.bg, marginBlock: 8, marginInline: 4, opacity: 0.4, width: 1 },
   switcherBtn: {
     backgroundColor: "transparent",
     borderStyle: "none",
@@ -927,10 +931,20 @@ export function Phone(props: { c: PhoneCtx }) {
         <button {...stylex.attrs(s.switcherBtn)} onClick={() => setVariant(-1)}>
           ←
         </button>
-        <span {...stylex.attrs(s.switcherLabel)}>
-          Phone <b>{variant().key}</b> — {variant().name}
+        <span {...stylex.attrs(s.switcherLabel)} title={variant().name}>
+          Phone <b>{variant().key}</b>
         </span>
         <button {...stylex.attrs(s.switcherBtn)} onClick={() => setVariant(1)}>
+          →
+        </button>
+        <span {...stylex.attrs(s.switcherRule)} />
+        <button {...stylex.attrs(s.switcherBtn)} onClick={() => props.c.setWt(-1)}>
+          ←
+        </button>
+        <span {...stylex.attrs(s.switcherLabel)} title={props.c.wt().name}>
+          Panel <b>{props.c.wt().key}</b>
+        </span>
+        <button {...stylex.attrs(s.switcherBtn)} onClick={() => props.c.setWt(1)}>
           →
         </button>
       </div>
