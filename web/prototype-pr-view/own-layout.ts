@@ -50,6 +50,8 @@ export interface Opts {
    * merges; `stretch`, any stretch where two run together for `minGutters` gutters, whatever share.
    */
   merge?: "line" | "trunks" | "stretch";
+  /** Move rows that make a line dip round a part back across it (default on). */
+  undip?: boolean;
   /** Pull together: rounds of group, order and place (later rounds only add merges). */
   rounds?: number;
   /** Y placement: Brandes–Köpf alignment (default), or per-column isotonic regression. */
@@ -533,6 +535,38 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     const chain = B.chains.get(key)!;
     return chain[c - colOf.get(laidBy.get(key)!.a)!];
   };
+  /** Lays the current clusters out again, seeding the order with the last layout's. */
+  const rebuild = () => {
+    const prev = B;
+    B = build(clusters);
+    // A trunk takes its members' mean row.
+    for (const it of B.items.values()) {
+      const old = it.links
+        .map((k) => prev.chains.get(k)![it.col - colOf.get(laidBy.get(k)!.a)!]?.ord)
+        .filter((v) => v !== undefined);
+      it.ord = it.node ? prev.items.get(it.id)!.ord : old.reduce((s, v) => s + v, 0) / Math.max(1, old.length);
+    }
+    order(B, true);
+    (o.placement === "iso" ? place : bk)(B);
+  };
+  /** For each trunk, the lines that dip to ride it (drop to it and climb back, or the reverse). */
+  const dippers = () => {
+    const out = new Map<number, Set<string>>();
+    const mid0 = (it: Item) => it.y + it.h / 2;
+    for (const [key, chain] of B.chains) {
+      const m = chain.map(mid0);
+      for (let k = 1; k + 1 < chain.length; k++) {
+        const it = chain[k]!;
+        if (it.trunk === undefined) continue;
+        let a = k - 1, b = k + 1;
+        while (a > 0 && Math.abs(m[a]! - m[k]!) < 1) a--;
+        while (b < chain.length - 1 && Math.abs(m[b]! - m[k]!) < 1) b++;
+        const da = m[a]! - m[k]!, db = m[b]! - m[k]!;
+        if (Math.abs(da) > 20 && Math.abs(db) > 20 && Math.sign(da) === Math.sign(db)) out.set(it.trunk, (out.get(it.trunk) ?? new Set()).add(key));
+      }
+    }
+    return out;
+  };
   if (o.mode === "pull") {
     // Rounds: group by rows in the current layout, rebuild with the trunks, order and place
     // again; lines the last round pulled together can now join each other. Until nothing changes.
@@ -548,18 +582,16 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
       if (sig === last) break;
       last = sig;
       clusters = next;
-      const prev = B;
-      B = build(clusters);
-      // Seed the order with the last round's: a trunk takes its members' mean row.
-      for (const it of B.items.values()) {
-        const old = it.links.map((k) => {
-          const chain = prev.chains.get(k)!;
-          return chain[it.col - colOf.get(laidBy.get(k)!.a)!]?.ord;
-        }).filter((v) => v !== undefined);
-        it.ord = it.node ? prev.items.get(it.id)!.ord : old.reduce((s, v) => s + v, 0) / Math.max(1, old.length);
-      }
-      order(B, true);
-      (o.placement === "iso" ? place : bk)(B);
+      rebuild();
+    }
+    // A line doesn't ride a trunk that makes it dip: take it off that trunk and lay out again.
+    for (let pass = 0; pass < 3 && o.undip !== false; pass++) {
+      const d = dippers();
+      if (!d.size) break;
+      clusters = clusters
+        .map((c, k) => ({ ...c, members: c.members.filter((m) => !d.get(k)?.has(m)) }))
+        .filter((c) => c.members.length > 1);
+      rebuild();
     }
   } else if (o.mode === "found") {
     const nodeYs = B.cols.map((col) => col.filter((it) => it.node).map((it) => [it.y, it.y + it.h] as const));
@@ -586,6 +618,67 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     for (const col of B.cols) col.sort((a, b) => a.ord - b.ord);
     renumber(B);
   }
+
+  // 4c. Undip: a row that sits past a part from both its line's neighbours (the line drops round
+  // the part and climbs back) moves back across, when that adds at most two crossings; then the
+  // rows are placed again. Rule 8: no U-turn where a straight route is free.
+  const crossAt = (Bb: Built, g: number) => {
+    if (g < 0 || g + 1 >= nCols) return 0;
+    let n = 0;
+    const es: [number, number, number][] = [];
+    for (const p of Bb.cols[g]!) for (const [q, w] of Bb.right.get(p)!) es.push([p.ord, q.ord, w]);
+    for (let i = 0; i < es.length; i++)
+      for (let j = i + 1; j < es.length; j++) {
+        const [a, b, w] = es[i]!, [x, y, v] = es[j]!;
+        if ((a - x) * (b - y) < 0) n += w * v;
+      }
+    return n;
+  };
+  const undip = (Bb: Built) => {
+    const mid0 = (it: Item) => it.y + it.h / 2;
+    for (let round = 0; round < 6; round++) {
+      const wants = new Map<Item, number[]>();
+      const veto = new Set<Item>();
+      for (const chain of Bb.chains.values()) {
+        const m = chain.map(mid0);
+        for (let k = 1; k + 1 < chain.length; k++) {
+          let a = k - 1, b = k + 1;
+          while (a > 0 && Math.abs(m[a]! - m[k]!) < 1) a--;
+          while (b < chain.length - 1 && Math.abs(m[b]! - m[k]!) < 1) b++;
+          const da = m[a]! - m[k]!, db = m[b]! - m[k]!;
+          const it = chain[k]!;
+          if (Math.abs(da) >= 1 && Math.abs(db) >= 1 && Math.sign(da) === Math.sign(db)) {
+            const target = da < 0 ? Math.max(m[a]!, m[b]!) : Math.min(m[a]!, m[b]!);
+            wants.set(it, [...(wants.get(it) ?? []), target]);
+          } else veto.add(it);
+        }
+      }
+      let moved = false;
+      for (const [it, ts] of wants) {
+        if (veto.has(it)) continue;
+        const target = ts.reduce((x, y) => x + y, 0) / ts.length;
+        const col = Bb.cols[it.col]!;
+        const rest = col.filter((x) => x !== it);
+        const up = target < mid0(it);
+        // Only worth it when a part stands between the row and where its line wants to be.
+        const between = rest.filter((x) => x.node && (up ? mid0(x) < mid0(it) && x.y + x.h > target : mid0(x) > mid0(it) && x.y < target));
+        if (!between.length) continue;
+        let at = rest.findIndex((x) => mid0(x) > target);
+        if (at < 0) at = rest.length;
+        const before = crossAt(Bb, it.col - 1) + crossAt(Bb, it.col);
+        const old = [...col];
+        col.splice(0, col.length, ...rest.slice(0, at), it, ...rest.slice(at));
+        col.forEach((x, i) => (x.ord = i));
+        if (crossAt(Bb, it.col - 1) + crossAt(Bb, it.col) - before > 2) {
+          col.splice(0, col.length, ...old);
+          col.forEach((x, i) => (x.ord = i));
+        } else moved = true;
+      }
+      if (!moved) break;
+      (o.placement === "iso" ? place : bk)(Bb);
+    }
+  };
+  if (o.undip !== false) undip(B);
 
   // 5. Ports: a part's lines leave (and arrive) spread down its side, ordered by the other end.
   const mid = (it: Item) => it.y + it.h / 2;

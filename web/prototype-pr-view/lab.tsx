@@ -110,7 +110,7 @@ async function draw(inp: Input, engine: Engine, merge: Merge): Promise<Drawn> {
   const o = ownLayout(
     nodes,
     inp.lines.map((x) => ({ key: x.key, from: x.from, to: x.to })),
-    { mode: engine, merge, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close(), rounds: rounds() },
+    { mode: engine, merge, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close(), rounds: rounds(), undip: params.get("undip") !== "0" },
   );
   const ms = performance.now() - t0;
   // Real direction: a line laid to → from runs backwards.
