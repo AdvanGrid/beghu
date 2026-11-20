@@ -1146,7 +1146,7 @@ function FoldView(props: { c: PCtx; d: PData }) {
         <button {...stylex.attrs(s.ctl)} disabled={steps().length === 0} onClick={back}>
           ← Back
         </button>
-        <span {...stylex.attrs(s.small, s.muted)}>{steps().length > 0 ? `undoes: ${now().label}` : "Click a block to open it in place; click a frame's ▾ to fold it."}</span>
+        <span {...stylex.attrs(s.small, s.muted)}>{steps().length > 0 ? `undoes: ${now().label}` : "Click selects; double-click opens a block in place (or goes to the code view for a single part); a frame's ▾ folds it."}</span>
         <button {...stylex.attrs(s.ctl)} disabled={steps().length === 0} onClick={() => setHist({ at: props.c.at(), steps: [] })}>
           Start over
         </button>
@@ -1159,7 +1159,7 @@ function FoldView(props: { c: PCtx; d: PData }) {
         lines={scene().lines}
         sw={scene().at ? d.sw(scene().at!) : null}
         focus={scene().focus}
-        onOpen={(b) => (openIt(b.openId!), b.node && props.c.pick({ kind: "node", id: b.node }))}
+        onOpen={(b) => openIt(b.openId!)}
         onFold={foldIt}
       />
     </div>
@@ -1292,6 +1292,8 @@ function FoldScene(props: {
         }, 560);
     });
   });
+  /** The block picked last (a fold has no part for the panel, so the canvas remembers it). */
+  const [picked, setPicked] = createSignal<string | null>(null);
   const byKey = createMemo(() => new Map(props.blocks.map((b) => [b.key, b])));
   const frameByKey = createMemo(() => new Map(props.frames.map((f) => [f.key, f])));
   const lit = createMemo(() => {
@@ -1368,7 +1370,7 @@ function FoldScene(props: {
               const isOut = () => b().kind === "outside";
               const chg = () => changeFill[b().change];
               const faded = () => lit() !== null && !lit()!.has(k);
-              const isSelected = () => !!b() && b().node === selNode();
+              const isSelected = () => !!b() && (b().node ? b().node === selNode() : picked() === k);
               return (
                 <Show when={box() && b()}>
                   <Glide box={box()!} from={l().from.get(k)}>
@@ -1376,12 +1378,18 @@ function FoldScene(props: {
                       data-hit
                       data-key={k}
                       {...stylex.attrs(s.click, faded() && s.faded)}
+                      // One click selects; a double-click goes in: opens the block in place, or, for a
+                      // part with nothing inside to open, goes to the code view at it.
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (b().opens) props.onOpen(b());
-                        else if (b().node) props.c.pick({ kind: "node", id: b().node! });
+                        setPicked(k);
+                        if (b().node) props.c.pick({ kind: "node", id: b().node! });
                       }}
-                      onDblClick={() => b().node && props.c.openCode(b().node!)}
+                      onDblClick={(e) => {
+                        e.stopPropagation();
+                        if (b().opens) props.onOpen(b());
+                        else if (b().node) props.c.openCode(b().node!);
+                      }}
                     >
                       <rect width={NODE_W} height={NODE_H} rx={7} {...stylex.attrs(s.block, isRest() && s.blockRest, isOut() && s.blockOutside, isSelected() && s.blockSel)} />
                       <rect y={6} width={4} height={NODE_H - 12} {...stylex.attrs(chg())} />
@@ -1392,8 +1400,8 @@ function FoldScene(props: {
                         {clip(b().sub, 34)}
                       </text>
                       <Show when={b().opens}>
-                        <text x={NODE_W - 50} y={NODE_H - 10} {...stylex.attrs(s.t2)}>
-                          open ▸
+                        <text x={NODE_W - 92} y={NODE_H - 10} {...stylex.attrs(s.t2)}>
+                          double-click ▸
                         </text>
                       </Show>
                       <Show when={b().node && b().kind !== "rest"}>
