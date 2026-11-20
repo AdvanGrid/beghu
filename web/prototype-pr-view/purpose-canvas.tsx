@@ -9,7 +9,9 @@
 //   D — Purpose × area map: purposes down, top-level parts across, counts in the cells.
 // All four roll a purpose's parts up to a budget of blocks ("store · 21 of 24 modules"), so a purpose
 // of hundreds of parts reads as a dozen blocks; a block opens in place.
+import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
+import ELK, { type ElkNode } from "elkjs/lib/elk.bundled.js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
@@ -82,9 +84,11 @@ const changeBg = stylex.create({
   unchanged: { backgroundColor: pal.unchanged },
 });
 
+const fadeIn = stylex.keyframes({ from: { opacity: 0 }, to: { opacity: 1 } });
+
 const s = stylex.create({
-  wrap: { color: colors.fg, fontFamily: fonts.ui, fontSize: 13, minHeight: "100%" },
-  head: { alignItems: "center", backgroundColor: colors.bg, borderBottomColor: colors.line, borderBottomStyle: "solid", borderBottomWidth: 1, display: "flex", flexWrap: "wrap", gap: 6, left: 0, paddingBlock: 8, paddingInline: 12, position: "sticky", top: 0, zIndex: 2 },
+  wrap: { color: colors.fg, fontFamily: fonts.ui, fontSize: 13, minHeight: "100%", minWidth: "100%", width: "max-content" },
+  head: { maxWidth: "calc(100vw - 480px)", alignItems: "center", backgroundColor: colors.bg, borderBottomColor: colors.line, borderBottomStyle: "solid", borderBottomWidth: 1, display: "flex", flexWrap: "wrap", gap: 6, left: 0, paddingBlock: 8, paddingInline: 12, position: "sticky", top: 0, zIndex: 2 },
   crumb: { alignItems: "center", backgroundColor: "transparent", borderStyle: "none", color: colors.accent, cursor: "pointer", display: "inline-flex", font: "inherit", gap: 4, padding: 0 },
   crumbOn: { color: colors.fg, fontWeight: 700 },
   codeBtn: { backgroundColor: colors.bgRaised, borderColor: colors.line, borderRadius: 6, borderStyle: "solid", borderWidth: 1, color: colors.fg, cursor: "pointer", font: "inherit", marginInlineStart: "auto", paddingBlock: 3, paddingInline: 8 },
@@ -92,6 +96,15 @@ const s = stylex.create({
   small: { fontSize: 12 },
   warn: { color: colors.warn },
   pad: { padding: 16 },
+  foldBar: { maxWidth: "calc(100vw - 480px)", alignItems: "center", backgroundColor: colors.bg, display: "flex", gap: 10, left: 0, paddingBlock: 6, paddingInline: 12, position: "sticky", top: 41, zIndex: 2 },
+  ctl: { backgroundColor: colors.bgRaised, borderColor: colors.line, borderRadius: 6, borderStyle: "solid", borderWidth: 1, color: colors.fg, cursor: "pointer", font: "inherit", fontWeight: 600, paddingBlock: 3, paddingInline: 10, ":disabled": { cursor: "default", opacity: 0.4 } },
+  svgSize: { transition: "width 500ms, height 500ms" },
+  glide: { transform: "translate(var(--x), var(--y))", transition: "transform 520ms cubic-bezier(0.2, 0.7, 0.2, 1), opacity 420ms ease" },
+  ghost: { opacity: 0.15 },
+  linesIn: { animationDelay: "380ms", animationDuration: "380ms", animationFillMode: "backwards", animationName: fadeIn },
+  frame: { scrollMarginBlock: 110, scrollMarginInline: 24, fill: colors.bgRaised, stroke: colors.muted, strokeWidth: 1.4 },
+  frameHit: { fill: "transparent" },
+  frameTitle: { fill: colors.fg, fontFamily: fonts.ui, fontSize: 13, fontWeight: 700, pointerEvents: "none" },
   click: { cursor: "pointer" },
   faded: { opacity: 0.25 },
   dot: { borderRadius: 999, display: "inline-block", flexShrink: 0, height: 8, verticalAlign: "middle", width: 8 },
@@ -922,23 +935,199 @@ function Chips(props: { c: PCtx; d: PData; members: Set<string>; budget: number 
 // ---------------------------------------------------------------------------------------------
 // B — Fold the rest: the code view's top level, the purpose's parts rolled up, everything else folded.
 
+// The roll-up's choices are made once per purpose (a plan: which blocks it opens, which sibling sets
+// it folds), and the reader's opens and folds are laid on top. Opening one block never re-decides the
+// rest, so nothing else moves house. An opened block becomes a frame around its parts, as in Clusters.
+
+interface Plan {
+  open: Set<string>;
+  fold: Set<string>;
+}
+
+function memberCount(d: PData, members: Set<string>) {
+  const memo = new Map<string, number>();
+  const n = (id: string): number => {
+    let v = memo.get(id);
+    if (v === undefined) {
+      v = (members.has(id) ? 1 : 0) + d.kids(id).reduce((a, k) => a + n(k.id), 0);
+      memo.set(id, v);
+    }
+    return v;
+  };
+  return n;
+}
+const grpKey = (d: PData, id: string) => `grp:${d.m.nodes.get(id)?.parent ?? ""}:${d.m.nodes.get(id)?.kind ?? ""}`;
+
+/** The roll-up's own plan for a purpose: the greedy opens, then the sibling folds that bring it under budget. */
+function rollPlan(d: PData, members: Set<string>, budget: number): Plan {
+  const n = memberCount(d, members);
+  const plan: Plan = { open: new Set(), fold: new Set() };
+  let blocks = d.tops.filter((x) => n(x) > 0);
+  const kidsWith = (b: string) => d.kids(b).filter((k) => n(k.id) > 0).map((k) => k.id);
+  for (;;) {
+    let best: string | null = null;
+    for (const b of blocks) {
+      const ks = kidsWith(b);
+      if (ks.length === 0 || blocks.length - 1 + ks.length > budget) continue;
+      if (!best || n(b) > n(best)) best = b;
+    }
+    if (!best) break;
+    plan.open.add(best);
+    const i = blocks.indexOf(best);
+    blocks = [...blocks.slice(0, i), ...kidsWith(best), ...blocks.slice(i + 1)];
+  }
+  let count = blocks.length;
+  const sets = new Map<string, string[]>();
+  for (const b of blocks) sets.set(grpKey(d, b), [...(sets.get(grpKey(d, b)) ?? []), b]);
+  for (const [k, bs] of [...sets].filter(([, bs]) => bs.length > 1).sort((a, b) => b[1].length - a[1].length)) {
+    if (count <= budget) break;
+    plan.fold.add(k);
+    count -= bs.length - 1;
+  }
+  return plan;
+}
+
+function foldOf(d: PData, members: Set<string>, n: (id: string) => number, k: string, bs: string[]): Block {
+  const kind = d.m.nodes.get(bs[0]!)?.kind ?? "part";
+  const inside = [...members].filter((m) => bs.some((b) => d.up(m).includes(b)));
+  const names = new Set(inside.map((m) => (bs.includes(m) ? "" : d.name(m))));
+  const what = names.size === 1 && !names.has("") ? `${[...names][0]} in ` : "";
+  const tally = new Map<string, number>();
+  for (const m of inside) if (!bs.includes(m)) tally.set(d.name(m), (tally.get(d.name(m)) ?? 0) + 1);
+  return {
+    id: k,
+    n: bs.reduce((a, b) => a + n(b), 0),
+    total: bs.reduce((a, b) => a + d.total(b), 0),
+    group: {
+      label: `${what}${bs.length} ${KIND_PLURAL[kind] ?? `${kind}s`}`,
+      ids: bs,
+      inside: [...tally].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([x, v]) => `${x} ${v}`).join(" · "),
+    },
+  };
+}
+
+/** Blocks for a plan: open what it opens (top down), fold what it folds, then fold the parts that serve nothing. */
+function rollFixed(d: PData, members: Set<string>, plan: Plan): Block[] {
+  const n = memberCount(d, members);
+  let blocks = d.tops.filter((x) => n(x) > 0);
+  for (;;) {
+    const i = blocks.findIndex((b) => plan.open.has(b) && d.kids(b).some((k) => n(k.id) > 0));
+    if (i < 0) break;
+    blocks = [...blocks.slice(0, i), ...d.kids(blocks[i]!).filter((k) => n(k.id) > 0).map((k) => k.id), ...blocks.slice(i + 1)];
+  }
+  let out: Block[] = blocks.map((id) => ({ id, n: n(id), total: d.total(id) }));
+  for (const k of plan.fold) {
+    const bs = blocks.filter((b) => grpKey(d, b) === k);
+    if (bs.length < 2) continue;
+    const at = out.findIndex((b) => b.id === bs[0]);
+    out = out.filter((b) => !bs.includes(b.id));
+    out.splice(at, 0, foldOf(d, members, n, k, bs));
+  }
+  const shown = new Set(blocks);
+  const parents = new Set(blocks.map((b) => d.m.nodes.get(b)?.parent ?? null));
+  for (const par of parents) {
+    const inner = par !== null && par !== d.root;
+    const others = (inner ? d.kids(par).map((k) => k.id) : d.tops).filter((x) => !shown.has(x) && n(x) === 0);
+    if (others.length === 0) continue;
+    if (inner) out.push({ id: `rest:${par}`, n: 0, total: others.length, rest: { label: `${others.length} other ${others.length === 1 ? "part" : "parts"}`, ids: others } });
+    else {
+      const byKind = new Map<string, string[]>();
+      for (const x of others) byKind.set(d.m.nodes.get(x)?.kind ?? "part", [...(byKind.get(d.m.nodes.get(x)?.kind ?? "part") ?? []), x]);
+      for (const [k, ids] of byKind) out.push({ id: `rest:top:${k}`, n: 0, total: ids.length, rest: { label: `${ids.length} other ${KIND_PLURAL[k] ?? `${k}s`}`, ids } });
+    }
+  }
+  return out;
+}
+
+interface FrameDef {
+  key: string;
+  parent: string | null;
+  label: string;
+  /** What folding it removes from the open set: a part's id or a sibling fold's key. */
+  fold: string;
+}
+
+/** The frame each block sits in: its nearest opened ancestor, and an opened sibling fold inside that. */
+function framesFor(d: PData, members: Set<string>, blocks: Block[], open: Set<string>): { frameOf: Map<string, string | null>; frames: FrameDef[] } {
+  const n = memberCount(d, members);
+  const frames = new Map<string, FrameDef>();
+  const nodeFrame = (id: string | null): string | null => {
+    for (let x = id; x && x !== d.root; x = d.m.nodes.get(x)?.parent ?? null) {
+      if (!open.has(x)) continue;
+      const key = `f:${x}`;
+      if (!frames.has(key)) frames.set(key, { key, parent: nodeFrame(d.m.nodes.get(x)?.parent ?? null), label: d.path(x), fold: x });
+      return key;
+    }
+    return null;
+  };
+  const frameOf = new Map<string, string | null>();
+  for (const b of blocks) {
+    const container = b.group ? (d.m.nodes.get(b.group.ids[0]!)?.parent ?? null) : b.rest ? (b.id.startsWith("rest:top:") ? null : b.id.slice(5)) : (d.m.nodes.get(b.id)?.parent ?? null);
+    let f = nodeFrame(container);
+    if (!b.group && !b.rest) {
+      const g = grpKey(d, b.id);
+      if (open.has(g)) {
+        const key = `f:${g}`;
+        if (!frames.has(key)) {
+          const sibs = blocks.filter((x) => !x.group && !x.rest && grpKey(d, x.id) === g).map((x) => x.id);
+          frames.set(key, { key, parent: f, label: foldOf(d, members, n, g, sibs).group!.label, fold: g });
+        }
+        f = key;
+      }
+    }
+    frameOf.set(b.id, f);
+  }
+  return { frameOf, frames: [...frames.values()] };
+}
+
 function FoldView(props: { c: PCtx; d: PData }) {
   const d = props.d;
-  // What's opened, for the purpose it was opened in: standing elsewhere starts folded again.
-  const [openedAt, setOpenedAt] = createSignal<{ at: string | null; ids: Set<string> }>({ at: null, ids: new Set() });
-  const opened = () => (openedAt().at === props.c.at() ? openedAt().ids : new Set<string>());
-  const setOpened = (f: (o: Set<string>) => Set<string>) => setOpenedAt({ at: props.c.at(), ids: f(opened()) });
+  const members = createMemo(() => (props.c.at() ? d.nodes(props.c.at()!) : new Set(props.c.p.purposes.flatMap((q) => d.direct(q.id)))));
+  const base = createMemo(() => rollPlan(d, members(), 16));
+  /** The reader's steps for this purpose, newest last; Back drops one. Standing elsewhere starts over. */
+  type Step = { open: Set<string>; closed: Set<string>; label: string; focus: string | null };
+  const [hist, setHist] = createSignal<{ at: string | null; steps: Step[] }>({ at: null, steps: [] });
+  const steps = () => (hist().at === props.c.at() ? hist().steps : []);
+  const now = (): Step => steps()[steps().length - 1] ?? { open: new Set(), closed: new Set(), label: "", focus: null };
+  const push = (s: Step) => setHist({ at: props.c.at(), steps: [...steps(), s] });
+  const plan = createMemo((): Plan => {
+    const st = now();
+    const open = new Set([...base().open, ...st.open].filter((x) => !st.closed.has(x)));
+    const fold = new Set([...base().fold, ...st.closed].filter((x) => x.startsWith("grp:") && !st.open.has(x)));
+    return { open, fold };
+  });
+  const label = (id: string) => (id.startsWith("grp:") ? (scene().sb.find((b) => b.key === id)?.title ?? scene().frames.find((f) => f.fold === id)?.label ?? "a fold") : d.path(id));
+  const openIt = (id: string) => {
+    const st = now();
+    const closed = new Set(st.closed);
+    closed.delete(id);
+    push({ open: new Set(st.open).add(id), closed, label: `opened ${label(id)}`, focus: `f:${id}` });
+  };
+  const foldIt = (id: string) => {
+    const st = now();
+    const open = new Set(st.open);
+    open.delete(id);
+    // Folding a block folds what was opened inside it too.
+    for (const x of [...open]) if (!x.startsWith("grp:") && d.up(x).includes(id)) open.delete(x);
+    push({ open, closed: new Set(st.closed).add(id), label: `folded ${label(id)}`, focus: id });
+  };
+  const back = () => setHist({ at: props.c.at(), steps: steps().slice(0, -1) });
   const scene = createMemo(() => {
     const at = props.c.at();
-    const members = at ? d.nodes(at) : new Set(props.c.p.purposes.flatMap((q) => d.direct(q.id)));
     const strong = at ? d.edges(at) : new Set(props.c.p.purposes.flatMap((q) => [...d.edges(q.id)]));
-    const blocks = rollup(d, members, 16, opened(), true);
+    const blocks = rollFixed(d, members(), plan());
+    const { frameOf, frames } = framesFor(d, members(), blocks, plan().open);
     const out = d.outside(at).filter((x) => !blocks.some((b) => b.id === x.node));
     const sb = [
-      ...blocks.map((b) => sceneBlock(d, b)),
-      ...out.map((x) => ({ ...sceneBlock(d, { id: x.node, n: 0, total: 1 }, "outside"), key: `out:${x.node}`, sub: `unchanged · ⚠ ${x.conflict.title}`, opens: false })),
+      // Inside a frame a part is named on its own: the frame's title says where it is.
+      ...blocks.map((b) => {
+        const sb = sceneBlock(d, b);
+        const frame = frameOf.get(b.id) ?? null;
+        return { ...sb, frame, title: frame && !b.group && !b.rest ? d.name(b.id) : sb.title };
+      }),
+      ...out.map((x) => ({ ...sceneBlock(d, { id: x.node, n: 0, total: 1 }, "outside"), key: `out:${x.node}`, sub: `unchanged · ⚠ ${x.conflict.title}`, opens: false, frame: "f:outside" })),
     ];
-    // Lines between two folds say nothing about the purpose: only lines with a purpose part at one end at least.
+    if (out.length > 0) frames.push({ key: "f:outside", parent: null, label: "Outside the diff: only through a conflict", fold: "" });
     const isRest = (id: string) => id.startsWith("rest:");
     const lines = rollLines(d, blocks, strong, true).filter((l) => l.strong || !(isRest(l.from) && isRest(l.to)));
     for (const x of out) {
@@ -949,19 +1138,293 @@ function FoldView(props: { c: PCtx; d: PData }) {
         if (b) lines.push({ key: `out:${x.node}→${b}`, from: `out:${x.node}`, to: b, strong: false, n: 1 });
       }
     }
-    return { sb, lines, groups: new Map(out.map((x) => [`out:${x.node}`, "outside"])), at };
+    return { sb, lines, frames, at, focus: now().focus };
   });
   return (
-    <Scene
-      c={props.c}
-      d={d}
-      blocks={scene().sb}
-      lines={scene().lines}
-      groups={scene().groups}
-      sw={scene().at ? d.sw(scene().at!) : null}
-      groupLabel={() => ({ text: "Outside the diff: only through a conflict", dashed: true })}
-      onOpen={(b) => (setOpened((o) => new Set(o).add(b.openId!)), b.node && props.c.pick({ kind: "node", id: b.node }))}
-    />
+    <div>
+      <div {...stylex.attrs(s.foldBar)}>
+        <button {...stylex.attrs(s.ctl)} disabled={steps().length === 0} onClick={back}>
+          ← Back
+        </button>
+        <span {...stylex.attrs(s.small, s.muted)}>{steps().length > 0 ? `undoes: ${now().label}` : "Click a block to open it in place; click a frame's ▾ to fold it."}</span>
+        <button {...stylex.attrs(s.ctl)} disabled={steps().length === 0} onClick={() => setHist({ at: props.c.at(), steps: [] })}>
+          Start over
+        </button>
+      </div>
+      <FoldScene
+        c={props.c}
+        d={d}
+        blocks={scene().sb}
+        frames={scene().frames}
+        lines={scene().lines}
+        sw={scene().at ? d.sw(scene().at!) : null}
+        focus={scene().focus}
+        onOpen={(b) => (openIt(b.openId!), b.node && props.c.pick({ kind: "node", id: b.node }))}
+        onFold={foldIt}
+      />
+    </div>
+  );
+}
+
+type FoldBlock = SceneBlock & { frame: string | null };
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+interface NLaid {
+  keys: string[];
+  at: Map<string, Box>;
+  frames: Map<string, Box>;
+  frameKeys: string[];
+  routes: Map<string, { d: string; end: { x: number; y: number; dx: number; dy: number } }>;
+  width: number;
+  height: number;
+  /** Where a newly shown block or frame starts its glide: the block it came out of (or folded into). */
+  from: Map<string, Box>;
+  focus: string | null;
+}
+
+const elk = new ELK();
+const FRAME_TOP = 38;
+
+async function layoutNested(blocks: FoldBlock[], frames: FrameDef[], lines: { key: string; from: string; to: string }[]): Promise<Omit<NLaid, "from" | "focus">> {
+  const options = {
+    "elk.algorithm": "layered",
+    "elk.direction": "RIGHT",
+    "elk.edgeRouting": "ORTHOGONAL",
+    "elk.spacing.nodeNode": "24",
+    "elk.layered.spacing.nodeNodeBetweenLayers": "48",
+    "elk.spacing.edgeNode": "16",
+    "elk.spacing.edgeEdge": "8",
+    "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+    "elk.spacing.componentComponent": "32",
+  };
+  const kids = (f: string | null): ElkNode[] => [
+    ...frames
+      .filter((x) => x.parent === f)
+      .map((x) => ({ id: x.key, layoutOptions: { ...options, "elk.padding": `[top=${FRAME_TOP},left=14,bottom=14,right=14]` }, children: kids(x.key) })),
+    ...blocks.filter((b) => b.frame === f).map((b) => ({ id: b.key, width: NODE_W, height: NODE_H })),
+  ];
+  const keys = new Set(blocks.map((b) => b.key));
+  const graph: ElkNode = {
+    id: "root",
+    layoutOptions: { ...options, "elk.padding": "[top=20,left=20,bottom=20,right=20]", "elk.hierarchyHandling": "INCLUDE_CHILDREN", "elk.json.edgeCoords": "ROOT", "elk.json.shapeCoords": "ROOT" },
+    children: kids(null),
+    edges: lines.filter((l) => keys.has(l.from) && keys.has(l.to)).map((l) => ({ id: l.key, sources: [l.from], targets: [l.to] })),
+  };
+  const out = await elk.layout(graph);
+  const at = new Map<string, Box>();
+  const fr = new Map<string, Box>();
+  const walk = (n: ElkNode) => {
+    for (const c of n.children ?? []) {
+      const b = { x: c.x ?? 0, y: c.y ?? 0, w: c.width ?? 0, h: c.height ?? 0 };
+      (c.children && c.children.length > 0) || c.id.startsWith("f:") ? fr.set(c.id, b) : at.set(c.id, b);
+      walk(c);
+    }
+  };
+  walk(out);
+  const routes = new Map<string, { d: string; end: { x: number; y: number; dx: number; dy: number } }>();
+  for (const e of out.edges ?? []) {
+    const sec = e.sections?.[0];
+    if (!sec) continue;
+    const pts = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint];
+    const a = pts[pts.length - 2]!, z = pts[pts.length - 1]!;
+    const len = Math.hypot(z.x - a.x, z.y - a.y) || 1;
+    routes.set(e.id, { d: pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" "), end: { x: z.x, y: z.y, dx: (z.x - a.x) / len, dy: (z.y - a.y) / len } });
+  }
+  // Frames in drawing order: outer before inner.
+  const depth = (k: string): number => {
+    const f = frames.find((x) => x.key === k);
+    return f?.parent ? 1 + depth(f.parent) : 0;
+  };
+  return { keys: blocks.map((b) => b.key), at, frames: fr, frameKeys: [...fr.keys()].sort((a, b) => depth(a) - depth(b)), routes, width: out.width ?? 0, height: out.height ?? 0 };
+}
+
+function FoldScene(props: {
+  c: PCtx;
+  d: PData;
+  blocks: FoldBlock[];
+  frames: FrameDef[];
+  lines: { key: string; from: string; to: string; strong: boolean; n: number }[];
+  sw: Sw | null;
+  focus: string | null;
+  onOpen: (b: SceneBlock) => void;
+  onFold: (id: string) => void;
+}) {
+  const d = props.d;
+  const [laid, setLaid] = createSignal<NLaid | null>(null);
+  let ticket = 0;
+  let svgEl: SVGSVGElement | undefined;
+  createMemo(() => {
+    const blocks = props.blocks, frames = props.frames, lines = props.lines, focus = props.focus;
+    const mine = ++ticket;
+    void layoutNested(blocks, frames, lines).then((l) => {
+      if (mine !== ticket) return;
+      const prev = laid();
+      const from = new Map<string, Box>();
+      if (prev) {
+        const prevNode = new Map<string, Box>();
+        for (const [k, b] of prev.at) prevNode.set(k, b);
+        for (const k of l.keys) {
+          if (prev.at.has(k)) continue;
+          // Opening: a new part comes out of the block it sat in. Folding: a fold comes from a part it now holds.
+          const anc = d.up(k).find((x) => prevNode.has(x));
+          const grp = props.blocks.find((b) => b.key === k);
+          const desc = [...prevNode.keys()].find((x) => d.up(x).includes(k) || (k.startsWith("grp:") && grpKey(d, x) === k));
+          const into = !anc && !desc && grp ? [...prevNode.keys()].find((x) => x.startsWith("grp:") && grpKey(d, k) === x) : undefined;
+          const src = anc ?? desc ?? into;
+          if (src) from.set(k, prevNode.get(src)!);
+        }
+        for (const k of l.frameKeys) {
+          if (prev.frames.has(k)) continue;
+          const src = prevNode.get(k.slice(2));
+          if (src) from.set(k, src);
+        }
+      }
+      setLaid({ ...l, from, focus });
+      // Bring what changed into view once it has moved.
+      if (focus)
+        setTimeout(() => {
+          const el = svgEl?.querySelector(`[data-key="${CSS.escape(focus)}"]`);
+          el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+        }, 560);
+    });
+  });
+  const byKey = createMemo(() => new Map(props.blocks.map((b) => [b.key, b])));
+  const frameByKey = createMemo(() => new Map(props.frames.map((f) => [f.key, f])));
+  const lit = createMemo(() => {
+    const sp = props.c.spot();
+    if (!sp) return null;
+    const set = new Set<string>();
+    for (const b of props.blocks) if (b.node && sp.nodes.some((n) => d.up(n).includes(b.node!) || d.up(b.node!).includes(n))) set.add(b.key);
+    return set;
+  });
+  const selNode = () => {
+    const x = props.c.sel();
+    return x?.kind === "node" ? x.id : null;
+  };
+  return (
+    <Show when={laid()} fallback={<p {...stylex.attrs(s.muted, s.pad)}>Laying out…</p>}>
+      {(l) => (
+        <svg ref={(e: SVGSVGElement) => (svgEl = e)} width={l().width} height={l().height} {...stylex.attrs(s.svg, s.svgSize)}>
+          <For each={l().frameKeys}>
+            {(k) => {
+              const f = () => frameByKey().get(k);
+              const box = () => l().frames.get(k);
+              const outside = k === "f:outside";
+              return (
+                <Show when={box()}>
+                  {(b) => (
+                    <Glide box={b()} from={l().from.get(k)} sized>
+                      <rect data-key={k} width={b().w} height={b().h} rx={10} {...stylex.attrs(s.frame, outside && s.boxDashed)} />
+                      <g
+                        data-hit
+                        {...stylex.attrs(!outside && s.click)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!outside && f()) props.onFold(f()!.fold);
+                        }}
+                      >
+                        <rect width={Math.min(b().w, 420)} height={30} {...stylex.attrs(s.frameHit)} />
+                        <text x={12} y={21} {...stylex.attrs(s.frameTitle)}>
+                          {outside ? "" : "▾ "}
+                          {clip(f()?.label ?? "", Math.max(10, Math.floor(b().w / 8)))}
+                        </text>
+                      </g>
+                    </Glide>
+                  )}
+                </Show>
+              );
+            }}
+          </For>
+          <Show when={l()} keyed>
+            {(ll) => (
+              <g {...stylex.attrs(s.linesIn)}>
+                <For each={props.lines}>
+                  {(ln) => {
+                    const r = ll.routes.get(ln.key);
+                    return (
+                      <Show when={r}>
+                        {(rr) => (
+                          <g>
+                            <path d={rr().d} {...stylex.attrs(s.line, s.lineWeak, ln.strong && s.lineStrong, ln.strong && props.sw !== null && strokes[props.sw ?? "c0"])} />
+                            <path d={arrowD(rr().end)} {...stylex.attrs(s.head2, s.fillWeak, ln.strong && s.fillStrong, ln.strong && props.sw !== null && fills[props.sw ?? "c0"])} />
+                          </g>
+                        )}
+                      </Show>
+                    );
+                  }}
+                </For>
+              </g>
+            )}
+          </Show>
+          <For each={l().keys}>
+            {(k) => {
+              const b = () => byKey().get(k) as FoldBlock;
+              const box = () => l().at.get(k);
+              const isRest = () => b().kind === "rest";
+              const isOut = () => b().kind === "outside";
+              const chg = () => changeFill[b().change];
+              const faded = () => lit() !== null && !lit()!.has(k);
+              const isSelected = () => !!b() && b().node === selNode();
+              return (
+                <Show when={box() && b()}>
+                  <Glide box={box()!} from={l().from.get(k)}>
+                    <g
+                      data-hit
+                      data-key={k}
+                      {...stylex.attrs(s.click, faded() && s.faded)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (b().opens) props.onOpen(b());
+                        else if (b().node) props.c.pick({ kind: "node", id: b().node! });
+                      }}
+                      onDblClick={() => b().node && props.c.openCode(b().node!)}
+                    >
+                      <rect width={NODE_W} height={NODE_H} rx={7} {...stylex.attrs(s.block, isRest() && s.blockRest, isOut() && s.blockOutside, isSelected() && s.blockSel)} />
+                      <rect y={6} width={4} height={NODE_H - 12} {...stylex.attrs(chg())} />
+                      <text x={14} y={24} {...stylex.attrs(s.t1, isRest() && s.tMuted)}>
+                        {clip(b().title, 26)}
+                      </text>
+                      <text x={14} y={42} {...stylex.attrs(s.t2)}>
+                        {clip(b().sub, 34)}
+                      </text>
+                      <Show when={b().opens}>
+                        <text x={NODE_W - 50} y={NODE_H - 10} {...stylex.attrs(s.t2)}>
+                          open ▸
+                        </text>
+                      </Show>
+                      <Show when={b().node && b().kind !== "rest"}>
+                        <For each={d.servedBy(b().node!)}>
+                          {(q, i) => <circle cx={18 + i() * 14} cy={NODE_H - 14} r={props.c.at() && d.topPurpose(props.c.at()!) === q ? 6 : 4.5} {...stylex.attrs(fills[d.sw(q)])} />}
+                        </For>
+                      </Show>
+                    </g>
+                  </Glide>
+                </Show>
+              );
+            }}
+          </For>
+        </svg>
+      )}
+    </Show>
+  );
+}
+
+/**
+ * Moves its content to `box` with a CSS transition. Content that's new starts at `from` (the block it
+ * came out of), faint, and glides out once it's on screen.
+ */
+function Glide(props: { box: Box; from?: Box; sized?: boolean; children: JSX.Element }) {
+  const [arrived, setArrived] = createSignal(props.from === undefined);
+  if (props.from) requestAnimationFrame(() => requestAnimationFrame(() => setArrived(true)));
+  const p = () => (arrived() || !props.from ? props.box : props.from);
+  return (
+    <g style={{ "--x": `${p().x}px`, "--y": `${p().y}px` }} {...stylex.attrs(s.glide, !arrived() && s.ghost)}>
+      {props.children}
+    </g>
   );
 }
 

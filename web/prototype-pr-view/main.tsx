@@ -858,7 +858,8 @@ function App(props: { m: Model }) {
             // (the scenario picker) and links keep their own clicks.
             el.addEventListener("click", (e) => {
               const t = e.target as Element;
-              if (!t.closest("[data-hit], button, a, input, select")) setSel(null);
+              // PURPOSE CANVAS (#160): on the purpose canvas the background goes back to the purpose, not the whole PR.
+              if (!t.closest("[data-hit], button, a, input, select")) setSel(pcOn() && pcAt() ? { kind: "purpose", id: pcAt()! } : null);
             });
             // Space + drag pans: the press arms it, the drag moves the canvas under the pointer, and
             // the click that ends a drag selects nothing.
