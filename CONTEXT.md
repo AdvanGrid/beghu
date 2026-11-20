@@ -176,3 +176,49 @@ _Avoid_: Test repo, scratch repo
 The AdvanGrid bot account whose non-expiring token runs the contract check's user-token half and its writes.
 _Avoid_: Bot user, service account
 
+
+### PR view
+
+**PR view**:
+The full-screen view of a pull request drawn as a graph by an agent, from services and modules down to claims and exact code lines.
+_Avoid_: PR graph, diagram
+
+**Analysis**:
+The graph one connected account's agent built for one PR at one head, with its claims. Only the latest is kept, and it belongs only to the account that uploaded it.
+_Avoid_: Report, review
+
+**Analysis run**:
+One attempt to produce an analysis: started by the button, the beghu CLI or beghu itself, pinned to the PR's head, and open to uploads until it's idle.
+_Avoid_: Job, session
+
+**Claim**:
+A statement of fact about the code in an analysis, backed by evidence: exact lines at base or head. It is supported or undetermined, never a judgement.
+_Avoid_: Finding, note
+
+**Purpose**:
+Something the PR sets out to do, from its description, its linked issues and its code. Purposes form a second view that crosses the code's structure; one purpose can span many parts, and a part can serve several.
+_Avoid_: Goal, intent, feature
+
+**Part**:
+A node of the analysis that is code: a service, app, library or module, always a real folder or files. A top-level part hangs directly off the system.
+_Avoid_: Component, group
+
+**Line**:
+One interaction drawn between two nodes: a call, a data flow or an event, at run time, build time or in tests. Using a part is a line; importing it is not. A call line names the callee's responsibility it uses.
+_Avoid_: Edge, dependency, connection
+
+**Area**:
+One agent's share of a split analysis run: a disjoint slice of the repo drawn from its own structure. A system area covers unchanged parts and draws only their lines and responsibilities.
+_Avoid_: Chunk, shard
+
+**Seam hint**:
+A line an area expects to cross into another area, left for the seam pass to draw or reject. It never reaches the upload.
+_Avoid_: Cross-ref, TODO edge
+
+**Candidate**:
+A pair of top-level parts where one might use the other, found from imports, manifests or config, which the caller's area must draw as lines or reject with a claim. It never reaches the upload.
+_Avoid_: Suspected edge, dependency
+
+**Partly drawn part**:
+An unchanged part opened only along the paths a line, step, purpose or conflict needs, so it holds some of its modules, not all.
+_Avoid_: Stub, partial node
