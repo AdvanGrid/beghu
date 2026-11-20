@@ -73,7 +73,7 @@ canvas; "Code view at ‹part› ›" (or a double-click) goes to the code view,
 in the bar returns.
 
 - **A, Purpose groups:** a fourth view. Purpose cards, then sub-purpose cards, then a leaf purpose's parts and lines.
-- **B, Fold the rest:** the code view's top level with everything the purpose doesn't touch folded into stubs.
+- **B, Fold the rest (chosen):** the code view's top level with everything the purpose doesn't touch folded into stubs. Blocks open in place inside frames and glide there; one click selects, a double-click goes in; Back and Start over undo opens and folds.
 - **C, Journey line:** the purpose's stops left to right; other purposes cross where they share parts.
 - **D, Purpose × area map:** purposes down, top-level parts across, counts in the cells.
 
