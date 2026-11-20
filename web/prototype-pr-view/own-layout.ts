@@ -44,6 +44,14 @@ export interface Opts {
   reach?: number;
   /** Merge as found: how close (px) two lines must run to count as following each other. */
   close?: number;
+  /**
+   * Highway: what may merge. `line`, a line joins a trunk when it shares `threshold` of its own
+   * span; `trunks`, the same rule applied again with trunks counted as lines, until nothing
+   * merges; `stretch`, any stretch where two run together for `minGutters` gutters, whatever share.
+   */
+  merge?: "line" | "trunks" | "stretch";
+  /** Pull together: rounds of group, order and place (later rounds only add merges). */
+  rounds?: number;
   /** Y placement: Brandes–Köpf alignment (default), or per-column isotonic regression. */
   placement?: "bk" | "iso";
 }
@@ -59,8 +67,8 @@ export interface Own {
   routes: Map<string, P[]>;
   flipped: Set<string>;
   trunks: Trunk[];
-  /** For each line, the trunk it rides (if any). */
-  rides: Map<string, string>;
+  /** For each line, the trunks it rides, in order. */
+  rides: Map<string, string[]>;
   width: number;
   height: number;
 }
@@ -162,22 +170,22 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
   const laidBy = new Map(laid.map((l) => [l.key, l]));
 
   // 2. Items: the parts, plus a dummy per line per column it passes through; a trunk shares one.
-  type Cluster = { members: string[]; from: number; to: number };
+  type Cluster = { members: string[]; from: number; to: number; anchor?: string };
   const build = (clusters: Cluster[]) => {
     const items = new Map<string, Item>();
     const cols: Item[][] = Array.from({ length: nCols }, () => []);
     const add = (it: Item) => (items.set(it.id, it), cols[it.col]!.push(it), it);
     for (const n of nodes) add({ id: n.id, col: colOf.get(n.id)!, w: n.w, h: n.h, node: n, links: [], ord: 0, y: 0 });
+    // Which trunk a line rides in each column, if any.
     const inCluster = new Map<string, number>();
-    clusters.forEach((c, k) => c.members.forEach((m) => inCluster.set(m, k)));
+    clusters.forEach((cl, k) => cl.members.forEach((m) => { for (let c = cl.from; c <= cl.to; c++) inCluster.set(`${m}|${c}`, k); }));
     const chains = new Map<string, Item[]>();
     for (const l of laid) {
       const chain = [items.get(l.a)!];
       for (let c = colOf.get(l.a)! + 1; c < colOf.get(l.b)!; c++) {
-        const k = inCluster.get(l.key);
-        const cl = k === undefined ? undefined : clusters[k]!;
+        const k = inCluster.get(`${l.key}|${c}`);
         let it: Item;
-        if (cl && c >= cl.from && c <= cl.to) {
+        if (k !== undefined) {
           const id = `t:${k}:${c}`;
           it = items.get(id) ?? add({ id, col: c, w: 0, h: 0, links: [], trunk: k, ord: 0, y: 0 });
         } else it = add({ id: `d:${l.key}:${c}`, col: c, w: 0, h: 0, links: [], ord: 0, y: 0 });
@@ -431,7 +439,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
   // cluster it shares enough of its span with, within `near`.
   const clusterBy = (near: (a: string, b: string, c: number) => boolean): Cluster[] => {
     const longs = laid.filter((l) => span(l) >= minG).sort((a, b) => span(b) - span(a) || (a.key < b.key ? -1 : 1));
-    const clusters: (Cluster & { anchor: Laid })[] = [];
+    const clusters: (Omit<Cluster, "anchor"> & { anchor: Laid })[] = [];
     for (const l of longs) {
       const [lo, hi] = [colOf.get(l.a)! + 1, colOf.get(l.b)! - 1];
       let joined = false;
@@ -456,32 +464,107 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
       }
       if (!joined) clusters.push({ members: [l.key], from: lo, to: hi, anchor: l });
     }
-    return clusters.filter((c) => c.members.length > 1).map(({ members, from, to }) => ({ members, from, to }));
+    return clusters.map(({ members, from, to, anchor }) => ({ members, from, to, anchor: anchor.key }));
   };
+
+  // Trunks merge too, or per stretch: sections (a run of columns where a set of lines share one
+  // row) merge pairwise, the longest shared run first, until nothing more qualifies. Where two
+  // merge, the shared run becomes one section, and what's left of each either side stays its own.
+  const sections = (near: (a: string, b: string, c: number) => boolean, rule: "trunks" | "stretch", seed?: Cluster[]): Cluster[] => {
+    type Sec = Cluster & { anchor: string };
+    let secs: Sec[];
+    if (seed) {
+      // Keep every earlier merge; each line's columns outside them are sections of their own.
+      secs = seed.map((c) => ({ ...c, anchor: c.anchor ?? c.members[0]! }));
+      const covered = new Set(seed.flatMap((c) => c.members.flatMap((m) => Array.from({ length: c.to - c.from + 1 }, (_, i) => `${m}|${c.from + i}`))));
+      for (const l of laid.filter((l) => span(l) >= minG)) {
+        let from = -1;
+        for (let c = colOf.get(l.a)! + 1; c <= colOf.get(l.b)!; c++) {
+          const free = c < colOf.get(l.b)! && !covered.has(`${l.key}|${c}`);
+          if (free && from < 0) from = c;
+          if (!free && from >= 0) (secs.push({ members: [l.key], from, to: c - 1, anchor: l.key }), (from = -1));
+        }
+      }
+    } else
+      secs =
+        rule === "trunks"
+          ? clusterBy(near).map((c) => ({ ...c, anchor: c.anchor! }))
+          : laid.filter((l) => span(l) >= minG).map((l) => ({ members: [l.key], from: colOf.get(l.a)! + 1, to: colOf.get(l.b)! - 1, anchor: l.key }));
+    for (let iter = 0; iter < 2000; iter++) {
+      let best: { i: number; j: number; r0: number; r1: number } | null = null;
+      for (let i = 0; i < secs.length; i++)
+        for (let j = i + 1; j < secs.length; j++) {
+          const [S, T] = [secs[i]!, secs[j]!];
+          const lo = Math.max(S.from, T.from), hi = Math.min(S.to, T.to);
+          if (lo > hi) continue;
+          let r0 = 0, r1 = -1, run = 0;
+          for (let c = lo; c <= hi; c++) {
+            if (near(S.anchor, T.anchor, c)) {
+              run++;
+              if (run > r1 - r0 + 1) (r0 = c - run + 1, (r1 = c));
+            } else run = 0;
+          }
+          const r = r1 - r0 + 1;
+          if (r < 1) continue;
+          const ok = rule === "trunks" ? r + 1 >= thr * Math.min(S.to - S.from + 2, T.to - T.from + 2) : r + 1 >= minG;
+          if (ok && (!best || r > best.r1 - best.r0 + 1)) best = { i, j, r0, r1 };
+        }
+      if (!best) break;
+      const [S, T] = [secs[best.i]!, secs[best.j]!];
+      const keep = S.members.length > T.members.length ? S : T;
+      const next: Sec[] = [{ members: [...S.members, ...T.members], from: best.r0, to: best.r1, anchor: keep.anchor }];
+      for (const X of [S, T]) {
+        if (X.from < best.r0) next.push({ ...X, to: best.r0 - 1 });
+        if (X.to > best.r1) next.push({ ...X, from: best.r1 + 1 });
+      }
+      secs = [...secs.filter((x) => x !== S && x !== T), ...next];
+    }
+    return secs;
+  };
+  const group = (near: (a: string, b: string, c: number) => boolean, seed?: Cluster[]): Cluster[] =>
+    (o.merge === "trunks" || o.merge === "stretch" ? sections(near, o.merge, seed) : clusterBy(near)).filter((c) => c.members.length > 1);
 
   let B = build([]);
   order(B, false);
   (o.placement === "iso" ? place : bk)(B);
   let clusters: Cluster[] = [];
+  // Where a line sits in a column: the item (its own dummy, or the trunk it rides) carrying it.
+  const carrier = (key: string, c: number) => {
+    const chain = B.chains.get(key)!;
+    return chain[c - colOf.get(laidBy.get(key)!.a)!];
+  };
   if (o.mode === "pull") {
-    const ordAt = (key: string, c: number) => B.items.get(`d:${key}:${c}`)?.ord;
-    clusters = clusterBy((a, b, c) => {
-      const x = ordAt(a, c), y = ordAt(b, c);
-      return x !== undefined && y !== undefined && Math.abs(x - y) <= reach;
-    });
-    const prev = B;
-    B = build(clusters);
-    // Seed the order with the first run's: a trunk takes its members' mean row.
-    for (const it of B.items.values()) {
-      const old = it.links.map((k) => prev.items.get(`d:${k}:${it.col}`)?.ord).filter((v) => v !== undefined);
-      it.ord = it.node ? prev.items.get(it.id)!.ord : old.reduce((s, v) => s + v, 0) / Math.max(1, old.length);
+    // Rounds: group by rows in the current layout, rebuild with the trunks, order and place
+    // again; lines the last round pulled together can now join each other. Until nothing changes.
+    let last = "";
+    const rounds = o.merge === "trunks" || o.merge === "stretch" ? (o.rounds ?? 1) : 1;
+    for (let round = 0; round < rounds; round++) {
+      const ordAt = (key: string, c: number) => carrier(key, c)?.ord;
+      const next = group((a, b, c) => {
+        const x = ordAt(a, c), y = ordAt(b, c);
+        return x !== undefined && y !== undefined && Math.abs(x - y) <= reach;
+      }, round ? clusters : undefined);
+      const sig = next.map((c) => `${c.from}-${c.to}:${[...c.members].sort().join()}`).sort().join("|");
+      if (sig === last) break;
+      last = sig;
+      clusters = next;
+      const prev = B;
+      B = build(clusters);
+      // Seed the order with the last round's: a trunk takes its members' mean row.
+      for (const it of B.items.values()) {
+        const old = it.links.map((k) => {
+          const chain = prev.chains.get(k)!;
+          return chain[it.col - colOf.get(laidBy.get(k)!.a)!]?.ord;
+        }).filter((v) => v !== undefined);
+        it.ord = it.node ? prev.items.get(it.id)!.ord : old.reduce((s, v) => s + v, 0) / Math.max(1, old.length);
+      }
+      order(B, true);
+      (o.placement === "iso" ? place : bk)(B);
     }
-    order(B, true);
-    (o.placement === "iso" ? place : bk)(B);
   } else if (o.mode === "found") {
     const nodeYs = B.cols.map((col) => col.filter((it) => it.node).map((it) => [it.y, it.y + it.h] as const));
     const yAt = (key: string, c: number) => B.items.get(`d:${key}:${c}`)?.y;
-    clusters = clusterBy((a, b, c) => {
+    clusters = group((a, b, c) => {
       const x = yAt(a, c), y = yAt(b, c);
       if (x === undefined || y === undefined || Math.abs(x - y) > close) return false;
       const [lo, hi] = [Math.min(x, y), Math.max(x, y)];
@@ -648,7 +731,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     routes.set(key, tidy(pts));
   }
   const trunks: Trunk[] = [];
-  const rides = new Map<string, string>();
+  const rides = new Map<string, string[]>();
   clusters.forEach((cl, k) => {
     const pts: P[] = [];
     for (let c = cl.from; c <= cl.to; c++) {
@@ -663,7 +746,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     if (pts.length < 2) return;
     const key = `trunk:${k}`;
     trunks.push({ key, members: cl.members, pts: tidy(pts), width: trunkWidth(cl.members.length) });
-    for (const m of cl.members) rides.set(m, key);
+    for (const m of cl.members) rides.set(m, [...(rides.get(m) ?? []), key]);
   });
   const regions: Own["regions"] = [];
   for (const [side, key] of [[1, "C"], [2, "U"]] as const) {
@@ -709,7 +792,7 @@ function isotonic(t: number[], w: number[]): number[] {
  * Each orthogonal line's segments, for counting crossings and bends the same way for every
  * engine. `group` lines (a trunk's members) don't count as crossing each other.
  */
-export function measure(routes: Map<string, P[]>, rides: Map<string, string> = new Map()) {
+export function measure(routes: Map<string, P[]>, rides: Map<string, string[]> = new Map()) {
   type S = { k: string; h: boolean; a: number; b: number; c: number };
   const segs: S[] = [];
   let bends = 0;
@@ -729,11 +812,11 @@ export function measure(routes: Map<string, P[]>, rides: Map<string, string> = n
   for (const h of hs)
     for (const v of vs) {
       if (h.k === v.k) continue;
-      const g1 = rides.get(h.k), g2 = rides.get(v.k);
-      if (g1 && g1 === g2) continue;
+      const g1 = rides.get(h.k)?.find((t) => rides.get(v.k)?.includes(t));
+      if (g1) continue;
       if (v.c > h.a + 0.5 && v.c < h.b - 0.5 && h.c > v.a + 0.5 && h.c < v.b - 0.5) {
-        // A trunk's members cross a line once between them, not once each.
-        const id = `${g1 ?? h.k}|${g2 ?? v.k}|${Math.round(v.c)}|${Math.round(h.c)}`;
+        // Lines on one trunk overlap, so a line crossing the trunk crosses it once.
+        const id = `${Math.round(v.c)}|${Math.round(h.c)}`;
         if (seen.has(id)) continue;
         seen.add(id);
         crossings++;

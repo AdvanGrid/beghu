@@ -22,6 +22,12 @@ const name = params.get("a") ?? "AdvanGrid-advangrid-2627";
 
 type Engine = "elk" | Mode;
 type Look = "split" | "popover" | "ribbon";
+type Merge = "line" | "trunks" | "stretch";
+const MERGES: { id: Merge; name: string }[] = [
+  { id: "line", name: "Merge: lines (share of the line)" },
+  { id: "trunks", name: "Merge: trunks too (share of the trunk)" },
+  { id: "stretch", name: "Merge: per stretch (≥ local gutters)" },
+];
 const ENGINES: { id: Engine; name: string }[] = [
   { id: "elk", name: "ELK (as prototyped, with fix-ups)" },
   { id: "lanes", name: "Lanes" },
@@ -43,6 +49,7 @@ const [minGutters, setMinGutters] = createSignal(num("min", 3));
 const [width, setWidth] = createSignal(num("w", 0));
 const [reach, setReach] = createSignal(num("reach", 6));
 const [close, setClose] = createSignal(num("close", 34));
+const [rounds, setRounds] = createSignal(num("rounds", 1));
 const sync = (k: string, v: string | number | null) => {
   const p = new URLSearchParams(location.search);
   if (v === null || v === "") p.delete(k);
@@ -61,7 +68,7 @@ interface Drawn {
   frames: { key: string; kind: "S" | "C" | "U"; x: number; y: number; w: number; h: number }[];
   routes: Map<string, P[]>;
   trunks: Trunk[];
-  rides: Map<string, string>;
+  rides: Map<string, string[]>;
   /** Lines laid to → from (their trunk runs the other way). */
   flipped: Set<string>;
   width: number;
@@ -70,7 +77,7 @@ interface Drawn {
   stats: { crossings: number; bends: number; length: number };
 }
 
-async function draw(inp: Input, engine: Engine): Promise<Drawn> {
+async function draw(inp: Input, engine: Engine, merge: Merge): Promise<Drawn> {
   const t0 = performance.now();
   if (engine === "elk") {
     const ids = inp.nodes.map((n) => n.id);
@@ -103,7 +110,7 @@ async function draw(inp: Input, engine: Engine): Promise<Drawn> {
   const o = ownLayout(
     nodes,
     inp.lines.map((x) => ({ key: x.key, from: x.from, to: x.to })),
-    { mode: engine, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close() },
+    { mode: engine, merge, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close(), rounds: rounds() },
   );
   const ms = performance.now() - t0;
   // Real direction: a line laid to → from runs backwards.
@@ -130,9 +137,9 @@ const on = (a: P, b: P, t: P[]) =>
     return false;
   });
 
-/** The route with the trunk's ends cut into it, so the part on the trunk can be offset alone. */
-function cut(pts: P[], t: P[]): P[] {
-  const ends = [t[0]!, t[t.length - 1]!];
+/** The route with the trunks' ends cut into it, so the parts on a trunk can be offset alone. */
+function cut(pts: P[], ts: P[][]): P[] {
+  const ends = ts.flatMap((t) => [t[0]!, t[t.length - 1]!]);
   const out: P[] = [pts[0]!];
   for (let i = 1; i < pts.length; i++) {
     const [a, b] = [pts[i - 1]!, pts[i]!];
@@ -144,14 +151,14 @@ function cut(pts: P[], t: P[]): P[] {
   return out;
 }
 
-/** The route offset by `o` (to the left of travel) wherever it runs along the trunk. */
-function strand(route: P[], t: P[], o: number): P[] {
-  const pts = cut(route, t);
+/** The route offset (to the left of travel) wherever it runs along one of the trunks, by that trunk's `o`. */
+function strand(route: P[], ts: { t: P[]; o: number }[]): P[] {
+  const pts = cut(route, ts.map((x) => x.t));
   const n = pts.length - 1;
   const segs = Array.from({ length: n }, (_, i) => {
     const [a, b] = [pts[i]!, pts[i + 1]!];
     const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
-    const off = on(a, b, t) ? o : 0;
+    const off = ts.find((x) => on(a, b, x.t))?.o ?? 0;
     return { nx: dy * off, ny: -dx * off };
   });
   const dir = (i: number) => Math.abs(pts[i + 1]!.y - pts[i]!.y) < 0.5;
@@ -234,6 +241,7 @@ function App(props: { inp: Input; overlay: number }) {
         <Num label="Local below (gutters)" get={minGutters} set={(v) => (setMinGutters(v), sync("min", v))} step={1} />
         <Num label="Parts per column (0 auto)" get={width} set={(v) => (setWidth(v), sync("w", v || null))} step={1} />
         <Num label="Pull reach (rows)" get={reach} set={(v) => (setReach(v), sync("reach", v))} step={1} />
+        <Num label="Pull rounds" get={rounds} set={(v) => (setRounds(v), sync("rounds", v))} step={1} />
         <Num label="Found: close (px)" get={close} set={(v) => (setClose(v), sync("close", v))} step={2} />
       </div>
       <div {...stylex.attrs(s.panes)}>
@@ -257,6 +265,7 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
   const inp = props.inp;
   const [engine, setEngine] = createSignal<Engine>((params.get(props.id) as Engine) ?? props.initial);
   const [look, setLook] = createSignal<Look>((params.get(`${props.id}look`) as Look) ?? "split");
+  const [merge, setMerge] = createSignal<Merge>((params.get(`${props.id}merge`) as Merge) ?? "line");
   const [scale, setScale] = createSignal(num(`${props.id}z`, 0.5));
   const [drawn, setDrawn] = createSignal<Drawn | null>(null);
   const [hover, setHover] = createSignal<{ node?: string; line?: string; trunk?: string } | null>(null);
@@ -265,10 +274,11 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
   let ticket = 0;
   createMemo(() => {
     const e = engine();
+    const mg = merge();
     // Read the knobs so a change relays out.
-    void [threshold(), minGutters(), width(), reach(), close()];
+    void [threshold(), minGutters(), width(), reach(), close(), rounds()];
     const mine = ++ticket;
-    void draw(inp, e).then((d) => mine === ticket && setDrawn(d));
+    void draw(inp, e, mg).then((d) => mine === ticket && setDrawn(d));
   });
   const lineBy = new Map(inp.lines.map((l) => [l.key, l]));
   const nodeBy = new Map(inp.nodes.map((n) => [n.id, n]));
@@ -292,8 +302,7 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
       const h = hover();
       if (h?.trunk) out.add(h.trunk);
       for (const k of lit()) {
-        const t = d.rides.get(k);
-        if (t) out.add(t);
+        for (const t of d.rides.get(k) ?? []) out.add(t);
       }
     }
     return out;
@@ -306,18 +315,18 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
     const open = opened();
     const trunkBy = new Map(d.trunks.map((t) => [t.key, t]));
     for (const [k, pts] of d.routes) {
-      const tk = d.rides.get(k);
-      const t = tk && open.has(tk) ? trunkBy.get(tk) : undefined;
-      if (!t) {
+      const ts = (d.rides.get(k) ?? []).filter((tk) => open.has(tk)).map((tk) => trunkBy.get(tk)!);
+      if (!ts.length) {
         out.set(k, pts);
         continue;
       }
-      // Members in the order they sit as they enter, 3 px apart across the trunk.
-      const i = t.members.indexOf(k);
-      const o = (i - (t.members.length - 1) / 2) * 3;
-      // Offset in laid direction, so every member shifts to the same side of the trunk.
+      // Members in the order they sit as they enter, 3 px apart across each trunk. Offset in laid
+      // direction, so every member shifts to the same side of the trunk.
       const flip = d.flipped.has(k);
-      const laid = strand(flip ? [...pts].reverse() : pts, t.pts, o);
+      const laid = strand(
+        flip ? [...pts].reverse() : pts,
+        ts.map((t) => ({ t: t.pts, o: (t.members.indexOf(k) - (t.members.length - 1) / 2) * 3 })),
+      );
       out.set(k, tidy(flip ? laid.reverse() : laid));
     }
     return out;
@@ -332,6 +341,9 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
         <Show when={engine() === "pull" || engine() === "found"}>
           <select value={look()} onChange={(e) => (setLook(e.currentTarget.value as Look), sync(`${props.id}look`, e.currentTarget.value), setCard(null))} {...stylex.attrs(s.select)}>
             <For each={LOOKS}>{(x) => <option value={x.id}>{x.name}</option>}</For>
+          </select>
+          <select value={merge()} onChange={(e) => (setMerge(e.currentTarget.value as Merge), sync(`${props.id}merge`, e.currentTarget.value))} {...stylex.attrs(s.select)}>
+            <For each={MERGES}>{(x) => <option value={x.id}>{x.name}</option>}</For>
           </select>
         </Show>
         <button {...stylex.attrs(s.btn)} onClick={() => (setScale((v) => Math.max(0.1, v / 1.25)), sync(`${props.id}z`, scale().toFixed(2)))}>
