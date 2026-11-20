@@ -42,7 +42,7 @@ async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_a
     let res = s
         .get(
             &mut Browser::default(),
-            "/issues/3000040375?label=bug&q=a%20b",
+            "/acme/web/issues/12?label=bug&q=a%20b",
         )
         .await;
     assert_eq!(res.status(), 200);
@@ -52,9 +52,7 @@ async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_a
         "the list page of this URL: {html}"
     );
     assert!(
-        html.contains(
-            r#"<link rel="preload" href="/api/issues/3000040375" as="fetch" crossorigin>"#
-        ),
+        html.contains(r#"<link rel="preload" href="/api/at/acme/web/12" as="fetch" crossorigin>"#),
         "the issue this URL opens: {html}"
     );
 }
@@ -90,17 +88,21 @@ async fn an_issue_url_preloads_the_issue_the_app_will_fetch() {
         html.split(r#"<link rel="preload" href=""#)
             .skip(1)
             .map(|l| l.split('"').next().unwrap().to_owned())
-            .filter(|h| h.starts_with("/api/issues/"))
+            .filter(|h| h.starts_with("/api/at/"))
             .collect()
     };
     for (url, want) in [
         // Leading zeros name the same issue: the app fetches it without them.
-        ("/issues/007", vec!["/api/issues/7"]),
-        ("/issues/7", vec!["/api/issues/7"]),
-        // Not an issue id: the app fetches nothing to preload.
-        ("/issues/7x", vec![]),
-        ("/issues/", vec![]),
-        ("/issues/99999999999999999999", vec![]),
+        ("/acme/web/issues/007", vec!["/api/at/acme/web/7"]),
+        ("/acme/web/issues/7", vec!["/api/at/acme/web/7"]),
+        // A PR's URL, as on GitHub.
+        ("/acme/web/pull/7", vec!["/api/at/acme/web/7"]),
+        ("/acme/web.js/issues/7", vec!["/api/at/acme/web.js/7"]),
+        // Not an issue number: the app fetches nothing to preload.
+        ("/acme/web/issues/7x", vec![]),
+        ("/acme/web/issues/99999999999999999999", vec![]),
+        // Names GitHub wouldn't give a repo, whose escaping the app's might not match.
+        ("/acme/w%20b/issues/7", vec![]),
     ] {
         let html = s
             .get(&mut Browser::default(), url)
@@ -126,8 +128,13 @@ async fn an_issue_url_modulepreloads_the_panel_chunk_and_the_list_does_not() {
         }
     };
     let tag = format!(r#"<link rel="modulepreload" crossorigin href="/{PANEL_CHUNK}">"#);
-    // Any id the route matches: the panel shows even an issue the server won't find.
-    for url in ["/issues/1", "/issues/007?label=bug", "/issues/x"] {
+    // Any issue the route matches: the panel shows even one the server won't find.
+    for url in [
+        "/acme/web/issues/1",
+        "/acme/web/issues/007?label=bug",
+        "/acme/web/pull/1",
+        "/acme/web/issues/x",
+    ] {
         assert!(html(url).await.contains(&tag), "{url}: {tag}");
     }
     for url in ["/issues", "/issues?label=bug"] {
@@ -147,7 +154,7 @@ async fn a_web_build_without_its_vite_manifest_stops_startup_and_says_so() {
 async fn the_shell_names_the_build_it_belongs_to() {
     let mut s = start().await;
     let tag = |build: &str| format!(r#"<meta name="beghu-build" content="{build}">"#);
-    let html = s.get(&mut Browser::default(), "/issues/1").await;
+    let html = s.get(&mut Browser::default(), "/acme/web/issues/1").await;
     assert!(html.text().await.unwrap().contains(&tag(common::BUILD)));
 
     // A deploy: the shell's build is the server's, so a tab knows what it runs.
@@ -168,7 +175,8 @@ async fn every_app_route_gets_the_shell() {
     let s = start().await;
     for path in [
         "/issues",
-        "/issues/1",
+        "/acme/web/issues/1",
+        "/acme/web/pull/1",
         "/new",
         "/new?repo=acme%2Fweb",
         "/repos",
@@ -203,13 +211,13 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
     for (url, data) in [
         ("/issues?mode=tree", "/api/tree?mode=tree"),
         (
-            "/issues/7?q=label%3Abug&mode=tree",
+            "/acme/web/issues/7?q=label%3Abug&mode=tree",
             "/api/tree?q=label%3Abug&amp;mode=tree",
         ),
         // Focus view on an issue reads the tree too.
         (
-            "/issues/7?mode=focus&focus=7&chain=blocking",
-            "/api/tree?mode=focus&amp;focus=7&amp;chain=blocking",
+            "/acme/web/issues/7?mode=focus&focus=acme/web/7&chain=blocking",
+            "/api/tree?mode=focus&amp;focus=acme/web/7&amp;chain=blocking",
         ),
     ] {
         let page = html(url).await;

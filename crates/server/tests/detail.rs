@@ -1,6 +1,7 @@
 //! `/api/issues/:id` serves one issue's detail (properties, body, the first page of comments and
 //! their total), `/api/issues/:id/comments` pages the thread 15 at a time, and `through=` refetches
-//! everything loaded so far in one request.
+//! everything loaded so far in one request. `/api/at/:owner/:repo/:number` serves the same detail
+//! by where GitHub has the issue, as its URL in the app names it.
 
 mod common;
 
@@ -213,6 +214,73 @@ async fn a_deleted_or_unknown_issue_is_gone_and_one_outside_the_synced_repos_is_
     // A 404 says nothing more.
     let (_, body) = s.api(&mut b, "/api/issues/1").await;
     assert_eq!(body.get("issue"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issue_reads_the_same_by_where_it_is_as_by_its_id() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (_, by_id) = s.api(&mut b, &format!("/api/issues/{}", target())).await;
+    let (owner, repo, number) = (
+        by_id["owner"].as_str().unwrap().to_owned(),
+        by_id["repo"].as_str().unwrap().to_owned(),
+        by_id["number"].as_i64().unwrap(),
+    );
+    // GitHub's names in any case, and the number with leading zeros, name the same issue.
+    for path in [
+        format!("/api/at/{owner}/{repo}/{number}"),
+        format!(
+            "/api/at/{}/{}/00{number}",
+            owner.to_uppercase(),
+            repo.to_uppercase()
+        ),
+    ] {
+        let (status, by_at) = s.api(&mut b, &path).await;
+        assert_eq!(status, 200, "{path}: {by_at}");
+        assert_eq!(by_at, by_id, "{path}");
+    }
+    // A PR too: issues and PRs share a repo's numbers.
+    let (_, prs) = s.api(&mut b, "/api/issues?q=is%3Apr").await;
+    let pr = &prs["rows"][0];
+    let path = format!(
+        "/api/at/{}/{}/{}",
+        pr["owner"].as_str().unwrap(),
+        pr["repo"].as_str().unwrap(),
+        pr["number"]
+    );
+    let (status, d) = s.api(&mut b, &path).await;
+    assert_eq!(status, 200, "{path}: {d}");
+    assert_eq!(
+        (&d["id"], d["kind"].as_str()),
+        (&pr["id"], Some("pr")),
+        "{path}"
+    );
+
+    // A number the repo doesn't have, a repo the mirror doesn't know, or no number at all: Gone.
+    for path in [
+        format!("/api/at/{owner}/{repo}/987654321"),
+        format!("/api/at/{owner}/nope/{number}"),
+        format!("/api/at/{owner}/{repo}/x"),
+        format!("/api/at/{owner}/{repo}/-{number}"),
+    ] {
+        let (status, body) = s.api(&mut b, &path).await;
+        assert_eq!(status, 404, "{path}");
+        assert_eq!(body["error"], "gone", "{path}");
+    }
+    // A stub, outside the synced repos: NoAccess, as by id.
+    let (_, stub) = s
+        .api(&mut b, &format!("/api/issues/{}", common::linked_stub()))
+        .await;
+    let i = &stub["issue"];
+    let path = format!(
+        "/api/at/{}/{}/{}",
+        i["owner"].as_str().unwrap(),
+        i["repo"].as_str().unwrap(),
+        i["number"]
+    );
+    let (status, body) = s.api(&mut b, &path).await;
+    assert_eq!(status, 403, "{path}");
+    assert_eq!(body["error"], "no_access", "{path}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

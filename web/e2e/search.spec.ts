@@ -9,6 +9,7 @@ import type { IssueDetail } from "../src/bindings/IssueDetail";
 import type { IssuePage } from "../src/bindings/IssuePage";
 import { matchSpans, searchOf } from "../src/highlight";
 import type { Md, MdNode } from "../src/md/ast";
+import { atApi, esc, issueUrl } from "./urls";
 
 /** A post's text nodes, as the walker marks them: one by one. */
 function texts(md: Md): string[] {
@@ -145,7 +146,7 @@ test("under a sort Blend can't use, the Match dropdown shows Best match and says
  * comments share one vocabulary) whose first match in its comments, as the detail marks them, is
  * on page 2.
  */
-async function matchOnPage2(page: Page): Promise<{ id: number; word: string }> {
+async function matchOnPage2(page: Page): Promise<{ id: number; url: string; word: string }> {
   const get = async <T>(path: string): Promise<T> => {
     const res = await page.request.get(path);
     expect(res.ok(), path).toBe(true);
@@ -166,15 +167,15 @@ async function matchOnPage2(page: Page): Promise<{ id: number; word: string }> {
     );
     for (const word of new Set(pairs)) {
       const terms = searchOf(word).terms;
-      if (matchSpans(first, terms).length === 0) return { id: row.id, word };
+      if (matchSpans(first, terms).length === 0) return { id: row.id, url: issueUrl(row), word };
     }
   }
   throw new Error("no issue has a phrase first in its second page of comments");
 }
 
 test("the detail scrolls to a first match that comment page 2 brings", async ({ page }) => {
-  const { id, word } = await matchOnPage2(page);
-  await page.goto(`/issues/${id}?q=` + encodeURIComponent(`is:open ${word} in:comments`));
+  const { url, word } = await matchOnPage2(page);
+  await page.goto(`${url}?q=` + encodeURIComponent(`is:open ${word} in:comments`));
   const detail = page.locator('[data-perf="detail"]');
   const comments = detail.locator('[data-perf="comment"]');
   await expect.poll(() => comments.count()).toBeGreaterThan(15);
@@ -189,8 +190,8 @@ test("the detail scrolls to a first match that comment page 2 brings", async ({ 
 });
 
 test("a new search on the open issue scrolls to its first match", async ({ page }) => {
-  const { id, word } = await matchOnPage2(page);
-  await page.goto(`/issues/${id}?q=is:open`);
+  const { url, word } = await matchOnPage2(page);
+  await page.goto(`${url}?q=is:open`);
   const detail = page.locator('[data-perf="detail"]');
   await expect.poll(() => detail.locator('[data-perf="comment"]').count()).toBeGreaterThan(15);
   expect(await detail.evaluate((el) => el.scrollTop)).toBe(0);
@@ -199,7 +200,7 @@ test("a new search on the open issue scrolls to its first match", async ({ page 
   await box.press("End");
   await box.pressSequentially(` ${word} in:comments`);
   await box.press("Enter");
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/issues/${id}`);
+  await expect.poll(() => new URL(page.url()).pathname).toBe(url);
   await expect(detail.locator('[data-perf="match"]').first()).toBeInViewport({ timeout: VIEW_LANDS_WITHIN_MS });
   expect(await detail.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 });
@@ -207,7 +208,8 @@ test("a new search on the open issue scrolls to its first match", async ({ page 
 test("the detail marks the search's words inside a rendered body's markup, and scrolls to the first", async ({ page }) => {
   const list = (await (await page.request.get("/api/issues")).json()) as IssuePage;
   const t = list.rows[0]!;
-  await page.route(new RegExp(`/api/issues/${t.id}(\\?.*)?$`), async (route) => {
+  // Its reads by id and by where it is (the URL's first read), refetches too.
+  await page.route(new RegExp(`(/api/issues/${t.id}|${esc(atApi(t))})(\\?.*)?$`), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     // Far enough down that the first match starts off screen.
@@ -220,7 +222,7 @@ test("the detail marks the search's words inside a rendered body's markup, and s
     ];
     await route.fulfill({ response: res, json: d });
   });
-  await page.goto(`/issues/${t.id}?q=` + encodeURIComponent("spinner in:body"));
+  await page.goto(issueUrl(t, "?q=") + encodeURIComponent("spinner in:body"));
   const body = page.locator('[data-perf="detail"] [data-perf="body"]');
   const marks = body.locator('[data-perf="match"]');
   await expect(marks).toHaveCount(5);

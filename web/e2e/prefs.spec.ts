@@ -6,6 +6,7 @@
 // Preferences are tomsj's, whom every other spec signs in as: this spec runs on its own, after
 // the rest (playwright.config.ts), and puts them back to the defaults around each test.
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { issueUrl, urlOf, urlRe, whereIs, type Where } from "./urls";
 
 // Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
 // this spec works on issues.
@@ -22,9 +23,12 @@ const rowOf = (page: Page, id: number) => page.locator(`[data-perf="row"][data-i
  * Two issues at the top of the default list (in view from its first frame) with two comments or
  * more, rows apart: neither is the other's neighbour, which the list preloads on its own.
  */
-async function twoTopIssues(page: Page): Promise<[{ id: number }, { id: number }]> {
+/** A row near the top of the list: its id and where it is. */
+type Top = Where & { id: number };
+
+async function twoTopIssues(page: Page): Promise<[Top, Top]> {
   const res = await page.request.get("/api/issues");
-  const p = (await res.json()) as { rows: { id: number; comments: number }[] };
+  const p = (await res.json()) as { rows: (Top & { comments: number })[] };
   const top = p.rows.slice(0, 14).map((r, index) => ({ ...r, index })).filter((r) => r.comments >= 2);
   const other = top.find((r) => r.index >= top[0]!.index + 3);
   if (!other) throw new Error("no two issues with comments at the top of the list, rows apart");
@@ -81,8 +85,8 @@ test.afterEach(async ({ page }) => {
 test("comment order re-sorts this tab at once, other tabs on their next open, and a reload shows it with no flash", async ({ context }) => {
   const a = await tab(context);
   const [issue, other] = await twoTopIssues(a);
-  const b = await tab(context, `/issues/${issue.id}`);
-  await a.goto(`/issues/${issue.id}`);
+  const b = await tab(context, issueUrl(issue));
+  await a.goto(issueUrl(issue));
   await expect(order(a)).toHaveAttribute("data-order", "newest");
   const newest = await firstComment(a).getAttribute("data-id");
 
@@ -120,7 +124,7 @@ test("comment order re-sorts this tab at once, other tabs on their next open, an
       if (o && seen.at(-1) !== o) seen.push(o);
     }).observe(document, { subtree: true, childList: true, attributes: true });
   });
-  await c.goto(`/issues/${issue.id}`);
+  await c.goto(issueUrl(issue));
   await expect(firstComment(c)).toHaveAttribute("data-id", oldest!);
   expect(await c.evaluate(() => (window as unknown as { orders: string[] }).orders)).toEqual(["oldest"]);
 });
@@ -181,7 +185,7 @@ test("a sequence under way finishes on the keymap it started on, then the new on
   await expect(detail(other)).toHaveAttribute("data-id", String(second));
   await other.keyboard.press("g");
   await other.keyboard.press("j");
-  await expect(other).toHaveURL(new RegExp(`/issues/${second}$`));
+  await expect(other).toHaveURL(new RegExp(`${urlRe(await whereIs(other, second))}$`));
 });
 
 test("a read of the keymap that lands after a newer one leaves the newer in effect", async ({ context }) => {
@@ -342,8 +346,9 @@ test("a default an account already gave another action starts unbound, and the a
 test("theme and widths are this browser's, and reach its other tabs", async ({ context }) => {
   const a = await tab(context);
   const id = await rowId(a, 0);
-  const b = await tab(context, `/issues/${id}`);
-  await a.goto(`/issues/${id}`);
+  const url = await urlOf(a, id);
+  const b = await tab(context, url);
+  await a.goto(url);
   await a.locator('[data-theme-choice="dark"]').click();
   await expect(b.locator("html")).toHaveAttribute("data-theme", "dark");
   await a.locator('[data-theme-choice="system"]').click();

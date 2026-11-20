@@ -77,9 +77,10 @@ async function oldTab(context: BrowserContext, prune: boolean): Promise<Page> {
 async function opensOnTheNewBuild(page: Page): Promise<void> {
   const row = rows(page).nth(1);
   const id = await row.getAttribute("data-id");
+  const path = new URL((await row.getAttribute("href"))!, page.url()).pathname;
   await row.click();
   await expect(detail(page)).toHaveAttribute("data-id", id!);
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}$`));
+  await expect(page).toHaveURL(new RegExp(`${path}$`));
   // Loaded afresh, as the new build.
   expect(await marked(page)).toBe(false);
   expect(await build(page)).toBe("B");

@@ -3,6 +3,13 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { status } from "./stack";
+import { atApi, issueUrl, urlOf, urlRe, whereIs, type Where } from "./urls";
+
+/**
+ * Every read of an issue's detail: by its id (a hover's, a refetch) or by where it is (the first
+ * read of a URL the tab opens cold), for a route to change or fail them all.
+ */
+const detailReads = (id: number | string, where: Where) => (u: URL) => u.pathname === `/api/issues/${id}` || u.pathname === atApi(where);
 
 const panel = (page: Page) => page.locator('[data-perf="panel"]');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
@@ -92,7 +99,7 @@ test("hovering a row preloads its detail, and the click shows it with no placeho
   const placeholders = await watchPlaceholders(page);
   await row.click();
   await expect(detail(page)).toHaveAttribute("data-id", id!);
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(await whereIs(page, Number(id)))}$`));
   expect(await placeholders()).toBe(0);
   expect(api.filter((p) => p === `/api/issues/${id}`)).toHaveLength(1);
   await expect(row).toHaveAttribute("aria-current", "page");
@@ -148,18 +155,19 @@ test("a hover longer than a preload lasts still opens the issue with no placehol
 test("an issue URL with leading zeros opens that issue, its first fetch the shell's preload", async ({ page }) => {
   await signIn(page);
   const id = await rows(page).first().getAttribute("data-id");
+  const where = await whereIs(page, Number(id));
   const api = apiRequests(page);
-  await goto(page, `/issues/00${id}`);
+  await goto(page, issueUrl(where).replace(/\/(\d+)$/, "/00$1"));
   await expect(detail(page)).toHaveAttribute("data-id", id!);
-  // The shell's preload, then at most one read again for the live stream's opening reset (a
-  // change may have landed before the stream was up): plain if the reset cleared the preload
-  // before the panel took it, through its last comment if the panel had it on screen. (Its
-  // neighbours in the list preload too, for the keys.)
+  // The shell's preload, by where the issue is with the zeros dropped, then at most one read
+  // again for the live stream's opening reset (a change may have landed before the stream was
+  // up): plain if the reset cleared the preload before the panel took it, through its last
+  // comment if the panel had it on screen. (Its neighbours in the list preload too, for the keys.)
   await page.waitForTimeout(1000);
-  const reads = api.filter((p) => /^\/api\/issues\/0*(\d+)(\?|$)/.exec(p)?.[1] === id);
-  expect(reads[0]).toBe(`/api/issues/${id}`);
+  const reads = api.filter((p) => p.startsWith(atApi(where)) || /^\/api\/issues\/0*(\d+)(\?|$)/.exec(p)?.[1] === id);
+  expect(reads[0]).toBe(atApi(where));
   expect(reads.length).toBeLessThanOrEqual(2);
-  for (const r of reads) expect(r).toMatch(new RegExp(`^/api/issues/${id}(\\?through=|\\?order=|$)`));
+  for (const r of reads.slice(1)) expect(r).toMatch(new RegExp(`^(/api/issues/${id}|${atApi(where)})(\\?through=|\\?order=|$)`));
 });
 
 test("comments come newest first, 15 at a time: page 2 after paint, later pages near the end", async ({ page }) => {
@@ -289,14 +297,15 @@ test("nothing in the panel moves when a value changes length", async ({ page }) 
       };
     });
   };
-  await goto(page, `/issues/${id}`);
+  const where = await whereIs(page, Number(id));
+  await goto(page, issueUrl(where));
   const before = await layout();
 
   // The same issue with every property a different length: closed as not planned, more labels,
   // another assignee, a long milestone, a comment count with more digits. Every read of it, the
   // stream's opening reset's `?through=` one included: a plain read let through would put the
   // issue back as it is.
-  await page.route((u) => u.pathname === `/api/issues/${id}`, async (route) => {
+  await page.route(detailReads(id!, where), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.state = "closed";
@@ -380,7 +389,8 @@ test("the divider resizes, keeps 360 px either side, and is remembered on this d
 });
 
 test("a deleted issue shows its in-place state, and the list stays usable", async ({ page }) => {
-  await signIn(page, "/issues/1");
+  // A number the repo doesn't have: the mirror holds nothing there.
+  await signIn(page, "/acme/web/issues/987654321");
   await expect(panel(page).getByText("This issue was deleted")).toBeVisible();
   const row = rows(page).first();
   const id = await row.getAttribute("data-id");
@@ -392,7 +402,10 @@ test("an issue outside the synced repos says so in place, with a link out to Git
   // A stub a relationship reaches: a mirror holds only those.
   const s = await summary();
   const stub = s.stub_ids[s.stub_numbers.findIndex((n) => !s.unlinked_stubs.includes(n))]!;
-  await signIn(page, `/issues/${stub}`);
+  await signIn(page);
+  // Where the stub is, as a read of it by id says: outside the synced repos.
+  const refused = (await (await page.request.get(`/api/issues/${stub}`)).json()) as { issue: Where };
+  await goto(page, issueUrl(refused.issue));
   await expect(panel(page).getByText("This issue is in a repo that isn't synced.")).toBeVisible();
   await expect(panel(page).getByRole("link", { name: "Open on GitHub" })).toHaveAttribute(
     "href",
@@ -406,13 +419,14 @@ test("at the 360 px minimum a long repo name is cut short, and the status row ke
   await page.addInitScript(() => localStorage.setItem("beghu.detail-width", "1"));
   await signIn(page);
   const id = await rows(page).first().getAttribute("data-id");
-  await page.route(`**/api/issues/${id}`, async (route) => {
+  const where = await whereIs(page, Number(id));
+  await page.route(detailReads(id!, where), async (route) => {
     const res = await route.fetch();
     const d = await res.json();
     d.repo = "a-repository-with-an-unusually-long-name-indeed";
     await route.fulfill({ response: res, json: d });
   });
-  await goto(page, `/issues/${id}`);
+  await goto(page, issueUrl(where));
   await expect(detail(page)).toHaveAttribute("data-id", id!);
   const box = (await panel(page).boundingBox())!;
   expect(box.width).toBe(360);
@@ -427,10 +441,12 @@ test("at the 360 px minimum a long repo name is cut short, and the status row ke
 test("a detail that fails to load offers Retry, which loads it", async ({ page }) => {
   await signIn(page);
   const id = await rows(page).first().getAttribute("data-id");
-  await page.route(`**/api/issues/${id}`, (r) => r.fulfill({ status: 500, body: "{}" }));
-  await goto(page, `/issues/${id}`);
+  const where = await whereIs(page, Number(id));
+  const reads = detailReads(id!, where);
+  await page.route(reads, (r) => r.fulfill({ status: 500, body: "{}" }));
+  await goto(page, issueUrl(where));
   await expect(panel(page).getByText("Couldn't load this issue")).toBeVisible();
-  await page.unroute(`**/api/issues/${id}`);
+  await page.unroute(reads);
   await panel(page).getByRole("button", { name: "Retry" }).click();
   await expect(detail(page)).toHaveAttribute("data-id", id!);
 });
@@ -519,7 +535,7 @@ test("another view on an open issue's URL forgets what a hover fetched", async (
     history.pushState(null, "", `${location.pathname}?view=other`);
     dispatchEvent(new PopStateEvent("popstate"));
   });
-  await expect(row).toHaveAttribute("href", `/issues/${id}?view=other`);
+  await expect(row).toHaveAttribute("href", await urlOf(page, id, "?view=other"));
   const titles = await watchTitles(page);
   await row.click();
   await expect(detail(page).locator('[data-perf="title"]')).toHaveText("Renamed since the hover");
@@ -531,7 +547,7 @@ const PANEL_CHUNK = "**/src/IssuePanel.tsx*";
 
 test("an issue URL's shell modulepreloads the panel's code, and the list's doesn't", async ({ request }) => {
   const tag = '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">';
-  expect(await (await request.get("/issues/1")).text()).toContain(tag);
+  expect(await (await request.get("/acme/web/issues/1")).text()).toContain(tag);
   expect(await (await request.get("/issues")).text()).not.toContain("modulepreload");
 });
 
@@ -544,7 +560,7 @@ test("while the panel's code is on its way, the list is already usable", async (
     await held;
     await route.continue();
   });
-  await goto(page, `/issues/${id}`);
+  await goto(page, await urlOf(page, Number(id)));
   await expect(rows(page).first()).toBeVisible();
   await expect(detail(page)).toHaveCount(0);
   release();
@@ -567,8 +583,9 @@ test("panel code that fails to load reloads the URL once, then offers Retry, the
   await row.click();
   await reloaded;
   await expect(page.getByText("Couldn't load this issue")).toBeVisible();
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}$`));
-  expect(loads).toEqual([`/issues/${id}`]);
+  const path = await urlOf(page, Number(id));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(await whereIs(page, Number(id)))}$`));
+  expect(loads).toEqual([path]);
   await expect(rows(page).first()).toBeVisible();
 
   await page.unroute(PANEL_CHUNK);

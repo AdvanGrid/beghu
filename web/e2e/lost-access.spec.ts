@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { issueUrl } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -165,7 +166,7 @@ test("a comment GitHub took whose answer was lost, then Disconnect, shows as may
   const list = (await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:issue is:open")}`)).json()) as { rows: { id: number; owner: string; repo: string; number: number }[] };
   const issue = list.rows.at(-1)!;
   try {
-    await page.goto(`/issues/${issue.id}`);
+    await page.goto(issueUrl(issue));
     const composer = page.locator('[data-perf="composer"]');
     await expect(composer).toBeVisible({ timeout: 15_000 });
     let sends = 0;

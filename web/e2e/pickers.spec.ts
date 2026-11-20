@@ -13,6 +13,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, exclusive, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 import { devCtl, status } from "./stack";
+import { atApi, issueUrl } from "./urls";
 
 let control: string;
 
@@ -80,10 +81,10 @@ async function signIn(page: Page, login = "tomsj"): Promise<void> {
   await expect(rows(page).first()).toBeVisible();
 }
 
-/** Opens `/issues/:id` and waits for the stream's opening reset to have been handled. */
-async function open(page: Page, id: number): Promise<void> {
-  const reset = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/issues/${id}` && r.ok());
-  await page.goto(`/issues/${id}`);
+/** Opens the issue's URL and waits for the stream's opening reset to have been handled. */
+async function open(page: Page, issue: Issue): Promise<void> {
+  const reset = page.waitForResponse((r) => [`/api/issues/${issue.id}`, atApi(issue)].includes(new URL(r.url()).pathname) && r.ok());
+  await page.goto(issueUrl(issue));
   await reset;
   await expect(composer(page)).toBeVisible();
 }
@@ -198,7 +199,7 @@ test.afterEach(async () => {
 test("the labels picker ticks the issue's labels and filters as you type", async ({ page }) => {
   await signIn(page);
   const issue = await claim(page, undefined, (r) => r.labels.length > 0);
-  await open(page, issue.id);
+  await open(page, issue);
   await opener(page, "labels").click();
   await expect(picker(page)).toBeVisible();
   for (const l of issue.labels) await expect(option(page, l.name)).toHaveAttribute("aria-selected", "true");
@@ -233,7 +234,7 @@ test("toggling five labels sends five ops in order, pending on the labels row on
   await signIn(page);
   const issue = await claim(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const had = issue.labels.map((l) => l.name);
     const picks = ["p0", "p1", "p2", "ux", "question"];
     const want = new Set(had);
@@ -275,7 +276,7 @@ test("quick picks never flicker back while GitHub's webhooks for them land", asy
   await signIn(page);
   const issue = await claim(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const { picks, final } = toggles(issue);
     await sampleLabels(page);
     // GitHub is quick: all five land within a second or two, so their webhooks, about a second
@@ -295,8 +296,8 @@ test("another tab of the same account never flickers while the first picks quick
   const issue = await claim(page);
   const other = await page.context().newPage();
   try {
-    await open(other, issue.id);
-    await open(page, issue.id);
+    await open(other, issue);
+    await open(page, issue);
     const { picks, final } = toggles(issue);
     await sampleLabels(other);
     await opener(page, "labels").click();
@@ -317,7 +318,7 @@ test("a refused pick reverts in one frame with its marker on the row, and nothin
   await signIn(page);
   const issue = await claim(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const name = ["p0", "p1", "p2", "ux"].find((n) => !issue.labels.some((l) => l.name === n))!;
     await fake("/faults/latency", { endpoint: LABELS(issue), ms: 800, count: 1 });
     await fake("/faults/fail", { endpoint: LABELS(issue), status: 403, count: 1 });
@@ -371,7 +372,7 @@ test("assignees are added and removed from their picker", async ({ page }) => {
   await signIn(page);
   const issue = await claim(page, undefined, (r) => !r.assignees.some((a) => a.login === "ilze-k"));
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     await opener(page, "assignees").click();
     await expect(option(page, "ilze-k")).toHaveAttribute("aria-selected", "false");
     await page.keyboard.type("ilze");
@@ -393,7 +394,7 @@ test("the milestone is set and cleared, and of two quick picks the last wins", a
   await signIn(page);
   const issue = await claim(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const now = ((await (await page.request.get(`/api/issues/${issue.id}`)).json()) as { milestone: { number: number } | null }).milestone;
     const milestones = (await (await page.request.get(`/api/repos/${await repoId(page, issue.id)}/milestones`)).json()) as {
       number: number;
@@ -447,7 +448,7 @@ test("a label renamed on GitHub updates the open picker, the detail and the list
   const renamed = `a11y ${Date.now().toString(36)}`;
   let done = false;
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     await opener(page, "labels").click();
     await expect(option(page, "ux")).toHaveAttribute("aria-selected", "true");
     devCtl(["fake", "label", "web", "ux", "--rename", renamed]);
@@ -468,7 +469,7 @@ test("a refused removal comes back with its marker in the row's slot, and nothin
   await signIn(page);
   const issue = await withLabels(page, await claim(page), 2);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const name = issue.labels[0]!.name;
     await fake("/faults/fail", { endpoint: UNLABEL(issue), status: 403, count: 1 });
     const below = () => box(page, "dl").then((b) => b.top + b.height);
@@ -495,7 +496,7 @@ test("on a full labels row a refused pick's marker keeps to one line, with +N fo
   await signIn(page);
   const issue = await withLabels(page, await claim(page), 3);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const off = ["p0", "p1", "p2", "ux", "question"].filter((n) => !issue.labels.some((l) => l.name === n));
     await fake("/faults/fail", { endpoint: LABELS(issue), status: 403, count: 2 });
     const row = () => box(page, 'dd[data-perf="labels"]');
@@ -527,7 +528,7 @@ test("a picker is used from the keyboard alone, and closes when focus leaves it"
   await signIn(page);
   const issue = await claim(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const sent = opsSent(page);
     await opener(page, "labels").focus();
     await page.keyboard.press("Enter");
@@ -566,7 +567,7 @@ test("a row's key opens its picker from the issue, and Enter picks what the typi
   await signIn(page);
   const issue = await claim(page, undefined, (r) => !r.labels.some((l) => l.name === "frontend"));
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const sent = opsSent(page);
     // The keys work with the focus in the issue.
     await page.locator('[data-perf="detail"]').focus();
@@ -593,7 +594,7 @@ test("a row's key opens its picker from the issue, and Enter picks what the typi
 test("the filter keeps focus when the picker's gaps are pressed, and aria-controls names only a list that's there", async ({ page }) => {
   await signIn(page);
   const issue = await claim(page);
-  await open(page, issue.id);
+  await open(page, issue);
   // Who can be assigned is held until the test lets it through: the picker shows Loading.
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
@@ -630,7 +631,7 @@ test("picker code that fails to load reloads the URL once, then says so with Ret
   await signIn(page);
   const issue = await claim(page);
   const chunk = /\/Pickers[.-]/;
-  await open(page, issue.id);
+  await open(page, issue);
   await page.route(chunk, (r) => r.abort());
   const loads: string[] = [];
   page.on("request", (r) => {
@@ -638,7 +639,7 @@ test("picker code that fails to load reloads the URL once, then says so with Ret
   });
   // A deploy that replaced the build is the usual cause: a fresh page names the new chunks.
   await opener(page, "labels").click();
-  await expect.poll(() => loads).toEqual([`/issues/${issue.id}`]);
+  await expect.poll(() => loads).toEqual([issueUrl(issue)]);
   await expect(composer(page)).toBeVisible();
   // Reloaded once already: this time it says so in place, the detail usable throughout.
   await opener(page, "labels").click();

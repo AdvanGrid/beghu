@@ -8,6 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, type Row } from "./claims";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
 import { devCtl } from "./stack";
+import { issueUrl, type Where } from "./urls";
 
 // Issue rows: the list shows PRs beside them (a PR row's icon carries data-pr-status), and
 // this spec works on issues.
@@ -26,16 +27,16 @@ async function signIn(page: Page): Promise<void> {
   await expect(rows(page).first()).toBeVisible();
 }
 
-/** Opens `/issues/:id` inside the app (in the view `search` names), as a click on a link to it would. */
-async function open(page: Page, id: number, search = ""): Promise<void> {
-  await page.evaluate(([id, search]) => {
+/** Opens the issue's URL inside the app (in the view `search` names), as a click on a link to it would. */
+async function open(page: Page, issue: Where & { id: number }, search = ""): Promise<void> {
+  await page.evaluate((href) => {
     const a = document.createElement("a");
-    a.href = `/issues/${id}${search}`;
+    a.href = href;
     document.body.append(a);
     a.click();
     a.remove();
-  }, [id, search] as const);
-  await expect(detail(page)).toHaveAttribute("data-id", String(id));
+  }, issueUrl(issue, search));
+  await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
 }
 
 const ref = (i: { repo: string; number: number }) => `${i.repo}#${i.number}`;
@@ -44,7 +45,7 @@ test("a deleted open issue says so in place, and its draft stays to copy", async
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await signIn(page);
   const issue = await claimBelowTheTop(page);
-  await open(page, issue.id);
+  await open(page, issue);
   // A comment GitHub confirmed is posted, not unsent text: it isn't kept with the draft, even
   // when the issue is deleted before any read of it shows the comment (the detail's reads from
   // the confirmation on are held until then, and answer that the issue is gone).
@@ -82,7 +83,7 @@ test("a deleted open issue says so in place, and its draft stays to copy", async
 test("a deleted open issue keeps an open description editor's text to copy", async ({ page }) => {
   await signIn(page);
   const issue = await claimBelowTheTop(page);
-  await open(page, issue.id);
+  await open(page, issue);
   await page.locator('[data-perf="edit-body"]').click();
   const box = page.locator('[data-perf="body-editor"] [data-perf="edit-box"]');
   // The editor's first opening loads its code (compiled on demand by the dev server) and the body.
@@ -100,7 +101,7 @@ test("an open issue transferred to another synced repo says where it went, and o
   const issue = await claimBelowTheTop(page, (r) => r.repo === "web");
   const other = await claimBelowTheTop(page, (r) => r.repo === "api");
   devCtl(["fake", "edit", ref(issue), "--relate", ref(other)]);
-  await open(page, issue.id);
+  await open(page, issue);
   await expect(page.locator(`[data-perf="rel-item"][data-id="${other.id}"]`)).toBeVisible({ timeout: SHOWS_WITHIN_MS });
 
   const moved = JSON.parse(devCtl(["fake", "transfer", ref(issue), "docs", "--json"])) as { issue: { id: number; number: number } };
@@ -118,7 +119,7 @@ test("an issue converted to a discussion shows closed and locked, and keeps its 
   devCtl(["fake", "edit", ref(parent), "--add-sub-issue", ref(issue)]);
   // In a view that keeps closed issues: under `is:open` the conversion's close takes it out of the
   // list, and the selection moves on to the issue that took its row (held.spec.ts).
-  await open(page, issue.id, `?q=${encodeURIComponent("is:open is:closed")}`);
+  await open(page, issue, `?q=${encodeURIComponent("is:open is:closed")}`);
   const crumb = page.locator('[data-perf="parent"]');
   await expect(crumb).toContainText(String(parent.number), { timeout: SHOWS_WITHIN_MS });
 

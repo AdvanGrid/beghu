@@ -1,8 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, lazy, Loading, onSettled, Show, untrack, type Element } from "solid-js";
-import { revalidate, useLocation, useMatch } from "@solidjs/router";
+import { revalidate, useLocation } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
-import { SessionEnded, forgetRemembered, getIssues, getMe, getTree, issueId, signIn, signInUrl } from "./api";
+import { SessionEnded, forgetRemembered, getIssues, getMe, getTree, signIn, signInUrl } from "./api";
+import { atOfPath, idAt } from "./at";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
 import { Background } from "./WhileSyncing";
@@ -42,7 +43,7 @@ export function Root(props: { children?: Element }) {
   onSettled(connectLive);
   newBuildOnNavigate();
   const location = useLocation();
-  const open = useMatch(() => "/issues/:id");
+  const open = () => atOfPath(location.pathname) !== undefined;
   // Another view (its query string, with an issue open or not) or leaving the issue for the
   // list's own path forgets the detail a hover remembered; opening an issue uses it up
   // (IssuePanel.tsx).
@@ -319,12 +320,12 @@ function AccountFailure(props: { error: unknown; reset: () => void }) {
 
 function List() {
   const location = useLocation();
-  const open = useMatch(() => "/issues/:id");
-  // A memo, read by every row: a conditional written in the props below would compile to a new
-  // computation on each read.
+  // The open issue's id, once the tab knows it: at once when it opens from a row, else when its
+  // detail comes (at.ts). A memo, read by every row: a conditional written in the props below
+  // would compile to a new computation on each read.
   const openId = createMemo(() => {
-    const m = open();
-    return m ? issueId(m.params.id) : undefined;
+    const a = atOfPath(location.pathname);
+    return a ? idAt(a) : undefined;
   });
   // The bar sits outside the list's boundary, so a view that fails to load can be changed.
   return (

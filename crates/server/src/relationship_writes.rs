@@ -716,6 +716,7 @@ fn reply(issue: i64) -> OpReply {
         body: None,
         refs: Refs::new(),
         unapplied: Vec::new(),
+        number: None,
     }
 }
 

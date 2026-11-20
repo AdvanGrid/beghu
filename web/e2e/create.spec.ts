@@ -11,6 +11,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { exclusive, fiveHundreds } from "./claims";
 import { BUDGET_MS, recordPushes, SHOWS_WITHIN_MS } from "./push";
 import { devCtl, status } from "./stack";
+import { atApi, urlOf } from "./urls";
 
 let control: string;
 
@@ -79,8 +80,9 @@ let made: number[] = [];
 
 /** The new issue the panel opened: its id, from the URL. */
 async function opened(page: Page): Promise<number> {
-  await page.waitForURL((u) => /^\/issues\/\d+$/.test(u.pathname));
-  const id = Number(/\/issues\/(\d+)/.exec(page.url())![1]);
+  await page.waitForURL((u) => /^\/[^/]+\/[^/]+\/issues\/\d+$/.test(u.pathname));
+  const [, owner, repo, number] = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(new URL(page.url()).pathname)!;
+  const id = ((await (await page.request.get(atApi({ owner: owner!, repo: repo!, number: Number(number) }))).json()) as { id: number }).id;
   made.push(id);
   await expect(page.locator(`[data-perf="detail"][data-id="${id}"]`)).toBeVisible();
   return id;
@@ -355,8 +357,9 @@ const createStatus = (page: Page) => page.locator('[data-perf="create-status"]')
 async function openRow(page: Page, word: string): Promise<number> {
   const row = rows(page).filter({ hasNotText: word }).first();
   const id = Number(await row.getAttribute("data-id"));
+  const path = new URL((await row.getAttribute("href"))!, page.url()).pathname;
   await row.click();
-  await page.waitForURL((u) => u.pathname === `/issues/${id}`);
+  await page.waitForURL((u) => u.pathname === path);
   await expect(page.locator(`[data-perf="detail"][data-id="${id}"]`)).toBeVisible();
   return id;
 }
@@ -398,13 +401,14 @@ test("a create carries on when the form closes: back in the form it's still Crea
   await expect(submit(page)).toHaveText("Creating…");
   const elsewhere = await openRow(page, second);
   await expect(createStatus(page)).toContainText("Created the issue in docs", { timeout: 10_000 });
-  expect(new URL(page.url()).pathname).toBe(`/issues/${elsewhere}`);
+  expect(new URL(page.url()).pathname).toBe(await urlOf(page, elsewhere));
   expect(creates()).toHaveLength(2);
   const [madeId] = await listed(page, second);
   expect(madeId).toBeDefined();
   made.push(madeId!);
   await createStatus(page).getByRole("link", { name: "Open" }).click();
-  await page.waitForURL((u) => u.pathname === `/issues/${madeId}`);
+  const madePath = await urlOf(page, madeId!);
+  await page.waitForURL((u) => u.pathname === madePath);
   await expect(createStatus(page)).toHaveCount(0);
   // The form starts afresh.
   await page.getByRole("link", { name: "New issue" }).click();
@@ -429,7 +433,7 @@ test("a create that fails while the form is closed says so in the status slot, a
 
   // Lost: it may have been made, so it's never sent again on its own.
   await expect(createStatus(page)).toContainText("May or may not have been created; check the list before trying again", { timeout: 10_000 });
-  expect(new URL(page.url()).pathname).toBe(`/issues/${elsewhere}`);
+  expect(new URL(page.url()).pathname).toBe(await urlOf(page, elsewhere));
   await createStatus(page).getByRole("link", { name: "Open the form" }).click();
   await expect(form(page)).toBeVisible();
   await expect(createStatus(page)).toHaveCount(0);
@@ -580,8 +584,9 @@ test("a failed write outranks the word on an issue created while away, which sho
   await expect(page.locator('[data-perf="state-note"]')).toContainText("Couldn't close");
   const other = rows(page).and(page.locator(`:not([data-id="${elsewhere}"]):not([data-id="${madeId}"])`)).first();
   const otherId = await other.getAttribute("data-id");
+  const otherPath = new URL((await other.getAttribute("href"))!, page.url()).pathname;
   await other.click();
-  await page.waitForURL((u) => u.pathname === `/issues/${otherId}`);
+  await page.waitForURL((u) => u.pathname === otherPath);
   // The other issue is on screen before anything is dismissed.
   await expect(page.locator(`[data-perf="detail"][data-id="${otherId}"]`)).toBeVisible();
   const slot = page.locator('[data-perf="status"]');
@@ -637,7 +642,7 @@ test("+ Create a new sub-issue opens the form with the issue as parent, and the 
   const parentRef = (await row.locator('[data-perf="ref"]').textContent())!.trim();
   let child: string | undefined;
   try {
-    await page.goto(`/issues/${parent}`);
+    await page.goto(await urlOf(page, parent));
     await page.locator('[data-perf="create-sub"]').click();
     await expect(form(page)).toBeVisible();
     // The parent's repo, and the parent, preset.
@@ -652,7 +657,7 @@ test("+ Create a new sub-issue opens the form with the issue as parent, and the 
     // Made, then made its sub-issue: the crumb names the parent once GitHub has both.
     await expect(page.locator('[data-perf="detail"] [data-perf="parent"]')).toContainText(parentRef);
     await expect(page.locator('[data-perf="links"] [data-perf="pending"]')).toHaveCount(0, { timeout: 15_000 });
-    await page.goto(`/issues/${parent}`);
+    await page.goto(await urlOf(page, parent));
     await expect(page.locator(`[data-perf="sub-row"][data-id="${id}"]`)).toBeVisible();
   } finally {
     if (child) devCtl(["fake", "edit", parentRef, "--remove-sub-issue", child]);
@@ -667,7 +672,7 @@ test("a new sub-issue GitHub won't attach is made all the same, its parent a fai
   const parentRef = (await row.locator('[data-perf="ref"]').textContent())!.trim();
   let child: string | undefined;
   try {
-    await page.goto(`/issues/${parent}`);
+    await page.goto(await urlOf(page, parent));
     await page.locator('[data-perf="create-sub"]').click();
     await expect(propRow(page, "parent")).toContainText(parentRef);
     devCtl(["fake", "fail", "POST /repos/*/*/issues/*/sub_issues", "422"]);

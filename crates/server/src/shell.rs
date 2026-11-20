@@ -6,8 +6,9 @@
 //! The preloads must match the client's fetches byte for byte (`web/src/api.ts`): `/api/me`,
 //! `/api/facets` (the filter bar's suggestions), `/api/issues` with the page's own query string
 //! (`/api/tree` in Tree mode, `mode=tree`: the tree's first fetch, as a tab with no expand state
-//! kept for the query makes it), and on an issue's URL (`/issues/:id`) that issue's detail,
-//! `/api/issues/:id`. `web/vite.config.ts` applies the same rule in dev, where Vite serves the
+//! kept for the query makes it), and on an issue's URL (`/:owner/:repo/issues/:number`, or
+//! `/pull/:number` for a PR, as on GitHub) that issue's detail, `/api/at/:owner/:repo/:number`.
+//! `web/vite.config.ts` applies the same rule in dev, where Vite serves the
 //! shell.
 //!
 //! An issue's URL also gets `<link rel=modulepreload>` for the issue panel's chunk, so a cold deep
@@ -87,12 +88,9 @@ impl Shell {
             escape_attr(build)
         );
         tags.push_str(&preloads(path, query));
-        // The route the app matches (`/issues/:id`, one non-empty segment) renders the panel,
-        // whether or not the id is one the server will find.
-        if path
-            .strip_prefix("/issues/")
-            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
-        {
+        // The route the app matches renders the panel, whether or not the issue is one the
+        // server will find.
+        if issue_at(path).is_some() {
             tags.push_str(&format!(
                 r#"<link rel="modulepreload" crossorigin href="/{}">"#,
                 escape_attr(&self.panel_chunk)
@@ -126,6 +124,15 @@ fn tree_mode(query: Option<&str>) -> bool {
     })
 }
 
+/// An issue's URL as the app's route matches it (`web/src/router.tsx`): its owner, repo and number,
+/// each one non-empty segment, with `issues` or `pull` between, as on GitHub.
+fn issue_at(path: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = path.strip_prefix('/')?.split('/');
+    let (owner, repo, kind, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let whole = parts.next().is_none() && [owner, repo, number].iter().all(|p| !p.is_empty());
+    (whole && matches!(kind, "issues" | "pull")).then_some((owner, repo, number))
+}
+
 /// The data preload tags for an app URL's path and query string.
 fn preloads(path: &str, query: Option<&str>) -> String {
     let route = if tree_mode(query) {
@@ -138,14 +145,20 @@ fn preloads(path: &str, query: Option<&str>) -> String {
         None => route.into(),
     };
     let mut hrefs = vec![String::from("/api/me"), String::from("/api/facets"), list];
-    // In the canonical form the app fetches (`/issues/007` opens issue 7). Anything that isn't
-    // an id in range gets no preload.
-    if let Some(id) = path
-        .strip_prefix("/issues/")
-        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|id| id.parse::<i64>().ok())
+    // In the canonical form the app fetches (`/acme/web/issues/007` opens number 7). Anything
+    // that isn't a number in range, or names an owner or repo GitHub wouldn't (whose escaping
+    // might differ from the app's), gets no preload.
+    let name = |n: &str| {
+        n.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    if let Some((owner, repo, number)) = issue_at(path)
+        .filter(|(owner, repo, number)| {
+            name(owner) && name(repo) && number.bytes().all(|b| b.is_ascii_digit())
+        })
+        .and_then(|(owner, repo, number)| Some((owner, repo, number.parse::<i64>().ok()?)))
     {
-        hrefs.push(format!("/api/issues/{id}"));
+        hrefs.push(format!("/api/at/{owner}/{repo}/{number}"));
     }
     hrefs
         .iter()
