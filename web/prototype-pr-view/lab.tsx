@@ -211,6 +211,7 @@ const s = stylex.create({
   head2: { fill: pal.unchanged },
   headHot: { fill: colors.accent },
   trunk: { fill: "none", opacity: 0.8, stroke: pal.unchanged, strokeLinecap: "butt", strokeLinejoin: "round", strokeWidth: "var(--tw)" },
+  trunkChanged: { stroke: pal.modified },
   trunkHot: { opacity: 0.9, stroke: colors.accent },
   trunkHit: { cursor: "pointer", fill: "none", pointerEvents: "stroke", stroke: "transparent", strokeWidth: 18 },
   card: {
@@ -227,7 +228,10 @@ const s = stylex.create({
     width: 320,
     zIndex: 3,
   },
-  cardHead: { color: colors.muted, fontSize: 11, padding: "2px 6px 6px" },
+  cardHead: { alignItems: "center", color: colors.muted, cursor: "grab", display: "flex", fontSize: 11, gap: 8, padding: "2px 2px 6px 6px", touchAction: "none", userSelect: "none" },
+  cardGrab: { cursor: "grabbing" },
+  cardTitle: { flex: 1 },
+  cardClose: { backgroundColor: "transparent", border: "none", borderRadius: 4, color: colors.muted, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "2px 6px" },
   row: { borderRadius: 4, cursor: "default", padding: "3px 6px" },
   rowHot: { backgroundColor: colors.hover },
 });
@@ -274,7 +278,10 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
   const [scale, setScale] = createSignal(num(`${props.id}z`, 0.5));
   const [drawn, setDrawn] = createSignal<Drawn | null>(null);
   const [hover, setHover] = createSignal<{ node?: string; line?: string; trunk?: string } | null>(null);
-  const [card, setCard] = createSignal<{ trunk: Trunk; x: number; y: number } | null>(null);
+  /** The trunk's card: shown while the pointer is on the trunk, or pinned by a click (then it stays, and drags by its head). */
+  const [card, setCard] = createSignal<{ trunk: Trunk; x: number; y: number; pinned: boolean } | null>(null);
+  const [dragging, setDragging] = createSignal<{ dx: number; dy: number } | null>(null);
+  addEventListener("keydown", (e) => e.key === "Escape" && (setCard(null), setRow(null)));
   const [row, setRow] = createSignal<string | null>(null);
   let ticket = 0;
   createMemo(() => {
@@ -372,7 +379,7 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
           )}
         </Show>
       </div>
-      <div {...stylex.attrs(s.scroll)} onScroll={() => setCard(null)}>
+      <div {...stylex.attrs(s.scroll)} onScroll={() => !card()?.pinned && setCard(null)}>
         <Show when={drawn()}>
           {(d) => (
             <svg width={d().width * scale()} height={d().height * scale()} viewBox={`0 0 ${d().width} ${d().height}`} onMouseLeave={() => setHover(null)}>
@@ -409,7 +416,7 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
                     <path
                       d={rounded(t.pts)}
                       style={{ "--tw": `${t.width}px` }}
-                      {...stylex.attrs(s.trunk, (card()?.trunk.key === t.key || hover()?.trunk === t.key) && s.trunkHot, lit().size > 0 && !t.members.some((m) => lit().has(m)) && s.lineDim)}
+                      {...stylex.attrs(s.trunk, t.members.some((m) => lineBy.get(m)!.change !== "unchanged") && s.trunkChanged, (card()?.trunk.key === t.key || hover()?.trunk === t.key) && s.trunkHot, lit().size > 0 && !t.members.some((m) => lit().has(m)) && s.lineDim)}
                     />
                   </Show>
                 )}
@@ -421,10 +428,16 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
                     {...stylex.attrs(s.trunkHit)}
                     onMouseEnter={(e) => {
                       setHover({ trunk: t.key });
-                      if (look() === "popover") {
+                      if (look() === "popover" && !card()?.pinned) {
                         const box = (e.currentTarget.ownerSVGElement!.parentElement!.parentElement as HTMLElement).getBoundingClientRect();
-                        setCard({ trunk: t, x: e.clientX - box.left + 12, y: e.clientY - box.top + 12 });
+                        setCard({ trunk: t, x: e.clientX - box.left + 12, y: e.clientY - box.top + 52, pinned: false });
                       }
+                    }}
+                    onClick={(e) => {
+                      // A click pins the card (any look): it stays until closed, and drags by its head.
+                      const box = (e.currentTarget.ownerSVGElement!.parentElement!.parentElement as HTMLElement).getBoundingClientRect();
+                      const c = card();
+                      setCard(c && c.trunk.key === t.key ? { ...c, pinned: true } : { trunk: t, x: e.clientX - box.left + 12, y: e.clientY - box.top + 52, pinned: true });
                     }}
                     onMouseLeave={() => look() !== "popover" && setHover(null)}
                   />
@@ -468,8 +481,31 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
       </div>
       <Show when={card()}>
         {(c) => (
-          <div style={{ "--x": `${c().x}px`, "--y": `${c().y + 40}px` }} {...stylex.attrs(s.card)} onMouseLeave={() => (setCard(null), setRow(null), setHover(null))}>
-            <div {...stylex.attrs(s.cardHead)}>{c().trunk.members.length} lines share this stretch</div>
+          <div style={{ "--x": `${c().x}px`, "--y": `${c().y}px` }} {...stylex.attrs(s.card)} onMouseLeave={() => !c().pinned && (setCard(null), setRow(null), setHover(null))}>
+            <div
+              {...stylex.attrs(s.cardHead, dragging() !== null && s.cardGrab)}
+              onPointerDown={(e) => {
+                if ((e.target as HTMLElement).closest("button")) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                // Grabbing the head pins the card too.
+                setCard({ ...c(), pinned: true });
+                setDragging({ dx: e.clientX - c().x, dy: e.clientY - c().y });
+              }}
+              onPointerMove={(e) => {
+                const g = dragging();
+                if (g) setCard({ ...c(), x: e.clientX - g.dx, y: e.clientY - g.dy });
+              }}
+              onPointerUp={() => setDragging(null)}
+            >
+              <span {...stylex.attrs(s.cardTitle)}>
+                {c().trunk.members.length} lines share this stretch{c().pinned ? "" : " · click the trunk to keep this"}
+              </span>
+              <Show when={c().pinned}>
+                <button {...stylex.attrs(s.cardClose)} aria-label="Close" onClick={() => (setCard(null), setRow(null), setHover(null))}>
+                  ×
+                </button>
+              </Show>
+            </div>
             <For each={c().trunk.members}>
               {(k) => {
                 const l = lineBy.get(k)!;
