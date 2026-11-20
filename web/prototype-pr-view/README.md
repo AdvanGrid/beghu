@@ -81,3 +81,14 @@ All four roll a purpose's parts up to a budget of blocks, folding siblings by ki
 too many ("middleware in 21 services"). `node web/prototype-pr-view/make-synthetic.ts` writes a
 made-up many-purpose PR (`?a=acme-shop-77`): 256 parts, a tenant-isolation purpose over about 110 of
 them, five purposes that share parts, and a conflict reaching unchanged code outside the diff.
+
+## Our layout for nested blocks (#166)
+
+`nested-layout.ts` lays out open blocks with our own engine (`own-layout.ts`, street routing): each
+open block's inside is laid out by the same engine, its lines leaving through stubs on the frame's
+edge, and the scope above lays the frame out as one big part with those ports. Open
+`nested.html?a=<name>`: click a block to open or fold it (the bar says what moved), "Open all"
+for Clusters fully open, the counts either on the line (room made in each gutter) or in the trunk's
+card, and "Phone" for a 390 px pane driven by taps (tap picks, its lines are rows; double tap opens).
+`?x=3` lays out three copies of the analysis. `node web/prototype-pr-view/nested-bench.ts [name] [times]`
+times the layout outside the browser and counts what moves when a block opens or folds.
