@@ -54,9 +54,12 @@ bottom; `?wt=0` is the old stated-rule panel, `[` `]` now switch the legend). Th
 `purpose.ts`-shaped data from `data/purposes/<name>.json` (gitignored: it quotes the PR and its
 issues), hand-written for #2627, beside the code view's analysis.
 
-- **A, Reader:** three sentences (intro, journey, destination), then the next level as a list.
+- **A, Reader (chosen):** three sentences (intro, journey, destination), then the next level as a list.
 - **B, Tour:** one step at a time; each step lights and moves the canvas, "Go in" stands on it.
 - **C, Crossing:** one sentence, then tables of purposes × parts.
 
 A purpose lights the parts and lines that serve it (the rest fades); hovering a stop, a role or a
 conflict lights what it names. Conflicts marked "made up" are invented where #2627 had none of that kind.
+
+A conflict is a question with one row per side: who says it, and what, in a few words (`says`). A
+row opens to the whole fact and its source.
