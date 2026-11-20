@@ -4,6 +4,7 @@
 // even one GitHub may not have; users and teams always go to GitHub.
 import type { RefTarget } from "../bindings/RefTarget";
 import type { MediaLinks } from "./media";
+import { issuePath } from "../at";
 
 /** A post's place (CONTEXT.md): the issue or PR it belongs to, as the server's `markdown::Place`. */
 export type Place = {
@@ -46,7 +47,7 @@ function sameRepo({ place }: Links, owner: string, repo: string): boolean {
 export function issueLink(links: Links, owner: string, repo: string, number: number, comment?: number): IssueLink {
   const label = `${sameRepo(links, owner, repo) ? `#${number}` : `${owner}/${repo}#${number}`}${comment === undefined ? "" : " (comment)"}`;
   const target = links.refs(refKey(owner, repo, number));
-  if (target) return { inApp: true, href: `/issues/${target.id}${links.search}`, label, target };
+  if (target) return { inApp: true, href: `${issuePath({ kind: target.kind, owner, repo, number })}${links.search}`, label, target };
   // GitHub redirects /issues/n to /pull/n for a PR.
   const fragment = comment === undefined ? "" : `#issuecomment-${comment}`;
   return { inApp: false, href: `https://github.com/${owner}/${repo}/issues/${number}${fragment}`, label };
@@ -72,7 +73,8 @@ export function linkHref(links: Links, href: string): { href: string; inApp: boo
   const m = GITHUB_ITEM.exec(href);
   const target = m && links.refs(refKey(m[1]!, m[2]!, Number(m[3])));
   if (!target) return { href, inApp: false };
-  return { href: `/issues/${target.id}${links.search}`, inApp: true, comment: m[4] === undefined ? undefined : Number(m[4]) };
+  const [, owner, repo, number] = m;
+  return { href: `${issuePath({ kind: target.kind, owner: owner!, repo: repo!, number: Number(number) })}${links.search}`, inApp: true, comment: m[4] === undefined ? undefined : Number(m[4]) };
 }
 
 /**

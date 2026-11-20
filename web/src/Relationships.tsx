@@ -25,6 +25,7 @@ import { ChunkFailed } from "./router";
 import { endOf, keyOf, refOf, related, type ShownRelated } from "./related";
 import { colors, fonts } from "./tokens.stylex";
 import type { RelatedLook } from "./writes";
+import { issuePath } from "./at";
 
 /** The relationship picker: loaded the first time one opens. */
 const RelationshipPicker = lazy(
@@ -51,7 +52,7 @@ function send(op: Op, look: { relationship: RelatedLook }): void {
 
 /** Where a related issue opens: in the panel, or on GitHub for a stub (or one not read yet). */
 function hrefOf(r: ShownRelated, search: string): string {
-  return r.stub || r.id === null ? `https://github.com/${r.owner}/${r.repo}/${r.kind === "pr" ? "pull" : "issues"}/${r.number}` : `/issues/${r.id}${search}`;
+  return r.stub || r.id === null ? `https://github.com${issuePath(r)}` : `${issuePath(r)}${search}`;
 }
 
 /** A related issue's title as a link: in the panel, or out to GitHub with ↗. */

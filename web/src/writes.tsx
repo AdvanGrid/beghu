@@ -48,7 +48,6 @@ import {
   Unreachable,
   getComments,
   getMe,
-  issueId,
   sendOp,
   signIn,
   mergeRefs,
@@ -58,6 +57,7 @@ import {
   type IssueOp as Op,
   type OpReply,
 } from "./api";
+import { atOfPath, idAt, pathOf } from "./at";
 import { touch } from "./keys";
 import type { Label } from "./bindings/Label";
 import type { RelatedEnd } from "./bindings/RelatedEnd";
@@ -1044,7 +1044,12 @@ function CommentNote(props: { op: string; at: number }) {
  */
 function Status() {
   const location = useLocation();
-  const open = () => issueId(/^\/issues\/([^/]+)$/.exec(location.pathname)?.[1]);
+  // A memo: what the tab learns of other issues (at.ts) mustn't rebuild the failures under the
+  // pointer, only the open issue changing.
+  const open = createMemo(() => {
+    const a = atOfPath(location.pathname);
+    return a && idAt(a);
+  });
   const failed = createMemo(() => ops().filter((p) => p.phase === "failed" && !involves(p, open())));
   const sending = createMemo(() => ops().filter((p) => p.phase === "sending"));
   const quiet = () => {
@@ -1057,7 +1062,7 @@ function Status() {
   const line = (p: Pending) => (
     <>
       <span {...stylex.attrs(s.failed)}>{failedLine(p, p.ref)}</span>
-      <Actions p={p} open={`/issues/${p.op.issue}${location.search}`} />
+      <Actions p={p} open={pathOf(p.op.issue, location.search)} />
     </>
   );
   const failedCreate = () => (createNote()?.failed ? createNote()!.Note : undefined);

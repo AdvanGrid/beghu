@@ -14,6 +14,7 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { SHOWS_WITHIN_MS } from "./push";
 import { devCtl } from "./stack";
+import { urlOf } from "./urls";
 
 type Detail = { id: number; repo: string; number: number; title: string; author: { login: string } | null };
 
@@ -45,9 +46,9 @@ async function othersIssues(page: Page, repo: string, login: string, n: number):
   throw new Error(`fewer than ${n} open issues of others' in ${repo}`);
 }
 
-/** Opens `/issues/:id`, and waits for its detail and its composer. */
+/** Opens the issue with id `id` at its URL, and waits for its detail and its composer. */
 async function openIssue(page: Page, id: number): Promise<void> {
-  await page.goto(`/issues/${id}`);
+  await page.goto(await urlOf(page, id));
   await expect(page.locator(`[data-perf="detail"][data-id="${id}"]`)).toBeVisible();
   await expect(composer(page)).toBeVisible();
 }

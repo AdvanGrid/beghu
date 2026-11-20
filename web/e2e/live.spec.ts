@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, unique } from "./claims";
 import { recordPushes, SHOWS_WITHIN_MS, timeFromPush } from "./push";
+import { atApi, issueUrl } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -413,7 +414,7 @@ async function watchTitles(page: Page): Promise<() => Promise<string[]>> {
 test("a comment made on GitHub shows in the open issue within 2 s, in one request through its last loaded comment", async ({ page }) => {
   const issue = await issueBelowTheTop(page);
   const opened = listRefetch(page);
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   await expect(comments(page)).toHaveCount(issue.comments);
   // The new stream's opening reset has been handled: any refetch it caused has gone out.
@@ -461,7 +462,7 @@ test("a match that a push brings to the open issue later never scrolls it", asyn
   await page.setViewportSize({ width: 1280, height: 600 });
   const issue = await issueBelowTheTop(page);
   const word = `zq${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  await page.goto(`/issues/${issue.id}?q=` + encodeURIComponent(`is:open ${word}`));
+  await page.goto(issueUrl(issue, "?q=") + encodeURIComponent(`is:open ${word}`));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   // Its one page of comments is in, with no match: the opening reads have settled.
   await expect(comments(page)).toHaveCount(issue.comments);
@@ -484,13 +485,15 @@ test("a match that a push brings to the open issue later never scrolls it", asyn
 
 test("a push for an issue whose detail failed to load acts as Retry", async ({ page }) => {
   const issue = await issueBelowTheTop(page);
-  await page.route(`**/api/issues/${issue.id}`, (r) => r.fulfill({ status: 500, body: "{}" }));
+  // Its reads by id and by where it is (the URL's first read) both fail.
+  const reads = (u: URL) => u.pathname === `/api/issues/${issue.id}` || u.pathname === atApi(issue);
+  await page.route(reads, (r) => r.fulfill({ status: 500, body: "{}" }));
   // The new stream's opening reset retries too: let it fail before the read can succeed.
   const opened = listRefetch(page);
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await opened;
   await expect(page.locator('[data-perf="panel"]').getByText("Couldn't load this issue")).toBeVisible();
-  await page.unroute(`**/api/issues/${issue.id}`);
+  await page.unroute(reads);
   const errors: Error[] = [];
   page.on("pageerror", (e) => errors.push(e));
   const text = unique("Commented after a failure");

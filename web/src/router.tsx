@@ -1,6 +1,7 @@
-import { lazy } from "solid-js";
-import { createRouter, intentPreload, tapPreload } from "@solidjs/router";
-import { getIssue, issueId, preloadIssue } from "./api";
+import { lazy, untrack } from "solid-js";
+import { createRouter, intentPreload, tapPreload, type RoutePreloadFunc } from "@solidjs/router";
+import { getIssue, getIssueAt, preloadIssue } from "./api";
+import { at, atString, idAt } from "./at";
 
 /** A route's code failed to load: offline, or a deploy replaced the build it belongs to. */
 export class ChunkFailed extends Error {}
@@ -42,23 +43,29 @@ const PrefsPanel = lazy(
 );
 
 // The list is the root layout and always mounted, at `/issues` (`/` is the public site's landing
-// page, web/site/); the view lives in the query string. An open
-// issue is its own path (`/issues/:id`, with the view kept in the query string), shown in the
-// panel beside the list. Rows are plain <a href>s under the router's one delegated click
-// listener; hover and tap preload the panel's code (the router warms a route's lazy component
-// itself) and the issue's detail together, so a click finds both ready.
+// page, web/site/); the view lives in the query string. An open issue is its own path, GitHub's
+// (`/acme/web/issues/12`, `/acme/web/pull/7` for a PR, at.ts), with the view kept in the query
+// string, shown in the panel beside the list. Rows are plain <a href>s under the router's one
+// delegated click listener; hover and tap preload the panel's code (the router warms a route's
+// lazy component itself) and the issue's detail together, so a click finds both ready.
+const issue = {
+  preload: (({ params, intent }) => {
+    const where = at(params.owner ?? "", params.repo ?? "", params.number ?? "");
+    const id = untrack(() => idAt(where));
+    // An issue the tab hasn't read a row or detail of (a cold load, a link from a post) reads its
+    // detail by where it is, and learns its id from that.
+    if (id === undefined) void getIssueAt(atString(where));
+    else if (intent === "preload") preloadIssue(id);
+    else void getIssue(id);
+  }) satisfies RoutePreloadFunc,
+  component: IssuePanel,
+};
+
 export const Router = createRouter({
   routes: [
     { path: "/issues", component: () => null },
-    {
-      path: "/issues/:id",
-      preload: ({ params, intent }) => {
-        const id = issueId(params.id);
-        if (intent === "preload") preloadIssue(id);
-        else void getIssue(id);
-      },
-      component: IssuePanel,
-    },
+    { path: "/:owner/:repo/issues/:number", ...issue },
+    { path: "/:owner/:repo/pull/:number", ...issue },
     // The create form opens in the panel, the view kept in the query string.
     { path: "/new", component: CreatePanel },
     // Repo picking takes the panel's place beside the list.

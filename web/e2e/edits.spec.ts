@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, shared, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
+import { atApi, issueUrl, type Where } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -45,10 +46,10 @@ const conflict = (page: Page) => page.locator('[data-perf="edit-conflict"]');
 /** An editor's first opening loads its code (compiled on demand by the dev server) and, for a body, its Markdown. */
 const OPENS_WITHIN_MS = 15_000;
 
-/** Opens `/issues/:id` and waits for the stream's opening reset to have been handled. */
-async function open(page: Page, id: number): Promise<void> {
-  const reset = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/issues/${id}` && r.ok());
-  await page.goto(`/issues/${id}`);
+/** Opens the issue's URL and waits for the stream's opening reset to have been handled. */
+async function open(page: Page, issue: Where & { id: number }): Promise<void> {
+  const reset = page.waitForResponse((r) => [`/api/issues/${issue.id}`, atApi(issue)].includes(new URL(r.url()).pathname) && r.ok());
+  await page.goto(issueUrl(issue));
   await reset;
   await expect(page.locator('[data-perf="composer"]')).toBeVisible();
 }
@@ -96,7 +97,7 @@ test.afterEach(async () => {
 test("e edits the title in place: Escape cancels, Enter saves, shown at once and then as GitHub has it", async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     const was = (await title(page).textContent())!.trim();
     await page.locator('[data-perf="detail"]').focus();
     await page.keyboard.press("e");
@@ -129,7 +130,7 @@ test("e edits the title in place: Escape cancels, Enter saves, shown at once and
 test("a live change to the body under edit shows at once; saving gives a 409 with both, and Overwrite with mine wins", async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     await page.locator('[data-perf="edit-body"]').click();
     await expect(editBox(page)).toBeFocused({ timeout: OPENS_WITHIN_MS });
     const mine = unique("My description");
@@ -161,7 +162,7 @@ test("a live change to the body under edit shows at once; saving gives a 409 wit
 test("an Overwrite with mine that fails otherwise keeps the editor on GitHub's body, not changed since", async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     await page.locator('[data-perf="edit-body"]').click();
     await expect(editBox(page)).toBeFocused({ timeout: OPENS_WITHIN_MS });
     const mine = unique("My description");
@@ -188,7 +189,7 @@ test("an Overwrite with mine that fails otherwise keeps the editor on GitHub's b
 test("Discard mine closes the editor on GitHub's title", async ({ page }) => {
   const issue = await claimBelowTheTop(page);
   try {
-    await open(page, issue.id);
+    await open(page, issue);
     await page.locator('[data-perf="edit-title"]').click();
     await expect(editBox(page)).toBeFocused({ timeout: OPENS_WITHIN_MS });
     await editBox(page).fill(unique("Mine"));
@@ -222,12 +223,12 @@ test("closing the tab with an open editor asks first; an edit on its way alone d
       return asked;
     };
 
-    await open(page, issue.id);
+    await open(page, issue);
     await page.locator('[data-perf="edit-title"]').click();
     await editBox(page).fill(unique("Unsaved"));
     expect(await leave()).toBe(true);
 
-    await open(page, issue.id);
+    await open(page, issue);
     await fake("/faults/latency", { endpoint: ISSUE(issue), ms: 8000, count: 1 });
     await page.locator('[data-perf="edit-title"]').click();
     await editBox(page).fill(unique("On its way"));

@@ -3,6 +3,7 @@
 // in pickers.spec.ts. Rebinding, which changes the account's keymap for every tab, is in
 // prefs.spec.ts.
 import { expect, test, type Page } from "@playwright/test";
+import { urlRe, whereIs } from "./urls";
 
 const rows = (page: Page) => page.locator('[data-perf="row"]');
 const detail = (page: Page) => page.locator('[data-perf="detail"]');
@@ -68,7 +69,7 @@ test("j and k step through the list with the panel following, and a preloaded ne
   await page.keyboard.press("j");
   await expect(detail(page)).toHaveAttribute("data-id", String(second), { timeout: AT_ONCE_MS });
   expect(reads()).toBe(0);
-  await expect(page).toHaveURL(new RegExp(`/issues/${second}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(await whereIs(page, Number(second)))}$`));
   await expect(rows(page).nth(1)).toHaveAttribute("aria-selected", "true");
   await expect(rows(page).nth(0)).toHaveAttribute("aria-selected", "false");
 
@@ -79,7 +80,7 @@ test("j and k step through the list with the panel following, and a preloaded ne
 test("keys pressed faster than the panel opens each still step: five j open the fifth row", async ({ page }) => {
   const fifth = await rowId(page, 4);
   for (let i = 0; i < 5; i++) await page.keyboard.press("j");
-  await expect(page).toHaveURL(new RegExp(`/issues/${fifth}$`));
+  await expect(page).toHaveURL(new RegExp(`${urlRe(await whereIs(page, Number(fifth)))}$`));
   await expect(detail(page)).toHaveAttribute("data-id", String(fifth));
   await expect(rows(page).nth(4)).toHaveAttribute("aria-selected", "true");
 });
@@ -331,7 +332,7 @@ test("on an issue, l opens the labels picker: typing filters it and fires no key
   await expect(picker(page)).toHaveCount(0);
   await expect(page.locator('[data-perf="pick-labels"]')).toBeFocused();
   await expect(hints(page)).toHaveAttribute("data-area", "panel");
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}`));
+  await expect(page).toHaveURL(new RegExp(urlRe(await whereIs(page, Number(id)))));
 
   // From there the next row's key opens its picker.
   await page.keyboard.press("m");

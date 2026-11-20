@@ -63,12 +63,12 @@ async fn signing_in_lands_on_next_with_a_session_cookie_and_api_me_names_the_acc
     let (visited, res) = s
         .follow(
             &mut b,
-            "/auth/login?next=%2Fissues%2F5%3Fq%3Dx&login=ilze-k",
+            "/auth/login?next=%2Facme%2Fweb%2Fissues%2F5%3Fq%3Dx&login=ilze-k",
         )
         .await;
     assert_eq!(
         visited.last().unwrap(),
-        &format!("{}/issues/5?q=x", s.server)
+        &format!("{}/acme/web/issues/5?q=x", s.server)
     );
     assert!(res.status().is_success());
 

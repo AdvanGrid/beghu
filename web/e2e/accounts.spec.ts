@@ -4,6 +4,7 @@
 // test; nothing here changes an account for anyone else (lost-access.spec.ts does, serially).
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { bfcache } from "./bfcache";
+import { atApi, issueUrl, type Where } from "./urls";
 
 // Among the stale-page specs (spec #86): a side-by-side tab sees the switch with the browser's
 // back-forward cache on, as a person's browser has it.
@@ -195,10 +196,10 @@ test("a stale tab that opens another issue says why it can't, and its draft stay
   await openIssue(stale);
   const drafted = stale.url();
   await composer(stale).locator("textarea").fill("don't strand me");
-  const page = (await (await stale.request.get("/api/issues?q=sort:created-asc")).json()) as { rows: { id: number }[] };
-  const unread = page.rows.at(-1)!.id;
-  const prs = (await (await stale.request.get(`/api/issues?q=${encodeURIComponent("is:pr sort:created-asc")}`)).json()) as { rows: { id: number }[] };
-  const unreadPr = prs.rows.at(-1)!.id;
+  const page = (await (await stale.request.get("/api/issues?q=sort:created-asc")).json()) as { rows: Where[] };
+  const unread = page.rows.at(-1)!;
+  const prs = (await (await stale.request.get(`/api/issues?q=${encodeURIComponent("is:pr sort:created-asc")}`)).json()) as { rows: Where[] };
+  const unreadPr = prs.rows.at(-1)!;
 
   const other = await context.newPage();
   await other.goto("/issues");
@@ -208,20 +209,20 @@ test("a stale tab that opens another issue says why it can't, and its draft stay
 
   // Another issue, one the tab hasn't read (nor preloaded): beghu answers it as the browser's
   // other account, so the tab can't show it.
-  const openInApp = (id: number) =>
-    stale.evaluate((id) => {
+  const openInApp = (i: Where) =>
+    stale.evaluate((href) => {
       const a = document.createElement("a");
-      a.href = `/issues/${id}`;
+      a.href = href;
       document.body.append(a);
       a.click();
       a.remove();
-    }, id);
+    }, issueUrl(i));
   await openInApp(unread);
   const notice = stale.locator('[data-perf="detail-stale"]');
   await expect(notice).toContainText("This tab is on another account");
   await expect(stale.getByText("Couldn't load this issue")).toBeHidden();
   // A PR's panel says the same.
-  const refused = stale.waitForResponse((r) => new URL(r.url()).pathname === `/api/issues/${unreadPr}`);
+  const refused = stale.waitForResponse((r) => new URL(r.url()).pathname === atApi(unreadPr));
   await openInApp(unreadPr);
   expect((await refused).status()).toBe(409);
   await expect(notice).toContainText("This tab is on another account");

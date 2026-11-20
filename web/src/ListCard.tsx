@@ -9,6 +9,7 @@ import { blockerStatus, type CardAt } from "./cards";
 import { point, unpoint } from "./pointed";
 import { ago } from "./time";
 import { colors, fonts } from "./tokens.stylex";
+import { issuePath } from "./at";
 
 /** The card's width, as its styles set it. */
 const WIDTH = { blockers: 390, labels: 240 };
@@ -70,7 +71,8 @@ function Item(props: { b: Blocker; search: string }) {
           : b().updated_at === null
             ? ""
             : `updated ${ago(b().updated_at!)} ago`;
-  const href = () => (b().stub ? `https://github.com/${b().owner}/${b().repo}/issues/${b().number}` : `/issues/${b().id}${props.search}`);
+  // Only issues block.
+  const href = () => (b().stub ? `https://github.com/${b().owner}/${b().repo}/issues/${b().number}` : `${issuePath({ ...b(), kind: "issue" })}${props.search}`);
   return (
     <a
       href={href()}

@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { status } from "./stack";
+import { issueUrl } from "./urls";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -44,12 +45,15 @@ test.beforeAll(async () => {
   stub = s.unlinked_stubs[0]!;
 });
 
-/** Signed in as tomsj (admin everywhere), at issue `id`'s panel. */
-async function openIssue(page: Page, id: number): Promise<void> {
+/** A fixture issue's URL in the app (the fixture's repos are all acme's). */
+const url = (u: Unlinked) => issueUrl({ owner: "acme", ...u });
+
+/** Signed in as tomsj (admin everywhere), at the issue's panel. */
+async function openIssue(page: Page, u: Unlinked): Promise<void> {
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/issues");
-  await page.goto(`/issues/${id}`);
-  await expect(page.locator('[data-perf="detail"]')).toHaveAttribute("data-id", String(id));
+  await page.goto(url(u));
+  await expect(page.locator('[data-perf="detail"]')).toHaveAttribute("data-id", String(u.id));
   // The writes code (with the composer) is in.
   await expect(page.locator('[data-perf="composer"]')).toBeVisible();
 }
@@ -78,7 +82,7 @@ test("each relationship kind is picked from the Links row, shows on both ends, a
   const [me, other] = [web[0]!, web[1]!];
   const far = api[1]!;
   try {
-    await openIssue(page, me.id);
+    await openIssue(page, me);
     // Blocked by, across repos, by `repo#n`; it shows at once.
     await pick(page, page.locator('[data-perf="add-blocked_by"]'), ref(far), ref(far));
     await expect(item(page, "blocked_by", far.id)).toBeVisible();
@@ -96,14 +100,14 @@ test("each relationship kind is picked from the Links row, shows on both ends, a
     await settled(page);
 
     // The other ends show it, from GitHub's data.
-    await page.goto(`/issues/${other.id}`);
+    await page.goto(url(other));
     await expect(item(page, "blocked_by", me.id)).toBeVisible();
     await expect(relates(page, me.id)).toBeVisible();
-    await page.goto(`/issues/${far.id}`);
+    await page.goto(url(far));
     await expect(item(page, "blocking", me.id)).toBeVisible();
 
     // × on hover removes each, here and on the other end.
-    await page.goto(`/issues/${me.id}`);
+    await page.goto(url(me));
     for (const row of [item(page, "blocked_by", far.id), item(page, "blocking", other.id), relates(page, other.id)]) {
       const x = row.locator('[data-perf="remove-relationship"]');
       // Away from every row (the last removal moved the next one under the pointer).
@@ -115,7 +119,7 @@ test("each relationship kind is picked from the Links row, shows on both ends, a
       await expect(row).toBeHidden();
     }
     await settled(page);
-    await page.goto(`/issues/${other.id}`);
+    await page.goto(url(other));
     await expect(page.locator('[data-perf="blocks"]')).toBeHidden();
     await expect(page.locator('[data-perf="relates"]')).toBeHidden();
   } finally {
@@ -128,7 +132,7 @@ test("a pasted URL of an unsynced repo's issue relates a stub; a refused write r
   const me = web[2]!;
   const sdk = `partner-sdk#${stub}`;
   try {
-    await openIssue(page, me.id);
+    await openIssue(page, me);
     await page.locator('[data-perf="add-relates"]').click();
     const picker = page.locator('[data-perf="relationship-picker"]');
     await picker.locator("input").fill(`https://github.com/acme/partner-sdk/issues/${stub}`);
@@ -163,7 +167,7 @@ test("sub-issues reorder by their grip and their ⋯ menu (by pointer or keys), 
   const [me, a, b, c, there] = [web[4]!, web[5]!, web[6]!, web[7]!, api[2]!];
   const order = async () => (await subRows(page).evaluateAll((rs) => rs.map((r) => Number(r.getAttribute("data-id")))));
   try {
-    await openIssue(page, me.id);
+    await openIssue(page, me);
     for (const child of [a, b, c]) await pick(page, page.locator('[data-perf="add-sub"]'), `#${child.number}`, ref(child));
     await expect(subRows(page)).toHaveCount(3);
     await settled(page);
@@ -229,11 +233,11 @@ test("sub-issues reorder by their grip and their ⋯ menu (by pointer or keys), 
     await picker.locator(`[data-perf="relationship-option"][data-ref="${ref(there)}"]`).click();
     await expect.poll(order).toEqual([c.id, a.id]);
     await settled(page);
-    await page.goto(`/issues/${b.id}`);
+    await page.goto(url(b));
     await expect(page.locator('[data-perf="parent"]')).toContainText(ref(there));
 
     // Remove, from the menu.
-    await page.goto(`/issues/${me.id}`);
+    await page.goto(url(me));
     await menu(a.id).click();
     await page.getByRole("menuitem", { name: "Remove" }).click();
     await expect.poll(order).toEqual([c.id]);
@@ -265,7 +269,7 @@ test("a relationship GitHub would refuse is listed with its reason and can't be 
   const [parent, child] = [web[0]!, web[1]!];
   try {
     devCtl(["fake", "edit", ref(parent), "--add-sub-issue", ref(child)]);
-    await openIssue(page, child.id);
+    await openIssue(page, child);
     await expect(page.locator('[data-perf="parent"]')).toContainText(ref(parent), { timeout: 20_000 });
     await page.locator('[data-perf="add-sub"]').click();
     const picker = page.locator('[data-perf="relationship-picker"]');

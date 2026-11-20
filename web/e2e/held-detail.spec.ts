@@ -9,6 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { claimBelowTheTop, claimLongThread, issuesBelowTheTop, unique, type Issue } from "./claims";
 import { SHOWS_WITHIN_MS } from "./push";
 import { devCtl } from "./stack";
+import { issueUrl } from "./urls";
 
 test.describe.configure({ mode: "serial" });
 
@@ -25,7 +26,7 @@ const total = (page: Page) => page.locator('[data-perf="comment-total"]');
 async function open(page: Page, issue: Issue): Promise<void> {
   const refetched = page.waitForResponse((r) => r.url().includes(`/api/issues/${issue.id}?through=`) && r.ok(), { timeout: 3000 }).catch(() => {});
   const stream = page.waitForResponse((r) => r.url().includes("/api/stream"));
-  await page.goto(`/issues/${issue.id}`);
+  await page.goto(issueUrl(issue));
   await expect(detail(page)).toHaveAttribute("data-id", String(issue.id));
   await stream;
   await refetched;

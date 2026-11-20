@@ -275,13 +275,47 @@ fn gone(c: &Reader, id: i64) -> QueryResult<ApiError> {
     })
 }
 
+/// An issue's or PR's detail by its database id: `GET /api/issues/:id`, what the open issue's
+/// refetches and the list's preloads read.
 pub async fn issue(
     State(app): State<App>,
     Extension(s): Extension<Session>,
     Path(raw): Path<String>,
     Query(dq): Query<DetailQuery>,
 ) -> Result<Json<IssueDetail>, ApiError> {
-    let id = issue_id(&raw)?;
+    detail(app, s, issue_id(&raw)?, dq).await
+}
+
+/// An issue's or PR's detail by where GitHub has it: `GET /api/at/:owner/:repo/:number`, what an
+/// issue's URL (`/acme/web/issues/12`) opens with before the tab knows its id. The number is
+/// digits only, as the app's routes match it. Anything the mirror doesn't hold there is
+/// Gone; a stub, or an issue in a repo no longer synced, NoAccess, as by id.
+pub async fn issue_at(
+    State(app): State<App>,
+    Extension(s): Extension<Session>,
+    Path((owner, repo, number)): Path<(String, String, String)>,
+    Query(dq): Query<DetailQuery>,
+) -> Result<Json<IssueDetail>, ApiError> {
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ApiError::Gone);
+    }
+    let number = issue_id(&number)?;
+    let id = app
+        .mirrors()
+        .read(s.account, Caller::Request, move |c| {
+            Ok(q::item_at(c, &owner, &repo, number)?.map(|i| i.id))
+        })
+        .await?
+        .ok_or(ApiError::Gone)?;
+    detail(app, s, id, dq).await
+}
+
+async fn detail(
+    app: App,
+    s: Session,
+    id: i64,
+    dq: DetailQuery,
+) -> Result<Json<IssueDetail>, ApiError> {
     let span = match dq.through.as_deref() {
         Some(t) => Span::Through(t.parse()?),
         None => Span::First,

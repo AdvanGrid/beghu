@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { devCtl, status } from "./stack";
+import { issueUrl, urlRe } from "./urls";
 
 test.describe.configure({ mode: "serial" });
 
@@ -27,6 +28,8 @@ async function summary(): Promise<{ unlinked: Unlinked[] }> {
 }
 
 const ref = (u: Unlinked) => `${u.repo}#${u.number}`;
+/** The issue's path in the app (the fixture's repos are all acme's), as a RegExp source. */
+const at = (u: Unlinked, search = "") => urlRe({ owner: "acme", ...u }, search);
 const row = (page: Page, id: number) => page.locator(`[data-perf="row"][data-id="${id}"]`);
 const tree = (page: Page) => page.locator('[data-perf="tree"]');
 const list = (page: Page) => page.locator('[data-perf="list"]');
@@ -109,8 +112,9 @@ test("?mode=tree round-trips through the toggle, its key, links, Back and Forwar
   // A row is a link that keeps the mode.
   const first = tree(page).locator('[data-perf="row"]').first();
   const id = await first.getAttribute("data-id");
+  const path = new URL((await first.getAttribute("href"))!, page.url()).pathname;
   await first.click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}\\?.*mode=tree`));
+  await expect(page).toHaveURL(new RegExp(`${path}\\?.*mode=tree`));
   await expect(tree(page)).toBeVisible();
   // Back to the tree without the issue, back to the list, and forward again.
   await page.goBack();
@@ -122,7 +126,7 @@ test("?mode=tree round-trips through the toggle, its key, links, Back and Forwar
   await page.goForward();
   await expect(tree(page)).toBeVisible();
   await page.goForward();
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}\\?`));
+  await expect(page).toHaveURL(new RegExp(`${path}\\?`));
   // A reload, and a link straight to it, open the tree.
   await page.reload();
   await expect(tree(page)).toBeVisible();
@@ -131,7 +135,7 @@ test("?mode=tree round-trips through the toggle, its key, links, Back and Forwar
   await page.locator("body").click({ position: { x: 1, y: 1 } });
   await page.keyboard.press("t");
   await expect(list(page)).toBeVisible();
-  await expect(page).toHaveURL(new RegExp(`/issues/${id}$`));
+  await expect(page).toHaveURL(new RegExp(`${path}$`));
 });
 
 test("a filtered tree shows matches inside dimmed ancestors opened along each path, readable in both themes, with ← and → as ARIA's tree has them", async ({ page }) => {
@@ -170,26 +174,26 @@ test("a filtered tree shows matches inside dimmed ancestors opened along each pa
     // Context is selectable: it opens in the panel. ← on an open node closes it, on a closed one
     // steps to its parent; → opens it, then steps to its first child.
     await row(page, mid.id).click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${mid.id}\\?`));
+    await expect(page).toHaveURL(new RegExp(`${at(mid)}\\?`));
     await row(page, mid.id).focus();
     await page.keyboard.press("ArrowLeft");
     await expect(row(page, mid.id)).toHaveAttribute("aria-expanded", "false");
     await expect(row(page, low.id)).toHaveCount(0);
     await page.keyboard.press("ArrowLeft");
-    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?`));
+    await expect(page).toHaveURL(new RegExp(`${at(top)}\\?`));
     await page.keyboard.press("ArrowDown");
-    await expect(page).toHaveURL(new RegExp(`/issues/${mid.id}\\?`));
+    await expect(page).toHaveURL(new RegExp(`${at(mid)}\\?`));
     await page.keyboard.press("ArrowRight");
     await expect(row(page, low.id)).toBeVisible();
     await page.keyboard.press("ArrowRight");
-    await expect(page).toHaveURL(new RegExp(`/issues/${low.id}\\?`));
+    await expect(page).toHaveURL(new RegExp(`${at(low)}\\?`));
 
     // Switching to the tree keeps the selection, or moves it to the nearest ancestor shown: in the
     // unfiltered tree, `top` is a closed root, so the issue under it shows as it.
-    await page.goto(`/issues/${low.id}`);
+    await page.goto(issueUrl({ owner: "acme", ...low }));
     await expect(page.locator('[data-perf="detail"]')).toHaveAttribute("data-id", String(low.id));
     await page.locator('[data-perf="mode-tree"]').click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${top.id}\\?.*mode=tree`));
+    await expect(page).toHaveURL(new RegExp(`${at(top)}\\?.*mode=tree`));
     await expect(row(page, top.id)).toHaveAttribute("aria-selected", "true");
   } finally {
     await unlinkAll(page, [top, mid, low]);

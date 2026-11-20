@@ -540,6 +540,10 @@ pub struct OpReply {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<Unapplied>>", optional)]
     pub unapplied: Vec<Unapplied>,
+    /// A create's new issue's number, for its URL (`/acme/web/issues/12`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub number: Option<i64>,
 }
 
 /// What GitHub left out of a write it made: each as the write that would apply it, and why, in
@@ -1191,6 +1195,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 body: None,
                 refs,
                 unapplied: Vec::new(),
+                number: None,
             })
         }
         // GitHub answers with the labels the issue has afterwards, but not the issue's
@@ -1220,6 +1225,7 @@ async fn run(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome {
                 body: None,
                 refs: Refs::new(),
                 unapplied: Vec::new(),
+                number: None,
             })
         }
         Op::Create { .. } => Err(Failure::Internal("a new issue names no issue".into())),
@@ -1510,6 +1516,7 @@ async fn create(app: &App, account: i64, op: &Op, sending: &Sending) -> Outcome 
         body: None,
         refs: Refs::new(),
         unapplied: left,
+        number: Some(made.number),
     })
 }
 
@@ -1569,6 +1576,7 @@ async fn edited(app: &App, account: i64, t: &q::OpTargetRow, body: Option<String
         body,
         refs,
         unapplied: Vec::new(),
+        number: None,
     }
 }
 

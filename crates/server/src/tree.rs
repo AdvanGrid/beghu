@@ -16,8 +16,8 @@
 //! open it; with `all`, opened to the bottom), and `sel` (the selection: the answer says where it
 //! shows, itself or the nearest ancestor that does).
 //!
-//! With `focus`, the answer is Focus view's tree instead (`mirror_db::focus`): one root, the issue
-//! in focus, and what's reached down from it along `chain` (`parent`, the default: sub-issues;
+//! With `focus` (`owner/repo/number`), the answer is Focus view's tree instead
+//! (`mirror_db::focus`): one root, the issue in focus, and what's reached down from it along `chain` (`parent`, the default: sub-issues;
 //! `blocking`: what each issue blocks), with linked PRs as leaves, filtered by the view as the
 //! tree is. An issue reached again after its first place is a `repeat`, with nothing under it. The
 //! root opens by default, as context does; it's one page, so `after` and `through` don't apply.
@@ -211,8 +211,9 @@ pub struct TreeQuery {
     /// With `under`: every node under it open (`1`).
     all: Option<String>,
     sel: Option<i64>,
-    /// Focus view: the issue in focus, the tree's one root.
-    focus: Option<i64>,
+    /// Focus view: the issue in focus, the tree's one root, by where GitHub has it:
+    /// `owner/repo/number`, as the app's URL names it.
+    focus: Option<String>,
     /// With `focus`: `parent` (sub-issues, the default) or `blocking` (what each issue blocks).
     chain: Option<String>,
 }
@@ -383,6 +384,7 @@ pub async fn tree(
         all: tq.under.is_some() && matches!(tq.all.as_deref(), Some("1" | "true")),
     };
     if let Some(root) = tq.focus {
+        let root = FocusAt::parse(&root);
         let chain = match tq.chain.as_deref() {
             None | Some("parent") => Chain::Sub,
             Some("blocking") => Chain::Blocks,
@@ -527,13 +529,38 @@ fn flatten_focus(
     out
 }
 
+/// The issue Focus view is on, as `?focus=` names it: `owner/repo/number`.
+struct FocusAt {
+    owner: String,
+    repo: String,
+    number: i64,
+}
+
+impl FocusAt {
+    /// Anything else names no issue, and its tree is empty, as for an issue the mirror doesn't
+    /// hold.
+    fn parse(s: &str) -> Option<Self> {
+        let mut parts = s.split('/');
+        let (owner, repo, number) = (parts.next()?, parts.next()?, parts.next()?);
+        let digits = !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit());
+        if parts.next().is_some() || owner.is_empty() || repo.is_empty() || !digits {
+            return None;
+        }
+        Some(Self {
+            owner: owner.into(),
+            repo: repo.into(),
+            number: number.parse().ok()?,
+        })
+    }
+}
+
 /// Focus view's tree (see the module's notes).
 #[allow(clippy::too_many_arguments)]
 async fn focus(
     app: &App,
     s: &Session,
     view: View,
-    root: i64,
+    root: Option<FocusAt>,
     chain: Chain,
     opens: Opens,
     under: Option<i64>,
@@ -549,6 +576,13 @@ async fn focus(
                 next: None,
                 last: None,
                 selected: None,
+            };
+            let root = match &root {
+                Some(at) => q::item_at(c, &at.owner, &at.repo, at.number)?.map(|i| i.id),
+                None => None,
+            };
+            let Some(root) = root else {
+                return Ok(empty);
             };
             let Some(focus) = Focus::build(c, root, chain)? else {
                 return Ok(empty);

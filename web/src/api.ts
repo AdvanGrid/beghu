@@ -30,6 +30,7 @@ import type { DropCheck } from "./bindings/DropCheck";
 import type { TreePage } from "./bindings/TreePage";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
+import { issuePath, learn, parseAt, pathOf } from "./at";
 
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
@@ -555,7 +556,25 @@ async function timed<T extends object>(url: string): Promise<T> {
   return stamp(await request<T>(url), at);
 }
 
-export const getIssues = query((search: string, after?: string) => timed<IssuePage>(issuesUrl(search, after)), "issues");
+/** A page of rows: the tab learns where each issue is (at.ts), so its URL finds its id. */
+function learnRows(page: IssuePage): IssuePage {
+  learn(page.rows);
+  return page;
+}
+
+/** A run of tree nodes, as `learnRows`. */
+function learnNodes(page: TreePage): TreePage {
+  learn(page.nodes.map((n) => n.row));
+  return page;
+}
+
+/** A detail, as `learnRows`: a transferred issue's place moves with it. */
+function learnDetail(detail: IssueDetail): IssueDetail {
+  learn([detail]);
+  return detail;
+}
+
+export const getIssues = query((search: string, after?: string) => timed<IssuePage>(issuesUrl(search, after)).then(learnRows), "issues");
 
 /**
  * Tree mode's URL for a view (the page's query string) with what the tab has open (`open`) and
@@ -573,11 +592,11 @@ export function treeUrl(search: string, opens: { open: readonly number[]; shut: 
 }
 
 /** A run of Tree mode's nodes (see `treeUrl`), through the query cache: a preload's fetch is used. */
-export const getTree = query((url: string) => timed<TreePage>(url), "tree");
+export const getTree = query((url: string) => timed<TreePage>(url).then(learnNodes), "tree");
 
 /** A run of Tree mode's nodes, fetched afresh: a node opening, a live refetch. */
 export function fetchTree(url: string): Promise<TreePage> {
-  return timed<TreePage>(url);
+  return timed<TreePage>(url).then(learnNodes);
 }
 
 /** Whether a drag in the tree may drop `child` under `parent`, and why not. */
@@ -619,27 +638,37 @@ export function forgetFailure(q: { key: string }): void {
  * shows none yet.
  */
 export function refetchIssues(search: string, through?: string): Promise<IssuePage> {
-  if (!through) return timed<IssuePage>(issuesUrl(search));
+  if (!through) return timed<IssuePage>(issuesUrl(search)).then(learnRows);
   const p = new URLSearchParams(search);
   p.set("through", through);
-  return timed<IssuePage>(`/api/issues?${p}`);
-}
-
-/**
- * The issue an `/issues/:id` path names: its digits as a number, leading zeros dropped as the
- * shell's preload drops them (crates/server/src/shell.rs). Anything else is NaN, which names no
- * issue: the server answers Gone.
- */
-export function issueId(raw: string | undefined): number {
-  return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return timed<IssuePage>(`/api/issues?${p}`).then(learnRows);
 }
 
 /**
  * An issue's detail: its properties, body and first page of comments. A hover or tap on its row
- * preloads it, so the click that opens it finds it ready. The URL must match the shell's preload
- * for `/issues/:id` (crates/server/src/shell.rs).
+ * preloads it, so the click that opens it finds it ready.
  */
-export const getIssue = query((id: number) => timed<IssueDetail>(`/api/issues/${id}`), "issue");
+export const getIssue = query((id: number) => timed<IssueDetail>(`/api/issues/${id}`).then(learnDetail), "issue");
+
+/**
+ * The path of the issue with id `id` with `search`: at once if the tab has read it, else once its
+ * detail is read (a tree's selection on a page not loaded yet).
+ */
+export async function pathFor(id: number, search = ""): Promise<string> {
+  return pathOf(id, search) ?? issuePath(await getIssue(id)) + search;
+}
+
+/**
+ * An issue's detail by where it is (`atString`'s form), for a URL whose issue the tab doesn't know
+ * the id of yet: a cold load, or a link from a post or a teammate. The URL must match the shell's
+ * preload for `/:owner/:repo/issues/:number` (crates/server/src/shell.rs).
+ */
+export const getIssueAt = query((s: string) => {
+  const a = parseAt(s);
+  // Nothing of that form names an issue: the server says Gone.
+  const path = a ? `${encodeURIComponent(a.owner)}/${encodeURIComponent(a.repo)}/${a.number}` : "-/-/-";
+  return timed<IssueDetail>(`/api/at/${path}`).then(learnDetail);
+}, "issueAt");
 
 /**
  * The details the last hovers, taps and keyboard neighbours preloaded, kept past the router's 5 s
@@ -739,7 +768,7 @@ export function cursorOf(c: Comment): string {
 export function refetchIssue(id: number, order: CommentOrder, through?: Comment): Promise<IssueDetail> {
   const p = new URLSearchParams(through === undefined ? {} : { through: cursorOf(through) });
   p.set("order", order);
-  return timed<IssueDetail>(`/api/issues/${id}?${p}`);
+  return timed<IssueDetail>(`/api/issues/${id}?${p}`).then(learnDetail);
 }
 
 /** The page of an issue's comments after the cursor `after` (the first page without), in `order`. */
