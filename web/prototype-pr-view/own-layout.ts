@@ -50,8 +50,12 @@ export interface Opts {
    * merges; `stretch`, any stretch where two run together for `minGutters` gutters, whatever share.
    */
   merge?: "line" | "trunks" | "stretch";
+  /** Pack each group into as few columns as `width` allows (default on for street routing). */
+  pack?: boolean;
   /** Street routing: what riding a stretch another line already uses costs, as a share of its length. */
   discount?: number;
+  /** Street routing: place the parts on their own, then widen only the gaps the routes need (default on). */
+  compact?: boolean;
   /** Street routing: what a bend costs, in px of length. */
   bend?: number;
   /** Move rows that make a line dip round a part back across it (default on). */
@@ -115,7 +119,8 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
   const minG = o.minGutters ?? 3;
   const reach = o.reach ?? 6;
   const close = o.close ?? 34;
-  const W = o.width ?? Math.max(5, Math.ceil(Math.sqrt(nodes.length / 1.4)));
+  // Packed groups can stand taller: about 1.5 × √parts a column, else √(parts / 1.4).
+  const W = o.width ?? ((o.pack ?? o.mode === "street") ? Math.ceil(1.5 * Math.sqrt(nodes.length)) : Math.max(5, Math.ceil(Math.sqrt(nodes.length / 1.4))));
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
   // 1. Columns: each side's layers, then one global column index.
@@ -149,12 +154,28 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
         preds.get(b)!.push(a);
       }
       const count: number[] = [];
+      // Packed (street routing's default): as few columns as `width` parts each allows; a part
+      // goes in the column its calls want, clamped, or the nearest with room and no part it's
+      // joined to. Lines that then run backwards are laid the other way round.
+      const K = Math.ceil(ids.length / W);
+      const packCols = (o.pack ?? o.mode === "street") && K >= 1;
+      const joined = new Map<string, Set<string>>(ids.map((id) => [id, new Set()]));
+      for (const l of intra) (joined.get(l.from)!.add(l.to), joined.get(l.to)!.add(l.from));
       for (const id of [...ids].sort((a, b) => pos.get(a)! - pos.get(b)!)) {
         let L = Math.max(0, ...preds.get(id)!.map((p) => layer.get(p)! + 1));
-        while ((count[L] ?? 0) >= W) L++;
+        if (packCols) {
+          const want = Math.min(L, K - 1);
+          const ok = (c: number) => (count[c] ?? 0) < W && ![...joined.get(id)!].some((j) => layer.get(j) === c);
+          let best = -1;
+          for (let d = 0; d < K + 8 && best < 0; d++) for (const c of [want - d, want + d]) if (best < 0 && c >= 0 && ok(c)) best = c;
+          L = best < 0 ? K + ids.length : best;
+        } else while ((count[L] ?? 0) >= W) L++;
         count[L] = (count[L] ?? 0) + 1;
         layer.set(id, L);
       }
+      // Close any empty columns a fallback left.
+      const usedL = [...new Set(ids.map((id) => layer.get(id)!))].sort((a, b) => a - b);
+      for (const id of ids) layer.set(id, usedL.indexOf(layer.get(id)!));
     }
     sideLayers[side] = Math.max(...ids.map((id) => layer.get(id)!)) + 1;
   }
@@ -693,6 +714,54 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     const BEND = o.bend ?? 40;
     const M = 10; // a level's clearance from a part
     const mid0 = (it: Item) => it.y + it.h / 2;
+    // Parts only: each column packed from the top in Lanes' order, pulled toward the middle of the
+    // parts it connects to; `extra[c][i]` widens the gap above the column's i-th part.
+    const nodeCols = B.cols.map((col) => col.filter((it) => it.node));
+    const nbrs = new Map<Item, Item[]>();
+    for (const l of laid) {
+      const [a, b] = [B.items.get(l.a)!, B.items.get(l.b)!];
+      nbrs.set(a, [...(nbrs.get(a) ?? []), b]);
+      nbrs.set(b, [...(nbrs.get(b) ?? []), a]);
+    }
+    const GAP_S = 36;
+    const placeParts = (extra: number[][]) => {
+      const packed = new Map<Item, number>();
+      nodeCols.forEach((col, c) => {
+        let y = TOP;
+        col.forEach((it, i) => {
+          y += (i ? GAP_S : 0) + (extra[c]?.[i] ?? 0);
+          it.y = y;
+          packed.set(it, y);
+          y += it.h;
+        });
+      });
+      for (let pass = 0; pass < 10; pass++)
+        nodeCols.forEach((col, c) => {
+          if (!col.length) return;
+          const off: number[] = [];
+          let acc = extra[c]?.[0] ?? 0;
+          col.forEach((_, i) => {
+            if (i) acc += col[i - 1]!.h + GAP_S + (extra[c]?.[i] ?? 0);
+            off.push(acc);
+          });
+          const t: number[] = [], w: number[] = [];
+          col.forEach((it, i) => {
+            const ns = nbrs.get(it) ?? [];
+            const want = ns.length ? ns.reduce((s2, q) => s2 + q.y + q.h / 2, 0) / ns.length - it.h / 2 : packed.get(it)!;
+            const anchor = packed.get(it)!;
+            t.push((want * ns.length + anchor * 1.5) / (ns.length + 1.5) - off[i]!);
+            w.push(ns.length + 1.5);
+          });
+          const z = isotonic(t, w);
+          col.forEach((it, i) => (it.y = Math.max(TOP, z[i]!) + off[i]!));
+        });
+    };
+    const compact = o.compact !== false;
+    let extra: number[][] = B.cols.map(() => []);
+    let hUse: Map<string, Set<string>>[] = [];
+    let paths = new Map<string, { ys: number[]; long: boolean }>();
+    for (let grow = 0; grow < (compact ? 3 : 1); grow++) {
+    if (compact) placeParts(extra);
     const raw: number[] = [];
     for (const col of B.cols) {
       const ns = col.filter((it) => it.node).sort((a, b) => a.y - b.y);
@@ -710,7 +779,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
     const free: boolean[][] = B.cols.map((col) => Y.map((y) => !col.some((it) => it.node && y > it.y - M && y < it.y + it.h + M)));
     const colWidth = B.cols.map((col) => Math.max(0, ...col.map((it) => it.w)));
     // Usage: per column, per level, which lines ride it; per gutter, per level step, how many.
-    const hUse: Map<string, Set<string>>[] = B.cols.map(() => new Map());
+    hUse = B.cols.map(() => new Map());
     const vUse: number[][] = Array.from({ length: nCols }, () => new Array(L).fill(0));
     const levelOf = (y: number) => {
       let lo = 0, hi = L - 1;
@@ -721,7 +790,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
       }
       return lo;
     };
-    const paths = new Map<string, { ys: number[]; long: boolean }>();
+    paths = new Map();
     const mark = (key: string, ys: number[], c0: number, sign: number) => {
       // ys: the y the line has in each gutter boundary: ys[0] at its start part, then a level per column, then its end part.
       for (let i = 1; i + 1 < ys.length; i++) {
@@ -818,6 +887,24 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
         paths.set(l.key, { ys, long });
         mark(l.key, ys, colOf.get(l.a)!, +1);
       }
+    if (!compact) break;
+    // Widen each gap to fit the levels routed through it (12 px apart, clear of the parts).
+    let grew = false;
+    const next = nodeCols.map((col, c) => {
+      const used = [...hUse[c]!].filter(([, set]) => set.size > 0).map(([k]) => Number(k));
+      return col.map((it, i) => {
+        const top = i ? col[i - 1]!.y + col[i - 1]!.h : TOP - 24;
+        const n = used.filter((y) => y > top && y < it.y).length;
+        const need = n ? n * 12 + 2 * M : 0;
+        const have = it.y - top;
+        const add = Math.max(extra[c]![i] ?? 0, need - have + (extra[c]![i] ?? 0));
+        if (add > (extra[c]![i] ?? 0) + 1) grew = true;
+        return add;
+      });
+    });
+    if (!grew) break;
+    extra = next;
+    }
     // Long lines sharing a level in a column ride one trunk there; runs of columns with the same
     // riders and level are one trunk.
     const per: { c: number; y: number; members: string[] }[] = [];
