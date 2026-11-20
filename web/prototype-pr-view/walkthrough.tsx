@@ -263,11 +263,33 @@ const st = stylex.create({
   },
   sources: { backgroundColor: colors.bgRaised, borderRadius: 4, marginBlock: 4, paddingBlock: 4, paddingInline: 8 },
   conflict: { borderColor: colors.line, borderRadius: 6, borderStyle: "solid", borderWidth: 1, marginBlock: 6, overflow: "hidden" },
-  conflictHead: { alignItems: "baseline", backgroundColor: colors.bgRaised, display: "flex", fontSize: 12, fontWeight: 600, gap: 6, paddingBlock: 4, paddingInline: 8 },
-  pair: { display: "grid", gridTemplateColumns: "1fr 1fr" },
-  side: { fontSize: 12, lineHeight: 1.45, paddingBlock: 6, paddingInline: 8 },
-  sideB: { borderLeftColor: colors.line, borderLeftStyle: "solid", borderLeftWidth: 1 },
-  madeUp: { color: colors.muted, fontSize: 10, fontStyle: "italic", fontWeight: 400, marginLeft: "auto" },
+  conflictHead: { alignItems: "baseline", display: "flex", fontSize: 13, fontWeight: 600, gap: 8, paddingBlock: 6, paddingInline: 8 },
+  cfKind: { color: colors.muted, flexShrink: 0, fontSize: 11, fontWeight: 400, marginLeft: "auto" },
+  cfRow: {
+    alignItems: "baseline",
+    backgroundColor: { default: "transparent", ":hover": colors.hover },
+    borderTopColor: colors.line,
+    borderTopStyle: "solid",
+    borderTopWidth: 1,
+    borderBottomWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    color: colors.fg,
+    columnGap: 10,
+    cursor: "pointer",
+    display: "grid",
+    fontFamily: fonts.ui,
+    fontSize: 13,
+    gridTemplateColumns: "minmax(0, 38%) 1fr auto",
+    lineHeight: 1.4,
+    paddingBlock: 5,
+    paddingInline: 8,
+    textAlign: "left",
+    width: "100%",
+  },
+  cfRowOn: { backgroundColor: colors.bgRaised },
+  cfWho: { color: colors.muted, fontSize: 12 },
+  cfDetail: { backgroundColor: colors.bgRaised, fontSize: 12, lineHeight: 1.45, paddingBottom: 6, paddingInline: 8 },
   srcTag: { color: colors.muted, display: "block", fontSize: 11, marginTop: 4 },
   details: { borderTopColor: colors.line, borderTopStyle: "solid", borderTopWidth: 1, marginTop: 10, paddingBlock: 6 },
   summary: { cursor: "pointer", fontWeight: 600, lineHeight: 1.4 },
@@ -438,35 +460,57 @@ function sourceLine(s: Source, c: WalkCtx): string {
 }
 
 const CONFLICT_KIND: Record<Conflict["kind"], string> = {
-  "stated-code": "Stated vs code",
-  "purpose-purpose": "Purpose vs purpose",
-  "purpose-outside": "Purpose vs code outside the diff",
+  "stated-code": "stated vs code",
+  "purpose-purpose": "purpose vs purpose",
+  "purpose-outside": "purpose vs code outside the diff",
 };
 
-/** A conflict: two facts side by side, each with its source, and no verdict. */
+/** Who says it, in a word or two: the purpose, else the source. */
+function sayer(f: Fact, c: WalkCtx, outside: boolean): string {
+  if (f.purpose) return c.p.purposes.find((x) => x.id === f.purpose)?.name ?? f.purpose;
+  if (f.source.kind === "description") return "PR description";
+  if (f.source.kind === "issue") return `#${f.source.number}`;
+  return outside ? "Code outside the diff" : "The code";
+}
+
+/**
+ * A conflict: a question, then one row per side, who says it and what, in a few words. No verdict.
+ * A row opens to the whole fact and its source.
+ */
 function ConflictCard(props: { c: WalkCtx; k: Conflict }) {
   const [open, setOpen] = createSignal<"a" | "b" | null>(null);
-  const side = (f: Fact, which: "a" | "b") => (
-    <div {...stylex.attrs(st.side, which === "b" && st.sideB)}>
+  const detail = (f: Fact) => (
+    <div {...stylex.attrs(st.cfDetail)}>
+      <div>{f.text}</div>
       <Show when={f.purpose}>
         {(id) => (
           <button onClick={() => props.c.pick({ kind: "purpose", id: id() })} {...stylex.attrs(st.crumb)}>
-            {props.c.p.purposes.find((x) => x.id === id())?.name}
+            Go to the purpose ›
           </button>
         )}
       </Show>
-      <div>{f.text}</div>
-      <button onClick={() => setOpen(open() === which ? null : which)} {...stylex.attrs(st.chip, open() === which && st.chipOn)}>
-        {sourceLine(f.source, props.c)}
-      </button>
+      <Show
+        when={f.source.kind === "code"}
+        fallback={
+          <div {...stylex.attrs(st.quote)}>
+            {sourceLine(f.source, props.c)}: “{(f.source as { quote: string }).quote}”
+          </div>
+        }
+      >
+        {props.c.codeClaim((f.source as { claim: string }).claim)}
+      </Show>
     </div>
   );
-  const opened = () => {
-    const f = open() === "a" ? props.k.a : open() === "b" ? props.k.b : null;
-    if (!f) return null;
-    if (f.source.kind === "code") return props.c.codeClaim(f.source.claim);
-    return <div {...stylex.attrs(st.quote)}>“{(f.source as { quote: string }).quote}”</div>;
-  };
+  const row = (f: Fact, which: "a" | "b") => (
+    <>
+      <button onClick={() => setOpen(open() === which ? null : which)} {...stylex.attrs(st.cfRow, open() === which && st.cfRowOn)}>
+        <span {...stylex.attrs(st.cfWho)}>{sayer(f, props.c, props.k.kind === "purpose-outside")}</span>
+        <span>{f.says}</span>
+        <span {...stylex.attrs(st.muted)}>{open() === which ? "▾" : "▸"}</span>
+      </button>
+      <Show when={open() === which}>{detail(f)}</Show>
+    </>
+  );
   return (
     <div
       {...stylex.attrs(st.conflict)}
@@ -474,18 +518,14 @@ function ConflictCard(props: { c: WalkCtx; k: Conflict }) {
       onMouseLeave={() => props.c.light(null)}
     >
       <div {...stylex.attrs(st.conflictHead)}>
-        <span {...stylex.attrs(st.muted)}>{CONFLICT_KIND[props.k.kind]}:</span> {props.k.title}
-        <Show when={props.k.madeUp}>
-          <span {...stylex.attrs(st.madeUp)}>made up for the prototype</span>
-        </Show>
+        <span>{props.k.title}</span>
+        <span {...stylex.attrs(st.cfKind)}>
+          {CONFLICT_KIND[props.k.kind]}
+          <Show when={props.k.madeUp}> · made up</Show>
+        </span>
       </div>
-      <div {...stylex.attrs(st.pair)}>
-        {side(props.k.a, "a")}
-        {side(props.k.b, "b")}
-      </div>
-      <Show when={opened()}>
-        <div {...stylex.attrs(st.side)}>{opened()}</div>
-      </Show>
+      {row(props.k.a, "a")}
+      {row(props.k.b, "b")}
     </div>
   );
 }

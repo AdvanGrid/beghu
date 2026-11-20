@@ -73,6 +73,9 @@ export interface EdgeWalk {
 
 /** One side of a conflict: a fact and its source. */
 export interface Fact {
+  /** What this side says, in a few words: the part that differs (shown at a glance). */
+  says: string;
+  /** The whole fact, shown when the row is opened. */
   text: string;
   source: Source;
   purpose?: string;
@@ -81,7 +84,7 @@ export interface Fact {
 export interface Conflict {
   id: string;
   kind: "stated-code" | "purpose-purpose" | "purpose-outside";
-  /** A few words naming what the two facts are about. No verdict. */
+  /** The question the two sides answer differently, in a few words. No verdict. */
   title: string;
   a: Fact;
   b: Fact;
