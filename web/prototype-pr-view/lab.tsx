@@ -33,6 +33,7 @@ const ENGINES: { id: Engine; name: string }[] = [
   { id: "lanes", name: "Lanes" },
   { id: "pull", name: "Highway: pull together" },
   { id: "found", name: "Highway: merge as found" },
+  { id: "street", name: "Highway: street routing" },
 ];
 const LOOKS: { id: Look; name: string }[] = [
   { id: "split", name: "Thick, splits on focus" },
@@ -50,6 +51,8 @@ const [width, setWidth] = createSignal(num("w", 0));
 const [reach, setReach] = createSignal(num("reach", 6));
 const [close, setClose] = createSignal(num("close", 34));
 const [rounds, setRounds] = createSignal(num("rounds", 1));
+const [discount, setDiscount] = createSignal(num("disc", 0.85));
+const [bendCost, setBendCost] = createSignal(num("bend", 40));
 const sync = (k: string, v: string | number | null) => {
   const p = new URLSearchParams(location.search);
   if (v === null || v === "") p.delete(k);
@@ -110,7 +113,7 @@ async function draw(inp: Input, engine: Engine, merge: Merge): Promise<Drawn> {
   const o = ownLayout(
     nodes,
     inp.lines.map((x) => ({ key: x.key, from: x.from, to: x.to })),
-    { mode: engine, merge, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close(), rounds: rounds(), undip: params.get("undip") !== "0" },
+    { mode: engine, merge, threshold: threshold(), minGutters: minGutters(), width: width() || undefined, reach: reach(), close: close(), rounds: rounds(), discount: discount(), bend: bendCost(), undip: params.get("undip") !== "0" },
   );
   const ms = performance.now() - t0;
   // Real direction: a line laid to → from runs backwards.
@@ -242,6 +245,8 @@ function App(props: { inp: Input; overlay: number }) {
         <Num label="Parts per column (0 auto)" get={width} set={(v) => (setWidth(v), sync("w", v || null))} step={1} />
         <Num label="Pull reach (rows)" get={reach} set={(v) => (setReach(v), sync("reach", v))} step={1} />
         <Num label="Pull rounds" get={rounds} set={(v) => (setRounds(v), sync("rounds", v))} step={1} />
+        <Num label="Street: shared costs ×" get={discount} set={(v) => (setDiscount(v), sync("disc", v))} step={0.05} />
+        <Num label="Street: bend costs (px)" get={bendCost} set={(v) => (setBendCost(v), sync("bend", v))} step={10} />
         <Num label="Found: close (px)" get={close} set={(v) => (setClose(v), sync("close", v))} step={2} />
       </div>
       <div {...stylex.attrs(s.panes)}>
@@ -276,7 +281,7 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
     const e = engine();
     const mg = merge();
     // Read the knobs so a change relays out.
-    void [threshold(), minGutters(), width(), reach(), close(), rounds()];
+    void [threshold(), minGutters(), width(), reach(), close(), rounds(), discount(), bendCost()];
     const mine = ++ticket;
     void draw(inp, e, mg).then((d) => mine === ticket && setDrawn(d));
   });
@@ -338,13 +343,15 @@ function Pane(props: { inp: Input; id: "l" | "r"; initial: Engine }) {
         <select value={engine()} onChange={(e) => (setEngine(e.currentTarget.value as Engine), sync(props.id, e.currentTarget.value))} {...stylex.attrs(s.select)}>
           <For each={ENGINES}>{(x) => <option value={x.id}>{x.name}</option>}</For>
         </select>
-        <Show when={engine() === "pull" || engine() === "found"}>
+        <Show when={engine() !== "elk" && engine() !== "lanes"}>
           <select value={look()} onChange={(e) => (setLook(e.currentTarget.value as Look), sync(`${props.id}look`, e.currentTarget.value), setCard(null))} {...stylex.attrs(s.select)}>
             <For each={LOOKS}>{(x) => <option value={x.id}>{x.name}</option>}</For>
           </select>
+          <Show when={engine() !== "street"}>
           <select value={merge()} onChange={(e) => (setMerge(e.currentTarget.value as Merge), sync(`${props.id}merge`, e.currentTarget.value))} {...stylex.attrs(s.select)}>
             <For each={MERGES}>{(x) => <option value={x.id}>{x.name}</option>}</For>
           </select>
+          </Show>
         </Show>
         <button {...stylex.attrs(s.btn)} onClick={() => (setScale((v) => Math.max(0.1, v / 1.25)), sync(`${props.id}z`, scale().toFixed(2)))}>
           −

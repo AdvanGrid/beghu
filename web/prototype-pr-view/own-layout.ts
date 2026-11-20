@@ -31,7 +31,7 @@ export interface LLink {
   from: string;
   to: string;
 }
-export type Mode = "lanes" | "pull" | "found";
+export type Mode = "lanes" | "pull" | "found" | "street";
 export interface Opts {
   mode: Mode;
   /** Most parts in one column of a group. */
@@ -50,6 +50,10 @@ export interface Opts {
    * merges; `stretch`, any stretch where two run together for `minGutters` gutters, whatever share.
    */
   merge?: "line" | "trunks" | "stretch";
+  /** Street routing: what riding a stretch another line already uses costs, as a share of its length. */
+  discount?: number;
+  /** Street routing: what a bend costs, in px of length. */
+  bend?: number;
   /** Move rows that make a line dip round a part back across it (default on). */
   undip?: boolean;
   /** Pull together: rounds of group, order and place (later rounds only add merges). */
@@ -678,7 +682,173 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
       (o.placement === "iso" ? place : bk)(Bb);
     }
   };
-  if (o.undip !== false) undip(B);
+
+  // 4d. Street routing: parts stay where Lanes put them. Each line then picks the height it passes
+  // each column at (a level: a part's middle or a gap's, free of parts in that column), as one
+  // cheapest path: length, a cost per bend, and a discount on any stretch, along a column or up a
+  // gutter, that a line already routed uses. Long lines go first (they lay the highways), then
+  // each is routed again against all the others. Local lines take no discount and avoid others.
+  if (o.mode === "street") {
+    const D = o.discount ?? 0.85;
+    const BEND = o.bend ?? 40;
+    const M = 10; // a level's clearance from a part
+    const mid0 = (it: Item) => it.y + it.h / 2;
+    const raw: number[] = [];
+    for (const col of B.cols) {
+      const ns = col.filter((it) => it.node).sort((a, b) => a.y - b.y);
+      ns.forEach((n, i) => {
+        raw.push(mid0(n));
+        const nx = ns[i + 1];
+        if (nx) raw.push((n.y + n.h + nx.y) / 2);
+      });
+      if (ns.length) (raw.push(ns[0]!.y - 24), raw.push(ns[ns.length - 1]!.y + ns[ns.length - 1]!.h + 24));
+    }
+    raw.sort((a, b) => a - b);
+    const Y: number[] = [];
+    for (const y of raw) if (!Y.length || y - Y[Y.length - 1]! >= 12) Y.push(y);
+    const L = Y.length;
+    const free: boolean[][] = B.cols.map((col) => Y.map((y) => !col.some((it) => it.node && y > it.y - M && y < it.y + it.h + M)));
+    const colWidth = B.cols.map((col) => Math.max(0, ...col.map((it) => it.w)));
+    // Usage: per column, per level, which lines ride it; per gutter, per level step, how many.
+    const hUse: Map<string, Set<string>>[] = B.cols.map(() => new Map());
+    const vUse: number[][] = Array.from({ length: nCols }, () => new Array(L).fill(0));
+    const levelOf = (y: number) => {
+      let lo = 0, hi = L - 1;
+      while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (Y[m]! < y) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const paths = new Map<string, { ys: number[]; long: boolean }>();
+    const mark = (key: string, ys: number[], c0: number, sign: number) => {
+      // ys: the y the line has in each gutter boundary: ys[0] at its start part, then a level per column, then its end part.
+      for (let i = 1; i + 1 < ys.length; i++) {
+        const c = c0 + i;
+        const k = String(ys[i]);
+        const set = hUse[c]!.get(k) ?? new Set();
+        if (sign > 0) set.add(key);
+        else set.delete(key);
+        hUse[c]!.set(k, set);
+      }
+      for (let i = 0; i + 1 < ys.length; i++) {
+        const g = c0 + i;
+        const [a, b] = [levelOf(Math.min(ys[i]!, ys[i + 1]!)), levelOf(Math.max(ys[i]!, ys[i + 1]!))];
+        for (let j = a; j < b; j++) vUse[g]![j]! += sign;
+      }
+    };
+    const route = (l: Laid, long: boolean) => {
+      const ca = colOf.get(l.a)!, cb = colOf.get(l.b)!;
+      const ya = mid0(B.items.get(l.a)!), yb = mid0(B.items.get(l.b)!);
+      const n = cb - ca - 1;
+      if (n <= 0) return [ya, yb];
+      // Vertical cost in gutter g between two ys, with the discount where others run.
+      const pre = (g: number) => {
+        const out = new Array(L).fill(0);
+        for (let j = 0; j + 1 < L; j++) {
+          const seg = Y[j + 1]! - Y[j]!;
+          const shared = long && vUse[g]![j]! > 0;
+          out[j + 1] = out[j] + (shared ? seg * D : !long && vUse[g]![j]! > 0 ? seg * 1.5 : seg);
+        }
+        return out;
+      };
+      const vcost = (P: number[], y0: number, y1: number) => {
+        if (Math.abs(y0 - y1) < 0.5) return 0;
+        const [lo, hi] = [Math.min(y0, y1), Math.max(y0, y1)];
+        const i = levelOf(lo), j = levelOf(hi);
+        // Ends off the level grid (a part's port) pay full length for the bit off it.
+        const inner = j > i ? P[j]! - P[i]! : 0;
+        return inner + Math.abs(Y[i]! - lo) + Math.abs(hi - Y[Math.min(j, L - 1)]!) + 2 * BEND;
+      };
+      let dp = new Array(L).fill(Infinity);
+      const back: Int32Array[] = [];
+      {
+        const P = pre(ca);
+        const c = ca + 1;
+        for (let j = 0; j < L; j++) {
+          if (!free[c]![j]) continue;
+          const users = hUse[c]!.get(String(Y[j]))?.size ?? 0;
+          const h = colWidth[c]! * (long && users ? D : !long && users ? 1.5 : 1);
+          dp[j] = vcost(P, ya, Y[j]!) + h;
+        }
+        back.push(new Int32Array(L).fill(-1));
+      }
+      for (let k = 1; k < n; k++) {
+        const g = ca + k;
+        const c = g + 1;
+        const P = pre(g);
+        const next = new Array(L).fill(Infinity);
+        const bk2 = new Int32Array(L).fill(-1);
+        for (let j = 0; j < L; j++) {
+          if (!free[c]![j]) continue;
+          const users = hUse[c]!.get(String(Y[j]))?.size ?? 0;
+          const h = colWidth[c]! * (long && users ? D : !long && users ? 1.5 : 1);
+          let best = Infinity, arg = -1;
+          for (let i = 0; i < L; i++) {
+            if (dp[i] === Infinity) continue;
+            const v = dp[i] + (i === j ? 0 : P[Math.max(i, j)]! - P[Math.min(i, j)]! + 2 * BEND);
+            if (v < best) (best = v, (arg = i));
+          }
+          next[j] = best + h;
+          bk2[j] = arg;
+        }
+        dp = next;
+        back.push(bk2);
+      }
+      const Pe = pre(cb - 1);
+      let best = Infinity, arg = -1;
+      for (let j = 0; j < L; j++) if (dp[j] < Infinity) {
+        const v = dp[j] + vcost(Pe, Y[j]!, yb);
+        if (v < best) (best = v, (arg = j));
+      }
+      if (arg < 0) return null;
+      const lv: number[] = [];
+      for (let k = n - 1, j = arg; k >= 0; k--) (lv.unshift(Y[j]!), (j = back[k]![j]!));
+      return [ya, ...lv, yb];
+    };
+    const order2 = [...laid].sort((a, b) => span(b) - span(a));
+    for (let pass = 0; pass < 3; pass++)
+      for (const l of order2) {
+        const long = span(l) >= minG;
+        const old = paths.get(l.key);
+        if (old) mark(l.key, old.ys, colOf.get(l.a)!, -1);
+        const ys = route(l, long);
+        if (!ys) continue;
+        paths.set(l.key, { ys, long });
+        mark(l.key, ys, colOf.get(l.a)!, +1);
+      }
+    // Long lines sharing a level in a column ride one trunk there; runs of columns with the same
+    // riders and level are one trunk.
+    const per: { c: number; y: number; members: string[] }[] = [];
+    for (let c = 0; c < nCols; c++)
+      for (const [k, set] of hUse[c]!) {
+        const members = [...set].filter((m) => paths.get(m)?.long);
+        if (members.length > 1) per.push({ c, y: Number(k), members: members.sort() });
+      }
+    per.sort((a, b) => a.y - b.y || a.c - b.c);
+    const cl2: Cluster[] = [];
+    for (const p of per) {
+      const lastC = cl2[cl2.length - 1];
+      if (lastC && lastC.to === p.c - 1 && (lastC as Cluster & { y?: number }).y === p.y && lastC.members.join() === p.members.join()) lastC.to = p.c;
+      else cl2.push({ members: p.members, from: p.c, to: p.c, y: p.y } as Cluster);
+    }
+    clusters = cl2;
+    const placed = B;
+    B = build(clusters);
+    for (const it of B.items.values()) {
+      if (it.node) it.y = placed.items.get(it.id)!.y;
+      else {
+        const k = it.links[0]!;
+        const ys = paths.get(k)?.ys;
+        const y = ys ? ys[it.col - colOf.get(laidBy.get(k)!.a)!]! : 0;
+        it.y = y - it.h / 2;
+      }
+    }
+    for (const col of B.cols) col.sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2));
+    renumber(B);
+  }
+  if (o.undip !== false && o.mode !== "street") undip(B);
 
   // 5. Ports: a part's lines leave (and arrive) spread down its side, ordered by the other end.
   const mid = (it: Item) => it.y + it.h / 2;
@@ -734,7 +904,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
   /** Verticals shorter than this never share a track. */
   const SHORT = 40;
   /** Per stretch: verticals that run together this far share a track. */
-  const STRETCH_PX = 120;
+  const STRETCH_PX = o.mode === "street" ? 20 : 120;
   const unit = (segs: Seg[]): V => {
     const ys = segs.flatMap((x) => [x.y1, x.y2]);
     const keys = segs.reduce((n, x) => n + x.keys.length, 0);
@@ -762,7 +932,7 @@ export function ownLayout(nodes: LNode[], links: LLink[], o: Opts): Own {
         const r = span1(x);
         const fits = (gr: (typeof groups)[number]) =>
           len(r) >= SHORT &&
-          (o.merge === "stretch" ? overlap(r, gr.all) >= STRETCH_PX : overlap(r, gr.anchor) >= thr * Math.min(len(r), len(gr.anchor)));
+          (o.merge === "stretch" || o.mode === "street" ? overlap(r, gr.all) >= STRETCH_PX : overlap(r, gr.anchor) >= thr * Math.min(len(r), len(gr.anchor)));
         const gr = groups.find(fits);
         if (gr) (gr.segs.push(x), (gr.all = { lo: Math.min(gr.all.lo, r.lo), hi: Math.max(gr.all.hi, r.hi) }));
         else groups.push({ segs: [x], anchor: r, all: r });
