@@ -304,6 +304,7 @@ const st = stylex.create({
   details: { borderTopColor: colors.line, borderTopStyle: "solid", borderTopWidth: 1, marginTop: 10, paddingBlock: 6 },
   summary: { cursor: "pointer", fontWeight: 600, lineHeight: 1.4 },
   role: { lineHeight: 1.45, paddingBlock: 3 },
+  subRoles: { borderLeftColor: colors.line, borderLeftStyle: "solid", borderLeftWidth: 2, marginBlock: 4, paddingLeft: 10 },
   link: { backgroundColor: "transparent", borderWidth: 0, color: colors.accent, cursor: "pointer", fontFamily: fonts.ui, fontSize: 13, fontWeight: 600, padding: 0, textAlign: "left" },
   builtKind: { color: colors.muted, display: "inline-block", fontSize: 11, minWidth: 74 },
   // B: the tour.
@@ -604,24 +605,62 @@ function StopList(props: { c: WalkCtx; stops: Stop[] }) {
   );
 }
 
+/** The purposes a place serves, grouped under their top-level purpose: one dot per group, as the canvas draws. */
+function roleGroups(p: Purposes, roles: Place["roles"]) {
+  const out: { top: Purpose; roles: Place["roles"] }[] = [];
+  for (const r of roles) {
+    let t = r.purpose;
+    while (t.parent) t = p.purposes.find((x) => x.id === t.parent)!;
+    const g = out.find((x) => x.top.id === t.id);
+    if (g) g.roles.push(r);
+    else out.push({ top: t, roles: [r] });
+  }
+  return out;
+}
+
 function Roles(props: { c: WalkCtx; place: Place }) {
+  const RoleLine = (r: Place["roles"][number], named: boolean) => (
+    <>
+      <Show when={named}>
+        <button onClick={() => props.c.pick({ kind: "purpose", id: r.purpose.id })} {...stylex.attrs(st.link)}>
+          {r.purpose.name}
+        </button>
+      </Show>
+      <Show when={r.via}>
+        {(v) => <span {...stylex.attrs(st.muted, st.small)}> (through {props.c.m.nodes.get(v())?.name})</span>}
+      </Show>
+      <div>{r.role}</div>
+    </>
+  );
   return (
     <ul {...stylex.attrs(st.list)}>
-      <For each={props.place.roles}>
-        {(r) => (
+      <For each={roleGroups(props.c.p, props.place.roles)}>
+        {(g) => (
           <li
             {...stylex.attrs(st.role)}
-            onMouseEnter={() => props.c.light(purposeLit(props.c.p, r.purpose.id))}
+            onMouseEnter={() => props.c.light(purposeLit(props.c.p, g.top.id))}
             onMouseLeave={() => props.c.light(null)}
           >
-            <PDot c={props.c} id={r.purpose.id} />
-            <button onClick={() => props.c.pick({ kind: "purpose", id: r.purpose.id })} {...stylex.attrs(st.link)}>
-              {r.purpose.name}
+            <PDot c={props.c} id={g.top.id} />
+            <button onClick={() => props.c.pick({ kind: "purpose", id: g.top.id })} {...stylex.attrs(st.link)}>
+              {g.top.name}
             </button>
-            <Show when={r.via}>
-              {(v) => <span {...stylex.attrs(st.muted, st.small)}> (through {props.c.m.nodes.get(v())?.name})</span>}
+            <For each={g.roles.filter((r) => r.purpose.id === g.top.id)}>{(r) => RoleLine(r, false)}</For>
+            <Show when={g.roles.some((r) => r.purpose.id !== g.top.id)}>
+              <ul {...stylex.attrs(st.list, st.subRoles)}>
+                <For each={g.roles.filter((r) => r.purpose.id !== g.top.id)}>
+                  {(r) => (
+                    <li
+                      {...stylex.attrs(st.role)}
+                      onMouseEnter={(e) => (e.stopPropagation(), props.c.light(purposeLit(props.c.p, r.purpose.id)))}
+                      onMouseLeave={() => props.c.light(purposeLit(props.c.p, g.top.id))}
+                    >
+                      {RoleLine(r, true)}
+                    </li>
+                  )}
+                </For>
+              </ul>
             </Show>
-            <div>{r.role}</div>
           </li>
         )}
       </For>
@@ -710,7 +749,10 @@ function Title(props: { place: Place; c: WalkCtx }) {
       const q = props.c.p.purposes.find((x) => x.name === pl.title)!;
       return `${q.parent ? "Sub-purpose" : "Purpose"} · ${q.kind}`;
     }
-    if (pl.kind === "node") return `Part · ${pl.roles.length} ${pl.roles.length === 1 ? "purpose" : "purposes"}`;
+    if (pl.kind === "node") {
+      const n = roleGroups(props.c.p, pl.roles).length;
+      return `Part · ${n} ${n === 1 ? "purpose" : "purposes"}`;
+    }
     return "Connection";
   };
   return (
