@@ -6,7 +6,7 @@
 //   B — Tour: one step at a time (intro, each stop, destination), each step driving the canvas.
 //   C — Crossing: tables of purposes × parts, the walkthrough cut to one sentence.
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
@@ -1031,7 +1031,19 @@ export function Walkthrough(props: { c: WalkCtx; variant: Exclude<WtKey, "0"> })
   const place = createMemo(() => placeOf(props.c, props.c.sel()));
   return (
     <Show when={place()} keyed>
-      {(pl) => (props.variant === "A" ? <Reader c={props.c} place={pl} /> : props.variant === "B" ? <Tour c={props.c} place={pl} /> : <Crossing c={props.c} place={pl} />)}
+      {(pl) => (
+        <Switch>
+          <Match when={props.variant === "A"}>
+            <Reader c={props.c} place={pl} />
+          </Match>
+          <Match when={props.variant === "B"}>
+            <Tour c={props.c} place={pl} />
+          </Match>
+          <Match when={props.variant === "C"}>
+            <Crossing c={props.c} place={pl} />
+          </Match>
+        </Switch>
+      )}
     </Show>
   );
 }
