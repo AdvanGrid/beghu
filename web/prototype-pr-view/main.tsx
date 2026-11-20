@@ -14,6 +14,7 @@ import { Phone, phoneWanted, type PhoneCtx, type PhoneSel } from "./mobile.tsx";
 import type { Analysis, Change, Claim, Edge, FacetAssignment, Node, Question, Topic } from "./schema.ts";
 import type { Purposes } from "./purpose.ts";
 import { purposeLit, Walkthrough, WT_VARIANTS, type WalkCtx, type WSel, type WtKey } from "./walkthrough.tsx";
+import { PC_VARIANTS, PurposeCanvas, type PCtx, type PcKey } from "./purpose-canvas.tsx";
 
 const loaders = import.meta.glob<Analysis>("./data/*.json", { import: "default" });
 // TOP-LEVEL VARIANTS (#144): made-up edges laid over an analysis (data/overlays/, gitignored), to
@@ -94,6 +95,24 @@ const spot = () => {
   const x = sel();
   return x?.kind === "purpose" && purposes ? purposeLit(purposes, x.id) : null;
 };
+// PURPOSE CANVAS (#160): which canvas shows a purpose; ← → in the bottom bar switch it. The canvas
+// shows the purpose the panel last stood on (or the whole PR) until "Code view ›" leaves for the code
+// view; "← Back to ‹purpose›" returns.
+const [pc, setPcRaw] = createSignal<(typeof PC_VARIANTS)[number]>(PC_VARIANTS.find((x) => x.key === params.get("pc")) ?? PC_VARIANTS[1]);
+const setPc = (step: number) => {
+  const i = (PC_VARIANTS.indexOf(pc()) + step + PC_VARIANTS.length) % PC_VARIANTS.length;
+  setPcRaw(PC_VARIANTS[i]!);
+  sync();
+};
+const [pcCode, setPcCode] = createSignal(false);
+let pcLast: string | null = null;
+const pcAt = createMemo(() => {
+  const x = sel();
+  if (!x) pcLast = null;
+  else if (x.kind === "purpose") pcLast = x.id;
+  return pcLast;
+});
+const pcOn = () => pc().key !== "0" && purposes !== null && !pcCode() && lens() !== "order";
 const [showLone, setShowLone] = createSignal(params.get("lone") === "1");
 const [opened, setOpened] = createSignal<Set<string>>(new Set());
 const toggleOpened = (k: string) =>
@@ -120,6 +139,7 @@ function sync() {
   put("lone", showLone() ? "1" : null);
   put("key", keyV().key === "2" ? null : keyV().key);
   put("wt", wt().key === "A" ? null : wt().key);
+  put("pc", pc().key === "A" ? null : pc().key);
   put("keyopen", keyOpen() ? null : "0");
   history.replaceState(null, "", `?${p}`);
 }
@@ -483,6 +503,7 @@ const s = stylex.create({
     transform: "translateX(-50%)",
     zIndex: 10,
   },
+  switcherBack: { backgroundColor: colors.bg, borderRadius: 999, borderStyle: "none", color: colors.fg, cursor: "pointer", fontWeight: 600, paddingBlock: 3, paddingInline: 10 },
   switcherButton: { backgroundColor: "transparent", borderStyle: "none", color: colors.bg, cursor: "pointer", fontSize: 16, paddingInline: 6 },
   overlapFillOn: { opacity: 0.28 },
   overlapLabel: { fontFamily: fonts.ui, fontSize: 10, fontWeight: 650, pointerEvents: "none", stroke: "none" },
@@ -603,8 +624,9 @@ async function start() {
     if (e.key === "-" || e.key === "_") zoomBy(0.8);
     if (e.key === "0") zoomFit();
     // Arrows switch the walkthrough (#159); Shift + arrows the layout (#144).
-    if (e.key === "ArrowLeft") (e.shiftKey ? setVariant(-1) : setWt(-1));
-    if (e.key === "ArrowRight") (e.shiftKey ? setVariant(1) : setWt(1));
+    // Arrows switch the purpose canvas (#160), Alt + arrows the walkthrough (#159).
+    if (e.key === "ArrowLeft") (e.shiftKey ? setVariant(-1) : e.altKey ? setWt(-1) : setPc(-1));
+    if (e.key === "ArrowRight") (e.shiftKey ? setVariant(1) : e.altKey ? setWt(1) : setPc(1));
     if (e.key === "[") setKeyV(-1);
     if (e.key === "]") setKeyV(1);
     if ((e.key === "?" || e.key === "k") && keyV().key === "4") setCallouts((x) => !x);
@@ -671,6 +693,18 @@ function App(props: { m: Model }) {
     }
     select(x);
   };
+
+  const pcCtx: PCtx | null = purposes
+    ? {
+        m,
+        p: purposes,
+        sel: () => sel() as WSel,
+        pick: (x) => (setHoverSpot(null), setSel(x as Sel)),
+        at: pcAt,
+        spot: () => hoverSpot(),
+        openCode: (id) => (setPcCode(true), reveal({ kind: "node", id })),
+      }
+    : null;
 
   // PHONE VARIANTS (#158): a narrow window, or ?phone=1..3, gets the phone shell instead.
   if (phoneWanted()) {
@@ -856,18 +890,25 @@ function App(props: { m: Model }) {
           }}
           {...stylex.attrs(s.canvas, spaceHeld() && s.grab, panning() && s.grabbing)}
         >
-          <Show when={lens() === "order"} fallback={variant().explore ? <Explorer m={m} kind={variant().explore!} /> : <Graph m={m} colour={colour} />}>
-            <Sequence m={m} colour={colour} />
+          <Show when={!pcOn()} fallback={<PurposeCanvas c={pcCtx!} variant={pc().key as Exclude<PcKey, "0">} />}>
+            <Show when={lens() === "order"} fallback={variant().explore ? <Explorer m={m} kind={variant().explore!} /> : <Graph m={m} colour={colour} />}>
+              <Sequence m={m} colour={colour} />
+            </Show>
           </Show>
         </div>
         <ZoomBar m={m} />
         <HoverCard m={m} />
         <div {...stylex.attrs(s.switcher)}>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setWt(-1)}>←</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setPc(-1)}>←</button>
           <span>
-            Panel <b>{wt().key}</b> — {wt().name}
+            Canvas <b>{pc().key}</b> — {pc().name}
           </span>
-          <button {...stylex.attrs(s.switcherButton)} onClick={() => setWt(1)}>→</button>
+          <button {...stylex.attrs(s.switcherButton)} onClick={() => setPc(1)}>→</button>
+          <Show when={pc().key !== "0" && purposes !== null && pcCode()}>
+            <button {...stylex.attrs(s.switcherBack)} onClick={() => (setPcCode(false), setSel(pcAt() ? { kind: "purpose", id: pcAt()! } : null))}>
+              ← Back to {pcAt() ? purposes!.purposes.find((q) => q.id === pcAt())?.name : "all purposes"}
+            </button>
+          </Show>
         </div>
       </div>
 
@@ -2255,7 +2296,8 @@ function Panel(props: { m: Model; reveal: (x: Sel) => void; colour: ColourFn; ed
     m,
     p: purposes!,
     sel: () => sel() as WSel,
-    pick: (x) => (setHoverSpot(null), x?.kind === "purpose" ? setSel(x) : props.reveal(x as Sel)),
+    // PURPOSE CANVAS (#160): standing on a purpose or the PR brings the purpose canvas back.
+    pick: (x) => (setHoverSpot(null), (x === null || x.kind === "purpose") && setPcCode(false), x?.kind === "purpose" || pcOn() ? setSel(x as Sel) : props.reveal(x as Sel)),
     light: (x) => setHoverSpot(x),
     show: (x) => {
       if (x.node) setFocus(m.nodes.get(x.node)?.parent ?? null);

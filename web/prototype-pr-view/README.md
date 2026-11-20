@@ -63,3 +63,21 @@ conflict lights what it names. Conflicts marked "made up" are invented where #26
 
 A conflict is a question with one row per side: who says it, and what, in a few words (`says`). A
 row opens to the whole fact and its source.
+
+## A purpose on the canvas (#160)
+
+`purpose-canvas.tsx` holds four canvases for a purpose, switched with `?pc=A|B|C|D` or ← → (the bar
+at the bottom; Alt + ← → now switch the panel's layout, `?pc=0` is the code view with fading only).
+They show where the walkthrough panel stands: the whole PR, or a purpose. Picking a part keeps the
+canvas; "Code view at ‹part› ›" (or a double-click) goes to the code view, and "← Back to ‹purpose›"
+in the bar returns.
+
+- **A, Purpose groups:** a fourth view. Purpose cards, then sub-purpose cards, then a leaf purpose's parts and lines.
+- **B, Fold the rest:** the code view's top level with everything the purpose doesn't touch folded into stubs.
+- **C, Journey line:** the purpose's stops left to right; other purposes cross where they share parts.
+- **D, Purpose × area map:** purposes down, top-level parts across, counts in the cells.
+
+All four roll a purpose's parts up to a budget of blocks, folding siblings by kind when there are
+too many ("middleware in 21 services"). `node web/prototype-pr-view/make-synthetic.ts` writes a
+made-up many-purpose PR (`?a=acme-shop-77`): 256 parts, a tenant-isolation purpose over about 110 of
+them, five purposes that share parts, and a conflict reaching unchanged code outside the diff.
