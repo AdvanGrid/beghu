@@ -9,7 +9,7 @@
 // a 390 px pane, no hover, trunks not tappable; tap a part to pick it, its lines are rows under
 // the map, and a row lights the line's whole route.
 import { render } from "@solidjs/web";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex.ts";
 import { pal } from "./tokens.stylex.ts";
@@ -51,8 +51,7 @@ const s = stylex.create({
   frameC: { fill: pal.modifiedTint, stroke: pal.modified, strokeWidth: 2 },
   frameU: { fill: colors.bgRaised, stroke: colors.muted, strokeDasharray: "6 4", strokeWidth: 1.5 },
   frameLabel: { fill: colors.muted, fontSize: 12, fontWeight: 650 },
-  box: { transform: "translate(var(--x), var(--y))", transition: `transform ${glide}ms cubic-bezier(.4,0,.2,1)` },
-  boxRect: { height: "var(--h)", transition: `width ${glide}ms cubic-bezier(.4,0,.2,1), height ${glide}ms cubic-bezier(.4,0,.2,1)`, width: "var(--w)" },
+  shape: { cursor: "pointer", strokeWidth: 1.5 },
   node: { cursor: "pointer", fill: pal.nodeBg, strokeWidth: 1.5 },
   open: { fill: "transparent", strokeWidth: 1.5 },
   nodeHot: { strokeWidth: 3 },
@@ -63,7 +62,7 @@ const s = stylex.create({
   unchanged: { stroke: pal.unchanged },
   nodeName: { fill: colors.fg, fontSize: 13, fontWeight: 600, pointerEvents: "none" },
   nodeKind: { fill: colors.muted, fontSize: 11, pointerEvents: "none" },
-  lines: { animationDelay: `${glide}ms`, animationDuration: "160ms", animationFillMode: "both", animationName: appear },
+  lines: { animationDuration: "180ms", animationFillMode: "both", animationName: appear },
   line: { fill: "none", stroke: pal.unchanged, strokeWidth: 1.5 },
   lineChanged: { stroke: pal.modified },
   dim: { opacity: 0.15 },
@@ -156,6 +155,78 @@ function App(props: { inp: Input; overlay: number; times: number }) {
     setOpen(o);
   };
 
+  // Open and fold glide (#166, as the purpose canvas settled): every block moves from where it
+  // was to where it goes; an opened block's contents glide out of it, growing from its corner,
+  // and a folded block's glide back in and fade. Lines hide while things move and fade back in
+  // once they settle. Driven from script, one frame at a time, so nothing remounts mid-glide.
+  type Shown = { x: number; y: number; w: number; h: number; o: number; open: boolean; depth: number };
+  type Frame = { boxes: Map<string, Shown>; regions: Nested["regions"]; width: number; height: number; moving: boolean };
+  const [frame, setFrame] = createSignal<Frame | null>(null);
+  const [order, setOrder] = createSignal<string[]>([]);
+  const target = (n: Nested): Map<string, Shown> => new Map([...n.boxes].map(([id, b]) => [id, { ...b, o: 1 }]));
+  /** The nearest block that `id` sits in and that `boxes` has. */
+  const holder = (id: string, boxes: Map<string, Shown>) => ancestors(id).find((a) => boxes.has(a));
+  let raf = 0;
+  createEffect(
+    () => drawn(),
+    (d) => {
+      cancelAnimationFrame(raf);
+      const to = target(d.n);
+      const was = frame();
+      const end: Frame = { boxes: to, regions: d.n.regions, width: d.n.width, height: d.n.height, moving: false };
+      const byDepth = (m: Map<string, Shown>) => [...m].sort((a, b) => a[1].depth - b[1].depth || Number(b[1].open) - Number(a[1].open)).map(([id]) => id);
+      if (!was || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        setOrder(byDepth(to));
+        setFrame(end);
+        return;
+      }
+      // Where each box starts and ends: arrivals come out of the block that holds them (from its
+      // top left corner, small and clear), leavers go back into theirs.
+      const from = new Map<string, Shown>();
+      const goal = new Map<string, Shown>();
+      for (const [id, b] of to) {
+        const p = was.boxes.get(id);
+        const h = p ? undefined : holder(id, was.boxes);
+        const hb = h ? was.boxes.get(h)! : undefined;
+        from.set(id, p ? { ...p, o: 1 } : hb ? { ...b, x: hb.x + 12, y: hb.y + 30, w: b.w * 0.4, h: b.h * 0.4, o: 0 } : { ...b, o: 0 });
+        goal.set(id, b);
+      }
+      for (const [id, p] of was.boxes) {
+        if (to.has(id)) continue;
+        const h = holder(id, to);
+        const hb = h ? to.get(h)! : undefined;
+        from.set(id, { ...p, o: 1 });
+        goal.set(id, hb ? { ...p, x: hb.x + 12, y: hb.y + 30, w: p.w * 0.4, h: p.h * 0.4, o: 0 } : { ...p, o: 0 });
+      }
+      setOrder(byDepth(from).concat(byDepth(to).filter((id) => !from.has(id))));
+      const regionFrom = was.regions;
+      const t0 = performance.now();
+      const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+      const step = (now: number) => {
+        const t = Math.min(1, (now - t0) / glide);
+        const e = glideCurve(t);
+        if (t >= 1) {
+          setOrder(byDepth(to));
+          setFrame(end);
+          return;
+        }
+        const boxes = new Map<string, Shown>();
+        for (const [id, a] of from) {
+          const b = goal.get(id)!;
+          // An opening block shows as a frame from the start; a folding one stays a frame until it lands.
+          boxes.set(id, { x: mix(a.x, b.x, e), y: mix(a.y, b.y, e), w: mix(a.w, b.w, e), h: mix(a.h, b.h, e), o: mix(a.o, b.o, e), open: a.open || b.open, depth: b.depth });
+        }
+        const regions = d.n.regions.map((r) => {
+          const q = regionFrom.find((x) => x.key === r.key) ?? r;
+          return { ...r, x: mix(q.x, r.x, e), y: mix(q.y, r.y, e), w: mix(q.w, r.w, e), h: mix(q.h, r.h, e) };
+        });
+        setFrame({ boxes, regions, width: Math.max(was.width, d.n.width), height: Math.max(was.height, d.n.height), moving: true });
+        raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+    },
+  );
+
   /** Scope lines lit by what the pointer (or a pick, or a row) is on: every scope line of the analysis lines it touches. */
   const lit = createMemo(() => {
     const d = drawn().n;
@@ -190,11 +261,12 @@ function App(props: { inp: Input; overlay: number; times: number }) {
 
   const Canvas = (cp: { phone: boolean }) => {
     const d = () => drawn().n;
+    const f = () => frame() ?? { boxes: new Map<string, Shown>(), regions: d().regions, width: d().width, height: d().height, moving: false };
     const sc = () => (cp.phone ? Math.min(scale(), 370 / d().width) : scale());
     let tapAt = 0;
     return (
-      <svg width={d().width * sc()} height={d().height * sc()} viewBox={`0 0 ${d().width} ${d().height}`} onMouseLeave={() => !cp.phone && setHover(null)}>
-        <For each={d().regions}>
+      <svg width={f().width * sc()} height={f().height * sc()} viewBox={`0 0 ${f().width} ${f().height}`} onMouseLeave={() => !cp.phone && setHover(null)}>
+        <For each={f().regions}>
           {(f) => (
             <g>
               <rect x={f.x} y={f.y} width={f.w} height={f.h} rx={10} {...stylex.attrs(f.key === "C" ? s.frameC : s.frameU)} />
@@ -205,15 +277,17 @@ function App(props: { inp: Input; overlay: number; times: number }) {
           )}
         </For>
         {/* Blocks, outermost first so open frames sit under what they hold. */}
-        <For each={[...d().boxes].sort((a, b) => a[1].depth - b[1].depth || Number(b[1].open) - Number(a[1].open))}>
-          {([id, b]) => {
+        <For each={order()}>
+          {(id) => {
+            const b = () => f().boxes.get(id) ?? { x: 0, y: 0, w: 0, h: 0, o: 0, open: false, depth: 0 };
+            const look = () => (b().open ? s.open : s.node);
             const n = inp.info.get(id)!;
             const ch = n.change === "unchanged" && inp.nodes.find((x) => x.id === id)!.side === 1 ? "modified" : n.change;
             const inside = inp.kids.get(id)?.length ?? 0;
             return (
               <g
-                style={{ "--x": `${b.x}px`, "--y": `${b.y}px` }}
-                {...stylex.attrs(s.box)}
+                transform={`translate(${b().x} ${b().y})`}
+                opacity={b().o}
                 onMouseEnter={() => !cp.phone && setHover({ node: id })}
                 onMouseLeave={() => !cp.phone && setHover(null)}
                 onClick={(e) => {
@@ -230,15 +304,16 @@ function App(props: { inp: Input; overlay: number; times: number }) {
                 <rect
                   x={0}
                   y={0}
-                  rx={b.open ? 10 : 8}
-                  style={{ "--w": `${b.w}px`, "--h": `${b.h}px` }}
-                  {...stylex.attrs(s.boxRect, b.open ? s.open : s.node, s[ch as Change], hover()?.node === id && s.nodeHot, picked() === id && s.picked)}
+                  width={b().w}
+                  height={b().h}
+                  rx={b().open ? 10 : 8}
+                  {...stylex.attrs(s.shape, look(), s[ch as Change], hover()?.node === id && s.nodeHot, picked() === id && s.picked)}
                 />
-                <text x={12} y={b.open ? 26 : 30} {...stylex.attrs(s.nodeName)}>
-                  {b.open ? "▾ " : ""}
+                <text x={12} y={b().open ? 26 : 30} {...stylex.attrs(s.nodeName)}>
+                  {b().open ? "▾ " : ""}
                   {n.name.length > 26 ? `${n.name.slice(0, 25)}…` : n.name}
                 </text>
-                <Show when={!b.open}>
+                <Show when={!b().open && b().h > 50}>
                   <text x={12} y={50} {...stylex.attrs(s.nodeKind)}>
                     {n.kind}
                     {inside ? ` · ▸ ${inside} inside` : ""}
@@ -248,7 +323,7 @@ function App(props: { inp: Input; overlay: number; times: number }) {
             );
           }}
         </For>
-        <Show when={drawn().version} keyed>
+        <Show when={!f().moving && drawn().version} keyed>
           {(_) => (
             <g {...stylex.attrs(s.lines)}>
               <For each={[...d().routes]}>
@@ -434,6 +509,20 @@ function App(props: { inp: Input; overlay: number; times: number }) {
       </Show>
     </div>
   );
+}
+
+/** cubic-bezier(.4, 0, .2, 1), the curve the other canvases glide on. */
+function glideCurve(t: number): number {
+  const x1 = 0.4, y1 = 0, x2 = 0.2, y2 = 1;
+  const bx = (u: number) => 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u;
+  const by = (u: number) => 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (bx(mid) < t) lo = mid;
+    else hi = mid;
+  }
+  return by((lo + hi) / 2);
 }
 
 /** The arrowhead at a route's end (or start), pointing the way the line arrives. */
