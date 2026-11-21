@@ -73,7 +73,7 @@ const s = stylex.create({
   headHot: { fill: colors.accent },
   count: { fill: colors.muted, fontSize: 10, fontVariantNumeric: "tabular-nums", fontWeight: 600, pointerEvents: "none" },
   countBg: { fill: colors.bg },
-  trunk: { fill: "none", opacity: 0.8, stroke: pal.lineQuiet, strokeLinecap: "butt", strokeLinejoin: "round", strokeWidth: "var(--tw)" },
+  trunk: { fill: "none", opacity: 0.45, stroke: pal.lineQuiet, strokeLinecap: "butt", strokeLinejoin: "round", strokeWidth: "var(--tw)" },
   trunkChanged: { stroke: pal.line },
   trunkHot: { opacity: 0.9, stroke: colors.accent },
   trunkHit: { cursor: "pointer", fill: "none", pointerEvents: "stroke", stroke: "transparent", strokeWidth: 18 },
