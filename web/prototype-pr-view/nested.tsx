@@ -63,17 +63,18 @@ const s = stylex.create({
   nodeName: { fill: colors.fg, fontSize: 13, fontWeight: 600, pointerEvents: "none" },
   nodeKind: { fill: colors.muted, fontSize: 11, pointerEvents: "none" },
   lines: { animationDuration: "180ms", animationFillMode: "both", animationName: appear },
-  line: { fill: "none", stroke: pal.unchanged, strokeWidth: 1.5 },
-  lineChanged: { stroke: pal.modified },
+  line: { fill: "none", stroke: pal.lineQuiet, strokeWidth: 1.5 },
+  lineChanged: { stroke: pal.line },
   dim: { opacity: 0.15 },
   lineHot: { stroke: colors.accent, strokeWidth: 2.5 },
   hit: { cursor: "pointer", fill: "none", pointerEvents: "stroke", stroke: "transparent", strokeWidth: 12 },
-  head2: { fill: pal.unchanged },
+  head2: { fill: pal.lineQuiet },
+  headChanged: { fill: pal.line },
   headHot: { fill: colors.accent },
   count: { fill: colors.muted, fontSize: 10, fontVariantNumeric: "tabular-nums", fontWeight: 600, pointerEvents: "none" },
   countBg: { fill: colors.bg },
-  trunk: { fill: "none", opacity: 0.8, stroke: pal.unchanged, strokeLinecap: "butt", strokeLinejoin: "round", strokeWidth: "var(--tw)" },
-  trunkChanged: { stroke: pal.modified },
+  trunk: { fill: "none", opacity: 0.8, stroke: pal.lineQuiet, strokeLinecap: "butt", strokeLinejoin: "round", strokeWidth: "var(--tw)" },
+  trunkChanged: { stroke: pal.line },
   trunkHot: { opacity: 0.9, stroke: colors.accent },
   trunkHit: { cursor: "pointer", fill: "none", pointerEvents: "stroke", stroke: "transparent", strokeWidth: 18 },
   card: {
@@ -336,10 +337,10 @@ function App(props: { inp: Input; overlay: number; times: number }) {
                     <g>
                       <path d={rounded(pts)} {...stylex.attrs(s.line, changed && s.lineChanged, dim() && s.dim)} />
                       <Show when={!l.to.startsWith("stub:")}>
-                        <path d={arrow(tipOf(pts, true))} {...stylex.attrs(s.head2, dim() && s.dim)} />
+                        <path d={arrow(tipOf(pts, true))} {...stylex.attrs(s.head2, changed && s.headChanged, dim() && s.dim)} />
                       </Show>
                       <Show when={l.both && !l.from.startsWith("stub:")}>
-                        <path d={arrow(tipOf(pts, false))} {...stylex.attrs(s.head2, dim() && s.dim)} />
+                        <path d={arrow(tipOf(pts, false))} {...stylex.attrs(s.head2, changed && s.headChanged, dim() && s.dim)} />
                       </Show>
                       <Show when={labels() === "room" && l.members.length > 1}>
                         <rect x={left.x + 3} y={left.y - 6} width={String(l.members.length).length * 6 + 6} height={12} rx={3} {...stylex.attrs(s.countBg, dim() && s.dim)} />

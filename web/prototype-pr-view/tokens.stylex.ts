@@ -20,6 +20,9 @@ export const pal = stylex.defineVars({
   addedTint: "light-dark(rgb(26 127 55 / 0.07), rgb(63 185 80 / 0.10))",
   removedTint: "light-dark(rgb(207 34 46 / 0.07), rgb(248 81 73 / 0.10))",
   modifiedTint: "light-dark(rgb(154 103 0 / 0.07), rgb(210 153 34 / 0.10))",
+  // Lines and trunks (#166): their own purple, so they never read as a block's outline.
+  line: "light-dark(#7c3aed, #a78bfa)",
+  lineQuiet: "light-dark(#c4b5fd, #6d5aa8)",
   nodeBg: "light-dark(#ffffff, #18181b)",
   contextBg: "light-dark(#f4f4f5, #111114)",
   code: "light-dark(#f6f8fa, #0d1117)",
