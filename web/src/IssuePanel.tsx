@@ -111,6 +111,11 @@ const PullBadge = lazy(() => import("./Pull"), { export: "PullBadge" });
 const PullBranches = lazy(() => import("./Pull"), { export: "PullBranches" });
 const OpenOnGitHub = lazy(() => import("./Pull"), { export: "OpenOnGitHub" });
 const ReviewsElsewhere = lazy(() => import("./Pull"), { export: "ReviewsElsewhere" });
+// PROTOTYPE (#169): the PR view's place in the PR panel. Never merged.
+const ProtoA = lazy(() => import("./PrototypePrAnalysis"), { export: "VariantASection" });
+const ProtoB = lazy(() => import("./PrototypePrAnalysis"), { export: "VariantBButton" });
+const ProtoC = lazy(() => import("./PrototypePrAnalysis"), { export: "VariantCRow" });
+const ProtoBar = lazy(() => import("./PrototypePrAnalysis"), { export: "ProtoBar" });
 
 /** The title and body editors: loaded when one first opens; a failed load is handled as a picker's. */
 const editorChunk = () =>
@@ -806,6 +811,9 @@ function Body(props: {
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
           <span {...stylex.attrs(s.spacer)} />
+          <Show when={d().pr}>
+            <ProtoB p={d()} />
+          </Show>
           <Show
             when={d().pr}
             fallback={
@@ -858,6 +866,10 @@ function Body(props: {
         </Show>
         <div ref={titleEnd} />
         <Show when={d().pr}>{(pr) => <PullBranches pr={pr()} />}</Show>
+        <Show when={d().pr}>
+          <ProtoA p={d()} />
+          <ProtoBar p={d()} />
+        </Show>
         <dl {...stylex.attrs(s.props)}>
           <PropRow prop="assignees" title="Assignees" d={d()} at={at()} open={picking() === "assignees"} setOpen={setOpen("assignees")} unit="assignees" cue={held.unitCue("assignees")} tint={held.unitTint("assignees")}>
             <For each={d().assignees} keyed={(u) => u.login} fallback={<span {...stylex.attrs(s.muted)}>No one</span>}>
@@ -906,6 +918,7 @@ function Body(props: {
             <dd {...unitAttrs("linked", held.unitCue("linked"), held.unitTint("linked"), s.value)}>
               <Linked items={d().closes} search={props.search} empty="Nothing" perf="closes" />
             </dd>
+            <ProtoC p={d()} keyStyle={s.key} valueStyle={s.value} />
           </Show>
         </dl>
         {/* Units of their own (#110): an empty one keeps a spot of no height, where a first item
