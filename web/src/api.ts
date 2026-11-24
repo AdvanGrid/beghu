@@ -106,6 +106,15 @@ export class Unavailable extends Error {
  */
 export class ServerError extends Error {}
 
+// The PR view's analysis (`analyses/` on the server).
+
+/** The PR has no analysis for this account, or not the one asked for. */
+export class NoAnalysis extends Error {}
+/** An analysis run refused at its start: the PR changes more files than an analysis takes. */
+export class PrTooLarge extends Error {}
+/** beghu couldn't bring the PR's stored analysis up to its schema: a bug on its side. */
+export class AnalysisMigrationFailed extends Error {}
+
 // Writes only: how a write GitHub didn't take failed. The message is the server's, for the user.
 
 /**
@@ -239,6 +248,12 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
       return new Lost(said, body.digest);
     case "maybe_posted":
       return new MaybePosted(said, body.after, body.digest);
+    case "no_analysis":
+      return new NoAnalysis(said);
+    case "pr_too_large":
+      return new PrTooLarge(said);
+    case "migration_failed":
+      return new AnalysisMigrationFailed(why);
     case undefined:
       break;
     default:

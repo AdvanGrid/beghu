@@ -728,6 +728,7 @@ async fn finish(
     // A mirror deleted when the account lost access (or went dormant) comes back empty, and
     // imports.
     app.mirrors().revive(id);
+    app.analyses().dbs.revive(id);
     if created {
         crate::repos::adopt_mirror_pick(app, id).await?;
     }

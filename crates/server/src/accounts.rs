@@ -50,7 +50,8 @@
 //! is done, with nothing else let in, it marks the account dormant only if `last_active_at`
 //! hasn't moved since it read it, and keeps the mirror if it has. So a request that came in
 //! meanwhile keeps the account active, and one that comes after finds it dormant and wakes it.
-//! A dormant account's mirror files are deleted at startup too. Any use wakes it ([`used`]), as
+//! A dormant account's mirror files are deleted at startup too, and so is its `analyses.db`
+//! (`analyses/`), deleted with its mirror as it goes dormant. Any use wakes it ([`used`]), as
 //! does signing in again: its repo set is read afresh (dropping the repos it can no longer
 //! see), and its mirror comes back empty and imports its whole pick, which the status slot
 //! calls "Re-importing — you've been away a while". The daily check also wipes dead tokens.
@@ -604,8 +605,12 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
             // afresh. Forgotten now, before that import finds misses of its own, and whether or
             // not it woke: left, the account would show "sync degraded" once it's back.
             forget_sync(app, account).await;
+            // Its analyses go with its mirror: they're the account's, and nothing keeps them past
+            // its dormancy.
+            delete_analyses(app, account).await;
             // A request may have woken it already: its repos stay in the sweeps.
             if status_of(app, account).await != Some(AccountStatus::Dormant) {
+                app.analyses().dbs.revive(account);
                 return;
             }
             // Its repos leave the sweeps, unless an active account syncs them too.
@@ -646,6 +651,7 @@ pub(crate) async fn used(
         if woke {
             back_from_dormancy(app, account);
             app.mirrors().revive(account);
+            app.analyses().dbs.revive(account);
             app.spawn(
                 move |app| async move { crate::repos::refresh_roles_now(&app, account).await },
             );
@@ -680,6 +686,31 @@ pub(crate) async fn streaming(app: &App, account: i64) {
 pub(crate) fn back_from_dormancy(app: &App, account: i64) {
     eprintln!("account {account}: in use again after going dormant; re-importing its synced repos");
     app.imports().mark_away(account);
+}
+
+/// Deletes the account's `analyses.db`, as it goes dormant. A failure is logged: startup deletes
+/// a dormant account's analyses again.
+async fn delete_analyses(app: &App, account: i64) {
+    match app.analyses().dbs.delete(account).await {
+        Ok(()) => eprintln!("account {account}: dormant; its analyses are deleted"),
+        Err(e) => eprintln!("account {account}: deleting its analyses as it went dormant: {e}"),
+    }
+}
+
+/// Startup step 3, for the analyses: deletes the `analyses.db` of every dormant account (a
+/// delete the drain cut off is finished here). A failure is logged.
+pub async fn delete_dormant_analyses(app: &App) -> Result<(), String> {
+    let accounts = app
+        .control()
+        .read(control_db::q::dormant_accounts)
+        .await
+        .map_err(|e| format!("can't read the dormant accounts: {e}"))?;
+    for account in accounts {
+        if let Err(e) = app.analyses().dbs.delete(account).await {
+            eprintln!("startup: deleting account {account}'s analyses: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// Startup step 3: deletes the mirrors of accounts that aren't active (they lost access, or

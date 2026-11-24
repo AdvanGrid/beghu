@@ -7,10 +7,18 @@ description = "The beghu server: one binary for the HTTP API, webhooks and every
 
 [dependencies]
 aes-gcm = "0.10"
+# The PR view's analysis: its schema, validator and migrations, called for every upload and
+# every stored analysis read.
+analysis = { path = "../analysis" }
+analysis-db = { workspace = true }
 axum = { workspace = true }
 base64 = "0.22"
+# An analysis's graph and claims, compressed once at upload at brotli 9 and gzip 9 and served as
+# stored: already in the build through tower-http's compression.
+brotli = "8"
 control-db = { workspace = true }
 dbrt = { workspace = true }
+flate2 = "1"
 futures-util = { version = "0.3", default-features = false }
 # The rendered-Markdown cache's LRU order: already in the build through rusqlite.
 hashlink = "0.12"
@@ -44,14 +52,11 @@ url = "2"
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
-# Decode what the server compressed.
-brotli = "8"
 bytes = "1"
 fake-github = { path = "../fake-github" }
 # GitHub-side facts of a fixture issue (its node id) that no HTTP seam shows.
 fake-db = { workspace = true }
 fixture = { workspace = true }
-flate2 = "1"
 reqwest = { workspace = true, features = ["stream"] }
 # Tests that need control-DB state no HTTP seam can make (tampering, a lock another process
 # holds, an aged session, a preference no API sets yet) open the control DB themselves. Never

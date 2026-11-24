@@ -203,6 +203,8 @@ name = "beghu"
 version = "0.0.0"
 dependencies = [
  "aes-gcm",
+ "analysis",
+ "analysis-db",
  "axum",
  "base64 0.22.1",
  "brotli 8.0.4",

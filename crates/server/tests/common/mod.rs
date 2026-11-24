@@ -104,6 +104,20 @@ pub const SITE: &[(&str, &str)] = &[
     ),
 ];
 
+/// Stand-ins for the agent's tools the server serves from `BEGHU_ANALYSIS_DIR`.
+pub const TOOLS: &[(&str, &str)] = &[
+    (
+        "validate.mjs",
+        "// validate.mjs, as the test harness stands it in
+",
+    ),
+    (
+        "merge.mjs",
+        "// merge.mjs, as the test harness stands it in
+",
+    ),
+];
+
 /// A minimal built web app: the shell template the server fills in per URL.
 pub const SHELL_TEMPLATE: &str = "<!doctype html><html><head><!--beghu:preload--></head><body><div id=\"root\"></div></body></html>";
 
@@ -262,6 +276,13 @@ async fn start_seeded(
     std::fs::write(web.join("index.html"), SHELL_TEMPLATE).unwrap();
     std::fs::create_dir_all(web.join(".vite")).unwrap();
     std::fs::write(web.join(".vite").join("manifest.json"), manifest()).unwrap();
+    // The agent's tools, as `crates/analysis-wasm/build.sh` builds them: stand-ins with the
+    // same names, which the run serves as they are.
+    let tools = web.join("analysis-tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    for (name, body) in TOOLS {
+        std::fs::write(tools.join(name), body).unwrap();
+    }
     let site = web.join("site");
     std::fs::create_dir_all(&site).unwrap();
     for (name, body) in SITE {
@@ -427,6 +448,9 @@ impl Stack {
             },
             web_dir: Some(self.web.clone()),
             mirrors: mirror_db_config(),
+            analysis_tools: Some(self.web.join("analysis-tools")),
+            analysis_chain: &analysis::CHAIN,
+            runs: beghu::RunLifetimes::default(),
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),

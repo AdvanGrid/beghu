@@ -15,7 +15,7 @@ pub struct Config {
     /// the OAuth callback.
     pub public_url: String,
     /// `BEGHU_DATA_DIR`: the volume, on block storage. Holds `control.db`, `backups/`,
-    /// `mirrors/`, and with a web build `assets/` and `builds/`.
+    /// `mirrors/`, `analyses/`, and with a web build `assets/` and `builds/`.
     pub data_dir: PathBuf,
     /// `BEGHU_TOKEN_KEY`: the HKDF master key (base64, at least 32 bytes).
     pub token_key: Vec<u8>,
@@ -27,6 +27,18 @@ pub struct Config {
     /// serves the app.
     pub web_dir: Option<PathBuf>,
     pub mirrors: MirrorsConfig,
+    /// `BEGHU_ANALYSIS_DIR`: the agent's tools, `validate.mjs` and `merge.mjs`, built from this
+    /// server's own commit (`crates/analysis-wasm/build.sh`; the image has them in
+    /// `/app/analysis`, and `./dev-ctl` builds them into `target/analysis-tools`). An analysis
+    /// run serves them as they are. Set but missing either file refuses startup; unset, the run
+    /// answers 503 for them.
+    pub analysis_tools: Option<PathBuf>,
+    /// The migration chain stored and uploaded analyses go through: always
+    /// [`analysis::CHAIN`], this build's. A test may give one a version ahead, with a step of its
+    /// own, to drive a migration through HTTP before the schema has a second version.
+    pub analysis_chain: &'static analysis::Chain<'static>,
+    /// How long analysis runs live (spec #176, "The run"): 24 h unused, 2 h idle, 7 days at most.
+    pub runs: RunLifetimes,
     /// How often a signed-in account's visible repos and roles are re-read from GitHub.
     pub repo_refresh_every: Duration,
     /// How long after a failed re-read of the roles the next is tried (a minute): long enough
@@ -89,6 +101,27 @@ pub struct Config {
     /// told (`x-beghu-scan-steps`), and the log names the statements, for the perf harness. Off
     /// by default.
     pub scan_steps: bool,
+}
+
+/// How long an analysis run lives.
+#[derive(Clone, Debug)]
+pub struct RunLifetimes {
+    /// A run nothing fetched from yet expires this long after its start (24 h).
+    pub unused_for: Duration,
+    /// An attached run expires after this long with no authenticated call (2 h).
+    pub idle_for: Duration,
+    /// An attached run expires this long after it attached, however busy (7 days).
+    pub lives_for: Duration,
+}
+
+impl Default for RunLifetimes {
+    fn default() -> Self {
+        RunLifetimes {
+            unused_for: Duration::from_secs(24 * 3600),
+            idle_for: Duration::from_secs(2 * 3600),
+            lives_for: Duration::from_secs(7 * 24 * 3600),
+        }
+    }
 }
 
 /// The attachment route's and the image proxy's limits (spec, "Markdown and media"), and where
@@ -319,6 +352,9 @@ impl Config {
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
+            analysis_tools: std::env::var("BEGHU_ANALYSIS_DIR").ok().map(PathBuf::from),
+            analysis_chain: &analysis::CHAIN,
+            runs: RunLifetimes::default(),
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),
@@ -347,8 +383,8 @@ impl Config {
     }
 
     // `./dev-ctl reset --all` deletes `control.db` (with its `-wal` and `-shm`) and `backups/`
-    // under BEGHU_DATA_DIR, and `reset` replaces `mirrors/`: keep these names in step with
-    // tools/dev-ctl/src/main.ts.
+    // under BEGHU_DATA_DIR, and `reset` replaces `mirrors/` and deletes `analyses/`: keep these
+    // names in step with tools/dev-ctl/src/main.ts.
 
     pub fn control_db(&self) -> PathBuf {
         self.data_dir.join("control.db")
@@ -362,6 +398,14 @@ impl Config {
 
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
+    }
+
+    /// Each account's `analyses.db`, as `analyses/<github user id>.db`.
+    // OPEN QUESTION (#176): "beside the mirror in the account's directory", but an account has
+    // no directory (its mirror is `mirrors/<id>.db`); a directory of their own keeps `./dev-ctl`'s
+    // `mirrors/` reseed from touching them.
+    pub fn analyses_dir(&self) -> PathBuf {
+        self.data_dir.join("analyses")
     }
 }
 

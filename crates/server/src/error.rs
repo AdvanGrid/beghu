@@ -31,6 +31,14 @@ pub enum ApiError {
         issue: IssueRef,
         to: Option<i64>,
     },
+    /// The PR has no analysis (for this account), or not the one asked for.
+    NoAnalysis,
+    /// An analysis run refused at its start: the PR changes more files than an analysis can
+    /// place. The message names the cap.
+    PrTooLarge(String),
+    /// The PR's stored analysis couldn't be migrated to this build's schema: a bug. It's left as
+    /// it was, and never served in its old shape.
+    AnalysisMigrationFailed,
     /// The issue is in the mirror but outside the synced repos (a stub, or a repo no longer
     /// synced), so beghu doesn't hold it. Its body says where it is on GitHub.
     NoAccess(IssueRef),
@@ -149,6 +157,12 @@ pub enum ErrorKind {
     Moved,
     /// 403: the issue is outside the account's synced repos.
     NoAccess,
+    /// 404: the PR has no analysis.
+    NoAnalysis,
+    /// 422: the PR changes more files than an analysis run takes.
+    PrTooLarge,
+    /// 500: the PR's stored analysis couldn't be brought to this build's schema.
+    MigrationFailed,
     /// 503: try again after the `retry-after` header's seconds.
     Unavailable,
     /// 500.
@@ -262,6 +276,17 @@ impl IntoResponse for ApiError {
                 moved_to = Some(to);
                 (StatusCode::GONE, ErrorKind::Moved, message)
             }
+            ApiError::NoAnalysis => (
+                StatusCode::NOT_FOUND,
+                ErrorKind::NoAnalysis,
+                "This PR has no analysis".to_owned(),
+            ),
+            ApiError::PrTooLarge(m) => (StatusCode::UNPROCESSABLE_ENTITY, ErrorKind::PrTooLarge, m),
+            ApiError::AnalysisMigrationFailed => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorKind::MigrationFailed,
+                "beghu couldn't bring this PR's analysis up to date".to_owned(),
+            ),
             ApiError::NoAccess(i) => {
                 issue = Some(i);
                 (

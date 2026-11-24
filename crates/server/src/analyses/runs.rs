@@ -1,0 +1,806 @@
+//! A run's life: starting one (the browser's `POST /api/{owner}/{repo}/pulls/{n}/runs`, the CLI's
+//! `POST /api/cli/runs`), ending one (`DELETE /api/{owner}/{repo}/pulls/{n}/run`, or the run's own
+//! `POST end`), and what every call on a run checks first ([`admit`]): the token, then each way a
+//! run ends (expired, superseded, ended, the account signed out of every browser, dormant, signed
+//! out by GitHub, or without Read on the repo). A run found ended that way is marked so, and the
+//! account's streams hear it.
+//!
+//! The run API answers in its own terms ([`RunError`]): it's read by an agent with `curl` or by
+//! the CLI, never by the web app, so its failures aren't the app's error kinds.
+
+use super::{PrKey, announce, new_id, new_token};
+use crate::auth::Session;
+use crate::crypto::{sha256, unb64};
+use crate::error::ApiError;
+use crate::tokens::AccountStatus;
+use crate::{App, now};
+use analysis::Report;
+use analysis_db::q::RunRow;
+use axum::Json;
+use axum::extract::{Extension, Path, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::time::Duration;
+use ts_rs::TS;
+
+/// Who started a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Producer {
+    /// The PR panel's Analyse button: the agent gets the run's URLs.
+    Button,
+    /// The beghu CLI: the agent gets CLI commands, and every call carries the CLI's credential.
+    Cli,
+}
+
+impl Producer {
+    fn as_str(self) -> &'static str {
+        match self {
+            Producer::Button => "button",
+            Producer::Cli => "cli",
+        }
+    }
+
+    pub fn of(run: &RunRow) -> Producer {
+        match run.producer.as_str() {
+            "cli" => Producer::Cli,
+            _ => Producer::Button,
+        }
+    }
+}
+
+/// Why a run ended: as `analyses.db` stores it, and as a 410 names it (`reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The user ended it (the PR panel, or `beghu analyse end`), or the agent did (`POST end`).
+    ByUser,
+    /// A newer run for the PR replaced it.
+    Superseded,
+    Expired,
+    /// The account signed out of every browser.
+    SignedOut,
+    /// The account went dormant.
+    Dormant,
+    /// GitHub signed the account out: it must sign in again.
+    SignInAgain,
+    /// The account can no longer read the repo.
+    NoRead,
+    /// The PR grew past [`super::MAX_FILES`] before the run pinned it.
+    TooLarge,
+}
+
+impl Serialize for Ended {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl Ended {
+    fn as_str(self) -> &'static str {
+        match self {
+            Ended::ByUser => "ended",
+            Ended::Superseded => "superseded",
+            Ended::Expired => "expired",
+            Ended::SignedOut => "signed_out",
+            Ended::Dormant => "dormant",
+            Ended::SignInAgain => "sign_in_again",
+            Ended::NoRead => "no_read",
+            Ended::TooLarge => "too_large",
+        }
+    }
+
+    pub fn from_db(s: &str) -> Ended {
+        match s {
+            "superseded" => Ended::Superseded,
+            "expired" => Ended::Expired,
+            "signed_out" => Ended::SignedOut,
+            "dormant" => Ended::Dormant,
+            "sign_in_again" => Ended::SignInAgain,
+            "no_read" => Ended::NoRead,
+            "too_large" => Ended::TooLarge,
+            _ => Ended::ByUser,
+        }
+    }
+
+    /// Why, in words for the agent.
+    fn why(self) -> &'static str {
+        match self {
+            Ended::ByUser => "This run was ended.",
+            Ended::Superseded => "A newer run for this PR replaced this one.",
+            Ended::Expired => "This run expired.",
+            Ended::SignedOut => "The account that started this run signed out of beghu.",
+            Ended::Dormant => "The account that started this run went dormant.",
+            Ended::SignInAgain => "The account that started this run must sign in to beghu again.",
+            Ended::NoRead => "The account that started this run can no longer read the repo.",
+            Ended::TooLarge => {
+                "The PR has more than 3,000 changed files, more than an analysis can place."
+            }
+        }
+    }
+}
+
+/// How a run call failed: a status and a JSON body naming the kind.
+#[derive(Debug)]
+pub(crate) enum RunError {
+    /// 401: no such token (or, for a CLI run, no CLI credential that goes with it).
+    BadToken,
+    /// 410: the run ended.
+    Ended(Ended),
+    /// 410: the run's account lost its analyses (it went dormant and came back): the run is gone.
+    Gone,
+    /// 413: past the upload's limits.
+    TooLarge,
+    /// 409: the upload's head isn't the one the run pinned.
+    HeadMoved {
+        pinned: String,
+    },
+    /// 422: the upload failed a check; nothing was stored. `migrated`: the versions the upload
+    /// was migrated between, when it was.
+    Refused {
+        report: Report,
+        migrated: Option<(u32, u32)>,
+    },
+    /// 404: the file isn't there (no previous analysis).
+    NotFound(&'static str),
+    BadRequest(String),
+    /// 415: a `Content-Encoding` other than `gzip`.
+    Encoding,
+    /// 503: try again after `retry_after`.
+    Unavailable {
+        retry_after: Duration,
+        why: String,
+    },
+    /// 500: the stored analysis couldn't be migrated to this build's schema (a bug).
+    MigrationFailed,
+    Internal(String),
+}
+
+/// The run API's error body.
+#[derive(Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RunErrorBody {
+    /// `bad_token`, `run_ended`, `too_large`, `head_moved`, `refused`, `not_found`,
+    /// `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`.
+    pub error: &'static str,
+    pub message: String,
+    /// With `run_ended`: why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub reason: Option<Ended>,
+    /// With `head_moved`: the head SHA the run pinned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<String>,
+    /// With `refused`: the error report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub report: Option<Report>,
+    /// With `refused`: the server's schema version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub version: Option<u32>,
+    /// With `too_large`: the limits, in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "{ wire: number, inflated: number }")]
+    pub limits: Option<serde_json::Value>,
+}
+
+impl From<dbrt::Error> for RunError {
+    fn from(e: dbrt::Error) -> Self {
+        match ApiError::from(e) {
+            ApiError::Unavailable { retry_after, why } => {
+                RunError::Unavailable { retry_after, why }
+            }
+            ApiError::Internal(m) => RunError::Internal(m),
+            other => RunError::Internal(format!("{other:?}")),
+        }
+    }
+}
+
+impl From<crate::tokens::Error> for RunError {
+    fn from(e: crate::tokens::Error) -> Self {
+        match e {
+            crate::tokens::Error::SignInAgain => RunError::Ended(Ended::SignInAgain),
+            crate::tokens::Error::Restarting => RunError::Unavailable {
+                retry_after: Duration::from_secs(5),
+                why: "beghu is restarting; try again in a moment".into(),
+            },
+            crate::tokens::Error::Db(e) => e.into(),
+            crate::tokens::Error::GitHub(e) => github_failed(e),
+            e => RunError::Internal(e.to_string()),
+        }
+    }
+}
+
+/// GitHub failed a call the run needed: try again later.
+pub(crate) fn github_failed(e: crate::github::Error) -> RunError {
+    let retry_after = match &e {
+        crate::github::Error::RateLimited(d) => *d,
+        _ => Duration::from_secs(10),
+    };
+    RunError::Unavailable {
+        retry_after,
+        why: format!("GitHub didn't answer as asked ({e}); try again in a moment"),
+    }
+}
+
+impl IntoResponse for RunError {
+    fn into_response(self) -> Response {
+        let mut body = RunErrorBody {
+            error: "",
+            message: String::new(),
+            reason: None,
+            pinned: None,
+            report: None,
+            version: None,
+            limits: None,
+        };
+        let mut retry = None;
+        let status = match self {
+            RunError::BadToken => {
+                body.error = "bad_token";
+                body.message = "No run has this token.".into();
+                StatusCode::UNAUTHORIZED
+            }
+            RunError::Ended(why) => {
+                body.error = "run_ended";
+                body.message = format!("{} Start a new run.", why.why());
+                body.reason = Some(why);
+                StatusCode::GONE
+            }
+            RunError::Gone => {
+                body.error = "run_ended";
+                body.message = "This run no longer exists. Start a new run.".into();
+                StatusCode::GONE
+            }
+            RunError::TooLarge => {
+                body.error = "too_large";
+                body.message = format!(
+                    "An upload is at most {} MB on the wire and {} MB once inflated.",
+                    super::MAX_WIRE >> 20,
+                    super::MAX_INFLATED >> 20
+                );
+                body.limits =
+                    Some(json!({ "wire": super::MAX_WIRE, "inflated": super::MAX_INFLATED }));
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
+            RunError::HeadMoved { pinned } => {
+                body.error = "head_moved";
+                body.message = format!(
+                    "The analysis isn't of the head this run pinned, {pinned}: analyse that commit, or start a new run for a newer head."
+                );
+                body.pinned = Some(pinned);
+                StatusCode::CONFLICT
+            }
+            RunError::Refused { report, migrated } => {
+                body.error = "refused";
+                body.message = match migrated {
+                    Some((from, to)) => format!(
+                        "The analysis failed the server's checks; nothing was stored. The schema moved from version {from} to {to} since this run's files were fetched: refetch schema.ts, validate.mjs and the instructions from this run."
+                    ),
+                    None => {
+                        "The analysis failed the server's checks; nothing was stored.".to_owned()
+                    }
+                };
+                body.report = Some(report);
+                body.version = Some(analysis::VERSION);
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            RunError::NotFound(what) => {
+                body.error = "not_found";
+                body.message = what.to_owned();
+                StatusCode::NOT_FOUND
+            }
+            RunError::BadRequest(m) => {
+                body.error = "bad_request";
+                body.message = m;
+                StatusCode::BAD_REQUEST
+            }
+            RunError::Encoding => {
+                body.error = "unsupported_encoding";
+                body.message = "Send the analysis as is, or with Content-Encoding: gzip.".into();
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            }
+            RunError::Unavailable { retry_after, why } => {
+                body.error = "unavailable";
+                body.message = why;
+                retry = Some(retry_after);
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            RunError::MigrationFailed => {
+                body.error = "migration_failed";
+                body.message =
+                    "beghu couldn't bring this PR's stored analysis up to its schema.".into();
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            RunError::Internal(m) => {
+                eprintln!("analysis run: internal error: {m}");
+                body.error = "internal";
+                body.message = "Something went wrong".into();
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+        let mut res = (status, Json(body)).into_response();
+        if let Some(r) = retry {
+            res.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(r.as_secs().max(1)));
+        }
+        res
+    }
+}
+
+/// A run call let through: the run's account and its row as it stands.
+pub(crate) struct Admitted {
+    pub account: i64,
+    pub run: RunRow,
+}
+
+impl Admitted {
+    pub fn pr(&self) -> PrKey {
+        PrKey {
+            account: self.account,
+            repo_id: self.run.repo_id,
+            number: self.run.number,
+        }
+    }
+
+    /// `owner/name`, as the run was started.
+    pub fn repo(&self) -> String {
+        format!("{}/{}", self.run.owner, self.run.name)
+    }
+}
+
+/// When the run expires, as it stands: 24 h after its start while nothing fetched from it, then
+/// 2 h after its last call, and never later than 7 days after it attached.
+pub(crate) fn deadline(app: &App, run: &RunRow) -> i64 {
+    let l = &app.cfg().runs;
+    match run.attached_at {
+        None => run.created_at + l.unused_for.as_secs() as i64,
+        Some(at) => {
+            (run.last_heard_at + l.idle_for.as_secs() as i64).min(at + l.lives_for.as_secs() as i64)
+        }
+    }
+}
+
+/// Ends the run if it's still live, telling the account's streams. The error the call that found
+/// it so answers.
+pub(crate) async fn end(app: &App, account: i64, run: &RunRow, why: Ended) -> RunError {
+    let (id, t) = (run.id.clone(), now());
+    match app
+        .analyses()
+        .dbs
+        .write(account, move |tx| {
+            analysis_db::q::end_run(tx, &id, why.as_str(), t)
+        })
+        .await
+    {
+        Ok(n) if n > 0 => {
+            eprintln!(
+                "account {account}: the analysis run on {}/{}#{} ended ({})",
+                run.owner,
+                run.name,
+                run.number,
+                why.as_str()
+            );
+            announce(
+                app,
+                account,
+                &format!("{}/{}", run.owner, run.name),
+                run.number,
+                None,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("account {account}: ending run {}: {e}", run.id),
+    }
+    RunError::Ended(why)
+}
+
+/// What every call on a run checks first, in order: the token names a run; its account isn't
+/// dormant or signed out by GitHub; the run exists and hasn't ended or expired; for a button
+/// run, the account is still signed in on some browser, and for a CLI run the call carries its
+/// CLI credential; the account can still read the repo. A run found ended on the way is marked
+/// so. The call counts as the run's use (`last_heard_at`).
+pub(crate) async fn admit(
+    app: &App,
+    token: &str,
+    headers: &HeaderMap,
+) -> Result<Admitted, RunError> {
+    let hash = match unb64(token) {
+        Some(raw) if raw.len() == 32 => sha256(&raw),
+        _ => return Err(RunError::BadToken),
+    };
+    let Some(t) = app
+        .control()
+        .read(move |c| control_db::q::run_token(c, &hash))
+        .await?
+    else {
+        return Err(RunError::BadToken);
+    };
+    let account = t.github_user_id;
+    // Its analyses were deleted with its mirror, or are about to be.
+    if AccountStatus::from_db(&t.status) == AccountStatus::Dormant {
+        return Err(RunError::Ended(Ended::Dormant));
+    }
+    let id = t.run_id.clone();
+    let run = match app
+        .analyses()
+        .dbs
+        .read(account, move |c| analysis_db::q::run(c, &id))
+        .await
+    {
+        Ok(Some(run)) => run,
+        Ok(None) => return Err(RunError::Gone),
+        Err(dbrt::Error::Deleted) => return Err(RunError::Ended(Ended::Dormant)),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(why) = &run.ended_reason {
+        return Err(RunError::Ended(Ended::from_db(why)));
+    }
+    if AccountStatus::from_db(&t.status) == AccountStatus::NeedsSignIn {
+        return Err(end(app, account, &run, Ended::SignInAgain).await);
+    }
+    let t = now();
+    if t >= deadline(app, &run) {
+        return Err(end(app, account, &run, Ended::Expired).await);
+    }
+    match Producer::of(&run) {
+        Producer::Button => {
+            let signed_in = app
+                .control()
+                .read(move |c| control_db::q::signed_in_anywhere(c, account, t))
+                .await?;
+            if !signed_in {
+                return Err(end(app, account, &run, Ended::SignedOut).await);
+            }
+        }
+        Producer::Cli => {
+            if cli_account(app, headers).await != Some(account) {
+                return Err(RunError::BadToken);
+            }
+        }
+    }
+    let repo = run.repo_id;
+    let role = app
+        .mirrors()
+        .read(account, mirror_db::Caller::Request, move |c| {
+            mirror_db::q::repo_role(c, repo)
+        })
+        .await?;
+    if role.flatten().is_none() {
+        return Err(end(app, account, &run, Ended::NoRead).await);
+    }
+    let id = run.id.clone();
+    app.analyses()
+        .dbs
+        .write(account, move |tx| analysis_db::q::heard_run(tx, &id, t))
+        .await?;
+    Ok(Admitted {
+        account,
+        run: RunRow {
+            last_heard_at: t,
+            ..run
+        },
+    })
+}
+
+/// The account a CLI call's credential (`Authorization: Bearer beghu_cli_…`) belongs to.
+// OPEN QUESTION (#176, #179): the CLI's credential (its format, its table in the control DB, and
+// how `beghu login` mints it) is slice 5's. Until it exists no call carries one: CLI runs can't
+// start, and every call on one is refused as unknown.
+async fn cli_account(_app: &App, _headers: &HeaderMap) -> Option<i64> {
+    None
+}
+
+/// Watches a live run until it ends, and ends it when it expires: the account's streams hear an
+/// expiry nobody's call found. A run whose watch a restart lost is found expired by its next call.
+pub(crate) fn watch(app: &App, account: i64, run: String) {
+    app.spawn(move |app| async move {
+        loop {
+            let id = run.clone();
+            let row = match app
+                .analyses()
+                .dbs
+                .read(account, move |c| analysis_db::q::run(c, &id))
+                .await
+            {
+                Ok(Some(row)) if row.ended_at.is_none() => row,
+                _ => return,
+            };
+            let wait = deadline(&app, &row) - now();
+            if wait <= 0 {
+                end(&app, account, &row, Ended::Expired).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+        }
+    });
+}
+
+/// The repo a run is for, as the account's mirror holds it: its id, its name as GitHub spells
+/// it, and whether the account can read it.
+pub(crate) struct Repo {
+    pub id: i64,
+    pub owner: String,
+    pub name: String,
+}
+
+/// `owner/name`, if the account can see it and read it.
+pub(crate) async fn readable_repo(
+    app: &App,
+    account: i64,
+    owner: &str,
+    name: &str,
+) -> Result<Option<Repo>, dbrt::Error> {
+    let (o, n) = (owner.to_owned(), name.to_owned());
+    let found = app
+        .mirrors()
+        .read(account, mirror_db::Caller::Request, move |c| {
+            mirror_db::q::run_repo(c, &o, &n)
+        })
+        .await?;
+    Ok(found.and_then(|r| {
+        r.role.map(|_| Repo {
+            id: r.id,
+            owner: r.owner,
+            name: r.name,
+        })
+    }))
+}
+
+/// `POST /api/{owner}/{repo}/pulls/{n}/runs`'s answer.
+#[derive(Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStarted {
+    /// The run's ID.
+    pub run: String,
+    /// The run's token: in the prompt's URL. beghu keeps only its hash, so this is the only time
+    /// it's told.
+    pub token: String,
+    /// The prompt to paste into an agent, word for word.
+    pub prompt: String,
+    /// When the run expires if nothing fetches from it (Unix seconds).
+    pub expires_at: i64,
+}
+
+/// `POST /api/cli/runs`'s answer.
+#[derive(Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CliRunStarted {
+    pub run: String,
+    pub token: String,
+    /// The PR's size, as the CLI prints it first: `120 files, +3400 −1200`.
+    pub size_line: String,
+}
+
+/// A run just started.
+struct Started {
+    run: String,
+    token: String,
+    created_at: i64,
+    files: i64,
+    additions: i64,
+    deletions: i64,
+}
+
+/// The PR's size, as the prompt and the run header state it: `120 files, +3400 −1200`.
+pub(crate) fn size_line(files: i64, additions: i64, deletions: i64) -> String {
+    format!("{files} files, +{additions} \u{2212}{deletions}")
+}
+
+/// Starts a run on PR `number` of `repo` for `account`, superseding the live one: refused when
+/// the account can't read the repo, the number isn't a PR, or the PR changes more than 3,000
+/// files.
+async fn start(
+    app: &App,
+    account: i64,
+    repo: &Repo,
+    number: i64,
+    producer: Producer,
+) -> Result<Started, ApiError> {
+    let gh = app.github().clone();
+    let (o, n) = (repo.owner.clone(), repo.name.clone());
+    let pull = app
+        .tokens()
+        .with_token(account, |token| {
+            let (gh, o, n) = (gh.clone(), o.clone(), n.clone());
+            async move { gh.pull(&token, &o, &n, number).await }
+        })
+        .await;
+    let pull = match pull {
+        Ok(crate::github::Shown::It(p)) => p,
+        Ok(_) => return Err(ApiError::Gone),
+        Err(crate::tokens::Error::GitHub(e)) => {
+            return Err(ApiError::GitHubDown(format!(
+                "GitHub didn't answer for the PR ({e}); try again in a moment"
+            )));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if pull.changed_files > super::MAX_FILES {
+        return Err(ApiError::PrTooLarge(format!(
+            "This PR changes {} files; an analysis takes at most {} (GitHub lists no more).",
+            pull.changed_files,
+            super::MAX_FILES
+        )));
+    }
+    let (run, token) = (new_id(), new_token());
+    let hash = sha256(&unb64(&token).expect("just encoded"));
+    let t = now();
+    {
+        let run = run.clone();
+        app.control()
+            .write(move |tx| control_db::q::insert_run_token(tx, &hash, &run, account, t))
+            .await?;
+    }
+    let (id, repo_id, owner, name) = (run.clone(), repo.id, repo.owner.clone(), repo.name.clone());
+    let written = app
+        .analyses()
+        .dbs
+        .write(account, move |tx| {
+            if let Some(live) = analysis_db::q::live_run(tx, repo_id, number)? {
+                analysis_db::q::end_run(tx, &live.id, Ended::Superseded.as_str(), t)?;
+            }
+            analysis_db::q::insert_run(
+                tx,
+                &id,
+                repo_id,
+                &owner,
+                &name,
+                number,
+                producer.as_str(),
+                t,
+            )
+        })
+        .await;
+    if let Err(e) = written {
+        // The token goes with the run it was for.
+        let id = run.clone();
+        if let Err(e) = app
+            .control()
+            .write(move |tx| control_db::q::delete_run_token(tx, &id))
+            .await
+        {
+            eprintln!("account {account}: taking back the token of run {run}: {e}");
+        }
+        return Err(e.into());
+    }
+    watch(app, account, run.clone());
+    announce(
+        app,
+        account,
+        &format!("{}/{}", repo.owner, repo.name),
+        number,
+        None,
+    );
+    Ok(Started {
+        run,
+        token,
+        created_at: t,
+        files: pull.changed_files,
+        additions: pull.additions,
+        deletions: pull.deletions,
+    })
+}
+
+/// The PR number in a route: digits only, as the app's routes match it.
+pub(crate) fn pr_number(raw: &str) -> Result<i64, ApiError> {
+    match raw.parse::<i64>() {
+        Ok(n) if n > 0 && raw.bytes().all(|b| b.is_ascii_digit()) => Ok(n),
+        _ => Err(ApiError::Gone),
+    }
+}
+
+/// `POST /api/{owner}/{repo}/pulls/{n}/runs`: starts a button run, superseding the PR's live
+/// run, and answers the prompt to copy.
+pub async fn start_button(
+    State(app): State<App>,
+    Extension(s): Extension<Session>,
+    Path((owner, name, number)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let number = pr_number(&number)?;
+    let repo = readable_repo(&app, s.account, &owner, &name)
+        .await?
+        .ok_or(ApiError::Gone)?;
+    let started = start(&app, s.account, &repo, number, Producer::Button).await?;
+    let url = format!(
+        "{}/api/runs/{}/instructions",
+        app.cfg().public_url,
+        started.token
+    );
+    let prompt = format!(
+        "Analyse pull request {}/{}#{number} ({}) for beghu by fetching your instructions from `{url}` and following them to the end: they say how to check out the code, build and check the analysis, and upload it. Large PRs are split across several agents and can take an hour; treat the link as a password, as it lets anyone holding it act on this PR's analysis until the run ends.",
+        repo.owner,
+        repo.name,
+        size_line(started.files, started.additions, started.deletions),
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(RunStarted {
+            run: started.run,
+            token: started.token,
+            prompt,
+            expires_at: started.created_at + app.cfg().runs.unused_for.as_secs() as i64,
+        }),
+    )
+        .into_response())
+}
+
+/// `DELETE /api/{owner}/{repo}/pulls/{n}/run`: ends the PR's live run, if it has one.
+pub async fn end_button(
+    State(app): State<App>,
+    Extension(s): Extension<Session>,
+    Path((owner, name, number)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let number = pr_number(&number)?;
+    let account = s.account;
+    let (o, n) = (owner.clone(), name.clone());
+    let repo = app
+        .mirrors()
+        .read(account, mirror_db::Caller::Request, move |c| {
+            mirror_db::q::run_repo(c, &o, &n)
+        })
+        .await?
+        .ok_or(ApiError::Gone)?;
+    let repo_id = repo.id;
+    let live = app
+        .analyses()
+        .dbs
+        .read(account, move |c| {
+            analysis_db::q::live_run(c, repo_id, number)
+        })
+        .await?;
+    if let Some(live) = live {
+        let id = live.id.clone();
+        let run = app
+            .analyses()
+            .dbs
+            .read(account, move |c| analysis_db::q::run(c, &id))
+            .await?;
+        if let Some(run) = run {
+            end(&app, account, &run, Ended::ByUser).await;
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/cli/runs`'s body.
+#[derive(Deserialize)]
+pub struct CliStart {
+    owner: String,
+    repo: String,
+    number: i64,
+}
+
+/// `POST /api/cli/runs`: starts a CLI run for the account the CLI's credential belongs to.
+pub async fn start_cli(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(body): Json<CliStart>,
+) -> Result<Response, RunError> {
+    let Some(account) = cli_account(&app, &headers).await else {
+        return Err(RunError::BadToken);
+    };
+    let repo = readable_repo(&app, account, &body.owner, &body.repo)
+        .await?
+        .ok_or(RunError::NotFound("No such repo, or you can't read it."))?;
+    let started = match start(&app, account, &repo, body.number, Producer::Cli).await {
+        Ok(s) => s,
+        Err(ApiError::Gone) => return Err(RunError::NotFound("No such PR.")),
+        Err(ApiError::PrTooLarge(m)) => return Err(RunError::BadRequest(m)),
+        Err(e) => return Err(RunError::Internal(format!("{e:?}"))),
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(CliRunStarted {
+            run: started.run,
+            token: started.token,
+            size_line: size_line(started.files, started.additions, started.deletions),
+        }),
+    )
+        .into_response())
+}
