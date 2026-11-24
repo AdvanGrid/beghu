@@ -1,0 +1,82 @@
+$ node --version
+v26.8.1
+
+## 1. The hand-written sample analysis validates clean (snippet, paths and folder checks included)
+$ node validate.mjs analysis.json base head --pr pr.json --previous previous
+{
+  "errors": [],
+  "warnings": []
+}
+0 errors, 0 warnings (17 claims, 1 conflicts, 5 edges, 9 nodes, 2 purposes, 1 scenarios)
+exit 0
+
+## 2. A broken analysis: a wrong snippet, a call line without `uses`, a judging word
+$ node validate.mjs broken.json base head --pr pr.json --previous previous | (summarised: rule, path)
+2 errors, 1 warnings (17 claims, 1 conflicts, 5 edges, 9 nodes, 2 purposes, 1 scenarios)
+exit 1
+2 errors, 1 warnings
+  errors line.uses /edges/0/uses
+  errors evidence.snippet /claims/0/evidence/0/snippet
+  warnings words.judging /nodes/1/summary
+
+## 3. The split check on the skeleton
+$ node validate.mjs split/1-skeleton.json base head --split split/split.json --pr pr.json
+{
+  "errors": [],
+  "warnings": []
+}
+0 errors, 0 warnings
+exit 0
+
+## 4. merge --split joins the skeleton and two areas, leaving the seam pass its hints
+$ node merge.mjs --split split/split.json split/1-skeleton.json split/2-api.json split/3-lib.json > merged.json
+{
+  "errors": [],
+  "warnings": []
+}
+0 errors, 0 warnings, 4 hints left for the seam pass
+exit 0
+nodes 9 lines 4 claims 17
+hints: ['seam', 'candidate', 'purpose', 'deepen']
+
+## 5. --finish refuses unresolved hints
+$ node merge.mjs --finish merged.json
+exit 1
+{
+  "errors": [
+    {
+      "path": "/hints/0",
+      "rule": "hint.unresolved",
+      "message": "seam hint `api.orders` → `lib`: unresolved: draw it, deepen it, add or fold it, or reject it with a claim"
+    },
+    {
+      "path": "/hints/1",
+      "rule": "hint.unresolved",
+      "message": "candidate `api` → `lib`: unresolved: draw it, deepen it, add or fold it, or reject it with a claim"
+    },
+    {
+      "path": "/hints/2",
+      "rule": "hint.unresolved",
+      "message": "purpose hint \"Record the refund\": unresolved: draw it, deepen it, add or fold it, or reject it with a claim"
+    },
+    {
+      "path": "/hints/3",
+      "rule": "hint.unresolved",
+      "message": "line `api->lib` ends at `lib`, which has children in another area: unresolved: draw it, deepen it, add or fold it, or reject it with a claim"
+    }
+  ],
+  "warnings": []
+}
+4 errors, 0 warnings, 4 hints left for the seam pass
+
+## 6. An untracked node_modules in head does not change drawn.folders
+{
+  "errors": [],
+  "warnings": []
+}
+0 errors, 0 warnings (17 claims, 1 conflicts, 5 edges, 9 nodes, 2 purposes, 1 scenarios)
+exit 0
+
+## 7. An 8 MB input, its report piped through cat, arrives whole
+0 errors, 1 warnings (17 claims, 1 conflicts, 5 edges, 9 nodes, 2 purposes, 1 scenarios)
+parsed whole report: 198 bytes, 1 findings
