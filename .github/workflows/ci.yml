@@ -76,6 +76,10 @@ jobs:
         working-directory: crates/analysis/tests/sample
         run: |
           tools="$RUNNER_TEMP/tools"
+          # drawn.folders counts only folders holding git-tracked files: an untracked node_modules
+          # in head leaves lib's count as the analysis gives it.
+          mkdir -p head/lib/node_modules/left-pad
+          echo 'module.exports = 0;' > head/lib/node_modules/left-pad/index.js
           node "$tools/validate.mjs" analysis.json base head --pr pr.json --previous previous
           node "$tools/validate.mjs" split/1-skeleton.json base head --split split/split.json --pr pr.json
           node "$tools/merge.mjs" split/1-skeleton.json split/2-api.json split/3-lib.json > "$RUNNER_TEMP/merged.json"

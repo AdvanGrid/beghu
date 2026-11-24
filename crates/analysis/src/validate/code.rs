@@ -1,11 +1,11 @@
 //! The checks that read the two checkouts through the caller's reader: snippets, paths and
-//! folder counts. The server runs none of them (it never reads code); the CLI and validate.mjs
+//! folder counts (of the folders holding git-tracked files). The server runs none of them (it never reads code); the CLI and validate.mjs
 //! run them all.
 
 use std::collections::HashMap;
 
 use super::index::Index;
-use crate::reader::{EntryKind, Reader, clean_path, count_folders};
+use crate::reader::{Reader, clean_path, count_folders};
 use crate::report::{Report, rule};
 use crate::schema::{CodeSide, Evidence};
 
@@ -89,6 +89,8 @@ pub(super) fn check(ix: &Index, reader: &dyn Reader, r: &mut Report) {
             }
         }
     }
+    // Head's git-tracked files, listed once, when a part is drawn partly.
+    let mut head_files: Option<Option<Vec<String>>> = None;
     for (ni, n) in a.nodes.iter().enumerate() {
         for (pi, path) in n.paths.iter().enumerate() {
             let exists = clean_path(path).is_some_and(|p| {
@@ -103,19 +105,26 @@ pub(super) fn check(ix: &Index, reader: &dyn Reader, r: &mut Report) {
             }
         }
         if let Some(d) = &n.drawn {
-            let mut total = 0;
-            for path in &n.paths {
-                let Some(p) = clean_path(path) else { continue };
-                if reader.kind(CodeSide::Head, p) == Some(EntryKind::Dir) {
-                    total += count_folders(reader, CodeSide::Head, p).unwrap_or(0);
-                }
-            }
+            let tracked = head_files.get_or_insert_with(|| reader.tracked(CodeSide::Head));
+            let Some(tracked) = tracked else {
+                r.error(
+                    format!("/nodes/{ni}/drawn/folders"),
+                    rule::DRAWN_FOLDERS,
+                    format!(
+                        "can't count `{}`'s folders: the head checkout's git-tracked files can't be listed (is it a git checkout?)",
+                        n.id
+                    ),
+                );
+                continue;
+            };
+            let paths: Vec<&str> = n.paths.iter().filter_map(|p| clean_path(p)).collect();
+            let total = count_folders(tracked, &paths);
             if total != d.folders {
                 r.error(
                     format!("/nodes/{ni}/drawn/folders"),
                     rule::DRAWN_FOLDERS,
                     format!(
-                        "`{}` has {total} folders under its paths at head, not {}",
+                        "`{}` has {total} folders holding git-tracked files under its paths at head, not {}",
                         n.id, d.folders
                     ),
                 );

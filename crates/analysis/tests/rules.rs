@@ -4,7 +4,9 @@
 mod common;
 
 use analysis::migrate::{Chain, Rename, Step};
-use analysis::{Context, Previous, rule, validate, validate_with};
+use analysis::{
+    CodeSide, Context, EntryKind, Previous, Reader, rule, validate, validate_value, validate_with,
+};
 use common::*;
 use serde_json::{Value, json};
 
@@ -1172,6 +1174,91 @@ fn drawn_folders() {
         &check_code(edit(|v| node(v, "lib")["drawn"]["folders"] = json!(2))),
         rule::DRAWN_FOLDERS,
     );
+    // A checkout whose tracked files can't be listed can't be counted.
+    let r = validate_value(sample(), &Context::default(), Some(&NotGit));
+    assert_error(&r.report, rule::DRAWN_FOLDERS);
+}
+
+/// The sample's checkouts with folders git doesn't track at head: an ignored `node_modules` and
+/// an untracked scratch folder in `lib`, and a tracked file two folders below `lib/log`.
+struct WithUntracked;
+
+const UNTRACKED: &[&str] = &[
+    "lib/node_modules/left-pad/index.js",
+    "lib/scratch/notes.txt",
+];
+
+impl Reader for WithUntracked {
+    fn read(&self, side: CodeSide, path: &str) -> Option<String> {
+        if side == CodeSide::Head && UNTRACKED.contains(&path) {
+            return Some(String::new());
+        }
+        Checkouts.read(side, path)
+    }
+
+    fn kind(&self, side: CodeSide, path: &str) -> Option<EntryKind> {
+        let on_disk = UNTRACKED.iter().any(|f| analysis::reader::under(f, path));
+        if side == CodeSide::Head && on_disk {
+            return Some(if UNTRACKED.contains(&path) {
+                EntryKind::File
+            } else {
+                EntryKind::Dir
+            });
+        }
+        Checkouts.kind(side, path)
+    }
+
+    fn tracked(&self, side: CodeSide) -> Option<Vec<String>> {
+        Checkouts.tracked(side)
+    }
+}
+
+/// `drawn.folders` counts the folders that hold a git-tracked file, so the folders git doesn't
+/// track never count, and a folder holding only a folder of tracked files does.
+#[test]
+fn drawn_folders_count_only_folders_holding_tracked_files() {
+    let r = validate_value(sample(), &Context::default(), Some(&WithUntracked));
+    assert!(
+        !r.report.rules().any(|x| x == rule::DRAWN_FOLDERS),
+        "{:#?}",
+        r.report.errors
+    );
+    struct Deeper;
+    impl Reader for Deeper {
+        fn read(&self, side: CodeSide, path: &str) -> Option<String> {
+            Checkouts.read(side, path)
+        }
+        fn kind(&self, side: CodeSide, path: &str) -> Option<EntryKind> {
+            Checkouts.kind(side, path)
+        }
+        fn tracked(&self, side: CodeSide) -> Option<Vec<String>> {
+            let mut t = Checkouts.tracked(side)?;
+            t.push("lib/log/rotate/daily/daily.go".into());
+            Some(t)
+        }
+    }
+    // lib/log/rotate and lib/log/rotate/daily: 5 folders.
+    let r = validate_value(
+        edit(|v| node(v, "lib")["drawn"]["folders"] = json!(5)),
+        &Context::default(),
+        Some(&Deeper),
+    );
+    assert!(!r.report.rules().any(|x| x == rule::DRAWN_FOLDERS));
+}
+
+/// A reader over folders that aren't git checkouts.
+struct NotGit;
+
+impl Reader for NotGit {
+    fn read(&self, side: CodeSide, path: &str) -> Option<String> {
+        Checkouts.read(side, path)
+    }
+    fn kind(&self, side: CodeSide, path: &str) -> Option<EntryKind> {
+        Checkouts.kind(side, path)
+    }
+    fn tracked(&self, _: CodeSide) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// The instructions list every rule the validator reports, so the agent can look one up.

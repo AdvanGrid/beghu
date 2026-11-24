@@ -78,14 +78,29 @@ impl Reader for Checkouts {
         })
     }
 
-    fn subdirs(&self, side: CodeSide, path: &str) -> Option<Vec<String>> {
-        let rd = std::fs::read_dir(Self::path(side, path)).ok()?;
-        Some(
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect(),
-        )
+    /// Every file under the checkout: the sample's checkouts are committed whole, so every file
+    /// in them is tracked.
+    fn tracked(&self, side: CodeSide) -> Option<Vec<String>> {
+        let root = Self::path(side, "");
+        let mut out = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).ok()?.filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p
+                        .strip_prefix(&root)
+                        .ok()?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push(rel);
+                }
+            }
+        }
+        out.sort();
+        Some(out)
     }
 }
 

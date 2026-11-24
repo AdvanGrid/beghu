@@ -20,9 +20,10 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn kind(this: &Checkouts, side: &str, path: &str) -> Option<String>;
 
-    /// A folder's immediate subfolders as a JSON array of names, or `undefined`.
+    /// Every file git tracks in that checkout (`git ls-files`), as a JSON array of repo-relative
+    /// paths, or `undefined` when git can't list them.
     #[wasm_bindgen(method)]
-    fn subdirs(this: &Checkouts, side: &str, path: &str) -> Option<String>;
+    fn tracked(this: &Checkouts, side: &str) -> Option<String>;
 }
 
 fn side(s: CodeSide) -> &'static str {
@@ -47,9 +48,9 @@ impl Reader for JsReader {
         }
     }
 
-    fn subdirs(&self, s: CodeSide, path: &str) -> Option<Vec<String>> {
+    fn tracked(&self, s: CodeSide) -> Option<Vec<String>> {
         self.0
-            .subdirs(side(s), path)
+            .tracked(side(s))
             .and_then(|j| serde_json::from_str(&j).ok())
     }
 }

@@ -285,8 +285,10 @@ their new or changed lines carry the change.
 An unchanged part gets its summary, responsibilities and lines, and nothing inside it, unless a
 line, a scenario step, a purpose or a conflict needs to end at a module in it. Then add only those
 modules and their parents, not their siblings, and set `drawn: { partial: true, folders: N }`,
-where `N` counts every folder under the part's paths at head, at any depth. Say so in
-`coverage.notes` ("sandbox: 3 of 9 folders drawn, the ones this PR's flows reach").
+where `N` counts every folder under the part's paths, at any depth, that holds at least one file
+git tracks at head (`git ls-files`), directly or in a subfolder. Untracked and ignored folders
+(`node_modules`, build output) don't count. Say so in `coverage.notes` ("sandbox: 3 of 9
+folders drawn, the ones this PR's flows reach").
 
 ### Lines
 
@@ -542,7 +544,8 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
   `carry.evidence`: no supported claim with evidence.
 - With the checkouts: `evidence.file` (no such file on that side), `evidence.range` (past the
   file's end), `evidence.snippet` (the snippet isn't the file's lines), `path.missing` (a path at
-  neither base nor head), `drawn.folders` (the folder count is wrong).
+  neither base nor head), `drawn.folders` (the count of folders holding git-tracked files is
+  wrong, or head isn't a git checkout).
 - The split check: `split.file-area` (a changed file in no area, in two, or outside its area's
   prefixes), `split.part-area` (a top-level part in no area or split across two),
   `split.overlap`, `split.id` (an area not named after one of its prefixes),

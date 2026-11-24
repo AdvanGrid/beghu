@@ -1,6 +1,7 @@
 // The validator's command line. build.sh puts this after the WASM glue and the inlined module, so
 // `validate` and `check_split` are in scope.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 const usage = `usage:
@@ -13,7 +14,10 @@ Checks an analysis against schema.ts and the two checkouts, and prints the repor
                       owned by exactly one area)
   --previous <dir>    the folder holding the run's previous-ids.json and vocabulary.json; with
                       neither file in it, there is no previous analysis and carried must be empty
-  --split <split.json> check the split instead (check-split): the first file is the skeleton`;
+  --split <split.json> check the split instead (check-split): the first file is the skeleton
+
+The checkouts are git checkouts: drawn.folders counts the folders under a part's paths that hold a
+file git tracks at head (git ls-files), so untracked and ignored folders never count.`;
 
 function fail(message) {
   process.stderr.write(`${message}\n\n${usage}\n`);
@@ -106,12 +110,16 @@ function checkouts(roots) {
         return undefined;
       }
     },
-    subdirs(side, path) {
-      const p = at(side, path);
+    // The files git tracks in the checkout, relative to it: folder counts read these, so
+    // untracked and ignored folders (node_modules, build output) never count.
+    tracked(side) {
       try {
-        if (p === undefined) return undefined;
-        const dirs = readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-        return JSON.stringify(dirs);
+        const out = execFileSync("git", ["-C", roots[side], "ls-files", "-z"], {
+          encoding: "utf8",
+          maxBuffer: 1 << 30,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        return JSON.stringify(out.split("\0").filter((f) => f !== ""));
       } catch {
         return undefined;
       }

@@ -393,8 +393,10 @@ export type FileStatus = "added" | "modified" | "removed" | "renamed";
 export type Drawn = {
   partial: true,
   /**
-   * The part's total folder count at head: every folder under its paths, at any depth, so the
-   * view can say "3 of 9 folders drawn". The validator counts it from the checkout.
+   * The part's total folder count at head, so the view can say "3 of 9 folders drawn": every
+   * folder under its paths, at any depth, that holds at least one file git tracks at head
+   * (directly or in a subfolder). Untracked and ignored folders (`node_modules`, build output)
+   * don't count. The validator counts it from the head checkout's `git ls-files`.
    */
   folders: number,
 };
