@@ -1,0 +1,389 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "api",
+      "kind": "service",
+      "parent": "shop",
+      "name": "api",
+      "paths": [
+        "api"
+      ],
+      "summary": "The HTTP API customers call.",
+      "change": "modified",
+      "responsibilities": [
+        {
+          "id": "serve-http",
+          "text": "routes HTTP requests to handlers",
+          "change": "modified",
+          "claims": [
+            "c1"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "inside-product",
+          "values": [
+            {
+              "value": "checkout",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "lang",
+          "values": [
+            {
+              "value": "go",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [
+        {
+          "question": "What changed?",
+          "answer": "It routes /orders/refund to the orders module's new handler.",
+          "claims": [
+            "c1"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "api/main.go",
+          "status": "modified",
+          "added": 1,
+          "removed": 0,
+          "generated": false,
+          "summary": "Routes /orders/refund to HandleRefund."
+        }
+      ],
+      "changeSummary": "Routes /orders/refund to the new refund handler.",
+      "walk": {
+        "intro": "The API is the shop's HTTP entry point.",
+        "journey": "It now routes /orders/refund to the orders module's new handler.",
+        "destination": "Customers can ask for a refund over HTTP.",
+        "claims": [
+          "c1"
+        ]
+      }
+    },
+    {
+      "id": "api.orders",
+      "kind": "module",
+      "parent": "api",
+      "name": "orders",
+      "paths": [
+        "api/orders"
+      ],
+      "summary": "Handles order requests.",
+      "change": "modified",
+      "responsibilities": [
+        {
+          "id": "refund",
+          "text": "refunds an order through Stripe",
+          "change": "added",
+          "claims": [
+            "c2"
+          ]
+        },
+        {
+          "id": "list",
+          "text": "lists orders as JSON",
+          "change": "unchanged",
+          "claims": [
+            "c3"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": [
+        {
+          "path": "api/orders/refund.go",
+          "status": "added",
+          "added": 21,
+          "removed": 0,
+          "generated": false,
+          "summary": "Adds HandleRefund."
+        }
+      ],
+      "changeSummary": "Adds HandleRefund, which refunds through Stripe and marks the order refunded.",
+      "walk": {
+        "intro": "The orders module handles order requests.",
+        "journey": "Its new HandleRefund calls Stripe's refunds endpoint, then writes the refunded flag.",
+        "destination": "An order refunded at Stripe is marked refunded.",
+        "claims": [
+          "c2",
+          "c4"
+        ]
+      },
+      "built": [
+        {
+          "kind": "decision",
+          "text": "reads the Stripe key from STRIPE_KEY",
+          "claims": [
+            "c5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "api.health",
+      "kind": "module",
+      "parent": "api",
+      "name": "health",
+      "paths": [
+        "api/health"
+      ],
+      "summary": "Answers the health probe.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "health",
+          "text": "answers the health probe",
+          "change": "unchanged",
+          "claims": [
+            "c6"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "customer->api.orders",
+      "from": "customer",
+      "to": "api.orders",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "refund",
+      "label": "asks for a refund",
+      "mode": "sync",
+      "change": "added",
+      "boundaries": [
+        "internet"
+      ],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c7"
+      ]
+    },
+    {
+      "id": "api.orders->stripe",
+      "from": "api.orders",
+      "to": "stripe",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "refunds",
+      "label": "refunds the payment",
+      "data": {
+        "what": "refund requests for a payment intent",
+        "direction": "both"
+      },
+      "mode": "sync",
+      "change": "added",
+      "boundaries": [
+        "stripe-network"
+      ],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c2"
+      ],
+      "occurs": "on every refund request",
+      "walk": {
+        "intro": "This line is the refund call to Stripe.",
+        "journey": "HandleRefund posts the order's payment intent to Stripe's refunds endpoint with the shop's key.",
+        "destination": "Stripe refunds the payment.",
+        "claims": [
+          "c2",
+          "c5"
+        ]
+      },
+      "neededBy": [
+        {
+          "text": "refunding an order needs Stripe to move the money",
+          "purpose": "purpose:refunds"
+        }
+      ]
+    }
+  ],
+  "purposes": [
+    {
+      "id": "purpose:refunds",
+      "serves": [
+        {
+          "node": "api.orders",
+          "role": "handles the refund request",
+          "claims": [
+            "c7"
+          ]
+        }
+      ],
+      "carries": [
+        {
+          "edge": "api.orders->stripe",
+          "why": "the refund itself happens at Stripe",
+          "claims": [
+            "c2"
+          ]
+        }
+      ]
+    }
+  ],
+  "hints": [
+    {
+      "kind": "seam",
+      "from": "api.orders",
+      "to": "lib",
+      "lineKind": "call",
+      "why": "reads orders through db.Query and marks a refund through db.Exec",
+      "claims": [
+        "c4",
+        "c3"
+      ]
+    },
+    {
+      "kind": "candidate",
+      "from": "api",
+      "to": "lib"
+    },
+    {
+      "kind": "purpose",
+      "name": "Record the refund",
+      "parent": "purpose:refunds",
+      "nodes": [
+        "api.orders"
+      ],
+      "why": "HandleRefund writes the refunded flag",
+      "claims": [
+        "c4"
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "routes /orders/refund to HandleRefund",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/main.go",
+          "start": 13,
+          "end": 13,
+          "note": "the new route",
+          "snippet": "\thttp.HandleFunc(\"/orders/refund\", orders.HandleRefund)"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "HandleRefund posts the order's payment intent to Stripe's refunds endpoint",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 13,
+          "end": 15,
+          "note": "the request to api.stripe.com and its send",
+          "snippet": "\treq, _ := http.NewRequest(\"POST\", \"https://api.stripe.com/v1/refunds?payment_intent=\"+id, nil)\n\treq.SetBasicAuth(os.Getenv(\"STRIPE_KEY\"), \"\")\n\tif _, err := http.DefaultClient.Do(req); err != nil {"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "HandleList reads orders through db.Query",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/orders.go",
+          "start": 12,
+          "end": 12,
+          "note": "the read",
+          "snippet": "\trows, err := db.Query(\"SELECT id, total FROM orders\")"
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "HandleRefund marks the order refunded through db.Exec",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 19,
+          "end": 19,
+          "note": "the write",
+          "snippet": "\tdb.Exec(\"UPDATE orders SET refunded = true WHERE id = $1\", id)"
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "text": "the Stripe key comes from the STRIPE_KEY environment variable",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 14,
+          "end": 14,
+          "note": "basic auth from the environment",
+          "snippet": "\treq.SetBasicAuth(os.Getenv(\"STRIPE_KEY\"), \"\")"
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "text": "Handle answers the health probe with 200",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/health/health.go",
+          "start": 6,
+          "end": 8,
+          "note": "the handler",
+          "snippet": "func Handle(w http.ResponseWriter, r *http.Request) {\n\tw.WriteHeader(http.StatusOK)\n}"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "text": "HandleRefund is the HTTP handler for refund requests",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 11,
+          "end": 11,
+          "note": "the handler",
+          "snippet": "func HandleRefund(w http.ResponseWriter, r *http.Request) {"
+        }
+      ]
+    }
+  ]
+}

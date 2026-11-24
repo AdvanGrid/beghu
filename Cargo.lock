@@ -86,6 +86,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "ts-rs",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,69 @@
+{
+  "mode": "split",
+  "areas": [
+    {
+      "id": "api",
+      "prefixes": [
+        "api/"
+      ],
+      "owns": [
+        "api/main.go",
+        "api/orders/refund.go"
+      ],
+      "reads": [
+        "lib"
+      ],
+      "estimate": "2 changed files, 4 Go files to read",
+      "system": false
+    },
+    {
+      "id": "lib",
+      "prefixes": [
+        "lib/"
+      ],
+      "owns": [],
+      "reads": [],
+      "estimate": "3 unchanged Go files: lines and responsibilities only",
+      "system": true
+    }
+  ],
+  "candidates": [
+    {
+      "from": "api",
+      "to": "lib",
+      "why": "api/orders imports example.com/shop/lib/db"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "purpose:refunds",
+      "name": "Refund an order",
+      "kind": "feature",
+      "sources": [
+        "description"
+      ],
+      "flow": {
+        "entries": [
+          "api/main.go: the /orders/refund route"
+        ],
+        "path": [
+          "api",
+          "stripe",
+          "lib",
+          "postgres"
+        ]
+      }
+    }
+  ],
+  "rules": [
+    {
+      "purpose": "purpose:refunds",
+      "id": "rule:refund-recorded",
+      "text": "every refund is recorded in the orders table",
+      "scope": "handlers under api/orders that call Stripe",
+      "sources": [
+        "description"
+      ]
+    }
+  ]
+}

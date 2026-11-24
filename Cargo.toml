@@ -10,6 +10,7 @@ members = [
   "crates/server",
   "crates/contract",
   "crates/md-ast",
+  "crates/analysis",
   "perf/fixture",
 ]
 # The benchmark candidates are throwaway projects with their own manifests.
