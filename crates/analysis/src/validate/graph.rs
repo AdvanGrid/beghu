@@ -34,7 +34,7 @@ pub(super) fn words(r: &mut Report, path: String, text: &str) {
 fn ids<'a>(ix: &Index<'a>, r: &mut Report) {
     let a = ix.a;
     let mut seen: HashMap<&'a str, String> = HashMap::new();
-    fn add<'a>(seen: &mut HashMap<&'a str, String>, id: &'a str, path: String, r: &mut Report) {
+    let mut add = |id: &'a str, path: String, r: &mut Report| {
         if let Some(first) = seen.get(id) {
             r.error(
                 path,
@@ -44,9 +44,7 @@ fn ids<'a>(ix: &Index<'a>, r: &mut Report) {
         } else {
             seen.insert(id, path);
         }
-    }
-    let add = |id: &'a str, path: String, r: &mut Report| add(&mut seen, id, path, r);
-    let mut add = add;
+    };
     for (i, n) in a.nodes.iter().enumerate() {
         add(&n.id, format!("/nodes/{i}/id"), r);
     }
