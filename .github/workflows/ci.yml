@@ -82,7 +82,7 @@ jobs:
           echo 'module.exports = 0;' > head/lib/node_modules/left-pad/index.js
           node "$tools/validate.mjs" analysis.json base head --pr pr.json --previous previous
           node "$tools/validate.mjs" split/1-skeleton.json base head --split split/split.json --pr pr.json
-          node "$tools/merge.mjs" split/1-skeleton.json split/2-api.json split/3-lib.json > "$RUNNER_TEMP/merged.json"
+          node "$tools/merge.mjs" --split split/split.json split/1-skeleton.json split/2-api.json split/3-lib.json > "$RUNNER_TEMP/merged.json"
           # The merge leaves the seam pass its hints; --finish refuses them while unresolved.
           if node "$tools/merge.mjs" --finish "$RUNNER_TEMP/merged.json" > /dev/null; then
             echo "merge.mjs --finish passed unresolved hints"; exit 1

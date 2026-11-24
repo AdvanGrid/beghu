@@ -150,9 +150,10 @@ pub fn check_split(skeleton: &str, split: &str, changed_files: &str) -> String {
     )
 }
 
-/// `fragments`: a JSON array of the fragments' texts, in order. Returns `{analysis, report}`.
+/// `fragments`: a JSON array of the fragments' texts, in order. `split`: `split.json`'s text, or
+/// `undefined`. Returns `{analysis, report}`.
 #[wasm_bindgen]
-pub fn merge(fragments: &str) -> String {
+pub fn merge(fragments: &str, split: Option<String>) -> String {
     let texts: Vec<String> = serde_json::from_str(fragments).unwrap_or_default();
     let mut bad = Report::default();
     let mut values = Vec::new();
@@ -166,10 +167,18 @@ pub fn merge(fragments: &str) -> String {
             ),
         }
     }
+    let split = match split.as_deref().map(serde_json::from_str::<Value>) {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => {
+            bad.error("", rule::SHAPE_JSON, format!("split.json isn't JSON: {e}"));
+            None
+        }
+    };
     if !bad.is_ok() {
         return out(Some(None), &bad, None);
     }
-    let m = analysis::merge(values);
+    let m = analysis::merge(values, split.as_ref());
     out(Some(Some(&m.analysis)), &m.report, None)
 }
 

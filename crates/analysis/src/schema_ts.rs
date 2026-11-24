@@ -13,12 +13,14 @@ use crate::report::Report;
 /// here.
 const FRAGMENT: &str = r#"/**
  * A fragment: what one agent of a split run writes (the skeleton, an area, or the seam pass's
- * input). Any subset of an analysis's fields, each list holding whole elements, plus the hints it
- * leaves for the seam pass. An area's purposes carry only `id` and the members it found
- * (`serves`, `carries`, walks); an area can't create a purpose or a rule, it hints one. Claim IDs
- * are local to the fragment: the merge renumbers them.
+ * input). `version` (the one this schema.ts was generated for) and any subset of an analysis's
+ * other fields, each list holding whole elements, plus the hints it leaves for the seam pass. The
+ * merge leaves out a fragment with no `version`. An area's purposes carry only `id` and the
+ * members it found (`serves`, `carries`, walks); an area can't create a purpose or a rule, it
+ * hints one (the merge turns one it writes anyway into a hint). Claim IDs are local to the
+ * fragment and unique in it: the merge renumbers them.
  */
-export type Fragment = Partial<Omit<Analysis, "purposes">> & {
+export type Fragment = Pick<Analysis, "version"> & Partial<Omit<Analysis, "purposes" | "version">> & {
   purposes?: (Pick<Purpose, "id"> & Partial<Purpose>)[];
   hints?: Array<Hint>;
 };

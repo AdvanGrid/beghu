@@ -21,7 +21,8 @@ pub struct Split {
     pub areas: Vec<Area>,
     /// Pairs of top-level parts where one might use the other, found from imports, manifest
     /// dependencies, client construction and URLs in config. The caller's area must draw each as
-    /// lines or reject it with a claim.
+    /// lines or reject it with a claim, in a `candidate` hint; `merge.mjs --split` turns each one
+    /// no fragment resolved into an unresolved `candidate` hint for the seam pass.
     pub candidates: Vec<Candidate>,
     /// The PR's purposes, in reading order, settled before the areas run.
     pub purposes: Vec<SplitPurpose>,
@@ -110,15 +111,18 @@ pub struct SplitRule {
 /// `node merge.mjs --finish` strips them.
 ///
 /// - `seam`: a line the area expects to cross into another area; it knows the caller, not the
-///   callee's module. Resolve it `drawn` or `rejected`.
+///   callee's module. The merge drops it when a line of its `lineKind` (and its `uses`, when
+///   given) runs from inside `from` to inside `to`. Resolve the rest `drawn` or `rejected`.
 /// - `deepen` (written by the merge): a line from one area ends at a part that has children in
 ///   another area. Resolve it `deepened` (to the child it reaches) or `rejected`.
 /// - `candidate`: a `split.json` candidate this area owns, resolved by the area itself: `drawn`
 ///   (the line IDs in `refs`) or `rejected` with a claim ("imports only shared types").
 /// - `purpose`: a purpose the area's code serves that `split.json` doesn't name. An area can't
-///   create a purpose: it hints one. Resolve it `added`, `folded` or `rejected`.
-/// - `rule`: a rule the area's code establishes or breaks that `split.json` doesn't name. Resolve
-///   it `added`, `folded` or `rejected`.
+///   create a purpose: it hints one, and the merge turns a purpose an area writes that neither
+///   the skeleton nor `split.json` has into this hint. Resolve it `added`, `folded` or `rejected`.
+/// - `rule`: a rule the area's code establishes or breaks that `split.json` doesn't name (the
+///   merge turns one an area writes anyway into this hint too). Resolve it `added`, `folded` or
+///   `rejected`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 #[ts(tag = "kind", rename_all = "lowercase")]
@@ -131,6 +135,12 @@ pub enum Hint {
         #[serde(rename = "lineKind")]
         #[ts(rename = "lineKind")]
         line_kind: EdgeKind,
+        /// For a `call`, the callee's responsibility ID it expects to use, when the area knows it.
+        /// Given, only a line with this `uses` answers the hint; omitted, any line of `lineKind`
+        /// between the two does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        uses: Option<String>,
         /// What the caller uses or sends, in a few words.
         why: String,
         claims: Vec<String>,

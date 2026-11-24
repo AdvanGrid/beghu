@@ -7,6 +7,13 @@
 //! writes belongs to its area. An area may rewrite what the skeleton drew coarsely (a top-level
 //! part it owns): its version replaces the skeleton's. Two areas writing the same element is
 //! `merge.duplicate`, and the later one's version stays.
+//!
+//! An area can't create a purpose or a rule: one it writes that neither the skeleton nor
+//! `split.json` settled becomes a `purpose` or `rule` hint instead. Given `split.json`, every
+//! candidate no fragment drew or rejected becomes an unresolved `candidate` hint.
+//!
+//! Malformed fragments never make it panic: whatever doesn't have the shape it joins by is
+//! reported or passed through for the validator.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +21,7 @@ use serde_json::{Map, Value, json};
 
 use crate::migrate::{self, VERSION};
 use crate::report::{Report, rule};
-use crate::tools::Hint;
+use crate::tools::{Hint, Split};
 use crate::validate::hints::{Known, describe, resolution, resolution_problem};
 use crate::validate::parse;
 
@@ -127,9 +134,23 @@ fn interaction(e: &Value) -> (String, String, String) {
     (kind, str_of(e, "when").unwrap_or_default().to_owned(), what)
 }
 
-/// Joins fragments in the order given: the skeleton first, then the areas.
-pub fn merge(fragments: Vec<Value>) -> Merged {
+/// Joins fragments in the order given: the skeleton first, then the areas. Given `split.json`,
+/// its candidates no fragment resolved become `candidate` hints, and its purposes and rules count
+/// as settled.
+pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
     let mut r = Report::default();
+    let split: Option<Split> = split.and_then(|v| {
+        let mut sr = Report::default();
+        let s = parse::<Split>(v, "", &mut sr);
+        for e in sr.errors {
+            r.error(
+                e.path,
+                &e.rule,
+                format!("split.json (the pointer is into it): {}", e.message),
+            );
+        }
+        s
+    });
     let mut out = Map::new();
     out.insert("version".into(), Value::from(VERSION));
     let mut lists: HashMap<&str, Vec<Value>> = HashMap::new();
@@ -144,26 +165,72 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
     let mut unclaimed: Vec<Value> = Vec::new();
     let mut carried: Vec<Value> = Vec::new();
     let mut coverage: Option<Map<String, Value>> = None;
-    let mut hints: Vec<(usize, Value)> = Vec::new();
+    // Each hint with where it came from: its fragment and its index there, when it has one.
+    let mut hints: Vec<(usize, Option<usize>, Value)> = Vec::new();
+    // The purposes and rules (by purpose) the skeleton and split.json settled.
+    let mut settled_purposes: HashSet<String> = HashSet::new();
+    let mut settled_rules: HashSet<(String, String)> = HashSet::new();
+    for p in split.iter().flat_map(|s| &s.purposes) {
+        settled_purposes.insert(p.id.clone());
+    }
+    for rl in split.iter().flat_map(|s| &s.rules) {
+        settled_rules.insert((rl.purpose.clone(), rl.id.clone()));
+    }
 
     for (fi, frag) in fragments.into_iter().enumerate() {
         let fp = format!("/{fi}");
+        if !frag.is_object() {
+            r.error(
+                &fp,
+                rule::SHAPE_TYPE,
+                format!("fragment {} isn't a JSON object", fi + 1),
+            );
+            continue;
+        }
+        if frag.get("version").is_none() {
+            r.error(
+                format!("{fp}/version"),
+                rule::SHAPE_MISSING_FIELD,
+                format!(
+                    "fragment {} has no `version`, so it's left out: every fragment, the skeleton included, carries the `version` its schema.ts was generated for ({VERSION})",
+                    fi + 1
+                ),
+            );
+            continue;
+        }
         let mut frag = match migrate::migrate_value(frag) {
             Ok(m) => m.value,
             Err(e) => {
+                let id = match e {
+                    migrate::MigrateError::Step { .. } => rule::MIGRATION_FAILED,
+                    _ => rule::VERSION_UNKNOWN,
+                };
                 r.error(
-                    &fp,
-                    rule::VERSION_UNKNOWN,
-                    format!("fragment {}: {e}", fi + 1),
+                    format!("{fp}/version"),
+                    id,
+                    format!("fragment {}, left out: {e}", fi + 1),
                 );
                 continue;
             }
         };
         // Renumber its claims after the ones already merged.
         let mut map = HashMap::new();
-        for c in array(&frag, "claims") {
+        let mut dup_claims = Vec::new();
+        for (ci, c) in array(&frag, "claims").enumerate() {
             if let Some(id) = str_of(c, "id") {
-                map.insert(id.to_owned(), format!("c{}", claims.len() + map.len() + 1));
+                if map.contains_key(id) {
+                    r.error(
+                        format!("{fp}/claims/{ci}/id"),
+                        rule::MERGE_DUPLICATE_CLAIM,
+                        format!(
+                            "fragment {} holds claim `{id}` twice: claim IDs are unique within a fragment, and only the first is kept",
+                            fi + 1
+                        ),
+                    );
+                    dup_claims.push(ci);
+                } else {
+                    map.insert(id.to_owned(), format!("c{}", claims.len() + map.len() + 1));
+                }
             }
         }
         let mut missing = Vec::new();
@@ -188,14 +255,19 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
             );
             continue;
         };
-        for c in obj
+        for (ci, mut c) in obj
             .remove("claims")
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
+            .into_iter()
+            .enumerate()
         {
-            let mut c = c;
-            if let Some(id) = str_of(&c, "id").and_then(|id| map.get(id)) {
-                c["id"] = Value::from(id.clone());
+            if dup_claims.contains(&ci) {
+                continue;
+            }
+            let new = str_of(&c, "id").and_then(|id| map.get(id)).cloned();
+            if let (Some(new), Some(o)) = (new, c.as_object_mut()) {
+                o.insert("id".into(), Value::from(new));
             }
             claims.push(c);
         }
@@ -275,7 +347,40 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
         {
-            let Value::Object(p) = p else { continue };
+            let Value::Object(mut p) = p else { continue };
+            let pid = p.get("id").and_then(Value::as_str).map(str::to_owned);
+            if fi == 0 {
+                // The skeleton settles its purposes and their rules.
+                if let Some(pid) = &pid {
+                    settled_purposes.insert(pid.clone());
+                    for rl in p
+                        .get("rules")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(rid) = str_of(rl, "id") {
+                            settled_rules.insert((pid.clone(), rid.to_owned()));
+                        }
+                    }
+                }
+            } else {
+                let Some(pid) = pid.filter(|id| settled_purposes.contains(id)) else {
+                    hints.push((fi, None, purpose_hint(fi, &p)));
+                    continue;
+                };
+                if let Some(Value::Array(rules)) = p.get_mut("rules") {
+                    rules.retain(|rl| {
+                        let known = str_of(rl, "id").is_some_and(|rid| {
+                            settled_rules.contains(&(pid.clone(), rid.to_owned()))
+                        });
+                        if !known {
+                            hints.push((fi, None, rule_hint(&pid, rl)));
+                        }
+                        known
+                    });
+                }
+            }
             let id = p.get("id").cloned();
             match purposes.iter_mut().find(|x| x.get("id") == id.as_ref()) {
                 None => purposes.push(p),
@@ -298,12 +403,14 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
                 }
             }
         }
-        for h in obj
+        for (hi, h) in obj
             .remove("hints")
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
+            .into_iter()
+            .enumerate()
         {
-            hints.push((fi, h));
+            hints.push((fi, Some(hi), h));
         }
     }
 
@@ -376,15 +483,25 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
     let known = Known::of(&merged);
     let mut work: Vec<Value> = Vec::new();
     let edges_now: Vec<Value> = merged["edges"].as_array().cloned().unwrap_or_default();
-    for (fi, raw) in hints {
-        let Some(h) = parse::<Hint>(&raw, &format!("/{fi}/hints"), &mut r) else {
+    // The candidates a fragment's hint covers: resolved, or left for the seam pass already.
+    let mut covered: HashSet<(String, String)> = HashSet::new();
+    for (fi, hi, raw) in hints {
+        let hp = match hi {
+            Some(hi) => format!("/{fi}/hints/{hi}"),
+            None => format!("/{fi}/purposes"),
+        };
+        let Some(h) = parse::<Hint>(&raw, &hp, &mut r) else {
             continue;
         };
+        if let Hint::Candidate { from, to, .. } = &h {
+            covered.insert((from.clone(), to.clone()));
+        }
         match &h {
             Hint::Seam {
                 from,
                 to,
                 line_kind,
+                uses,
                 resolution: None,
                 ..
             } => {
@@ -393,6 +510,7 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
                     .and_then(|v| v.as_str().map(str::to_owned));
                 let matched = edges_now.iter().any(|m| {
                     str_of(m, "kind") == kind.as_deref()
+                        && uses.as_deref().is_none_or(|u| str_of(m, "uses") == Some(u))
                         && str_of(m, "from").is_some_and(|f| tree.within(f, from))
                         && str_of(m, "to").is_some_and(|t| tree.within(t, to))
                 });
@@ -406,7 +524,7 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
             } => {
                 if let Some(problem) = resolution_problem(&h, res, &known) {
                     r.error(
-                        format!("/{fi}/hints"),
+                        &hp,
                         rule::HINT_UNRESOLVED,
                         format!("{}: {problem}", describe(&h)),
                     );
@@ -414,6 +532,12 @@ pub fn merge(fragments: Vec<Value>) -> Merged {
                 }
             }
             _ => work.push(raw),
+        }
+    }
+    // split.json's candidates no fragment drew or rejected.
+    for c in split.iter().flat_map(|s| &s.candidates) {
+        if !covered.contains(&(c.from.clone(), c.to.clone())) {
+            work.push(json!({ "kind": "candidate", "from": c.from, "to": c.to }));
         }
     }
     // Lines from one area that end at a part with children in another.
@@ -474,6 +598,62 @@ fn merge_purpose(have: &mut Map<String, Value>, p: Map<String, Value>) {
     }
 }
 
+/// The elements of a list field, for editing; nothing when `v` isn't an object or the field
+/// isn't a list.
+fn items<'a>(v: &'a mut Value, k: &str) -> impl Iterator<Item = &'a mut Value> {
+    v.get_mut(k)
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+}
+
+/// The `purpose` hint for a purpose an area wrote that neither the skeleton nor `split.json`
+/// settled: its name, parent and serving parts, and every claim it holds.
+fn purpose_hint(fi: usize, p: &Map<String, Value>) -> Value {
+    let id = p.get("id").and_then(Value::as_str).unwrap_or("(no id)");
+    let name = p.get("name").and_then(Value::as_str).unwrap_or(id);
+    let serves: Vec<&Value> = p
+        .get("serves")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let nodes: Vec<&str> = serves.iter().filter_map(|s| str_of(s, "node")).collect();
+    // Every claim it holds, anywhere in it, in number order.
+    let mut held = HashSet::new();
+    collect_refs(&Value::Object(p.clone()), &mut held, false);
+    let mut claims: Vec<String> = held.into_iter().collect();
+    claims.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
+    let intro = p
+        .get("walk")
+        .and_then(|w| str_of(w, "intro"))
+        .map(|t| format!(": {t}"))
+        .unwrap_or_default();
+    let mut h = json!({
+        "kind": "purpose",
+        "name": name,
+        "nodes": nodes,
+        "why": format!("fragment {} wrote purpose `{id}`, which the skeleton doesn't have; an area can't create a purpose{intro}", fi + 1),
+        "claims": claims,
+    });
+    if let (Some(parent), Some(o)) = (p.get("parent").and_then(Value::as_str), h.as_object_mut()) {
+        o.insert("parent".into(), Value::from(parent));
+    }
+    h
+}
+
+/// The `rule` hint for a rule an area wrote that neither the skeleton nor `split.json` settled.
+fn rule_hint(purpose: &str, rl: &Value) -> Value {
+    let id = str_of(rl, "id").unwrap_or("(no id)");
+    json!({
+        "kind": "rule",
+        "purpose": purpose,
+        "text": str_of(rl, "text").unwrap_or(id),
+        "scope": str_of(rl, "scope").unwrap_or_default(),
+        "claims": array(rl, "sources").filter_map(Value::as_str).collect::<Vec<_>>(),
+    })
+}
+
 /// Points every reference to a replaced line at the line that replaced it.
 fn retarget(v: &mut Value, replaced: &HashMap<String, String>) {
     if replaced.is_empty() {
@@ -484,14 +664,14 @@ fn retarget(v: &mut Value, replaced: &HashMap<String, String>) {
             *x = Value::from(new.clone());
         }
     };
-    for s in v["scenarios"].as_array_mut().into_iter().flatten() {
-        for t in s["steps"].as_array_mut().into_iter().flatten() {
+    for s in items(v, "scenarios") {
+        for t in items(s, "steps") {
             if let Some(e) = t.get_mut("edge") {
                 swap(e);
             }
         }
     }
-    for p in v["purposes"].as_array_mut().into_iter().flatten() {
+    for p in items(v, "purposes") {
         for c in p
             .get_mut("carries")
             .and_then(Value::as_array_mut)
@@ -513,7 +693,7 @@ fn retarget(v: &mut Value, replaced: &HashMap<String, String>) {
             }
         }
     }
-    for c in v["conflicts"].as_array_mut().into_iter().flatten() {
+    for c in items(v, "conflicts") {
         for e in c
             .pointer_mut("/touches/edges")
             .and_then(Value::as_array_mut)

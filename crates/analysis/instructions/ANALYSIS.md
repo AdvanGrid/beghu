@@ -141,32 +141,36 @@ the areas. A non-interactive one goes on.
 
 Give each area agent these instructions, `schema.ts`, the skeleton, `split.json`, its own area,
 and its slice of `previous-ids.json` (the IDs under its prefixes). Each writes a **fragment**: a
-partial analysis of its area, with its own claims (`c1`, `c2`, …, local to the fragment), plus
-**hints** for what it can't settle alone:
+partial analysis of its area with `version` set (the merge leaves out a fragment without one),
+with its own claims (`c1`, `c2`, …, local to the fragment and each ID used once), plus **hints**
+for what it can't settle alone:
 
 - its parts, down to where the files are, with their lines, responsibilities, facets, files,
   answers, walks and `built`;
 - every candidate it owns, resolved in a `candidate` hint: `drawn` (the line IDs) or `rejected`
   with a claim ("imports only shared types");
 - a `seam` hint for each line it expects to cross into another area's module, when it knows the
-  callee only as a top-level part;
+  callee only as a top-level part. Give it `uses` (the callee's responsibility) when you know
+  which one the call needs: then only a line with that `uses` answers it;
 - for the purposes: `serves` for its own parts, `carries` for lines inside the area, and
   stated-vs-code conflicts in its own files. **An area can't create a purpose or a rule**: it
-  writes a `purpose` or `rule` hint, or puts the part in `unclaimed` with a reason.
+  writes a `purpose` or `rule` hint, or puts the part in `unclaimed` with a reason. A purpose or
+  rule an area writes that the skeleton and `split.json` don't have becomes a hint in the merge.
 
 A node ID derived from paths lets an area name another area's module without asking.
 
 ### 5. Merge
 
 ```sh
-node merge.mjs skeleton.json area-1.json area-2.json ... > merged.json
+node merge.mjs --split split.json skeleton.json area-1.json area-2.json ... > merged.json
 ```
 
 (or `beghu analyse merge`). The skeleton comes first. The merge joins the fragments, renumbers
 claims `c1…` across them, drops the skeleton's coarse lines an area drew deeper, and lists the
 seam pass's work as `hints`: every unmatched seam hint, every line from one area that ends at a
-part with children in another (`deepen`), every unresolved candidate, and every purpose and rule
-hint. Never merge by hand.
+part with children in another (`deepen`), every unresolved candidate (with `--split`, also each
+`split.json` candidate no area drew or rejected), every purpose and rule hint, and every purpose
+or rule an area wrote that the skeleton and `split.json` don't have. Never merge by hand.
 
 ### 6. The rule checks (one per rule)
 
@@ -551,7 +555,8 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
   `split.overlap`, `split.id` (an area not named after one of its prefixes),
   `split.system-area` (a system area owning changed files), `split.prefix` (a prefix that is the
   repo root or isn't a repo-relative folder). The merge: `merge.duplicate` (warning: two areas
-  wrote the same element).
+  wrote the same element), `merge.duplicate-claim` (a fragment holds a claim ID twice; the first
+  is kept).
 
 ## When you're done
 

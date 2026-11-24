@@ -157,6 +157,7 @@ pub mod rule {
     pub const SPLIT_SYSTEM_AREA: &str = "split.system-area";
     pub const SPLIT_PREFIX: &str = "split.prefix";
     pub const MERGE_DUPLICATE: &str = "merge.duplicate";
+    pub const MERGE_DUPLICATE_CLAIM: &str = "merge.duplicate-claim";
 
     // With a reader over the two checkouts.
     pub const EVIDENCE_FILE: &str = "evidence.file";
@@ -244,6 +245,7 @@ pub mod rule {
         SPLIT_SYSTEM_AREA,
         SPLIT_PREFIX,
         MERGE_DUPLICATE,
+        MERGE_DUPLICATE_CLAIM,
         EVIDENCE_FILE,
         EVIDENCE_RANGE,
         EVIDENCE_SNIPPET,

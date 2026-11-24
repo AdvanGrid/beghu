@@ -1045,7 +1045,8 @@ export type Split = {
   /**
    * Pairs of top-level parts where one might use the other, found from imports, manifest
    * dependencies, client construction and URLs in config. The caller's area must draw each as
-   * lines or reject it with a claim.
+   * lines or reject it with a claim, in a `candidate` hint; `merge.mjs --split` turns each one
+   * no fragment resolved into an unresolved `candidate` hint for the seam pass.
    */
   candidates: Array<Candidate>,
   /**
@@ -1156,15 +1157,18 @@ export type SplitRule = {
  * `node merge.mjs --finish` strips them.
  *
  * - `seam`: a line the area expects to cross into another area; it knows the caller, not the
- *   callee's module. Resolve it `drawn` or `rejected`.
+ *   callee's module. The merge drops it when a line of its `lineKind` (and its `uses`, when
+ *   given) runs from inside `from` to inside `to`. Resolve the rest `drawn` or `rejected`.
  * - `deepen` (written by the merge): a line from one area ends at a part that has children in
  *   another area. Resolve it `deepened` (to the child it reaches) or `rejected`.
  * - `candidate`: a `split.json` candidate this area owns, resolved by the area itself: `drawn`
  *   (the line IDs in `refs`) or `rejected` with a claim ("imports only shared types").
  * - `purpose`: a purpose the area's code serves that `split.json` doesn't name. An area can't
- *   create a purpose: it hints one. Resolve it `added`, `folded` or `rejected`.
- * - `rule`: a rule the area's code establishes or breaks that `split.json` doesn't name. Resolve
- *   it `added`, `folded` or `rejected`.
+ *   create a purpose: it hints one, and the merge turns a purpose an area writes that neither
+ *   the skeleton nor `split.json` has into this hint. Resolve it `added`, `folded` or `rejected`.
+ * - `rule`: a rule the area's code establishes or breaks that `split.json` doesn't name (the
+ *   merge turns one an area writes anyway into this hint too). Resolve it `added`, `folded` or
+ *   `rejected`.
  */
 export type Hint = {
   "kind": "seam",
@@ -1177,6 +1181,12 @@ export type Hint = {
    */
   to: string,
   lineKind: EdgeKind,
+  /**
+   * For a `call`, the callee's responsibility ID it expects to use, when the area knows it.
+   * Given, only a line with this `uses` answers the hint; omitted, any line of `lineKind`
+   * between the two does.
+   */
+  uses?: string,
   /**
    * What the caller uses or sends, in a few words.
    */
@@ -1254,12 +1264,14 @@ export type ResolutionHow = "drawn" | "deepened" | "added" | "folded" | "rejecte
 
 /**
  * A fragment: what one agent of a split run writes (the skeleton, an area, or the seam pass's
- * input). Any subset of an analysis's fields, each list holding whole elements, plus the hints it
- * leaves for the seam pass. An area's purposes carry only `id` and the members it found
- * (`serves`, `carries`, walks); an area can't create a purpose or a rule, it hints one. Claim IDs
- * are local to the fragment: the merge renumbers them.
+ * input). `version` (the one this schema.ts was generated for) and any subset of an analysis's
+ * other fields, each list holding whole elements, plus the hints it leaves for the seam pass. The
+ * merge leaves out a fragment with no `version`. An area's purposes carry only `id` and the
+ * members it found (`serves`, `carries`, walks); an area can't create a purpose or a rule, it
+ * hints one (the merge turns one it writes anyway into a hint). Claim IDs are local to the
+ * fragment and unique in it: the merge renumbers them.
  */
-export type Fragment = Partial<Omit<Analysis, "purposes">> & {
+export type Fragment = Pick<Analysis, "version"> & Partial<Omit<Analysis, "purposes" | "version">> & {
   purposes?: (Pick<Purpose, "id"> & Partial<Purpose>)[];
   hints?: Array<Hint>;
 };
