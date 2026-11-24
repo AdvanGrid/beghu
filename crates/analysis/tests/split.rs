@@ -124,3 +124,32 @@ fn split_references_and_depth() {
     assert_error(&r, rule::PURPOSE_DEPTH);
     assert_error(&edited(|s| s["mode"] = json!("areas")), rule::SHAPE_ENUM);
 }
+
+#[test]
+fn split_prefix() {
+    // The whole repo as one area is single mode, which writes no split.json.
+    for root in ["", ".", "./", "/"] {
+        let r = edited(|s| {
+            s["areas"][1]["prefixes"] = json!(["lib/", root]);
+        });
+        assert_error(&r, rule::SPLIT_PREFIX);
+        // And it overlaps every other area.
+        assert_error(&r, rule::SPLIT_OVERLAP);
+    }
+    assert_error(
+        &edited(|s| s["areas"][1]["prefixes"] = json!(["lib/", "../elsewhere/"])),
+        rule::SPLIT_PREFIX,
+    );
+    // A root prefix holds every path.
+    assert!(analysis::reader::under("api/main.go", "./"));
+    assert!(analysis::reader::under("api/main.go", ""));
+}
+
+#[test]
+fn a_skeleton_without_a_version_is_reported_as_such() {
+    let mut sk = skeleton();
+    sk.as_object_mut().unwrap().remove("version");
+    let r = check_split(&sk, &split(), Some(&changed_files()));
+    assert_error(&r, rule::SHAPE_MISSING_FIELD);
+    assert!(r.errors[0].message.contains("no `version`"));
+}

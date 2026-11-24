@@ -42,7 +42,8 @@ pub enum SplitMode {
 pub struct Area {
     /// Derived from its paths: one of its `prefixes`, without the trailing slash.
     pub id: String,
-    /// The repo path prefixes it covers (`services/api/`). No prefix lies inside another area's.
+    /// The repo path prefixes it covers (`services/api/`): repo-relative folders, never the repo
+    /// root (`""`, `.`, `./`, `/`). No prefix lies inside another area's.
     pub prefixes: Vec<String>,
     /// The changed files it owns, as `pr.json` lists them, each under one of its prefixes.
     pub owns: Vec<String>,

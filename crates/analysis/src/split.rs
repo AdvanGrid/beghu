@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use crate::migrate;
-use crate::reader::under;
+use crate::reader::{clean_path, is_root, under};
 use crate::report::{Report, rule};
 use crate::tools::Split;
 use crate::validate::parse;
@@ -54,6 +54,14 @@ fn top_level_parts(skeleton: &Value) -> (Vec<Part>, HashSet<String>) {
 /// Pointers in the report are into `split.json`.
 pub fn check_split(skeleton: &Value, split: &Value, changed_files: Option<&[String]>) -> Report {
     let mut r = Report::default();
+    if skeleton.is_object() && skeleton.get("version").is_none() {
+        r.error(
+            "",
+            rule::SHAPE_MISSING_FIELD,
+            format!("the skeleton has no `version`: it's a fragment, and every fragment carries the `version` its schema.ts was generated for ({})", migrate::VERSION),
+        );
+        return r;
+    }
     let skeleton = match migrate::migrate_value(skeleton.clone()) {
         Ok(m) => m.value,
         Err(e) => {
@@ -76,6 +84,19 @@ pub fn check_split(skeleton: &Value, split: &Value, changed_files: Option<&[Stri
                 rule::ID_DUPLICATE,
                 format!("area `{}` appears twice", a.id),
             );
+        }
+        for (xi, x) in a.prefixes.iter().enumerate() {
+            if is_root(x) || clean_path(x).is_none() {
+                r.error(
+                    format!("{p}/prefixes/{xi}"),
+                    rule::SPLIT_PREFIX,
+                    if is_root(x) {
+                        format!("`{x}` is the whole repo: an area is a folder of it, and a run that reads the whole repo as one is single mode, with no split.json")
+                    } else {
+                        format!("`{x}` isn't a repo-relative folder (`services/api/`): no leading `/`, `.` or `..` segments")
+                    },
+                );
+            }
         }
         if !a.prefixes.iter().any(|x| x.trim_end_matches('/') == a.id) {
             r.error(

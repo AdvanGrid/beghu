@@ -155,6 +155,7 @@ pub mod rule {
     pub const SPLIT_OVERLAP: &str = "split.overlap";
     pub const SPLIT_ID: &str = "split.id";
     pub const SPLIT_SYSTEM_AREA: &str = "split.system-area";
+    pub const SPLIT_PREFIX: &str = "split.prefix";
     pub const MERGE_DUPLICATE: &str = "merge.duplicate";
 
     // With a reader over the two checkouts.
@@ -241,6 +242,7 @@ pub mod rule {
         SPLIT_OVERLAP,
         SPLIT_ID,
         SPLIT_SYSTEM_AREA,
+        SPLIT_PREFIX,
         MERGE_DUPLICATE,
         EVIDENCE_FILE,
         EVIDENCE_RANGE,

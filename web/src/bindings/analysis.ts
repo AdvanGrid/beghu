@@ -1069,7 +1069,8 @@ export type Area = {
    */
   id: string,
   /**
-   * The repo path prefixes it covers (`services/api/`). No prefix lies inside another area's.
+   * The repo path prefixes it covers (`services/api/`): repo-relative folders, never the repo
+   * root (`""`, `.`, `./`, `/`). No prefix lies inside another area's.
    */
   prefixes: Array<string>,
   /**

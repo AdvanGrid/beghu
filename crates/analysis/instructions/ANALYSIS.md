@@ -549,8 +549,9 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
 - The split check: `split.file-area` (a changed file in no area, in two, or outside its area's
   prefixes), `split.part-area` (a top-level part in no area or split across two),
   `split.overlap`, `split.id` (an area not named after one of its prefixes),
-  `split.system-area` (a system area owning changed files). The merge: `merge.duplicate`
-  (warning: two areas wrote the same element).
+  `split.system-area` (a system area owning changed files), `split.prefix` (a prefix that is the
+  repo root or isn't a repo-relative folder). The merge: `merge.duplicate` (warning: two areas
+  wrote the same element).
 
 ## When you're done
 
