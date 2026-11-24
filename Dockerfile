@@ -7,7 +7,8 @@
 #
 # The stages: the web app (vite build, with its .br/.gz siblings and the Vite manifest the server
 # reads at startup); a glibc release build of the server, its dependencies first in a layer of
-# their own (cargo-chef); then distroless, running as nonroot. The base images are pinned by
+# their own (cargo-chef); the agent's tools (validate.mjs, merge.mjs); then distroless, running
+# as nonroot. The base images are pinned by
 # digest (their multi-arch index); bump a tag and its digest together
 # (`skopeo inspect --raw docker://<image:tag> | sha256sum`).
 #
@@ -53,11 +54,21 @@ RUN cargo build --release --locked -p beghu \
     && install -D target/release/beghu /out/beghu \
     && install -d /out/data
 
-# 3. What runs: the binary, the web build, and /data owned by nonroot (uid 65532), so a fresh
-# named volume starts out writable. Debian 13 while the build stages are 12: the binary, linked
-# against bookworm's glibc 2.36, runs on trixie's 2.41. cc-debian12 was still shipping libssl3
-# 3.0.20 after Debian's 3.0.22 fixed CVE-2026-84782; beghu never loads libssl (it uses rustls),
-# but deployers' image scans fail on it.
+# 3. The agent's tools, validate.mjs and merge.mjs: the analysis crate built to WASM and inlined
+# into two single Node files (crates/analysis-wasm/build.sh), served by the server from its own
+# commit. wasm-bindgen-cli must match the wasm-bindgen crate's version in Cargo.lock; bump them
+# together. Its install is a layer of its own, cached until that version changes.
+FROM chef AS analysis-tools
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install wasm-bindgen-cli --version 0.2.129 --locked
+COPY . .
+RUN crates/analysis-wasm/build.sh /out/analysis
+
+# 4. What runs: the binary, the web build, the agent's tools, and /data owned by nonroot (uid
+# 65532), so a fresh named volume starts out writable. Debian 13 while the build stages are 12:
+# the binary, linked against bookworm's glibc 2.36, runs on trixie's 2.41. cc-debian12 was still
+# shipping libssl3 3.0.20 after Debian's 3.0.22 fixed CVE-2026-84782; beghu never loads libssl
+# (it uses rustls), but deployers' image scans fail on it.
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2
 ARG BEGHU_BUILD_ID
 # The source label links the ghcr.io package to this repo; the revision names the commit.
@@ -69,6 +80,7 @@ ENV BEGHU_BUILD_ID=${BEGHU_BUILD_ID} \
     BEGHU_WEB_DIR=/app/web
 COPY --from=server /out/beghu /app/beghu
 COPY --from=web /src/web/dist /app/web
+COPY --from=analysis-tools /out/analysis /app/analysis
 COPY --from=server --chown=65532:65532 /out/data /data
 VOLUME /data
 EXPOSE 8080

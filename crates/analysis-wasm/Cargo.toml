@@ -1,0 +1,19 @@
+[package]
+name = "analysis-wasm"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "The analysis crate built to WASM for validate.mjs and merge.mjs (build.sh)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+analysis = { path = "../analysis" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Not behind a wasm32 cfg, so cargo deny (which checks the host targets) sees it too.
+wasm-bindgen = "=0.2.129"
+
+[lints]
+workspace = true

@@ -1,0 +1,106 @@
+{
+  "facets": [
+    {
+      "id": "inside-product",
+      "name": "Product area",
+      "question": "What part of the product is it for?",
+      "appliesTo": "node",
+      "multi": true,
+      "values": [
+        {
+          "id": "checkout",
+          "label": "Checkout",
+          "prefix": "CO",
+          "description": "Taking and refunding payments for orders."
+        },
+        {
+          "id": "platform",
+          "label": "Platform",
+          "prefix": "PL",
+          "description": "Code every product area uses."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-role",
+      "name": "What it does for the shop",
+      "question": "What does it do for this system?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "payments",
+          "label": "Payments",
+          "prefix": "PAY",
+          "description": "Moves money."
+        },
+        {
+          "id": "relational-data",
+          "label": "Relational data",
+          "prefix": "SQL",
+          "description": "Holds tables."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-runner",
+      "name": "Who runs it",
+      "question": "Who runs it, as the code shows it?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "hosted",
+          "label": "Hosted service",
+          "prefix": "HOST",
+          "description": "Reached by URL and key."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "lang",
+      "name": "Language",
+      "question": "What language is it written in?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "go",
+          "label": "Go",
+          "prefix": "Go",
+          "description": "Go packages."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    }
+  ],
+  "purposes": [
+    {
+      "id": "purpose:refunds",
+      "name": "Refund an order"
+    }
+  ]
+}
