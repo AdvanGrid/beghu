@@ -1133,6 +1133,17 @@ fn drawn_folders() {
     );
 }
 
+/// The instructions list every rule the validator reports, so the agent can look one up.
+#[test]
+fn the_instructions_name_every_rule() {
+    let missing: Vec<&str> = rule::ALL
+        .iter()
+        .copied()
+        .filter(|id| !analysis::INSTRUCTIONS.contains(&format!("`{id}`")))
+        .collect();
+    assert!(missing.is_empty(), "ANALYSIS.md doesn't name {missing:?}");
+}
+
 /// Every rule ID has a test here or in `split.rs` and `merge.rs`, named by its constant.
 #[test]
 fn every_rule_has_a_test() {
