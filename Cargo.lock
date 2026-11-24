@@ -97,6 +97,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis-db"
+version = "0.0.0"
+dependencies = [
+ "dbrt",
+ "rusqlite",
+ "sqlcheck",
+ "tokio",
+]
+
+[[package]]
 name = "analysis-wasm"
 version = "0.0.0"
 dependencies = [
