@@ -116,7 +116,7 @@ pub struct Skipped {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Reference {
-    /// The reference as `pr.json` lists it (`acme/infra#12`, a Jira key, a URL).
+    /// The reference as `pr.json` lists it (`acme/infra#12`, an issue tracker key, a URL).
     #[serde(rename = "ref")]
     #[ts(rename = "ref")]
     pub reference: String,
@@ -485,7 +485,7 @@ pub struct Edge {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EdgeData {
     /// What crosses, in domain terms: records, messages, files, prompts, model output,
-    /// credentials ("probe session rows", "OpenAI chat requests"). Never just "data" or
+    /// credentials ("probe session rows", "a third-party API's requests"). Never just "data" or
     /// "request".
     pub what: String,
     /// `forward`: from `from` to `to`. `back`: from `to` to `from` (a read). `both`: each way.

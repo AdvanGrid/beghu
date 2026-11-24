@@ -384,7 +384,7 @@ top-level purposes first, then each one's sub-purposes. IDs are path-like slugs
 
 - **Sources.** Quote the description and the served issues word for word. A reference the run
   didn't serve (`pr.json`'s `unreached`) may be read with your own tools (`gh`, an MCP server for
-  Jira or Linear), and what you learn may shape how you name and order purposes, but it is never
+  an issue tracker), and what you learn may shape how you name and order purposes, but it is never
   evidence: list it in `coverage.references` as `own-tools`, or `unreached` if you couldn't read
   it. Never quote an issue the run didn't serve.
 - **Members.** `serves` lists the deepest parts that serve the purpose, each with its role in one

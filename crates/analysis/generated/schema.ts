@@ -159,7 +159,7 @@ export type Skipped = {
 
 export type Reference = {
   /**
-   * The reference as `pr.json` lists it (`acme/infra#12`, a Jira key, a URL).
+   * The reference as `pr.json` lists it (`acme/infra#12`, an issue tracker key, a URL).
    */
   ref: string,
   how: ReferenceHow,
@@ -513,7 +513,7 @@ export type When = "runtime" | "build" | "test";
 export type EdgeData = {
   /**
    * What crosses, in domain terms: records, messages, files, prompts, model output,
-   * credentials ("probe session rows", "OpenAI chat requests"). Never just "data" or
+   * credentials ("probe session rows", "a third-party API's requests"). Never just "data" or
    * "request".
    */
   what: string,
