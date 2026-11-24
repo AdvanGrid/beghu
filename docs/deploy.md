@@ -117,6 +117,7 @@ refused either way.
 | `PORT` | no (image: 8080) | The plain-HTTP port. Without the image's setting it's 3000. |
 | `BEGHU_BUILD_ID` | no (image: the git SHA, a required build arg) | Letters, digits, `.`, `_` and `-`, up to 64. `dev` if unset. |
 | `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output: the app and the prerendered public site (`site/`: the landing page at `/`, `/pricing`, `/privacy`, `/terms`, `robots.txt` and `sitemap.xml`, whose canonical URLs take their origin from `BEGHU_PUBLIC_URL`). Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app and the site. |
+| `BEGHU_ANALYSIS_DIR` | no (image: `/app/analysis`) | The agent's tools, `validate.mjs` and `merge.mjs`, built from the same commit (`crates/analysis-wasm/build.sh`). An analysis run serves them as they are. Set but missing either file refuses startup; unset, a run answers 503 for them. |
 | `GITHUB_API_URL` | no | Default `https://api.github.com`. Dev and CI point it at Fake GitHub. |
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
 | `GITHUB_ATTACHMENTS_URL` | no | Default `https://private-user-images.githubusercontent.com`: where the attachment URLs GitHub mints into a post's HTML point. The attachment route fetches from nowhere else. Dev and CI point it at Fake GitHub's `/private-user-images`. |
@@ -157,6 +158,7 @@ What's on it:
 | `control.db` (with `-wal`, `-shm` while running) | Accounts, sessions, encrypted tokens, synced repos, webhook deliveries, preferences. The only state that can't be rebuilt. |
 | `backups/` | The control DB's backups. See [Backups and restore](#backups-and-restore). |
 | `mirrors/<github user id>.db` | Each account's mirror. It's disposable: it's rebuilt from GitHub if it's lost, and never backed up. |
+| `analyses/<github user id>.db` | Each account's PR view analysis runs and latest analyses. Not backed up (an analysis is made again by running the agent again); deleted with the mirror when the account goes dormant. |
 | `assets/` | The web build's hashed assets, this build's and the ones still kept from earlier builds. |
 | `builds/<build id>.json` | Each build's asset list, and when a later build superseded it. |
 

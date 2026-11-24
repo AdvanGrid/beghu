@@ -10,6 +10,8 @@ export const PID = join(DEV, "dev-ctl.pid");
 export const STATE = join(DEV, "dev-ctl.json");
 export const DATA = join(DEV, "data");
 export const MIRRORS = join(DATA, "mirrors");
+/** Each account's `analyses.db` (crates/server/src/config.rs, `analyses_dir`). */
+export const ANALYSES = join(DATA, "analyses");
 export const FAKE_DB = join(DATA, "fake", "truth.db");
 /** What `start` seeded the data with (`Seeded`). Gone after a plain `reset`, so `start` seeds again. */
 export const SEEDED = join(DATA, "seeded.json");
@@ -25,6 +27,11 @@ export const DEPLOYED = join(DEV, "deployed.json");
 export const ASSETS = join(DATA, "assets");
 export const BUILDS = join(DATA, "builds");
 export const TARGET = join(ROOT, "target", "debug");
+/**
+ * The agent's tools, validate.mjs and merge.mjs, as crates/analysis-wasm/build.sh builds them
+ * from this tree: the server serves them to analysis runs (BEGHU_ANALYSIS_DIR).
+ */
+export const ANALYSIS_TOOLS = join(ROOT, "target", "analysis-tools");
 
 const port = (name: string, fallback: number): number => {
   const v = process.env[name];

@@ -15,6 +15,7 @@ import {
   FAKE_DB,
   LOG,
   MIRRORS,
+  ANALYSES,
   PID,
   PROCS,
   ROOT,
@@ -181,8 +182,9 @@ Commands:
                               the other builds' records, as their day being up would.
   deploy dev                  Back to build dev, the app served by Vite.
   reset [--all] [--fresh]     Restore pristine mirrors and the fake's state (sign-ins,
-                              faults, its data), keeping the control DB (less its Resync
-                              marks and hourly limits). Restarts the stack if it's running.
+                              faults, its data) and delete the accounts' analyses, keeping
+                              the control DB (less its Resync marks and hourly limits).
+                              Restarts the stack if it's running.
                               --all also wipes the control DB.
                               --fresh deletes the mirrors instead, so every account imports
                               its synced repos through the fake on its next use (with --all,
@@ -922,6 +924,9 @@ async function reset(args: string[]): Promise<void> {
   remove(join(FAKE_DB, ".."));
   done.push("fake state restored");
   remove(MIRRORS);
+  // An account's analyses go with its pristine mirror.
+  remove(ANALYSES);
+  done.push("analyses deleted");
   if (set.has("--fresh")) {
     // Recorded as seeded, so start doesn't put pristine mirrors back: accounts re-import.
     writeJson(SEEDED, { scale, fresh: true } satisfies Seeded);
