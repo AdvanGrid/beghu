@@ -78,8 +78,9 @@ impl Reader for Checkouts {
         })
     }
 
-    /// Every file under the checkout: the sample's checkouts are committed whole, so every file
-    /// in them is tracked.
+    /// Every file under the checkout but `node_modules`: the sample's checkouts are committed
+    /// whole, so every file in them is tracked, and `.gitignore` ignores the `node_modules` CI's
+    /// validate.mjs step puts in head (a real reader asks git).
     fn tracked(&self, side: CodeSide) -> Option<Vec<String>> {
         let root = Self::path(side, "");
         let mut out = Vec::new();
@@ -88,7 +89,9 @@ impl Reader for Checkouts {
             for e in std::fs::read_dir(&dir).ok()?.filter_map(Result::ok) {
                 let p = e.path();
                 if p.is_dir() {
-                    stack.push(p);
+                    if e.file_name() != "node_modules" {
+                        stack.push(p);
+                    }
                 } else {
                     let rel = p
                         .strip_prefix(&root)

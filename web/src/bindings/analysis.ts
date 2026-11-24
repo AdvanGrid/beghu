@@ -1035,11 +1035,6 @@ export type CodeSide = "base" | "head";
  */
 export type Split = {
   /**
-   * `split`: areas run as separate agents. A single-mode run writes no `split.json`, so this
-   * is `split` in every file the tools read.
-   */
-  mode: SplitMode,
-  /**
    * Disjoint slices of the repo, drawn from its own structure (workspaces, services,
    * packages), not from the diff alone. Every changed file is owned by exactly one area, and
    * every top-level part lies in exactly one area.
@@ -1061,8 +1056,6 @@ export type Split = {
    */
   rules: Array<SplitRule>,
 };
-
-export type SplitMode = "single" | "split";
 
 /**
  * One agent's share of the run.

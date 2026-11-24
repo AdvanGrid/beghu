@@ -15,9 +15,6 @@ use crate::schema::{AppliesTo, EdgeKind, FacetValue, PurposeKind};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Split {
-    /// `split`: areas run as separate agents. A single-mode run writes no `split.json`, so this
-    /// is `split` in every file the tools read.
-    pub mode: SplitMode,
     /// Disjoint slices of the repo, drawn from its own structure (workspaces, services,
     /// packages), not from the diff alone. Every changed file is owned by exactly one area, and
     /// every top-level part lies in exactly one area.
@@ -31,13 +28,6 @@ pub struct Split {
     pub purposes: Vec<SplitPurpose>,
     /// The rules to check against all of head, one check each after the merge.
     pub rules: Vec<SplitRule>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum SplitMode {
-    Single,
-    Split,
 }
 
 /// One agent's share of the run.

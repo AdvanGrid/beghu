@@ -114,12 +114,19 @@ function checkouts(roots) {
     // untracked and ignored folders (node_modules, build output) never count.
     tracked(side) {
       try {
+        // Git's own variables would point it at another repo than the checkout's.
+        const env = { ...process.env };
+        for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) delete env[k];
         const out = execFileSync("git", ["-C", roots[side], "ls-files", "-z"], {
           encoding: "utf8",
+          env,
           maxBuffer: 1 << 30,
           stdio: ["ignore", "pipe", "ignore"],
         });
-        return JSON.stringify(out.split("\0").filter((f) => f !== ""));
+        const files = out.split("\0").filter((f) => f !== "");
+        // None tracked: the folder isn't a checkout of its own (it may sit untracked inside
+        // another repo), so there's no count rather than a count of 0.
+        return files.length === 0 ? undefined : JSON.stringify(files);
       } catch {
         return undefined;
       }

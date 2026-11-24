@@ -165,8 +165,8 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
     let mut unclaimed: Vec<Value> = Vec::new();
     let mut carried: Vec<Value> = Vec::new();
     let mut coverage: Option<Map<String, Value>> = None;
-    // Each hint with where it came from: its fragment and its index there, when it has one.
-    let mut hints: Vec<(usize, Option<usize>, Value)> = Vec::new();
+    // Each hint with its fragment and the pointer to what it came from in that fragment.
+    let mut hints: Vec<(usize, String, Value)> = Vec::new();
     // The purposes and rules (by purpose) the skeleton and split.json settled.
     let mut settled_purposes: HashSet<String> = HashSet::new();
     let mut settled_rules: HashSet<(String, String)> = HashSet::new();
@@ -247,14 +247,29 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
                 ),
             );
         }
+        // Checked to be an object above.
         let Some(obj) = frag.as_object_mut() else {
-            r.error(
-                &fp,
-                rule::SHAPE_TYPE,
-                format!("fragment {} isn't a JSON object", fi + 1),
-            );
             continue;
         };
+        // A list that isn't one would otherwise vanish from the merge unreported.
+        for key in BY_ID
+            .iter()
+            .chain(&["purposes", "unclaimed", "carried", "claims", "hints"])
+        {
+            if let Some(v) = obj.get(*key)
+                && !v.is_array()
+                && !v.is_null()
+            {
+                r.error(
+                    format!("{fp}/{key}"),
+                    rule::SHAPE_TYPE,
+                    format!(
+                        "fragment {}'s `{key}` isn't a list, so it's left out of the merge",
+                        fi + 1
+                    ),
+                );
+            }
+        }
         for (ci, mut c) in obj
             .remove("claims")
             .and_then(|v| v.as_array().cloned())
@@ -301,10 +316,12 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
             }
         }
         for key in BY_ID {
-            for item in obj
+            for (ii, item) in obj
                 .remove(*key)
                 .and_then(|v| v.as_array().cloned())
                 .unwrap_or_default()
+                .into_iter()
+                .enumerate()
             {
                 let Some(id) = str_of(&item, "id").map(str::to_owned) else {
                     lists.entry(key).or_default().push(item);
@@ -322,7 +339,7 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
                         let before = writer.insert((*key, id.clone()), fi).unwrap_or(0);
                         if before != 0 && list[at] != item {
                             r.warn(
-                                format!("{fp}/{key}"),
+                                format!("{fp}/{key}/{ii}"),
                                 rule::MERGE_DUPLICATE,
                                 format!(
                                     "`{id}` is written by fragments {} and {}: two areas own it, and fragment {}'s version stays",
@@ -342,12 +359,25 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
                 }
             }
         }
-        for p in obj
+        for (pi, p) in obj
             .remove("purposes")
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
+            .into_iter()
+            .enumerate()
         {
-            let Value::Object(mut p) = p else { continue };
+            let pp = format!("{fp}/purposes/{pi}");
+            let Value::Object(mut p) = p else {
+                r.error(
+                    &pp,
+                    rule::SHAPE_TYPE,
+                    format!(
+                        "fragment {}'s purpose isn't a JSON object, so it's left out",
+                        fi + 1
+                    ),
+                );
+                continue;
+            };
             let pid = p.get("id").and_then(Value::as_str).map(str::to_owned);
             if fi == 0 {
                 // The skeleton settles its purposes and their rules.
@@ -366,16 +396,19 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
                 }
             } else {
                 let Some(pid) = pid.filter(|id| settled_purposes.contains(id)) else {
-                    hints.push((fi, None, purpose_hint(fi, &p)));
+                    hints.push((fi, pp, purpose_hint(fi, &p)));
                     continue;
                 };
                 if let Some(Value::Array(rules)) = p.get_mut("rules") {
+                    let mut ri = 0;
                     rules.retain(|rl| {
+                        let at = format!("{pp}/rules/{ri}");
+                        ri += 1;
                         let known = str_of(rl, "id").is_some_and(|rid| {
                             settled_rules.contains(&(pid.clone(), rid.to_owned()))
                         });
                         if !known {
-                            hints.push((fi, None, rule_hint(&pid, rl)));
+                            hints.push((fi, at, rule_hint(&pid, rl)));
                         }
                         known
                     });
@@ -410,7 +443,7 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
             .into_iter()
             .enumerate()
         {
-            hints.push((fi, Some(hi), h));
+            hints.push((fi, format!("{fp}/hints/{hi}"), h));
         }
     }
 
@@ -485,11 +518,7 @@ pub fn merge(fragments: Vec<Value>, split: Option<&Value>) -> Merged {
     let edges_now: Vec<Value> = merged["edges"].as_array().cloned().unwrap_or_default();
     // The candidates a fragment's hint covers: resolved, or left for the seam pass already.
     let mut covered: HashSet<(String, String)> = HashSet::new();
-    for (fi, hi, raw) in hints {
-        let hp = match hi {
-            Some(hi) => format!("/{fi}/hints/{hi}"),
-            None => format!("/{fi}/purposes"),
-        };
+    for (_, hp, raw) in hints {
         let Some(h) = parse::<Hint>(&raw, &hp, &mut r) else {
             continue;
         };

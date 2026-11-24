@@ -88,7 +88,7 @@ pub fn body() -> String {
         Conflict, ConflictKind, Side, Who, Sites, Touches, Cause, Unclaimed,
         Carried, CarriedKind, CarriedCause,
         Claim, ClaimStatus, Evidence, CodeSide,
-        Split, SplitMode, Area, Candidate, SplitPurpose, Flow, SplitRule,
+        Split, Area, Candidate, SplitPurpose, Flow, SplitRule,
         Hint, Resolution, ResolutionHow,
     );
     out.push(FRAGMENT.trim_end().to_owned());

@@ -127,6 +127,8 @@ fn merge_duplicate() {
     f[1]["nodes"].as_array_mut().unwrap().push(lib_db);
     let m = merge(f, None);
     assert_warning(&m.report, rule::MERGE_DUPLICATE);
+    // At the later writer's element.
+    assert_eq!(m.report.warnings[0].path, "/2/nodes/0");
     // The skeleton's coarse version giving way to an area's isn't one.
     assert!(merge(fragments(), None).report.warnings.is_empty());
 }
@@ -395,7 +397,7 @@ fn with_split_json_every_candidate_no_area_resolved_is_left_for_the_seam_pass() 
     );
     // A split.json that doesn't fit is reported.
     assert_error(
-        &merge(fragments(), Some(&json!({ "mode": "split" }))).report,
+        &merge(fragments(), Some(&json!({ "areas": [] }))).report,
         rule::SHAPE_MISSING_FIELD,
     );
 }
@@ -413,4 +415,44 @@ fn a_seam_hint_with_uses_is_answered_only_by_a_line_with_that_uses() {
     };
     assert!(with("query"), "an exec line doesn't answer a query seam");
     assert!(!with("exec"));
+}
+
+#[test]
+fn a_list_that_isnt_one_is_reported_not_dropped_silently() {
+    let mut f = fragments();
+    f[1]["nodes"] = json!({ "id": "x" });
+    f[1]["hints"] = json!({ "kind": "seam" });
+    f[1]["purposes"] = json!("p");
+    f[2]["purposes"] = json!([5]);
+    let m = merge(f, None);
+    for at in ["/1/nodes", "/1/hints", "/1/purposes", "/2/purposes/0"] {
+        assert!(
+            m.report
+                .errors
+                .iter()
+                .any(|e| e.path == at && e.rule == rule::SHAPE_TYPE),
+            "no shape.type at {at}: {:?}",
+            m.report.errors
+        );
+    }
+}
+
+#[test]
+fn a_purpose_split_json_alone_settled_is_the_areas_to_write() {
+    // The skeleton leaves the purpose to split.json.
+    let mut f = fragments();
+    f[0]["purposes"] = json!([]);
+    let hinted = |m: &analysis::Merged| {
+        m.analysis["hints"].as_array().is_some_and(|h| {
+            h.iter().any(|x| {
+                x["kind"] == "purpose" && x["why"].as_str().unwrap().contains("`purpose:refunds`")
+            })
+        })
+    };
+    let m = merge(f.clone(), Some(&load("split/split.json")));
+    assert_eq!(ids(&m.analysis, "purposes"), ["purpose:refunds"]);
+    assert!(!hinted(&m));
+    // Without split.json nothing settled it, so the area only hints it.
+    let m = merge(f, None);
+    assert!(hinted(&m));
 }

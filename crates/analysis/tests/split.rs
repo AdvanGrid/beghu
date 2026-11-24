@@ -122,7 +122,11 @@ fn split_references_and_depth() {
             "kind": "feature", "sources": ["code"], "flow": { "entries": [], "path": [] } }));
     });
     assert_error(&r, rule::PURPOSE_DEPTH);
-    assert_error(&edited(|s| s["mode"] = json!("areas")), rule::SHAPE_ENUM);
+    // A split.json has no `mode`: one exists only in a split run.
+    assert_error(
+        &edited(|s| s["mode"] = json!("split")),
+        rule::SHAPE_UNKNOWN_FIELD,
+    );
 }
 
 #[test]
