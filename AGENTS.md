@@ -1,7 +1,7 @@
 # AGENTS.md
 
-beghu v1 is being built to the spec in issue #86. Read `CONTEXT.md` for the glossary and use its
-terms.
+beghu v1 is being built to the spec in issue #86, and the PR view to the spec in issue #174 and
+its sub-issues. Read `CONTEXT.md` for the glossary and use its terms.
 
 ## Running the app
 

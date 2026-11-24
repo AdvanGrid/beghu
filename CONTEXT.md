@@ -222,3 +222,31 @@ _Avoid_: Suspected edge, dependency
 **Partly drawn part**:
 An unchanged part opened only along the paths a line, step, purpose or conflict needs, so it holds some of its modules, not all.
 _Avoid_: Stub, partial node
+
+**Conflict**:
+Two facts about a PR that don't agree, side by side with their sources and no verdict: what the description or an issue says against the code, two purposes against each other, or a purpose's rule against code outside the diff.
+_Avoid_: Issue, problem, finding
+
+**Canvas**:
+The PR view's one drawing of the code view, where parts open in place as frames. The order of actions and a purpose's fold are drawn on it too.
+_Avoid_: Drawn graph, Clusters, diagram
+
+**Path**:
+The PR view's second explorer: columns of cards, one per pick, each holding what the picked card connects to.
+_Avoid_: Columns view, drill-down
+
+**Fold plan**:
+How the canvas rolls a purpose's parts up to a budget of blocks (16, or 8 on a phone): made once per purpose, so later opens never rearrange it.
+_Avoid_: Purpose layout, roll-up
+
+**Group**:
+A block on the canvas that isn't a part: a column, a box, or a fold of same-kind siblings ("middleware in 21 services").
+_Avoid_: Cluster, grouping node
+
+**Rest block**:
+A muted, dashed block on the canvas that stands for parts left out, because they don't serve the purpose or weren't drawn. It can't be opened.
+_Avoid_: Stub, placeholder
+
+**Trunk**:
+Lines that run along the same stretch of the drawing, merged into one thick stroke.
+_Avoid_: Bundle, highway
