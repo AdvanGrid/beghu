@@ -549,6 +549,10 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
   entry for an ID the previous analysis didn't have (or there was none). `carry.present`: an
   entry for an ID still in the analysis. `carry.now`: `now` doesn't fit `kind`.
   `carry.evidence`: no supported claim with evidence.
+- Only the server, against what the run pinned: `evidence.quote-mismatch` (a description or
+  issue quote that isn't word for word in `pr.json`) and `evidence.issue-not-served` (issue
+  evidence from an issue `pr.json`'s `issues` doesn't list). An upload of another head than the
+  pinned one is refused before these (`409`).
 - With the checkouts: `evidence.file` (no such file on that side), `evidence.range` (past the
   file's end), `evidence.snippet` (the snippet isn't the file's lines), `path.missing` (a path at
   neither base nor head), `drawn.folders` (the count of folders holding git-tracked files is
