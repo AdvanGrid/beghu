@@ -92,3 +92,21 @@ for Clusters fully open, the counts either on the line (room made in each gutter
 card, and "Phone" for a 390 px pane driven by taps (tap picks, its lines are rows; double tap opens).
 `?x=3` lays out three copies of the analysis. `node web/prototype-pr-view/nested-bench.ts [name] [times]`
 times the layout outside the browser and counts what moves when a block opens or folds.
+
+## One canvas or three (#173)
+
+`canvas.html?a=<name>` asks whether the drawn graph and Clusters are one canvas or two. Both
+shapes use our layout (`nested-layout.ts`), one shared panel (a stand-in for the walkthrough:
+the PR, a purpose, a part, a line) and Path. Switch with ← → or the bar at the bottom (`?v=one|three`).
+
+- **one, One canvas:** Canvas | Path. The canvas is the locked top level, and every part opens in
+  place (double-click). Standing on the PR or a purpose folds the rest on this same canvas, with
+  Back and Start over. "Code view at ‹part› ›" leaves the fold with that part opened in place.
+- **three, Three canvases:** Drawn graph | Clusters | Path. The drawn graph is the locked top
+  level. A double-click zooms into a part: a scene of its inside, with the parts it connects to
+  around it, and a Zoom trail. Standing on the PR or a purpose folds the rest on it.
+  Clusters starts as four group blocks that open in place, and ignores purposes.
+
+Click picks, double-click opens, and clicking an open frame's title folds it. Each canvas keeps
+its own opens when you switch tabs; the selection is shared. Left out: lenses, Colour by, Boxes,
+hover cards, the legend, the purpose plan's sibling folds, and the phone.
