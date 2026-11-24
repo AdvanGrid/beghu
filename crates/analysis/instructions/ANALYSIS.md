@@ -493,8 +493,9 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
   (warning): the file was migrated from an older version; refetch the run's files.
   `migration.failed`: a migration step failed.
 - `shape.json`, `shape.missing-field`, `shape.unknown-field`, `shape.enum`, `shape.type`: the file
-  doesn't fit `schema.ts`. `shape.hints`: resolved hints are still in the file (`merge.mjs
-  --finish` strips them). `hint.unresolved`: a hint the seam pass hasn't resolved.
+  doesn't fit `schema.ts`; the path points at the field itself. `shape.hints`: the file has a
+  `hints` key, even an empty one (`merge.mjs --finish` strips the resolved hints and the key).
+  `hint.unresolved`: a hint the seam pass hasn't resolved.
 - `id.duplicate`: an ID is used twice (IDs share one namespace). `ref.unknown`: a reference names
   nothing. `claim.id`: a claim ID isn't `c1`, `c2`, …. `purpose.id`: a purpose ID isn't a
   path-like slug under its parent's.
@@ -534,7 +535,7 @@ rule IDs. Errors refuse the upload; warnings (marked) don't.
   `touches` misses a node the evidence lands in, or a side's purpose. `conflict.sites`: over 20
   sites listed. `cause.evidence`: a cause without supported code evidence.
 - `unclaimed.missing`: a changed leaf part that serves no purpose and isn't in `unclaimed`.
-  `unbacked.exact`: `unbacked` present with purposes, or missing without them.
+  `unbacked.exact`: `unbacked` present with purposes, or missing or blank without them.
 - `carry.unaccounted`: a previous ID that is gone with no `carried` entry. `carry.unknown`: an
   entry for an ID the previous analysis didn't have (or there was none). `carry.present`: an
   entry for an ID still in the analysis. `carry.now`: `now` doesn't fit `kind`.

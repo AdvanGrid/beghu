@@ -186,6 +186,31 @@ fn shape_hints() {
     assert_error(&r, rule::SHAPE_HINTS);
 }
 
+/// Any `hints` key fails the shape check, an empty list included: an upload carries none.
+#[test]
+fn an_empty_hints_list_fails_the_shape_check() {
+    assert_error(&check(edit(|v| v["hints"] = json!([]))), rule::SHAPE_HINTS);
+    assert_error(&check(edit(|v| v["hints"] = json!({}))), rule::SHAPE_HINTS);
+}
+
+/// A shape error points at the field serde refused, not the element holding it, with `~` and `/`
+/// escaped in keys.
+#[test]
+fn shape_errors_point_at_the_exact_field() {
+    let r = check(edit(|v| {
+        node(v, "api")["files"][0]["added"] = json!("three")
+    }));
+    assert_error(&r, rule::SHAPE_TYPE);
+    assert_eq!(r.errors[0].path, "/nodes/1/files/0/added");
+    let r = check(edit(|v| {
+        node(v, "api")["files"][0]["weird/key~"] = json!(1)
+    }));
+    assert_error(&r, rule::SHAPE_UNKNOWN_FIELD);
+    assert_eq!(r.errors[0].path, "/nodes/1/files/0/weird~1key~0");
+    let r = check(edit(|v| v["a/b~c"] = json!(1)));
+    assert_eq!(r.errors[0].path, "/a~1b~0c");
+}
+
 #[test]
 fn hint_unresolved() {
     let r = check(edit(|v| {
@@ -974,6 +999,22 @@ fn unbacked_exact() {
         v["unclaimed"] = json!([{ "node": "api.orders", "reason": "no purpose names refunds" }]);
     }));
     assert_error(&r, rule::UNBACKED_EXACT);
+    // A blank `unbacked` says nothing.
+    for blank in ["", "  \n"] {
+        let r = check(edit(|v| {
+            v["purposes"] = json!([]);
+            v["unclaimed"] =
+                json!([{ "node": "api.orders", "reason": "no purpose names refunds" }]);
+            v["unbacked"] = json!(blank);
+        }));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.rule == rule::UNBACKED_EXACT && e.message.contains("empty")),
+            "{:#?}",
+            r.errors
+        );
+    }
 }
 
 // Carrying over.

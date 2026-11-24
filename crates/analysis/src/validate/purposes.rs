@@ -490,6 +490,11 @@ fn unclaimed(ix: &Index, r: &mut Report) {
             rule::UNBACKED_EXACT,
             "`unbacked` is only for an analysis with no purposes",
         ),
+        (true, Some(text)) if text.trim().is_empty() => r.error(
+            "/unbacked",
+            rule::UNBACKED_EXACT,
+            "`unbacked` is empty: say in one or two sentences why no purpose could be backed",
+        ),
         _ => {}
     }
 }

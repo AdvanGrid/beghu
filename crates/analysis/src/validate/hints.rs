@@ -32,11 +32,15 @@ pub(crate) fn describe(h: &Hint) -> String {
 }
 
 /// An analysis given to the validator still carries `hints`: each unresolved one is
-/// `hint.unresolved`, and any left at all fails the shape check, since hints never go into an
-/// upload.
+/// `hint.unresolved`, and the key itself fails the shape check (`shape.hints`), even when the list
+/// is empty, since an upload carries no `hints` at all.
 pub(crate) fn check_present(hints: &Value, r: &mut Report) {
     let Some(items) = hints.as_array() else {
-        r.error("/hints", rule::SHAPE_TYPE, "`hints` is a list");
+        r.error(
+            "/hints",
+            rule::SHAPE_HINTS,
+            "an upload carries no `hints`: resolve them and run `node merge.mjs --finish`",
+        );
         return;
     };
     let mut resolved = 0;
@@ -54,13 +58,16 @@ pub(crate) fn check_present(hints: &Value, r: &mut Report) {
             resolved += 1;
         }
     }
-    if resolved > 0 {
-        r.error(
-            "/hints",
-            rule::SHAPE_HINTS,
-            format!("{resolved} resolved hints are still here: `node merge.mjs --finish` strips them, and an upload carries none"),
-        );
-    }
+    let message = if items.is_empty() {
+        "an empty `hints` list is still here: an upload carries no `hints` key; `node merge.mjs --finish` drops it".to_owned()
+    } else if resolved == items.len() {
+        format!(
+            "{resolved} resolved hints are still here: `node merge.mjs --finish` strips them, and an upload carries no `hints`"
+        )
+    } else {
+        "an upload carries no `hints`: resolve every one, then `node merge.mjs --finish` strips them".to_owned()
+    };
+    r.error("/hints", rule::SHAPE_HINTS, message);
 }
 
 /// The IDs a resolution may point at, from a (possibly partial) analysis.

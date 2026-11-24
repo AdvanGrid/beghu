@@ -172,7 +172,7 @@ fn shape(value: &Value, r: &mut Report) -> Option<Analysis> {
     for k in obj.keys() {
         if !FIELDS.contains(&k.as_str()) {
             r.error(
-                format!("/{k}"),
+                format!("/{}", pointer_segment(k)),
                 rule::SHAPE_UNKNOWN_FIELD,
                 format!("unknown field `{k}`"),
             );
@@ -271,12 +271,27 @@ fn list<T: DeserializeOwned>(
     }
 }
 
-/// Parses one element, filing serde's complaint under the rule it names.
+/// Parses one element, filing serde's complaint under the rule it names, at the deepest field
+/// serde's path reaches (`/nodes/1/files/0/added`; a missing field's path is the object that lacks
+/// it). Inside an element whose `kind` picks its shape (evidence, hints), the path stops at the
+/// element.
 pub(crate) fn parse<T: DeserializeOwned>(v: &Value, path: &str, r: &mut Report) -> Option<T> {
-    match T::deserialize(v) {
+    match serde_path_to_error::deserialize::<_, T>(v) {
         Ok(x) => Some(x),
         Err(e) => {
-            let msg = e.to_string();
+            let mut at = path.to_owned();
+            for seg in e.path().iter() {
+                use serde_path_to_error::Segment;
+                match seg {
+                    Segment::Seq { index } => at.push_str(&format!("/{index}")),
+                    Segment::Map { key } => {
+                        at.push('/');
+                        at.push_str(&pointer_segment(key));
+                    }
+                    Segment::Enum { .. } | Segment::Unknown => {}
+                }
+            }
+            let msg = e.into_inner().to_string();
             let id = if msg.starts_with("missing field") {
                 rule::SHAPE_MISSING_FIELD
             } else if msg.starts_with("unknown field") {
@@ -286,8 +301,13 @@ pub(crate) fn parse<T: DeserializeOwned>(v: &Value, path: &str, r: &mut Report) 
             } else {
                 rule::SHAPE_TYPE
             };
-            r.error(path, id, msg);
+            r.error(at, id, msg);
             None
         }
     }
+}
+
+/// One JSON pointer segment (RFC 6901): `~` becomes `~0` and `/` becomes `~1`.
+pub(crate) fn pointer_segment(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
 }

@@ -11,6 +11,9 @@ description = "The PR view's analysis: its types (the schema), the validator, th
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The JSON pointer to the exact field serde refused (`/nodes/1/files/0/added`), for the report.
+# Already in the tree through axum.
+serde_path_to_error = "0.1"
 # `no-serde-warnings`: ts-rs ignores the serde attributes it has no TypeScript for
 # (`deny_unknown_fields` on an enum, `deserialize_with`) and would print a warning for each.
 ts-rs = { version = "12", features = ["no-serde-warnings"] }
