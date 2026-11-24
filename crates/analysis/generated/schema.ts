@@ -2,7 +2,7 @@
 // `cargo test -p analysis` from the Rust types in crates/analysis/src (schema.rs, tools.rs,
 // report.rs), doc comments included. Don't edit it: change the types and their comments.
 // schema-version: 1
-// shape-hash: sha256:4641527164c14102289fa77ae3d30ac4994a8fd72f5768586872f480ea0f8cb5
+// shape-hash: sha256:9a30490bd66b325e4ba5ba3ed1f632504b46cc21592d3145957b2929bdbd187b
 
 /**
  * One PR analysis: the system at the PR's base and head drawn as one graph, where every element

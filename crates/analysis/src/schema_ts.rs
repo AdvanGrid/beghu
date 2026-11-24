@@ -200,8 +200,37 @@ fn pretty(decl: &str) -> String {
     out
 }
 
-/// The text the schema guard hashes: the body without comments or blank space, declarations
-/// sorted, so editing a doc comment (a prompt change) or moving a type leaves it alone.
+/// The names of the types an upload is made of: [`crate::Analysis`] and every type it reaches.
+/// The split procedure's types (`split.json`, hints, fragments), the previous analysis's skeleton
+/// and the report aren't among them: they never reach storage, so changing them needs no
+/// migration.
+pub fn upload_types() -> HashSet<String> {
+    let cfg = &Config::new();
+    let mut reached = Vec::new();
+    collect::<crate::schema::Analysis>(cfg, &mut HashSet::new(), &mut reached);
+    reached.into_iter().collect()
+}
+
+/// The text the schema guard hashes: [`shape`] of the upload's types only (see
+/// [`upload_types`]).
+pub fn upload_shape(body: &str) -> String {
+    let names = upload_types();
+    let shaped = shape(body);
+    let decls: Vec<&str> = shaped
+        .split("export")
+        .filter(|d| {
+            names.iter().any(|n| {
+                d.strip_prefix("type")
+                    .and_then(|rest| rest.strip_prefix(n.as_str()))
+                    .is_some_and(|rest| rest.starts_with('=') || rest.starts_with('<'))
+            })
+        })
+        .collect();
+    decls.join("export")
+}
+
+/// A body's shape: without comments or blank space, declarations sorted, so editing a doc comment
+/// (a prompt change) or moving a type leaves it alone.
 pub fn shape(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
