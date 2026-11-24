@@ -14,14 +14,38 @@
 //!   `dismiss` for the latest approval or request for changes) bumps its `updated_at`, sets its
 //!   review decision as GitHub would ([`review`]: a null one stays null) and sends
 //!   `pull_request_review` (`submitted`, or `dismissed`) for the review, on the PR's head commit.
+//! - Its head, commits and changed files, which the PR view's analysis runs read through
+//!   `GET /repos/{owner}/{repo}/pulls/{number}`, `…/files` and `…/commits` ([`router`]): a
+//!   fixture PR derives them from its id (1 to 4 commits, 1 to 9 files); a push on the control
+//!   port (`POST /push`, [`push`]) adds a commit on top, moving the head, and may say which files
+//!   the PR changes from then on. The pulls API pages as GitHub's does (`per_page` up to 100,
+//!   default 30, with `Link` headers), and stops at GitHub's caps: 3,000 files and 250 commits.
+//!   A number that isn't a PR, or a repo the token can't see, is a 404.
 
-use crate::api::rfc3339;
+use crate::Fake;
+use crate::api::{self, AnyToken, rfc3339};
 use crate::events;
+use crate::repos::{Params, paged, visible_repo};
 use crate::webhooks::{Delivery, envelope, issue_json};
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use fake_db::q;
 use rusqlite::Connection;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::Digest as _;
 use std::collections::BTreeSet;
+
+/// The most files GitHub lists for a PR (`GET …/pulls/{number}/files`: "Responses include a
+/// maximum of 3000 files").
+pub(crate) const MAX_FILES: i64 = 3_000;
+
+/// The most commits GitHub lists for a PR (`GET …/pulls/{number}/commits`: "Lists a maximum of
+/// 250 commits for a pull request").
+pub(crate) const MAX_COMMITS: i64 = 250;
 
 /// GitHub's closing keywords (`/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue`).
 const KEYWORDS: [&str; 9] = [
@@ -35,15 +59,18 @@ pub(crate) fn pr_json(c: &Connection, id: i64) -> rusqlite::Result<Value> {
     let p = q::pr_details(c, id)?;
     let r = q::repo(c, i.repo_id)?;
     let full = format!("{}/{}", r.owner, r.name);
-    let branch = |name: Option<&str>| {
+    let head = head(c, id)?;
+    let totals = file_totals(c, id)?;
+    let branch = |name: Option<&str>, sha: String| {
         let name = name.unwrap_or("main");
         json!({
             "label": format!("{}:{name}", r.owner),
             "ref": name,
-            "sha": format!("{:040x}", (id as u64).wrapping_mul(0x9e37_79b9) ^ name.len() as u64),
+            "sha": sha,
             "repo": crate::webhooks::repo_json(&r),
         })
     };
+    let base_ref = p.base_ref.as_deref().unwrap_or("main");
     Ok(json!({
         "url": format!("https://api.github.com/repos/{full}/pulls/{}", i.number),
         "id": p.pr_id,
@@ -70,8 +97,8 @@ pub(crate) fn pr_json(c: &Connection, id: i64) -> rusqlite::Result<Value> {
         "labels": issue["labels"],
         "milestone": issue["milestone"],
         "draft": p.draft.unwrap_or(false),
-        "head": branch(p.head_ref.as_deref()),
-        "base": branch(p.base_ref.as_deref()),
+        "head": branch(p.head_ref.as_deref(), head.sha.clone()),
+        "base": branch(p.base_ref.as_deref(), base_sha(r.id, base_ref)),
         "author_association": issue["author_association"],
         "auto_merge": null,
         "active_lock_reason": null,
@@ -80,11 +107,451 @@ pub(crate) fn pr_json(c: &Connection, id: i64) -> rusqlite::Result<Value> {
         "comments": i.comments_count,
         "review_comments": 0,
         "maintainer_can_modify": false,
-        "commits": 1,
-        "additions": 0,
-        "deletions": 0,
-        "changed_files": 0,
+        "commits": head.commits,
+        "additions": totals.additions,
+        "deletions": totals.deletions,
+        "changed_files": totals.files,
     }))
+}
+
+/// 40 hex digits derived from `what`: a commit or blob SHA the fixture doesn't hold.
+fn derived_sha(what: &str) -> String {
+    let digest = sha2::Sha256::digest(what.as_bytes());
+    digest.iter().take(20).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The tip of branch `name` of repo `repo`: the same for every PR on that base.
+fn base_sha(repo: i64, name: &str) -> String {
+    derived_sha(&format!("branch {repo} {name}"))
+}
+
+/// The `k`th commit (1-based) of PR `id`, before any push named its own SHA.
+fn commit_sha(id: i64, k: i64) -> String {
+    derived_sha(&format!("commit {id} {k}"))
+}
+
+/// How many commits fixture PR `id` has before any push: 1 to 4.
+fn derived_commits(id: i64) -> i64 {
+    1 + id.rem_euclid(4)
+}
+
+/// How many files fixture PR `id` changes before a push names its own: 1 to 9.
+fn derived_files(id: i64) -> i64 {
+    1 + id.rem_euclid(9)
+}
+
+/// A PR's head: its SHA, how many commits it has, and whether its files are stored (a push named
+/// them) or derive from its id.
+pub(crate) struct Head {
+    pub sha: String,
+    pub commits: i64,
+    files_set: bool,
+}
+
+pub(crate) fn head(c: &Connection, id: i64) -> rusqlite::Result<Head> {
+    let base = derived_commits(id);
+    Ok(match q::pull_head(c, id)? {
+        Some(h) => Head {
+            sha: h.head_sha,
+            commits: base + h.pushes,
+            files_set: h.files_set,
+        },
+        None => Head {
+            sha: commit_sha(id, base),
+            commits: base,
+            files_set: false,
+        },
+    })
+}
+
+/// One changed file, as the pulls API lists it.
+pub(crate) struct File {
+    pub filename: String,
+    pub previous_filename: Option<String>,
+    pub status: String,
+    pub additions: i64,
+    pub deletions: i64,
+}
+
+/// The `k`th (0-based) of a fixture PR's derived files: the first added, the rest modified.
+fn derived_file(id: i64, k: i64) -> File {
+    File {
+        filename: format!("src/pr{id}/file{k}.rs"),
+        previous_filename: None,
+        status: if k == 0 { "added" } else { "modified" }.into(),
+        additions: 3 + k * 2 + id.rem_euclid(5),
+        deletions: if k == 0 { 0 } else { k.rem_euclid(3) },
+    }
+}
+
+/// How many files the PR changes, and its lines added and removed, all told.
+pub(crate) struct Totals {
+    pub files: i64,
+    pub additions: i64,
+    pub deletions: i64,
+}
+
+fn file_totals(c: &Connection, id: i64) -> rusqlite::Result<Totals> {
+    if head(c, id)?.files_set {
+        let t = q::pull_file_totals(c, id)?;
+        return Ok(Totals {
+            files: t.files,
+            additions: t.additions,
+            deletions: t.deletions,
+        });
+    }
+    let all: Vec<File> = (0..derived_files(id))
+        .map(|k| derived_file(id, k))
+        .collect();
+    Ok(Totals {
+        files: all.len() as i64,
+        additions: all.iter().map(|f| f.additions).sum(),
+        deletions: all.iter().map(|f| f.deletions).sum(),
+    })
+}
+
+/// A page of the PR's files: `limit` from `offset`.
+fn files_page(c: &Connection, id: i64, limit: i64, offset: i64) -> rusqlite::Result<Vec<File>> {
+    if head(c, id)?.files_set {
+        return Ok(q::pull_files(c, id, limit, offset)?
+            .into_iter()
+            .map(|f| File {
+                filename: f.filename,
+                previous_filename: f.previous_filename,
+                status: f.status,
+                additions: f.additions,
+                deletions: f.deletions,
+            })
+            .collect());
+    }
+    let end = derived_files(id).min(offset + limit);
+    Ok((offset..end).map(|k| derived_file(id, k)).collect())
+}
+
+pub(crate) fn router() -> Router<Fake> {
+    Router::new()
+        .route("/repos/{owner}/{repo}/pulls/{number}", get(pull))
+        .route("/repos/{owner}/{repo}/pulls/{number}/files", get(files))
+        .route("/repos/{owner}/{repo}/pulls/{number}/commits", get(commits))
+}
+
+/// PR `number` of the visible repo `owner/name`: its item id, or GitHub's 404 (no such repo for
+/// the token, or the number names an issue or nothing).
+async fn find_pull(
+    fake: &Fake,
+    token: AnyToken,
+    owner: String,
+    name: String,
+    number: i64,
+) -> Result<i64, Response> {
+    let repo = visible_repo(fake, token, owner, name).await?;
+    let found = fake
+        .state()
+        .truth
+        .read(move |c| {
+            Ok(match q::any_item_id(c, repo, number)? {
+                Some(id) if q::issue(c, id)?.kind == "pr" => Some(id),
+                _ => None,
+            })
+        })
+        .await
+        .map_err(api::internal)?;
+    match found {
+        Some(id) => Ok(id),
+        None => Err(api::not_found().await),
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{number}`.
+async fn pull(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    Path((owner, name, number)): Path<(String, String, i64)>,
+) -> Response {
+    let id = match find_pull(&fake, token, owner, name, number).await {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    match fake.state().truth.read(move |c| pr_json(c, id)).await {
+        Ok(p) => axum::Json(p).into_response(),
+        Err(e) => api::internal(e),
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{number}/files`: at most [`MAX_FILES`], however many the PR
+/// changes.
+async fn files(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    headers: HeaderMap,
+    Path((owner, name, number)): Path<(String, String, i64)>,
+    Query(p): Query<Params>,
+) -> Response {
+    let path = format!("/repos/{owner}/{name}/pulls/{number}/files");
+    let id = match find_pull(&fake, token, owner.clone(), name.clone(), number).await {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    let (offset, limit) = (p.offset(), p.per_page());
+    let limit = limit.min(MAX_FILES - offset).max(0);
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let r = q::repo(c, q::issue(c, id)?.repo_id)?;
+            let head = head(c, id)?.sha;
+            Ok(files_page(c, id, limit, offset)?
+                .into_iter()
+                .map(|f| file_json(&r, &head, &f))
+                .collect::<Vec<_>>())
+        })
+        .await;
+    match read {
+        Ok(items) => paged(&headers, &path, &p, items, &[]),
+        Err(e) => api::internal(e),
+    }
+}
+
+/// A changed file as the pulls API lists it. `patch` is left out, as GitHub leaves it out of a
+/// file too large or binary to diff.
+fn file_json(r: &q::RepoRow, head: &str, f: &File) -> Value {
+    let full = format!("{}/{}", r.owner, r.name);
+    let mut v = json!({
+        "sha": derived_sha(&format!("blob {head} {}", f.filename)),
+        "filename": f.filename,
+        "status": f.status,
+        "additions": f.additions,
+        "deletions": f.deletions,
+        "changes": f.additions + f.deletions,
+        "blob_url": format!("https://github.com/{full}/blob/{head}/{}", f.filename),
+        "raw_url": format!("https://github.com/{full}/raw/{head}/{}", f.filename),
+        "contents_url": format!("https://api.github.com/repos/{full}/contents/{}?ref={head}", f.filename),
+    });
+    if let Some(prev) = &f.previous_filename {
+        v["previous_filename"] = json!(prev);
+    }
+    v
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{number}/commits`: oldest first, at most [`MAX_COMMITS`],
+/// the last one the PR's head.
+async fn commits(
+    State(fake): State<Fake>,
+    token: AnyToken,
+    headers: HeaderMap,
+    Path((owner, name, number)): Path<(String, String, i64)>,
+    Query(p): Query<Params>,
+) -> Response {
+    let path = format!("/repos/{owner}/{name}/pulls/{number}/commits");
+    let id = match find_pull(&fake, token, owner, name, number).await {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    let (offset, per_page) = (p.offset(), p.per_page());
+    let read = fake
+        .state()
+        .truth
+        .read(move |c| {
+            let i = q::issue(c, id)?;
+            let r = q::repo(c, i.repo_id)?;
+            let head = head(c, id)?;
+            let author = i
+                .author_id
+                .map(|a| q::user_row(c, a))
+                .transpose()?
+                .flatten();
+            let base = q::pr_details(c, id)?
+                .base_ref
+                .unwrap_or_else(|| "main".into());
+            let end = head.commits.min(MAX_COMMITS).min(offset + per_page);
+            let sha = |k: i64| {
+                if k == head.commits {
+                    head.sha.clone()
+                } else {
+                    commit_sha(id, k)
+                }
+            };
+            Ok((offset + 1..=end)
+                .map(|k| {
+                    let parent = if k == 1 {
+                        base_sha(r.id, &base)
+                    } else {
+                        sha(k - 1)
+                    };
+                    commit_json(
+                        &r,
+                        &sha(k),
+                        &parent,
+                        author.as_ref(),
+                        i.created_at.unwrap_or(0) + k * 60,
+                        k,
+                    )
+                })
+                .collect::<Vec<_>>())
+        })
+        .await;
+    match read {
+        Ok(items) => paged(&headers, &path, &p, items, &[]),
+        Err(e) => api::internal(e),
+    }
+}
+
+/// A commit as the pulls API lists it: made by the PR's author, unsigned.
+fn commit_json(
+    r: &q::RepoRow,
+    sha: &str,
+    parent: &str,
+    author: Option<&q::UserRowRow>,
+    at: i64,
+    k: i64,
+) -> Value {
+    let full = format!("{}/{}", r.owner, r.name);
+    let api = format!("https://api.github.com/repos/{full}");
+    let (name, user) = match author {
+        Some(u) => (
+            u.login.clone(),
+            crate::webhooks::user_json(u.id, &u.login, u.avatar_url.as_deref()),
+        ),
+        None => ("ghost".to_owned(), Value::Null),
+    };
+    let person = json!({
+        "name": name,
+        "email": format!("{name}@users.noreply.github.com"),
+        "date": rfc3339(at),
+    });
+    let tree = derived_sha(&format!("tree {sha}"));
+    json!({
+        "sha": sha,
+        "node_id": format!("C_{sha}"),
+        "commit": {
+            "author": person,
+            "committer": person,
+            "message": format!("Commit {k}"),
+            "tree": { "sha": tree, "url": format!("{api}/git/trees/{tree}") },
+            "url": format!("{api}/git/commits/{sha}"),
+            "comment_count": 0,
+            "verification": {
+                "verified": false,
+                "reason": "unsigned",
+                "signature": null,
+                "payload": null,
+                "verified_at": null,
+            },
+        },
+        "url": format!("{api}/commits/{sha}"),
+        "html_url": format!("https://github.com/{full}/commit/{sha}"),
+        "comments_url": format!("{api}/commits/{sha}/comments"),
+        "author": user,
+        "committer": user,
+        "parents": [{
+            "sha": parent,
+            "url": format!("{api}/commits/{parent}"),
+            "html_url": format!("https://github.com/{full}/commit/{parent}"),
+        }],
+    })
+}
+
+/// `POST /push` on the control port: a push to a PR's head branch.
+#[derive(Deserialize)]
+pub(crate) struct Push {
+    /// `owner/name`, or a name that is unique.
+    repo: String,
+    number: i64,
+    /// The new head's SHA; derived when left out.
+    sha: Option<String>,
+    /// The files the PR changes from now on, in order; left out, they stay as they were.
+    files: Option<Vec<PushedFile>>,
+    /// Or this many generated files (`src/pushed/file{k}.rs`, one line added each), for a PR
+    /// past GitHub's 3,000-file cap.
+    file_count: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PushedFile {
+    filename: String,
+    previous_filename: Option<String>,
+    status: String,
+    additions: i64,
+    deletions: i64,
+}
+
+/// Adds a commit on top of the PR, as a push to its head branch does: its head moves to the new
+/// commit, and its files are those the push names. It sends no webhook: beghu doesn't follow
+/// `pull_request` `synchronize` yet. Answers the PR's new head and counts.
+pub(crate) fn push(
+    tx: &rusqlite::Transaction,
+    p: &Push,
+) -> rusqlite::Result<Result<Value, String>> {
+    let repo = match crate::edits::find_repo(tx, &p.repo)? {
+        Ok(r) => r,
+        Err(why) => return Ok(Err(why)),
+    };
+    let id = match q::any_item_id(tx, repo, p.number)? {
+        Some(id) if q::issue(tx, id)?.kind == "pr" => id,
+        _ => return Ok(Err(format!("{}#{} isn't a PR", p.repo, p.number))),
+    };
+    let before = head(tx, id)?;
+    let pushes = before.commits - derived_commits(id) + 1;
+    let sha = p
+        .sha
+        .clone()
+        .unwrap_or_else(|| commit_sha(id, before.commits + 1));
+    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(Err("sha must be 40 hex digits".into()));
+    }
+    let files: Option<Vec<File>> = match (&p.files, p.file_count) {
+        (Some(_), Some(_)) => return Ok(Err("give files or file_count, not both".into())),
+        (Some(list), None) => Some(
+            list.iter()
+                .map(|f| File {
+                    filename: f.filename.clone(),
+                    previous_filename: f.previous_filename.clone(),
+                    status: f.status.clone(),
+                    additions: f.additions,
+                    deletions: f.deletions,
+                })
+                .collect(),
+        ),
+        (None, Some(n)) => Some(
+            (0..n.max(0))
+                .map(|k| File {
+                    filename: format!("src/pushed/file{k}.rs"),
+                    previous_filename: None,
+                    status: "modified".into(),
+                    additions: 1,
+                    deletions: 0,
+                })
+                .collect(),
+        ),
+        (None, None) => None,
+    };
+    let files_set = before.files_set || files.is_some();
+    if let Some(files) = files {
+        // A PR whose files derived from its id keeps none of them: the push names them all.
+        q::clear_pull_files(tx, id)?;
+        for (k, f) in files.iter().enumerate() {
+            q::add_pull_file(
+                tx,
+                id,
+                k as i64,
+                &f.filename,
+                f.previous_filename.as_deref(),
+                &f.status,
+                f.additions,
+                f.deletions,
+            )?;
+        }
+    }
+    q::set_pull_head(tx, id, &sha, pushes, files_set)?;
+    let after = head(tx, id)?;
+    let totals = file_totals(tx, id)?;
+    Ok(Ok(json!({
+        "head": after.sha,
+        "commits": after.commits,
+        "changed_files": totals.files,
+        "additions": totals.additions,
+        "deletions": totals.deletions,
+    })))
 }
 
 /// The issues `body`'s closing keywords name, in the PR's repo `repo` or another: `#12`,

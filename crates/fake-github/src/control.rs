@@ -60,6 +60,10 @@
 //! - `POST /suspend {login}`, `POST /unsuspend {login}`: the App's installation on the user's
 //!   own account is suspended, or no longer; GitHub sends `installation` `suspend` or
 //!   `unsuspend`.
+//! - `POST /push {repo, number, sha?, files?, file_count?}`: a push to a PR's head branch: a commit
+//!   on top (`sha`, or a derived one) becomes its head, and with `files` (`[{filename, status,
+//!   additions, deletions, previous_filename?}]`) or `file_count` (that many generated files) the
+//!   PR changes those files from then on (`pulls.rs`). No webhook.
 //! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
 //!   real clock, no deliveries logged.
 
@@ -99,6 +103,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/uninstall", post(uninstall))
         .route("/suspend", post(suspend))
         .route("/unsuspend", post(unsuspend))
+        .route("/push", post(push))
         .route("/reset", post(reset))
         .route("/attachments", post(crate::attachments::upload))
 }
@@ -110,6 +115,20 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> Response {
         axum::Json(json!({ "error": msg.into() })),
     )
         .into_response()
+}
+
+/// `POST /push`.
+async fn push(State(fake): State<Fake>, axum::Json(p): axum::Json<crate::pulls::Push>) -> Response {
+    match fake
+        .state()
+        .truth
+        .write(move |tx| crate::pulls::push(tx, &p))
+        .await
+    {
+        Ok(Ok(answer)) => axum::Json(answer).into_response(),
+        Ok(Err(why)) => bad_request(why),
+        Err(e) => api::internal(e),
+    }
 }
 
 fn ok() -> Response {

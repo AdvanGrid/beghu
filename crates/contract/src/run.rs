@@ -419,6 +419,27 @@ async fn rest_reads(http: &Http, c: &mut Checker, full: &str, t: &str) -> Result
             "GET /repos/{owner}/{repo}/issues/{number} (a PR)",
             &a,
         );
+        // What an analysis run pins (#176): the PR, its changed files and its commits.
+        for (name, path, request) in [
+            (
+                "rest.pull",
+                format!("{base}/pulls/{pr}"),
+                "GET /repos/{owner}/{repo}/pulls/{number}",
+            ),
+            (
+                "rest.pull_files",
+                format!("{base}/pulls/{pr}/files?per_page=100"),
+                "GET /repos/{owner}/{repo}/pulls/{number}/files",
+            ),
+            (
+                "rest.pull_commits",
+                format!("{base}/pulls/{pr}/commits?per_page=100"),
+                "GET /repos/{owner}/{repo}/pulls/{number}/commits",
+            ),
+        ] {
+            let a = http.get(&path, t).await?;
+            c.answer(name, request, &a);
+        }
     }
     let a = http
         .get(
