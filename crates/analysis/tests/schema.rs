@@ -30,6 +30,15 @@ fn header_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 #[test]
 fn schema_ts_is_current_and_its_shape_is_versioned() {
     let body = body();
+    // A `*/` inside a doc comment would end the TypeScript comment early.
+    for (i, line) in body.lines().enumerate() {
+        let t = line.trim();
+        assert!(
+            !t.contains("*/") || t == "*/",
+            "schema.ts line {}: a doc comment holds `*/`: {line}",
+            i + 7
+        );
+    }
     let hash = format!("sha256:{:x}", Sha256::digest(shape(&body).as_bytes()));
     let path = root().join("generated/schema.ts");
     let committed = std::fs::read_to_string(&path).unwrap_or_default();

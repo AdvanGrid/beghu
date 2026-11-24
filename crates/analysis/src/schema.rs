@@ -661,7 +661,7 @@ pub struct Rule {
     pub id: String,
     /// The rule, as a statement ("every handler checks the caller's role").
     pub text: String,
-    /// Where it applies, in plain words ("HTTP handlers under `services/*/api`").
+    /// Where it applies, in plain words ("HTTP handlers under `services/<name>/api`").
     pub scope: String,
     /// Claim IDs: where the rule is stated or established.
     pub sources: Vec<String>,

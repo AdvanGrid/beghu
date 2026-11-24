@@ -2,7 +2,7 @@
 // `cargo test -p analysis` from the Rust types in crates/analysis/src (schema.rs, tools.rs,
 // report.rs), doc comments included. Don't edit it: change the types and their comments.
 // schema-version: 1
-// shape-hash: sha256:000161a776e118f96bb462780b42fb7be8a4e584234068f5f8cd3e447b8d9832
+// shape-hash: sha256:4641527164c14102289fa77ae3d30ac4994a8fd72f5768586872f480ea0f8cb5
 
 /**
  * One PR analysis: the system at the PR's base and head drawn as one graph, where every element
@@ -763,14 +763,15 @@ export type Rule = {
    */
   text: string,
   /**
-   * Where it applies, in plain words ("HTTP handlers under `services/*/
-  api`").
- */
-scope: string, 
-/**
- * Claim IDs: where the rule is stated or established.
- */
-sources: Array<string>, checked: RuleCheck, };
+   * Where it applies, in plain words ("HTTP handlers under `services/<name>/api`").
+   */
+  scope: string,
+  /**
+   * Claim IDs: where the rule is stated or established.
+   */
+  sources: Array<string>,
+  checked: RuleCheck,
+};
 
 /**
  * The rule's check: the scope as written, enumerated with search, each site followed one hop
