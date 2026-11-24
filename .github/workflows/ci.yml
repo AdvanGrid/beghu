@@ -36,15 +36,53 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude fixture --locked
 
-      # ts-rs writes the server's wire types to web/src/bindings during `cargo test`.
+      # ts-rs writes the server's wire types to web/src/bindings during `cargo test`, and the
+      # analysis crate's schema to crates/analysis/generated/schema.ts (copied into the bindings).
       - name: TypeScript bindings are committed
         run: |
-          git add -N web/src/bindings
-          git diff --exit-code -- web/src/bindings || {
-            echo "web/src/bindings is stale: run cargo test and commit it"; exit 1; }
+          git add -N web/src/bindings crates/analysis/generated
+          git diff --exit-code -- web/src/bindings crates/analysis/generated || {
+            echo "web/src/bindings or crates/analysis/generated is stale: run cargo test and commit it"; exit 1; }
 
       - name: Fixture still loads after the migrations
         run: cargo test -p fixture --locked
+
+  analysis-tools:
+    # validate.mjs and merge.mjs: the analysis crate built to WASM and inlined as base64 into two
+    # single Node files (crates/analysis-wasm/build.sh), then run under plain Node, with no npm
+    # install, on the crate's hand-written sample. wasm-bindgen-cli matches the wasm-bindgen
+    # crate's version in Cargo.lock (build.sh refuses any other).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: wasm-bindgen@0.2.129
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Build validate.mjs and merge.mjs
+        run: crates/analysis-wasm/build.sh "$RUNNER_TEMP/tools"
+
+      - name: Run them on the sample
+        working-directory: crates/analysis/tests/sample
+        run: |
+          tools="$RUNNER_TEMP/tools"
+          node "$tools/validate.mjs" analysis.json base head --pr pr.json --previous previous
+          node "$tools/validate.mjs" split/1-skeleton.json base head --split split/split.json --pr pr.json
+          node "$tools/merge.mjs" split/1-skeleton.json split/2-api.json split/3-lib.json > "$RUNNER_TEMP/merged.json"
+          # The merge leaves the seam pass its hints; --finish refuses them while unresolved.
+          if node "$tools/merge.mjs" --finish "$RUNNER_TEMP/merged.json" > /dev/null; then
+            echo "merge.mjs --finish passed unresolved hints"; exit 1
+          fi
 
   secrets:
     # gitleaks over the whole history: its default rules, with .gitleaks.toml allowing the dev and

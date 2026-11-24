@@ -96,6 +96,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis-wasm"
+version = "0.0.0"
+dependencies = [
+ "analysis",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
