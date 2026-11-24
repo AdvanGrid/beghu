@@ -1027,13 +1027,16 @@ export type Evidence = {
 export type CodeSide = "base" | "head";
 
 /**
- * `split.json`: the skeleton's plan for the run, written before any area starts and checked by
- * the split check (`node validate.mjs <skeleton> <base> <head> --split split.json`, or
- * `beghu analyse check-split`).
+ * `split.json`: the skeleton's plan for a split run, written before any area starts and checked
+ * by the split check (`node validate.mjs <skeleton> <base> <head> --split split.json`, or
+ * `beghu analyse check-split`). Only a split run writes one: in single mode one agent does every
+ * step, and there is no `split.json` and no split check. `node merge.mjs --split split.json`
+ * reads its candidates.
  */
 export type Split = {
   /**
-   * `single`: one agent does every step. `split`: areas run as separate agents.
+   * `split`: areas run as separate agents. A single-mode run writes no `split.json`, so this
+   * is `split` in every file the tools read.
    */
   mode: SplitMode,
   /**

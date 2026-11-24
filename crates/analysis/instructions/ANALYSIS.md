@@ -121,10 +121,12 @@ cheap: they're listed, not read line by line. Draw the **areas** from the repo's
   lines and responsibilities only and own no changed file;
 - each candidate belongs to its caller's area, because the evidence is on the caller's side.
 
-Write the skeleton as a fragment (a partial analysis: see `Fragment` in `schema.ts`) and the plan
-as `split.json` (`Split`). In `single` mode, `split.json` holds one area covering the whole repo.
+In `split` mode, write the skeleton as a fragment (a partial analysis that carries `version`:
+see `Fragment` in `schema.ts`) and the plan as `split.json` (`Split`). Each area's prefixes are
+folders of the repo, never its root. In `single` mode there is no `split.json` and no split
+check: go on to the checkpoint (see "Single mode").
 
-### 2. Check the split
+### 2. Check the split (split mode only)
 
 ```sh
 node validate.mjs skeleton.json base head --split split.json --pr pr.json
@@ -134,8 +136,8 @@ node validate.mjs skeleton.json base head --split split.json --pr pr.json
 
 ### 3. The checkpoint
 
-An interactive harness shows the engineer the areas and the estimate, and asks before starting
-the areas. A non-interactive one goes on.
+An interactive harness shows the engineer the plan (single mode, or the areas and their
+estimates) and asks before going on. A non-interactive one goes on.
 
 ### 4. The areas (one agent each)
 
@@ -222,7 +224,8 @@ still runs its checks, and the reader sees the evidence labelled "not checked".
 ### Single mode
 
 One agent does every step in the same order: the skeleton, the areas' work for the whole repo,
-the rule checks, the seam pass's work and the scenarios. There are no fragments, hints or merge.
+the rule checks, the seam pass's work and the scenarios. There is no `split.json` and no split
+check (skip step 2), and there are no fragments, hints or merge: write `analysis.json` directly.
 
 ## What to draw
 

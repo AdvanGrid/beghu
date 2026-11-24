@@ -7,13 +7,16 @@ use ts_rs::TS;
 
 use crate::schema::{AppliesTo, EdgeKind, FacetValue, PurposeKind};
 
-/// `split.json`: the skeleton's plan for the run, written before any area starts and checked by
-/// the split check (`node validate.mjs <skeleton> <base> <head> --split split.json`, or
-/// `beghu analyse check-split`).
+/// `split.json`: the skeleton's plan for a split run, written before any area starts and checked
+/// by the split check (`node validate.mjs <skeleton> <base> <head> --split split.json`, or
+/// `beghu analyse check-split`). Only a split run writes one: in single mode one agent does every
+/// step, and there is no `split.json` and no split check. `node merge.mjs --split split.json`
+/// reads its candidates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Split {
-    /// `single`: one agent does every step. `split`: areas run as separate agents.
+    /// `split`: areas run as separate agents. A single-mode run writes no `split.json`, so this
+    /// is `split` in every file the tools read.
     pub mode: SplitMode,
     /// Disjoint slices of the repo, drawn from its own structure (workspaces, services,
     /// packages), not from the diff alone. Every changed file is owned by exactly one area, and
