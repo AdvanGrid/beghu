@@ -487,9 +487,9 @@ pub(crate) async fn admit(
 }
 
 /// The account a CLI call's credential (`Authorization: Bearer beghu_cli_…`) belongs to.
-// OPEN QUESTION (#176, #179): the CLI's credential (its format, its table in the control DB, and
-// how `beghu login` mints it) is slice 5's. Until it exists no call carries one: CLI runs can't
-// start, and every call on one is refused as unknown.
+// OPEN QUESTION (#176, #179): slice 5 adds the credential (its format, its table in the control
+// DB, and how `beghu login` mints it). Until then no call carries one: CLI runs can't start, and
+// every call on one is refused as unknown.
 async fn cli_account(_app: &App, _headers: &HeaderMap) -> Option<i64> {
     None
 }

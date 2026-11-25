@@ -400,10 +400,11 @@ impl Config {
         self.data_dir.join("mirrors")
     }
 
-    /// Each account's `analyses.db`, as `analyses/<github user id>.db`.
-    // OPEN QUESTION (#176): "beside the mirror in the account's directory", but an account has
-    // no directory (its mirror is `mirrors/<id>.db`); a directory of their own keeps `./dev-ctl`'s
-    // `mirrors/` reseed from touching them.
+    /// Each account's `analyses.db`, as `analyses/<github user id>.db`: beside the mirrors, not
+    /// among them. An account has no directory of its own (its mirror is `mirrors/<id>.db`), and
+    /// `mirrors/` holds only disposable files, which `./dev-ctl reset` replaces wholesale and
+    /// startup deletes by account status; an analysis can't be had from GitHub again, so it
+    /// keeps out of their way.
     pub fn analyses_dir(&self) -> PathBuf {
         self.data_dir.join("analyses")
     }
