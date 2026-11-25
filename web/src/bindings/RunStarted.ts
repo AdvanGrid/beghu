@@ -18,6 +18,11 @@ token: string,
  */
 prompt: string, 
 /**
+ * When the run started (Unix seconds, the server's clock): what the PR detail's
+ * `run.startedAt` says of it.
+ */
+startedAt: number, 
+/**
  * When the run expires if nothing fetches from it (Unix seconds).
  */
 expiresAt: number, };

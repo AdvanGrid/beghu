@@ -387,7 +387,7 @@ async fn detail(
                     head_sha: item.head_sha.as_deref(),
                 },
             )
-            .await?;
+            .await;
             Some(PullDetail {
                 status: PrStatus::of(&item.state, item.draft, item.merged_at),
                 head: item.head_ref.take(),

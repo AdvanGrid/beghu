@@ -60,11 +60,13 @@
 //! - `POST /suspend {login}`, `POST /unsuspend {login}`: the App's installation on the user's
 //!   own account is suspended, or no longer; GitHub sends `installation` `suspend` or
 //!   `unsuspend`.
-//! - `POST /push {repo, number, sha?, force?, files?, file_count?}`: a push to a PR's head branch:
-//!   a commit on top (`sha`, or a derived one) becomes its head, and with `files` (`[{filename,
-//!   status, additions, deletions, previous_filename?}]`) or `file_count` (that many generated
-//!   files) the PR changes those files from then on (`pulls.rs`). With `force`, a force push: the
-//!   PR's old commits leave its commit list. GitHub sends `pull_request` `synchronize`.
+//! - `POST /push {repo, number, sha?, force?, files?, file_count?, commits?, login?}`: a push to a
+//!   PR's head branch by `login` (a fixture account; the PR's author by default): a commit on top
+//!   (`sha`, or a derived one), the last of `commits` (1 by default), becomes its head, and with
+//!   `files` (`[{filename, status, additions, deletions, previous_filename?}]`) or `file_count`
+//!   (that many generated files) the PR changes those files from then on (`pulls.rs`). With
+//!   `force`, a force push: the PR's old commits leave its commit list. GitHub sends
+//!   `pull_request` `synchronize`, with the pusher as its `sender`.
 //! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
 //!   real clock, no deliveries logged.
 

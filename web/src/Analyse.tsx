@@ -3,34 +3,46 @@
 //
 // The label is the state: Analyse; Analyse again (the last run expired, no analysis); ● Waiting
 // for agent (amber, pulsing); ● Agent working or ● CLI working (green, pulsing); ● Upload refused
-// (red, steady); PR view, PR view · N behind or PR view · outdated (accent). The main part does
-// the obvious thing: with nothing live it copies the prompt and starts a run; otherwise it opens
-// the popover (the two PR view states will open the full-screen view once it has a route). ▾
-// always opens the popover, which holds the analysis, the live run (its steps, one status line,
-// Copy again, End run, what was copied), or Analyse this PR with the CLI's alternative.
+// (red, steady); PR view, PR view · N behind or PR view · outdated (accent), with a live run's dot
+// and words after it (● PR view · Agent working: a re-analysis under way). The main part does the
+// obvious thing: with nothing live it copies the prompt and starts a run; otherwise it opens the
+// popover (the two PR view states will open the full-screen view once it has a route). ▾ always
+// opens the popover, which holds the analysis, the live run (its steps, one status line, Copy
+// again, End run, what was copied), or Analyse this PR with the CLI's alternative.
+//
+// The popover is a non-modal dialog: opening it moves focus to its first control, Escape closes
+// it (before the panel's keys hear it) and puts focus back on the button that opened it, and Tab
+// goes on from its last control to what follows the button. Its ages tick while it's open.
 //
 // Starting and ending a run are writes: each absorbs its own failure, saying so in the popover,
 // and the label rolls back to what the detail says. A started run shows as waiting at once, and
 // an ended one as gone, until the PR's detail (refetched on the `analysis` push) says so itself.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, onSettled, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onSettled, Show, type Accessor } from "solid-js";
 import { tabAccount } from "./account";
-import { PrTooLarge } from "./api";
+import { PrTooLarge, readAt } from "./api";
 import type { PullDetail } from "./bindings/PullDetail";
 import type { PrAnalysis } from "./bindings/PrAnalysis";
 import type { PrRun } from "./bindings/PrRun";
 import { writesPaused } from "./live";
-import { endRun, forgetPrompts, keepPrompt, keptPrompt, startRun, type PrAt } from "./runs";
+import { forgetPrompts, keepPrompt, keptPrompt, promptsSeen } from "./prompts";
+import { endRun, startRun, type PrAt } from "./runs";
 import { ago, fullDate } from "./time";
 import { colors, fonts } from "./tokens.stylex";
 
 /** What the button shows: one of the seven states. */
 type State = "analyse" | "again" | "waiting" | "working" | "refused" | "view";
+/** A live run's state, as its dot shows it. */
+type RunState = "waiting" | "working" | "refused";
 
 /** How long "Copied" shows in a copy button's place. */
 const COPIED_MS = 1500;
 /** How long a run this tab started shows as waiting before the detail must say so itself. */
 const STARTED_FOR_MS = 15_000;
+/** How often the open popover's ages ("last heard 2m ago") are worked out again. */
+const TICK_MS = 30_000;
+/** What can take focus in the popover, in order. */
+const FOCUSABLE = "button:not([disabled]), summary, a[href], [tabindex]:not([tabindex='-1'])";
 
 const short = (sha: string) => sha.slice(0, 7);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -78,8 +90,12 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   const [started, setStarted] = createSignal<PrRun>();
   /** The run this tab is ending, hidden until the detail no longer shows it. */
   const [ending, setEnding] = createSignal<string>();
-  /** Bumped when a prompt is kept, so Copy again reads storage again. */
+  /** Bumped when a prompt is kept, here or in another tab (`storage`), so Copy again reads storage again. */
   const [kept, setKept] = createSignal(0);
+  /** Bumped every TICK_MS while the popover is open: its ages read the clock again. */
+  const [tick, setTick] = createSignal(0);
+  /** The button that opened the popover: focus goes back to it on Escape. */
+  let opener: HTMLButtonElement | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let startedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -101,41 +117,61 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   const expired = () => props.d.pr?.run?.state === "expired" && !started();
   const analysis = (): PrAnalysis | undefined => props.d.pr?.analysis;
 
-  // The detail caught up with this tab's start or end; and prompts of runs no longer live go.
+  // The detail caught up with this tab's start (the same run, or a newer one by the server's
+  // clock) or end; and the prompts of runs it shows no longer live go.
   createEffect(
     () => props.d.pr?.run,
     (r) => {
       const live = r && r.state !== "expired" ? r.id : undefined;
-      if (started() && (live === started()?.id || (r && r.id !== started()?.id && r.startedAt > (started()?.startedAt ?? 0)))) setStarted(undefined);
+      const mine = started();
+      if (mine && (live === mine.id || (r && r.id !== mine.id && r.startedAt > mine.startedAt))) setStarted(undefined);
       if (ending() && live !== ending()) setEnding(undefined);
-      if (!started()) forgetPrompts(account, at(), live);
+      // When the read began, on the clock the prompts are kept by.
+      const read = readAt(props.d);
+      if (!started()) promptsSeen(account, at(), r, Number.isFinite(read) ? performance.timeOrigin + read : NaN);
     },
   );
 
-  const state = (): State => {
-    if (analysis()) return "view";
+  /** The live run's state, if one is. */
+  const runState = (): RunState | undefined => {
     const r = run();
-    if (r) return r.refused > 0 ? "refused" : r.state === "waiting" ? "waiting" : "working";
-    return expired() ? "again" : "analyse";
+    if (!r) return undefined;
+    return r.refused > 0 ? "refused" : r.state === "waiting" ? "waiting" : "working";
   };
 
-  const label = () => {
-    const r = run();
-    switch (state()) {
-      case "view": {
-        const b = analysis()?.behind;
-        return b === undefined ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
-      }
+  const state = (): State => {
+    if (analysis()) return "view";
+    return runState() ?? (expired() ? "again" : "analyse");
+  };
+
+  /** The live run's words, beside its dot. */
+  const runWords = () => {
+    switch (runState()) {
       case "refused":
         return "Upload refused";
       case "waiting":
         return "Waiting for agent";
       case "working":
-        return r?.producer === "cli" ? "CLI working" : "Agent working";
+        return run()?.producer === "cli" ? "CLI working" : "Agent working";
+      default:
+        return undefined;
+    }
+  };
+
+  const label = () => {
+    switch (state()) {
+      case "view": {
+        const b = analysis()?.behind;
+        const view = b === undefined ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
+        const words = runWords();
+        return words ? `${view} · ${words}` : view;
+      }
       case "again":
         return "Analyse again";
       case "analyse":
         return "Analyse";
+      default:
+        return runWords()!;
     }
   };
 
@@ -153,12 +189,14 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     const pr = at();
     const making = startRun(pr);
     const copying = copy(making.then((s) => s.prompt));
+    // A start that failed fails the copy too: that's reported as the start's failure, below.
+    copying.catch(() => {});
     try {
       const s = await making;
-      keepPrompt(account, pr, s.run, s.prompt);
+      keepPrompt(account, pr, s.run, s.prompt, s.startedAt, s.expiresAt);
       forgetPrompts(account, pr, s.run);
       setKept((n) => n + 1);
-      setStarted({ id: s.run, producer: "button", state: "waiting", refused: 0, startedAt: Math.floor(Date.now() / 1000), expiresAt: s.expiresAt });
+      setStarted({ id: s.run, producer: "button", state: "waiting", refused: 0, startedAt: s.startedAt, expiresAt: s.expiresAt });
       // The detail catches up on the run's `analysis` push; one lost leaves it to the next read.
       clearTimeout(startedTimer);
       startedTimer = setTimeout(() => setStarted(undefined), STARTED_FOR_MS);
@@ -213,37 +251,70 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     }
   };
 
-  const main = () => {
+  /** Whether the main part opens the popover rather than starting a run. */
+  const mainOpens = () => state() !== "analyse" && state() !== "again";
+
+  /** Opens or closes the popover from `from`, which focus goes back to on Escape. */
+  const toggle = (from: HTMLButtonElement) => {
+    opener = from;
+    setOpen((o) => !o);
+  };
+
+  const main = (e: MouseEvent & { currentTarget: HTMLButtonElement }) => {
     // "PR view" opens the full-screen view once it has its route (#181); until then, the popover.
-    if (state() === "analyse" || state() === "again") void analyse();
-    else setOpen((o) => !o);
+    if (mainOpens()) toggle(e.currentTarget);
+    else void analyse();
   };
 
   let wrap!: HTMLSpanElement;
+  let pop: HTMLDivElement | undefined;
+  // Opened: focus moves to the popover's first control.
+  createEffect(open, (o) => {
+    if (o) pop?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+  });
   onSettled(() => {
     const away = (e: PointerEvent) => {
       if (open() && !wrap.contains(e.target as Node)) setOpen(false);
     };
-    // Before the panel's keys: Escape closes the popover, not the PR.
+    // Before the panel's keys (on the window, after the document), which never hear it: Escape
+    // closes the popover, not the PR, and focus goes back to the button that opened it.
     const esc = (e: KeyboardEvent) => {
       if (open() && e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
         setOpen(false);
+        (opener?.isConnected ? opener : wrap.querySelector<HTMLElement>("button"))?.focus();
       }
     };
+    // Tabbed out past its last control: the popover closes behind the focus.
+    const left = (e: FocusEvent) => {
+      const to = e.relatedTarget as Node | null;
+      if (open() && to && !wrap.contains(to)) setOpen(false);
+    };
+    // Another tab of this browser kept or dropped a prompt.
+    const stored = (e: StorageEvent) => {
+      if (e.key === null || e.key.startsWith("beghu.prompt.")) setKept((n) => n + 1);
+    };
+    const ticking = setInterval(() => {
+      if (open()) setTick((n) => n + 1);
+    }, TICK_MS);
     document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc, true);
+    wrap.addEventListener("focusout", left);
+    addEventListener("storage", stored);
     return () => {
       document.removeEventListener("pointerdown", away);
       document.removeEventListener("keydown", esc, true);
+      wrap.removeEventListener("focusout", left);
+      removeEventListener("storage", stored);
+      clearInterval(ticking);
       clearTimeout(copiedTimer);
       clearTimeout(startedTimer);
     };
   });
 
   const dot = () => {
-    switch (state()) {
+    switch (runState()) {
       case "waiting":
         return s.dotWait;
       case "working":
@@ -256,14 +327,16 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   };
 
   return (
-    <span ref={wrap} {...stylex.attrs(s.wrap)} data-perf="analyse" data-state={state()}>
+    <span ref={wrap} {...stylex.attrs(s.wrap)} data-perf="analyse" data-state={state()} data-run={runState()}>
       <button
         type="button"
         {...stylex.attrs(s.main, state() === "view" && s.mainView)}
         data-perf="analyse-main"
-        disabled={busy() && (state() === "analyse" || state() === "again")}
+        disabled={busy() && !mainOpens()}
         onClick={main}
-        title={state() === "analyse" || state() === "again" ? "Copies a prompt for your agent and starts an analysis run" : undefined}
+        aria-haspopup={mainOpens() ? "dialog" : undefined}
+        aria-expanded={mainOpens() ? (open() ? "true" : "false") : undefined}
+        title={mainOpens() ? undefined : "Copies a prompt for your agent and starts an analysis run"}
       >
         <Show when={dot()}>{(d) => <span {...stylex.attrs(s.dot, d())} aria-hidden="true" />}</Show>
         {copied() === "prompt" && !open() ? "Copied" : label()}
@@ -275,13 +348,13 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
         aria-label="Analysis details"
         aria-haspopup="dialog"
         aria-expanded={open() ? "true" : "false"}
-        onClick={() => setOpen((o) => !o)}
+        onClick={(e) => toggle(e.currentTarget)}
       >
         ▾
       </button>
       <Show when={open()}>
-        <div role="dialog" aria-label="Analysis" {...stylex.attrs(s.pop)} data-perf="analyse-pop">
-          <Show when={analysis()}>{(a) => <AnalysisPart a={a()} />}</Show>
+        <div ref={pop} role="dialog" aria-label="Analysis" {...stylex.attrs(s.pop)} data-perf="analyse-pop">
+          <Show when={analysis()}>{(a) => <AnalysisPart a={a()} tick={tick} />}</Show>
           <Show
             when={run()}
             fallback={
@@ -314,7 +387,7 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
                 <b>Run</b>
                 <Steps r={r()} uploaded={(analysis()?.createdAt ?? 0) >= r().startedAt} />
                 <p {...stylex.attrs(s.text, r().refused > 0 && s.bad)} data-perf="analyse-status">
-                  {statusLine(r())}
+                  {(tick(), statusLine(r()))}
                 </p>
                 <div {...stylex.attrs(s.row)}>
                   <Show when={r().producer === "button"}>
@@ -376,13 +449,13 @@ function statusLine(r: PrRun): string {
 }
 
 /** The popover's analysis: its head and age, how far behind, and its counts. */
-function AnalysisPart(props: { a: PrAnalysis }) {
+function AnalysisPart(props: { a: PrAnalysis; tick: Accessor<number> }) {
   return (
     <section {...stylex.attrs(s.sec)} data-perf="analyse-analysis">
       <div {...stylex.attrs(s.row)}>
         <b>Analysis</b>
         <span {...stylex.attrs(s.small, s.muted)} title={fullDate(props.a.createdAt)}>
-          at <code {...stylex.attrs(s.code)}>{short(props.a.headSha)}</code>, {since(props.a.createdAt)}
+          at <code {...stylex.attrs(s.code)}>{short(props.a.headSha)}</code>, {(props.tick(), since(props.a.createdAt))}
         </span>
         <Show when={props.a.behind}>
           {(b) => (
@@ -456,6 +529,7 @@ const s = stylex.create({
     borderStartStartRadius: 0,
     color: colors.muted,
     cursor: "pointer",
+    fontFamily: fonts.ui,
     fontSize: 12,
     borderLeftWidth: 0,
     height: 24,
@@ -529,6 +603,7 @@ const s = stylex.create({
     backgroundColor: colors.accentBg,
     color: colors.accentFg,
     cursor: "pointer",
+    fontFamily: fonts.ui,
     fontSize: 12,
     fontWeight: 600,
     height: 26,
@@ -542,6 +617,7 @@ const s = stylex.create({
     backgroundColor: { default: colors.bg, ":hover": colors.hover },
     color: colors.fg,
     cursor: "pointer",
+    fontFamily: fonts.ui,
     fontSize: 12,
     fontWeight: 600,
     height: 26,
@@ -555,6 +631,7 @@ const s = stylex.create({
     backgroundColor: { default: "transparent", ":hover": colors.hover },
     color: colors.danger,
     cursor: "pointer",
+    fontFamily: fonts.ui,
     fontSize: 12,
     fontWeight: 600,
     height: 26,

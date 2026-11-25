@@ -493,6 +493,13 @@ pub(crate) struct Push {
     /// Or this many generated files (`src/pushed/file{k}.rs`, one line added each), for a PR
     /// past GitHub's 3,000-file cap.
     file_count: Option<i64>,
+    /// How many commits the push brings (one by default), the last being the new head: one
+    /// `synchronize` for them all, as for a push of several. For a PR past GitHub's 250-commit
+    /// list.
+    commits: Option<i64>,
+    /// Who pushed: a fixture account's login. Left out, the PR's author, or the fixture's first
+    /// account for a PR whose author is gone.
+    login: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -507,7 +514,8 @@ pub(crate) struct PushedFile {
 /// Adds a commit on top of the PR, as a push to its head branch does: its head moves to the new
 /// commit, its `updated_at` to now, and its files are those the push names. A force push
 /// replaces its history first. GitHub sends `pull_request` `synchronize`, with the head before
-/// and after (`/webhooks/webhook-events-and-payloads#pull_request`), from the PR's author.
+/// and after (`/webhooks/webhook-events-and-payloads#pull_request`), from the pusher: `login`,
+/// else the PR's author, else the fixture's first account.
 /// Answers the PR's new head and counts, and the delivery.
 pub(crate) fn push(
     tx: &rusqlite::Transaction,
@@ -522,10 +530,17 @@ pub(crate) fn push(
         Some(id) if q::issue(tx, id)?.kind == "pr" => id,
         _ => return Ok(Err(format!("{}#{} isn't a PR", p.repo, p.number))),
     };
+    let brought = p.commits.unwrap_or(1);
+    if brought < 1 {
+        return Ok(Err("commits must be at least 1".into()));
+    }
     let before = head(tx, id)?;
     let (rewrites, pushes) = match p.force {
-        true => (before.rewrites + 1, 1),
-        false => (before.rewrites, before.commits - derived_commits(id) + 1),
+        true => (before.rewrites + 1, brought),
+        false => (
+            before.rewrites,
+            before.commits - derived_commits(id) + brought,
+        ),
     };
     let k = derived_commits(id) + pushes;
     let sha = p.sha.clone().unwrap_or_else(|| commit_sha(id, rewrites, k));
@@ -585,15 +600,29 @@ pub(crate) fn push(
     let totals = file_totals(tx, id)?;
     let i = q::issue(tx, id)?;
     let r = q::repo(tx, i.repo_id)?;
-    let sender = match i
-        .author_id
-        .map(|a| q::user_row(tx, a))
-        .transpose()?
-        .flatten()
-    {
-        Some(u) => crate::webhooks::user_json(u.id, &u.login, u.avatar_url.as_deref()),
-        None => Value::Null,
+    // GitHub always names who pushed.
+    let pusher = match p.login.as_deref() {
+        Some(login) => match q::account_by_login(tx, login)? {
+            Some(a) => q::user_row(tx, a.id)?,
+            None => return Ok(Err(format!("{login} isn't a fixture account"))),
+        },
+        None => match i
+            .author_id
+            .map(|a| q::user_row(tx, a))
+            .transpose()?
+            .flatten()
+        {
+            Some(u) => Some(u),
+            None => match q::accounts(tx)?.first() {
+                Some(a) => q::user_row(tx, a.id)?,
+                None => None,
+            },
+        },
     };
+    let Some(u) = pusher else {
+        return Ok(Err("no fixture user to push as".into()));
+    };
+    let sender = crate::webhooks::user_json(u.id, &u.login, u.avatar_url.as_deref());
     let mut d = envelope(&r, &sender);
     d["action"] = json!("synchronize");
     d["number"] = json!(i.number);

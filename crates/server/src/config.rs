@@ -119,6 +119,9 @@ pub struct RunLifetimes {
     /// How long an ended run's row and token are kept, only to tell a call with its token why it
     /// ended (410), before the daily check prunes them (30 days).
     pub ended_kept_for: Duration,
+    /// How often, at most, an attached run's calls tell the account's streams it was heard from
+    /// (an `analysis` event), so the PR panel's "last heard" is true to within this (1 min).
+    pub heard_every: Duration,
 }
 
 impl Default for RunLifetimes {
@@ -128,6 +131,7 @@ impl Default for RunLifetimes {
             idle_for: Duration::from_secs(2 * 3600),
             lives_for: Duration::from_secs(7 * 24 * 3600),
             ended_kept_for: Duration::from_secs(30 * 24 * 3600),
+            heard_every: Duration::from_secs(60),
         }
     }
 }

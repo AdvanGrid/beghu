@@ -32,7 +32,7 @@
 // included, so a tab that was reconnecting when an import or a resync ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
-import { forgetRemembered, prefsChanged, rolesChanged } from "./api";
+import { forgetPull, forgetRemembered, prefsChanged, rolesChanged } from "./api";
 import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
 import { noteBuild } from "./build";
 import type { ImportStatus } from "./bindings/ImportStatus";
@@ -186,9 +186,8 @@ export function connectLive(): () => void {
     });
     es.addEventListener("analysis", (e) => {
       const a = JSON.parse((e as MessageEvent<string>).data) as StreamAnalysis;
-      // A cached or remembered read of the PR shows its run as it was.
-      query.clear();
-      forgetRemembered();
+      // A cached or remembered read of the PR shows its run as it was; nothing else changed.
+      forgetPull(a.repo, a.number);
       for (const fn of [...analysisListeners]) fn(a);
     });
     es.addEventListener("ids", (e) => {

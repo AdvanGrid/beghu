@@ -546,6 +546,14 @@ pub(crate) async fn admit(
         .dbs
         .write(account, move |tx| analysis_db::q::heard_run(tx, &id, t))
         .await?;
+    // The PR panel shows when the agent was last heard from: true to within `heard_every`.
+    if let Some(attached) = run.attached_at {
+        let every = app.cfg().runs.heard_every.as_secs() as i64;
+        if app.analyses().heard_due(&run.id, attached, t, every) {
+            let repo = format!("{}/{}", run.owner, run.name);
+            announce(app, account, &repo, run.number, None);
+        }
+    }
     Ok(Admitted {
         account,
         run: RunRow {
@@ -893,6 +901,9 @@ pub struct RunStarted {
     pub token: String,
     /// The prompt to paste into an agent, word for word.
     pub prompt: String,
+    /// When the run started (Unix seconds, the server's clock): what the PR detail's
+    /// `run.startedAt` says of it.
+    pub started_at: i64,
     /// When the run expires if nothing fetches from it (Unix seconds).
     pub expires_at: i64,
 }
@@ -1062,6 +1073,7 @@ pub async fn start_button(
             run: started.run,
             token: started.token,
             prompt,
+            started_at: started.created_at,
             expires_at: started.created_at + app.cfg().runs.unused_for.as_secs() as i64,
         }),
     )

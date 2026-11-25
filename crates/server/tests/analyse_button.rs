@@ -2,7 +2,9 @@
 //! each state, set up through the run API (start, the agent's first fetch, a refused and an
 //! accepted upload, the end call, an expiry); "N behind" as Fake GitHub's pushes move the PR's
 //! head, by `synchronize` webhooks and by the sweeps' probes when a webhook is lost; a force push
-//! that leaves the analysed head out of the PR's commits; and GitHub refusing the commit list.
+//! that leaves the analysed head out of the PR's commits; GitHub refusing the commit list, lagging
+//! the head, or listing only 250 commits; the count coming later by its event while the read
+//! answers at once; an `analyses.db` that can't be read; and "last heard" told at most once a while.
 
 mod common;
 
@@ -33,9 +35,12 @@ async fn setup(s: &Stack) -> (Browser, i64) {
         .await;
     assert_eq!(status, 200, "{page}");
     let number = page["rows"][0]["number"].as_i64().unwrap();
+    let id = page["rows"][0]["id"].as_i64().unwrap();
     let description = sample()["pr"]["description"].as_str().unwrap().to_owned();
     s.edit(json!({ "repo": "acme/web", "number": number, "body": description }))
         .await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
     s.fake(
         "POST",
         "/push",
@@ -48,6 +53,15 @@ async fn setup(s: &Stack) -> (Browser, i64) {
         }),
     )
     .await;
+    // The mirror has the push: its read-back names the PR.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "the push's read-back");
+        match st.event_within(Duration::from_millis(500)).await {
+            Some(e) if e.event == "ids" && common::ids_of(&e).contains(&id) => break,
+            _ => {}
+        }
+    }
     (b, number)
 }
 
@@ -171,6 +185,7 @@ async fn the_pr_detail_shows_the_run_and_the_analysis_in_each_state() {
     );
     assert_eq!(run["refused"], 0);
     assert_eq!(run["expiresAt"], started["expiresAt"]);
+    assert_eq!(run["startedAt"], started["startedAt"]);
     assert!(
         run.get("pinnedSha").is_none() && run.get("lastHeard").is_none(),
         "{run}"
@@ -308,9 +323,12 @@ async fn behind_counts_the_commits_pushed_since_the_analysed_head_once_per_head(
     at_head["pr"]["headSha"] = json!(head);
     let (status, body) = upload(&s, &token, &at_head).await;
     assert_eq!(status, 201, "{body}");
-    let p = pr(&s, &mut b2, number).await;
+    // Once the mirror has that head too (it read outdated before, so it may still lag).
+    let p = pr_until(&s, &b, number, "at the new head", |p| {
+        p["analysis"].get("behind").is_none()
+    })
+    .await;
     assert_eq!(p["analysis"]["headSha"], json!(head));
-    assert!(p["analysis"].get("behind").is_none(), "{p}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -377,4 +395,185 @@ async fn a_commit_list_github_fails_to_answer_reads_as_outdated_until_it_does() 
     .await;
     // Not kept: the next read counts.
     pr_until(&s, &b, number, "1 behind", |p| p["analysis"]["behind"] == 1).await;
+}
+
+/// The `analysis` events the stream brings within `wait`.
+async fn analysis_events(st: &mut common::Stream, wait: Duration) -> Vec<Value> {
+    st.events_for(wait)
+        .await
+        .into_iter()
+        .filter(|e| e.event == "analysis")
+        .map(|e| serde_json::from_str(&e.data).unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event() {
+    let s = start().await;
+    let (mut b, number) = setup(&s).await;
+    analysed(&s, &b, number).await;
+    // GitHub takes 4 s to list the PR's commits.
+    s.fake(
+        "POST",
+        "/faults/latency",
+        json!({ "endpoint": "GET /repos/*/*/pulls/*/commits", "ms": 4000 }),
+    )
+    .await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    push(&s, number, false).await;
+    // Until the mirror has the new head the PR reads at head; then outdated while it's counted.
+    // Every read answers at once.
+    let read_at = until(10.0, "the mirror's head moved", || {
+        let mut b = b.clone();
+        let s = &s;
+        async move {
+            let t = std::time::Instant::now();
+            let p = pr(s, &mut b, number).await;
+            let took = t.elapsed();
+            assert!(took < Duration::from_secs(2), "the read took {took:?}");
+            (p["analysis"]["behind"] == "outdated").then_some(std::time::Instant::now())
+        }
+    })
+    .await;
+    // A second read meanwhile starts no second count, and doesn't wait either.
+    let t = std::time::Instant::now();
+    assert_eq!(
+        pr(&s, &mut b, number).await["analysis"]["behind"],
+        "outdated"
+    );
+    assert!(t.elapsed() < Duration::from_secs(2));
+    // The count lands and tells the stream, which reads the PR again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let got = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no analysis event for the count"
+        );
+        let evs = analysis_events(&mut st, Duration::from_millis(200)).await;
+        if let Some(e) = evs.into_iter().find(|e| e["number"] == number) {
+            break e;
+        }
+    };
+    assert!(
+        read_at.elapsed() >= Duration::from_secs(2),
+        "the event came with the count"
+    );
+    assert_eq!(got["repo"], "acme/web");
+    assert_eq!(pr(&s, &mut b, number).await["analysis"]["behind"], 1);
+    s.fake("DELETE", "/faults", json!({})).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commit_list_that_lags_the_head_is_counted_again_and_never_kept_wrong() {
+    let s = start().await;
+    let (b, number) = setup(&s).await;
+    analysed(&s, &b, number).await;
+    // GitHub's REST list hasn't caught up with the push the mirror read: it ends at the analysed
+    // head.
+    s.fake(
+        "POST",
+        "/faults/rewrite",
+        json!({
+            "endpoint": "GET /repos/*/*/pulls/*/commits", "count": 1,
+            "raw": format!("[{{\"sha\":\"{HEAD}\"}}]"),
+        }),
+    )
+    .await;
+    push(&s, number, false).await;
+    // Never at head (what counting to the list's end would say), and 1 behind once listed.
+    let seen = std::sync::Mutex::new(Vec::new());
+    pr_until(&s, &b, number, "1 behind", |p| {
+        seen.lock()
+            .unwrap()
+            .push(p["analysis"].get("behind").cloned());
+        p["analysis"]["behind"] == 1
+    })
+    .await;
+    let seen = seen.into_inner().unwrap();
+    let first_moved = seen.iter().position(|b| b.is_some()).unwrap();
+    assert!(
+        seen[first_moved..].iter().all(|b| b.is_some()),
+        "read at head after the head moved: {seen:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_head_past_the_250_commits_github_lists_reads_as_outdated() {
+    let s = start().await;
+    let (b, number) = setup(&s).await;
+    analysed(&s, &b, number).await;
+    s.fake(
+        "POST",
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "commits": 300 }),
+    )
+    .await;
+    pr_until(&s, &b, number, "outdated", |p| {
+        p["analysis"]["behind"] == "outdated"
+    })
+    .await;
+    // Past the counts' retries: still outdated, never a count up to the list's end.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut b2 = b.clone();
+    assert_eq!(
+        pr(&s, &mut b2, number).await["analysis"]["behind"],
+        "outdated"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_analyses_db_that_cant_be_read_leaves_the_pr_detail_without_run_or_analysis() {
+    let s = start().await;
+    let (mut b, number) = setup(&s).await;
+    // Before this server first opens the account's `analyses.db`, it's made into a file that
+    // isn't a database (a disk fault): every use of it fails.
+    let dir = s.data.join("analyses");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{}.db", b.account()));
+    std::fs::write(&file, vec![b'x'; 4096]).unwrap();
+    let (status, d) = s.api(&mut b, &format!("/api/at/acme/web/{number}")).await;
+    assert_eq!(status, 200, "{d}");
+    assert_eq!(d["number"], number);
+    assert!(
+        d["pr"].get("run").is_none() && d["pr"].get("analysis").is_none(),
+        "{d}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_calls_tell_the_stream_it_was_heard_from_at_most_once_a_while() {
+    let s = start_with(|c| c.runs.heard_every = Duration::from_secs(2)).await;
+    let (mut b, number) = setup(&s).await;
+    let (token, _) = start_run(&s, &b, number).await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    // The first fetch attaches the run: one event.
+    assert_eq!(fetch(&s, &token, "instructions").await, 200);
+    assert_eq!(
+        analysis_events(&mut st, Duration::from_millis(500))
+            .await
+            .len(),
+        1
+    );
+    let heard = pr(&s, &mut b, number).await["run"]["lastHeard"]
+        .as_i64()
+        .unwrap();
+    // Another call at once: nothing to tell yet.
+    assert_eq!(fetch(&s, &token, "pr.json").await, 200);
+    assert!(
+        analysis_events(&mut st, Duration::from_millis(500))
+            .await
+            .is_empty()
+    );
+    // A call `heard_every` later is told, and the detail has it.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    assert_eq!(fetch(&s, &token, "pr.json").await, 200);
+    let evs = analysis_events(&mut st, Duration::from_millis(500)).await;
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert_eq!(evs[0]["number"], number);
+    let now = pr(&s, &mut b, number).await["run"]["lastHeard"]
+        .as_i64()
+        .unwrap();
+    assert!(now >= heard + 2, "{heard} then {now}");
 }

@@ -27,8 +27,9 @@
 //! - `prefs` (`{}`): the account's preferences changed (prefs.rs), in this tab or another,
 //!   maybe in another browser: the tab reads `/api/me` again.
 //! - `analysis` (`{"repo":…,"number":…,"analysis"?:…}`): a PR's analysis run changed state
-//!   (started, attached, refused, ended, expired), or an upload was accepted, when `analysis`
-//!   names the PR's new analysis (`analyses/`). The PR panel reads the PR's detail again; an open
+//!   (started, attached, refused, ended, expired), its agent was heard from (at most once a
+//!   minute), its "N behind" was counted, or an upload was accepted, when `analysis` names the
+//!   PR's new analysis (`analyses/`). The PR panel reads the PR's detail again; an open
 //!   PR view compares the ID with its own.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //! - An open stream is its account's use: it moves `last_active_at` hourly, so an account with a

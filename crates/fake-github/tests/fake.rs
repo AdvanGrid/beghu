@@ -5104,6 +5104,11 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     assert_eq!(p["pull_request"]["number"], number);
     assert_eq!(p["repository"]["full_name"], "acme/web");
     assert!(p["installation"]["id"].is_number());
+    // GitHub always names who pushed: here, nobody named, the PR's author.
+    match pr["user"]["login"].as_str() {
+        Some(author) => assert_eq!(p["sender"]["login"], author, "{p}"),
+        None => assert!(p["sender"]["login"].is_string(), "{p}"),
+    }
     // It moved the PR's `updated_at`, as GitHub's push does.
     let issue: Value = fake
         .get(&format!("/repos/acme/web/issues/{number}"), &token)
@@ -5114,17 +5119,19 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     assert_ne!(issue["updated_at"], updated);
 
     // A second push keeps the first's commit in the list under it, and GraphQL names the head.
+    // This one by another account, and bringing three commits, the last the head.
     let second = "abcdef0123456789abcdef0123456789abcdef02";
     fake.control(
         reqwest::Method::POST,
         "/push",
-        json!({ "repo": "acme/web", "number": number, "sha": second }),
+        json!({ "repo": "acme/web", "number": number, "sha": second, "commits": 3, "login": "ilze-k" }),
     )
     .await;
     let now = all_pages(&fake, &format!("{base}/commits"), &token).await;
     let shas: Vec<&str> = now.iter().map(|c| c["sha"].as_str().unwrap()).collect();
-    assert_eq!(shas.len(), old.len() + 2);
-    assert_eq!(&shas[old.len()..], [first, second]);
+    assert_eq!(shas.len(), old.len() + 4);
+    assert_eq!(shas[old.len()], first);
+    assert_eq!(shas[old.len() + 3], second);
     assert_eq!(shas[old.len() - 1], old.last().unwrap()["sha"]);
     let node = before["node_id"].as_str().unwrap();
     let installation = fake.installation_token_value().await;
@@ -5136,7 +5143,9 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
         )
         .await;
     assert_eq!(res["data"]["node"]["headRefOid"], second, "{res}");
-    received_for(&mut rx, Duration::from_secs(3)).await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].payload()["sender"]["login"], "ilze-k");
 
     // A force push: none of the old commits is in the list any more.
     let pushed = fake
