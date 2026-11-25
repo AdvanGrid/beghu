@@ -31,7 +31,11 @@
 //!
 //! **Live:** every change of a run's state (started, attached, refused, ended, expired) and every
 //! accepted upload sends the account's streams an `analysis` event (live.rs).
+//!
+//! **The PR panel** reads the PR's run and a summary of its analysis with the PR's detail, and
+//! how many commits the PR's head is past the analysed one ([`panel`]).
 
+pub(crate) mod panel;
 pub(crate) mod pin;
 pub(crate) mod run_api;
 pub(crate) mod runs;

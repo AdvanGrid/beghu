@@ -18,6 +18,7 @@
 //! again.
 
 use crate::App;
+use crate::analyses::panel::{self, PanelPr, PrAnalysis, PrRun};
 use crate::api::{CommentOrder, Label, PrStatus, ReviewDecision, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
@@ -108,6 +109,15 @@ pub struct PullDetail {
     pub review: Option<ReviewDecision>,
     /// Unix seconds; `null` unless merged.
     pub merged_at: Option<i64>,
+    /// The account's analysis run on the PR, while one is live or when the last one expired
+    /// (the Analyse button, `analyses/panel.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run: Option<PrRun>,
+    /// The account's analysis of the PR, if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub analysis: Option<PrAnalysis>,
 }
 
 #[derive(Serialize, TS)]
@@ -363,13 +373,32 @@ async fn detail(
         },
         item.kind == "pr",
     );
-    let pr = (item.kind == "pr").then(|| PullDetail {
-        status: PrStatus::of(&item.state, item.draft, item.merged_at),
-        head: item.head_ref.take(),
-        base: item.base_ref.take(),
-        review: ReviewDecision::parse(item.review_decision.as_deref()),
-        merged_at: item.merged_at,
-    });
+    let pr = match item.kind == "pr" {
+        false => None,
+        true => {
+            let (run, analysis) = panel::read(
+                &app,
+                PanelPr {
+                    account,
+                    repo_id: item.repo_id,
+                    owner: &item.owner,
+                    name: &item.repo,
+                    number: item.number,
+                    head_sha: item.head_sha.as_deref(),
+                },
+            )
+            .await?;
+            Some(PullDetail {
+                status: PrStatus::of(&item.state, item.draft, item.merged_at),
+                head: item.head_ref.take(),
+                base: item.base_ref.take(),
+                review: ReviewDecision::parse(item.review_decision.as_deref()),
+                merged_at: item.merged_at,
+                run,
+                analysis,
+            })
+        }
+    };
     let body = Post {
         kind: PostKind::Body,
         id,

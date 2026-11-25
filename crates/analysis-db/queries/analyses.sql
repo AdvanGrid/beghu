@@ -83,7 +83,44 @@ UPDATE analyses SET version = :version, migrated_ids = :migrated_ids, graph_br =
   graph_gz = :graph_gz, claims_br = :claims_br, claims_gz = :claims_gz
 WHERE id = :id AND version = :from;
 
--- The account lost Read on the repo: its analyses there go.
+-- The account lost Read on the repo: its analyses there go, with what was counted of them.
 -- name: delete_repo_analyses :exec
 -- param: repo_id i64
 DELETE FROM analyses WHERE repo_id = :repo_id;
+
+-- name: delete_repo_behind :exec
+-- param: repo_id i64
+DELETE FROM behind WHERE repo_id = :repo_id;
+
+-- What the PR panel shows of the PR's analysis.
+-- name: analysis_summary :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT id, head_sha, created_at, parts, purposes, conflicts
+FROM analyses WHERE repo_id = :repo_id AND number = :number;
+
+-- How far `head` is past `analysed` on the PR, once counted: a row with `behind` NULL is
+-- "outdated"; no row, not counted yet.
+-- name: behind_of :opt
+-- param: repo_id i64
+-- param: number i64
+-- param: analysed &str
+-- param: head &str
+SELECT behind FROM behind
+WHERE repo_id = :repo_id AND number = :number AND analysed = :analysed AND head = :head;
+
+-- name: put_behind :exec
+-- param: repo_id i64
+-- param: number i64
+-- param: analysed &str
+-- param: head &str
+-- param: behind Option<i64>
+INSERT INTO behind (repo_id, number, analysed, head, behind)
+VALUES (:repo_id, :number, :analysed, :head, :behind)
+ON CONFLICT (repo_id, number, analysed, head) DO UPDATE SET behind = excluded.behind;
+
+-- An upload replaced the PR's analysis: what was counted against the old one goes.
+-- name: delete_pr_behind :exec
+-- param: repo_id i64
+-- param: number i64
+DELETE FROM behind WHERE repo_id = :repo_id AND number = :number;

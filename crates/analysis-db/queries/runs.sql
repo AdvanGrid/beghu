@@ -6,6 +6,15 @@ SELECT id, repo_id, owner, name, number, producer, state, created_at, attached_a
        ended_at, ended_reason, pinned, refused, last_report
 FROM runs WHERE id = :id;
 
+-- The PR's latest run, live or ended, as the PR panel shows it.
+-- name: latest_run :opt
+-- param: repo_id i64
+-- param: number i64
+SELECT id, producer, state, created_at, attached_at, last_heard_at, ended_reason, pinned_head,
+       refused_errors
+FROM runs WHERE repo_id = :repo_id AND number = :number
+ORDER BY created_at DESC, id DESC LIMIT 1;
+
 -- The PR's live run, if any.
 -- name: live_run :opt
 -- param: repo_id i64
@@ -36,8 +45,10 @@ WHERE id = :id AND state <> 'ended';
 -- name: attach_run :exec
 -- param: id &str
 -- param: pinned &str
+-- param: pinned_head &str
 -- param: now i64
-UPDATE runs SET state = 'attached', attached_at = :now, last_heard_at = :now, pinned = :pinned
+UPDATE runs SET state = 'attached', attached_at = :now, last_heard_at = :now, pinned = :pinned,
+  pinned_head = :pinned_head
 WHERE id = :id AND state = 'waiting';
 
 -- name: heard_run :exec
@@ -48,7 +59,14 @@ UPDATE runs SET last_heard_at = :now WHERE id = :id AND state <> 'ended';
 -- name: refuse_upload :exec
 -- param: id &str
 -- param: report &str
-UPDATE runs SET refused = refused + 1, last_report = :report WHERE id = :id;
+-- param: errors i64
+UPDATE runs SET refused = refused + 1, last_report = :report, refused_errors = :errors
+WHERE id = :id;
+
+-- An upload was accepted: the run's last upload is no longer a refused one.
+-- name: accept_upload :exec
+-- param: id &str
+UPDATE runs SET refused_errors = NULL WHERE id = :id;
 
 -- Every live run: startup re-arms each one's expiry.
 -- name: live_runs :many

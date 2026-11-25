@@ -1001,6 +1001,39 @@ impl GitHub {
         Ok(Shown::It(all))
     }
 
+    /// PR `number`'s commits' SHAs, oldest first (`GET /repos/{o}/{r}/pulls/{n}/commits`, paged
+    /// by 100), up to the 250 GitHub lists at most.
+    pub async fn pull_commits(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Shown<Vec<String>>, Error> {
+        #[derive(Deserialize)]
+        struct Commit {
+            sha: String,
+        }
+        const PER_PAGE: usize = 100;
+        let mut all = Vec::new();
+        // GitHub lists 250 commits at most: 3 pages of 100.
+        for page in 1..=3 {
+            let path = format!(
+                "/repos/{owner}/{repo}/pulls/{number}/commits?per_page={PER_PAGE}&page={page}"
+            );
+            let got: Vec<Commit> = match shown(self.get(token, &path).await)? {
+                Shown::It(got) => got,
+                other => return Ok(other.map(|_: Vec<Commit>| Vec::new())),
+            };
+            let n = got.len();
+            all.extend(got.into_iter().map(|c| c.sha));
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(Shown::It(all))
+    }
+
     /// Every comment on issue `number` of `owner/repo`, oldest first
     /// (`GET /repos/{o}/{r}/issues/{n}/comments`, paged by 100), or why GitHub shows none.
     pub async fn issue_comments(
