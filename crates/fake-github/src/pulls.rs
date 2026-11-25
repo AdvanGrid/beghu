@@ -16,9 +16,11 @@
 //!   `pull_request_review` (`submitted`, or `dismissed`) for the review, on the PR's head commit.
 //! - Its head, commits and changed files, which the PR view's analysis runs read through
 //!   `GET /repos/{owner}/{repo}/pulls/{number}`, `…/files` and `…/commits` ([`router`]): a
-//!   fixture PR derives them from its id (1 to 4 commits, 1 to 9 files); a push on the control
-//!   port (`POST /push`, [`push`]) adds a commit on top, moving the head, and may say which files
-//!   the PR changes from then on. The pulls API pages as GitHub's does (`per_page` up to 100,
+//!   fixture PR derives them from its id (1 to 4 commits, 1 to 9 files), its head being the
+//!   fixture's head SHA for it (`headRefOid` in GraphQL); a push on the control port (`POST
+//!   /push`, [`push`]) adds a commit on top, moving the head and sending `pull_request`
+//!   `synchronize`, and may say which files the PR changes from then on. A force push replaces
+//!   the PR's history, so its old commits leave its commit list. The pulls API pages as GitHub's does (`per_page` up to 100,
 //!   default 30, with `Link` headers), and stops at GitHub's caps: 3,000 files and 250 commits.
 //!   A number that isn't a PR, or a repo the token can't see, is a 404.
 
@@ -125,9 +127,13 @@ fn base_sha(repo: i64, name: &str) -> String {
     derived_sha(&format!("branch {repo} {name}"))
 }
 
-/// The `k`th commit (1-based) of PR `id`, before any push named its own SHA.
-fn commit_sha(id: i64, k: i64) -> String {
-    derived_sha(&format!("commit {id} {k}"))
+/// The `k`th commit (1-based) of PR `id` when no push named its SHA, after `rewrites` force
+/// pushes.
+fn commit_sha(id: i64, rewrites: i64, k: i64) -> String {
+    match rewrites {
+        0 => derived_sha(&format!("commit {id} {k}")),
+        r => derived_sha(&format!("commit {id} {k} r{r}")),
+    }
 }
 
 /// How many commits fixture PR `id` has before any push: 1 to 4.
@@ -140,14 +146,17 @@ fn derived_files(id: i64) -> i64 {
     1 + id.rem_euclid(9)
 }
 
-/// A PR's head: its SHA, how many commits it has, and whether its files are stored (a push named
-/// them) or derive from its id.
+/// A PR's head: its SHA, how many commits it has, whether its files are stored (a push named
+/// them) or derive from its id, and how many force pushes rewrote its history.
 pub(crate) struct Head {
     pub sha: String,
     pub commits: i64,
     files_set: bool,
+    rewrites: i64,
 }
 
+/// PR `id`'s head. Before any push it's the fixture's head SHA for the PR (what the import reads
+/// as `headRefOid`), or one derived from its id for a PR the fixture names none for.
 pub(crate) fn head(c: &Connection, id: i64) -> rusqlite::Result<Head> {
     let base = derived_commits(id);
     Ok(match q::pull_head(c, id)? {
@@ -155,13 +164,36 @@ pub(crate) fn head(c: &Connection, id: i64) -> rusqlite::Result<Head> {
             sha: h.head_sha,
             commits: base + h.pushes,
             files_set: h.files_set,
+            rewrites: h.rewrites,
         },
         None => Head {
-            sha: commit_sha(id, base),
+            sha: match q::pr_details(c, id)?.head_sha {
+                Some(sha) => sha,
+                None => commit_sha(id, 0, base),
+            },
             commits: base,
             files_set: false,
+            rewrites: 0,
         },
     })
+}
+
+/// The SHA of PR `id`'s `k`th commit (1-based) with `head` as its head: the head itself, a pushed
+/// commit, the fixture's head while no force push replaced it, or one derived from the PR's id.
+fn commit_at(c: &Connection, id: i64, head: &Head, k: i64) -> rusqlite::Result<String> {
+    if k == head.commits {
+        return Ok(head.sha.clone());
+    }
+    if let Some(sha) = q::pull_commit(c, id, k)? {
+        return Ok(sha);
+    }
+    if head.rewrites == 0
+        && k == derived_commits(id)
+        && let Some(sha) = q::pr_details(c, id)?.head_sha
+    {
+        return Ok(sha);
+    }
+    Ok(commit_sha(id, head.rewrites, k))
 }
 
 /// One changed file, as the pulls API lists it.
@@ -364,30 +396,23 @@ async fn commits(
                 .base_ref
                 .unwrap_or_else(|| "main".into());
             let end = head.commits.min(MAX_COMMITS).min(offset + per_page);
-            let sha = |k: i64| {
-                if k == head.commits {
-                    head.sha.clone()
+            let mut out = Vec::new();
+            for k in offset + 1..=end {
+                let parent = if k == 1 {
+                    base_sha(r.id, &base)
                 } else {
-                    commit_sha(id, k)
-                }
-            };
-            Ok((offset + 1..=end)
-                .map(|k| {
-                    let parent = if k == 1 {
-                        base_sha(r.id, &base)
-                    } else {
-                        sha(k - 1)
-                    };
-                    commit_json(
-                        &r,
-                        &sha(k),
-                        &parent,
-                        author.as_ref(),
-                        i.created_at.unwrap_or(0) + k * 60,
-                        k,
-                    )
-                })
-                .collect::<Vec<_>>())
+                    commit_at(c, id, &head, k - 1)?
+                };
+                out.push(commit_json(
+                    &r,
+                    &commit_at(c, id, &head, k)?,
+                    &parent,
+                    author.as_ref(),
+                    i.created_at.unwrap_or(0) + k * 60,
+                    k,
+                ));
+            }
+            Ok(out)
         })
         .await;
     match read {
@@ -459,6 +484,10 @@ pub(crate) struct Push {
     number: i64,
     /// The new head's SHA; derived when left out.
     sha: Option<String>,
+    /// A force push: the PR's history is replaced by new commits (derived anew) under the new
+    /// head, so none of its old commits is in its list any more.
+    #[serde(default)]
+    force: bool,
     /// The files the PR changes from now on, in order; left out, they stay as they were.
     files: Option<Vec<PushedFile>>,
     /// Or this many generated files (`src/pushed/file{k}.rs`, one line added each), for a PR
@@ -476,12 +505,15 @@ pub(crate) struct PushedFile {
 }
 
 /// Adds a commit on top of the PR, as a push to its head branch does: its head moves to the new
-/// commit, and its files are those the push names. It sends no webhook: beghu doesn't follow
-/// `pull_request` `synchronize` yet. Answers the PR's new head and counts.
+/// commit, its `updated_at` to now, and its files are those the push names. A force push
+/// replaces its history first. GitHub sends `pull_request` `synchronize`, with the head before
+/// and after (`/webhooks/webhook-events-and-payloads#pull_request`), from the PR's author.
+/// Answers the PR's new head and counts, and the delivery.
 pub(crate) fn push(
     tx: &rusqlite::Transaction,
     p: &Push,
-) -> rusqlite::Result<Result<Value, String>> {
+    at: i64,
+) -> rusqlite::Result<Result<(Value, Delivery), String>> {
     let repo = match crate::edits::find_repo(tx, &p.repo)? {
         Ok(r) => r,
         Err(why) => return Ok(Err(why)),
@@ -491,11 +523,12 @@ pub(crate) fn push(
         _ => return Ok(Err(format!("{}#{} isn't a PR", p.repo, p.number))),
     };
     let before = head(tx, id)?;
-    let pushes = before.commits - derived_commits(id) + 1;
-    let sha = p
-        .sha
-        .clone()
-        .unwrap_or_else(|| commit_sha(id, before.commits + 1));
+    let (rewrites, pushes) = match p.force {
+        true => (before.rewrites + 1, 1),
+        false => (before.rewrites, before.commits - derived_commits(id) + 1),
+    };
+    let k = derived_commits(id) + pushes;
+    let sha = p.sha.clone().unwrap_or_else(|| commit_sha(id, rewrites, k));
     if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(Err("sha must be 40 hex digits".into()));
     }
@@ -542,16 +575,41 @@ pub(crate) fn push(
             )?;
         }
     }
-    q::set_pull_head(tx, id, &sha, pushes, files_set)?;
+    if p.force {
+        q::clear_pull_commits(tx, id)?;
+    }
+    q::add_pull_commit(tx, id, k, &sha)?;
+    q::set_pull_head(tx, id, &sha, pushes, files_set, rewrites)?;
+    q::touch_pull(tx, id, at)?;
     let after = head(tx, id)?;
     let totals = file_totals(tx, id)?;
-    Ok(Ok(json!({
-        "head": after.sha,
-        "commits": after.commits,
-        "changed_files": totals.files,
-        "additions": totals.additions,
-        "deletions": totals.deletions,
-    })))
+    let i = q::issue(tx, id)?;
+    let r = q::repo(tx, i.repo_id)?;
+    let sender = match i
+        .author_id
+        .map(|a| q::user_row(tx, a))
+        .transpose()?
+        .flatten()
+    {
+        Some(u) => crate::webhooks::user_json(u.id, &u.login, u.avatar_url.as_deref()),
+        None => Value::Null,
+    };
+    let mut d = envelope(&r, &sender);
+    d["action"] = json!("synchronize");
+    d["number"] = json!(i.number);
+    d["before"] = json!(before.sha);
+    d["after"] = json!(after.sha);
+    d["pull_request"] = pr_json(tx, id)?;
+    Ok(Ok((
+        json!({
+            "head": after.sha,
+            "commits": after.commits,
+            "changed_files": totals.files,
+            "additions": totals.additions,
+            "deletions": totals.deletions,
+        }),
+        Delivery::new("pull_request", d),
+    )))
 }
 
 /// The issues `body`'s closing keywords name, in the PR's repo `repo` or another: `#12`,

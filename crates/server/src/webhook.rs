@@ -1479,15 +1479,11 @@ impl RepoChange {
             ("label", _) => p.label.map(Change::Label),
             ("milestone", "deleted") => p.milestone.map(|m| Change::MilestoneDeleted(m.id)),
             ("milestone", _) => p.milestone.map(Change::Milestone),
-            // A push to the branch, or merge-queue and auto-merge bookkeeping, changes nothing
-            // the mirror holds.
+            // Merge-queue and auto-merge bookkeeping changes nothing the mirror holds. A push to
+            // the branch (`synchronize`) moves the PR's head commit: it's read back as any other.
             (
                 "pull_request",
-                "synchronize"
-                | "enqueued"
-                | "dequeued"
-                | "auto_merge_enabled"
-                | "auto_merge_disabled",
+                "enqueued" | "dequeued" | "auto_merge_enabled" | "auto_merge_disabled",
             ) => None,
             ("pull_request" | "pull_request_review", _) => {
                 match (p.pull_request, repository.full_name.split_once('/')) {

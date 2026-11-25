@@ -114,7 +114,8 @@ SELECT r.dst_id AS other FROM relationships r WHERE r.kind = 'closes' AND r.src_
 
 -- name: pr_details :one
 -- param: id i64
-SELECT i.pr_id, i.draft AS "draft: bool", i.merged_at, i.head_ref, i.base_ref, i.review_decision
+SELECT i.pr_id, i.draft AS "draft: bool", i.merged_at, i.head_ref, i.base_ref, i.review_decision,
+       i.head_sha
 FROM items i WHERE i.id = :id;
 
 -- An item's comments, oldest first, after a (created_at, id) cursor.

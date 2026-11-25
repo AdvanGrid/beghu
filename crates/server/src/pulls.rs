@@ -52,7 +52,7 @@ pub(crate) const QUERY: &str = concat!(
     "query PullReadBack($id: ID!, $after: String) {
   node(id: $id) {
     ... on PullRequest {
-      id databaseId isDraft mergedAt headRefName baseRefName reviewDecision
+      id databaseId isDraft mergedAt headRefName headRefOid baseRefName reviewDecision
       closingIssuesReferences(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes { ...End }
@@ -76,6 +76,7 @@ struct Node {
     is_draft: bool,
     merged_at: Option<String>,
     head_ref_name: Option<String>,
+    head_ref_oid: Option<String>,
     base_ref_name: Option<String>,
     review_decision: Option<String>,
     closing_issues_references: Option<Nodes>,
@@ -215,6 +216,7 @@ async fn read(inner: &Inner, p: &Pull) -> Result<Option<Read>, Failure> {
                 draft: node.is_draft,
                 merged_at: node.merged_at.as_deref().and_then(parse_time),
                 head_ref: node.head_ref_name.clone(),
+                head_sha: node.head_ref_oid.clone(),
                 base_ref: node.base_ref_name.clone(),
                 review_decision: node.review_decision.as_deref().map(str::to_lowercase),
             });

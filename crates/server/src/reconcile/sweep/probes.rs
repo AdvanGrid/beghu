@@ -155,6 +155,7 @@ impl Sweeper {
                     draft: d.is_draft,
                     merged_at: d.merged_at.as_deref().and_then(parse_time),
                     head_ref: d.head_ref_name.clone(),
+                    head_sha: d.head_ref_oid.clone(),
                     base_ref: d.base_ref_name.clone(),
                     review_decision: d.review_decision.as_deref().map(str::to_lowercase),
                 });

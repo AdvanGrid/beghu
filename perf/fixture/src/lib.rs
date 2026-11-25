@@ -659,6 +659,7 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
                 pr.then_some("main"),
                 review,
                 issue_type,
+                pr.then(|| head_sha(id)).as_deref(),
                 seq,
             )?;
             for &(lid, p) in &repo.labels {
@@ -952,6 +953,7 @@ fn twin_repo(tx: &Connection) -> rusqlite::Result<()> {
             None,
             None,
             None,
+            None,
             seq,
         )?;
     }
@@ -1093,6 +1095,23 @@ fn full_parent(tx: &Connection, summary: &Summary) -> rusqlite::Result<()> {
     }
     assert_eq!(q::relationship_counts(tx, 0, 0, hub)?.children, FULL_PARENT);
     Ok(())
+}
+
+/// A PR's head commit: 40 hex digits derived from its id alone (no draw from the generator's
+/// random stream, so nothing else in the fixture moves), as Fake GitHub serves it until a push.
+fn head_sha(id: i64) -> String {
+    let mut x = (id as u64) ^ 0x9e37_79b9_7f4a_7c15;
+    let mut out = String::with_capacity(48);
+    while out.len() < 40 {
+        // splitmix64's step.
+        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        out.push_str(&format!("{:016x}", z ^ (z >> 31)));
+    }
+    out.truncate(40);
+    out
 }
 
 fn radix36(mut n: i64) -> String {

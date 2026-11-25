@@ -16,7 +16,7 @@ fn issue(
 ) -> rusqlite::Result<usize> {
     q::insert_item(
         tx, id, "I_x", 1, id, "issue", title, body, "open", None, 1, None, 0, id, None, None, None,
-        None, None, None, None, None, seq,
+        None, None, None, None, None, None, seq,
     )
 }
 

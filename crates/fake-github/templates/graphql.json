@@ -301,6 +301,7 @@
             },
             "databaseId": "number",
             "headRefName": "string",
+            "headRefOid": "string",
             "id": "string",
             "isDraft": "boolean",
             "mergedAt": [
@@ -487,6 +488,7 @@
           },
           "databaseId": "number",
           "headRefName": "string",
+          "headRefOid": "string",
           "id": "string",
           "isDraft": "boolean",
           "mergedAt": [

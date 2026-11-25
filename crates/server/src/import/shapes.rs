@@ -161,6 +161,8 @@ pub(crate) struct PullDetails {
     pub(crate) is_draft: bool,
     pub(crate) merged_at: Option<String>,
     pub(crate) head_ref_name: Option<String>,
+    /// The head commit's SHA.
+    pub(crate) head_ref_oid: Option<String>,
     pub(crate) base_ref_name: Option<String>,
     pub(crate) review_decision: Option<String>,
     pub(crate) closing_issues_references: Option<Conn<Target>>,
@@ -328,7 +330,7 @@ pub(crate) const IMPORT_PULL_DETAILS: &str = concat!(
     "query ImportPullDetails($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on PullRequest {
-      id databaseId isDraft mergedAt headRefName baseRefName reviewDecision
+      id databaseId isDraft mergedAt headRefName headRefOid baseRefName reviewDecision
       closingIssuesReferences(first: 50) { pageInfo { hasNextPage endCursor } nodes { ...Target } }
     }
   }
