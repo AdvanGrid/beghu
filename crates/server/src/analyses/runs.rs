@@ -563,9 +563,10 @@ const TIMER_RETRY_MAX: Duration = Duration::from_secs(60);
 /// since moved it). Woken when the run ends otherwise, or its row goes ([`super::Store::wake`]),
 /// it stops then: nothing on the HTTP surface tells that from a timer that sleeps on to its
 /// deadline and only then finds its run ended, but woken, it doesn't hold a task for up to 7
-/// days. A read that fails for a passing reason (busy, a failing disk) is tried again, backing
-/// off, rather than leave a live run with no timer. A restart re-arms every live run's
-/// ([`rearm`]). Nothing for a run that has a timer already (a start just before startup's
+/// days. A read that fails for a passing reason (busy, at capacity) is tried again, backing
+/// off, rather than leave a live run with no timer. One that fails for good (the file can't be
+/// opened or read) stops it, logged once: the run's next call finds it expired, and a restart
+/// re-arms every live run's ([`rearm`]). Nothing for a run that has a timer already (a start just before startup's
 /// re-arm read the live runs).
 pub(crate) fn watch(app: &App, account: i64, run: String) {
     let Some(woken) = app.analyses().timer(account, &run) else {
@@ -584,6 +585,12 @@ pub(crate) fn watch(app: &App, account: i64, run: String) {
                 Ok(Some(row)) if row.ended_at.is_none() => row,
                 // Ended, or its row gone with its repo's analyses or its account's file.
                 Ok(_) | Err(dbrt::Error::Deleted) => break,
+                Err(e) if !e.is_transient() => {
+                    eprintln!(
+                        "account {account}: reading analysis run {run} for its timer: {e}; its timer stops, and its next call or the next start ends it"
+                    );
+                    break;
+                }
                 Err(e) => {
                     eprintln!(
                         "account {account}: reading analysis run {run} for its timer: {e}; trying again in {}s",
@@ -773,8 +780,9 @@ pub(crate) async fn lost_repo(app: &App, account: i64, repo_id: i64, repo: &str)
 /// The daily check's part (and so startup's, its first): for every active account, each repo it
 /// has runs or analyses of that its mirror says it can't read goes as [`lost_repo`] has it go.
 /// That runs as a re-read of the roles finds Read lost, once; this retries one whose delete
-/// failed, or that a crash cut off. Only against a mirror that holds the account's repos: an
-/// empty one (just revived, its repos not read yet) says nothing about them.
+/// failed, or that a crash cut off. Only against a mirror its repos were read into: one never
+/// read (just created or revived) says nothing about them, while one read that lists none says
+/// the account lost them all.
 pub(crate) async fn heal_lost_repos(app: &App) {
     let accounts = match app.control().read(control_db::q::active_accounts).await {
         Ok(a) => a,
@@ -804,12 +812,16 @@ pub(crate) async fn heal_lost_repos(app: &App) {
         let visible = match app
             .mirrors()
             .read(account, mirror_db::Caller::Sweep, |c| {
-                mirror_db::q::visible_repos(c)
+                Ok((
+                    mirror_db::q::visible_repos(c)?,
+                    mirror_db::q::roles_read(c)?,
+                ))
             })
             .await
         {
-            Ok(v) if v.is_empty() => continue,
-            Ok(v) => v,
+            // Never read (a mirror from before `roles_read` lists its repos, so it was).
+            Ok((v, false)) if v.is_empty() => continue,
+            Ok((v, _)) => v,
             Err(mirror_db::Error::Deleted) => continue,
             Err(e) => {
                 eprintln!("account {account}: reading its repos for its analyses: {e}");

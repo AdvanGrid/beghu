@@ -143,6 +143,8 @@ pub enum RunPausePoint {
     /// Disconnect has marked the account (`needs_sign_in`, its analyses to delete) and is about
     /// to delete its mirror and its `analyses.db`.
     Disconnected,
+    /// A sign-in has recorded the account and is about to store its tokens, which activates it.
+    SignIn,
 }
 
 /// A test's pause: called at each [`RunPausePoint`], and the run goes on once its future does.

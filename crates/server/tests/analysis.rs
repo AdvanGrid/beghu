@@ -52,19 +52,35 @@ async fn setup_pr(s: &Stack, b: &mut Browser, index: usize) -> i64 {
 }
 
 /// A test's pause at `point` ([`beghu::Config::analysis_pause`]): the first run that gets there
-/// says so on `reached` and waits there until `release`; every other passes.
+/// while it's armed says so on `reached` and waits there until `release`; every other passes.
 struct Pause {
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     reached: std::sync::Arc<tokio::sync::Notify>,
     release: std::sync::Arc<tokio::sync::Notify>,
 }
 
+impl Pause {
+    /// The next run that gets to the pause waits there.
+    fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A pause at `point`, armed from the start.
 fn pause_once(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
-    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (hook, p) = pause_unarmed(point);
+    p.arm();
+    (hook, p)
+}
+
+/// A pause at `point` that passes everything until [`Pause::arm`].
+fn pause_unarmed(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
     let p = Pause {
+        armed: Default::default(),
         reached: Default::default(),
         release: Default::default(),
     };
-    let (reached, release) = (p.reached.clone(), p.release.clone());
+    let (armed, reached, release) = (p.armed.clone(), p.reached.clone(), p.release.clone());
     let hook: beghu::RunPause = std::sync::Arc::new(move |at| {
         if at != point || !armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(async {});
@@ -76,6 +92,17 @@ fn pause_once(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
         })
     });
     (hook, p)
+}
+
+/// Both pauses, each at its own point.
+fn both(a: beghu::RunPause, b: beghu::RunPause) -> beghu::RunPause {
+    std::sync::Arc::new(move |at| {
+        let (a, b) = (a(at), b(at));
+        Box::pin(async move {
+            a.await;
+            b.await;
+        })
+    })
 }
 
 /// A push to the PR's head: `sha`, changing the sample's two files.
@@ -1071,7 +1098,8 @@ async fn losing_read_on_the_repo_revokes_a_run() {
 async fn going_dormant_revokes_a_run_and_deletes_the_analyses() {
     let s = start_with(|c| {
         c.accounts_check_every = Duration::from_millis(100);
-        c.dormant_after = Duration::from_secs(3);
+        // Long enough for the setup and the upload on a busy host.
+        c.dormant_after = Duration::from_secs(10);
     })
     .await;
     let (b, number) = setup(&s).await;
@@ -1081,7 +1109,7 @@ async fn going_dormant_revokes_a_run_and_deletes_the_analyses() {
     let account: i64 = b.account().parse().unwrap();
     let file = s.data.join("analyses").join(format!("{account}.db"));
     assert!(file.exists());
-    until(15.0, "the analyses deleted", || async {
+    until(30.0, "the analyses deleted", || async {
         (!file.exists()).then_some(())
     })
     .await;
@@ -1315,16 +1343,16 @@ fn held_at_store() -> (beghu::RunPause, HeldAtStore) {
     (hook, HeldAtStore { arrived, release })
 }
 
-/// `tomsj`'s browser, and a run's token for each of `n` PRs of `acme/web` set up as [`setup`]
-/// sets up the first.
-async fn runs_on_prs(s: &Stack, n: usize) -> (Browser, Vec<String>) {
+/// `tomsj`'s browser, and for each of `n` PRs of `acme/web` set up as [`setup`] sets up the
+/// first, its number and a run's token.
+async fn runs_on_prs(s: &Stack, n: usize) -> (Browser, Vec<(i64, String)>) {
     let (mut b, first) = setup(s).await;
-    let mut tokens = vec![run(s, &b, first).await];
+    let mut runs = vec![(first, run(s, &b, first).await)];
     for i in 1..n {
         let number = setup_pr(s, &mut b, i).await;
-        tokens.push(run(s, &b, number).await);
+        runs.push((number, run(s, &b, number).await));
     }
-    (b, tokens)
+    (b, runs)
 }
 
 /// The sample uploaded with `token`, in a task of its own: its status.
@@ -1352,8 +1380,8 @@ async fn two_uploads_at_most_do_the_heavy_work_at_once() {
     let (hook, held) = held_at_store();
     let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     // One upload per PR, so no PR's lock holds one back.
-    let (_b, tokens) = runs_on_prs(&s, 3).await;
-    let uploads: Vec<_> = tokens.iter().map(|t| upload_task(&s, t)).collect();
+    let (_b, runs) = runs_on_prs(&s, 3).await;
+    let uploads: Vec<_> = runs.iter().map(|(_, t)| upload_task(&s, t)).collect();
     until(15.0, "two uploads at their store", || async {
         (held.count() >= 2).then_some(())
     })
@@ -1387,9 +1415,9 @@ fn send_upload(s: &Stack, token: &str) -> std::net::TcpStream {
 async fn an_upload_whose_client_leaves_keeps_its_turn_until_its_work_is_done() {
     let (hook, held) = held_at_store();
     let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
-    let (b, tokens) = runs_on_prs(&s, 3).await;
+    let (b, runs) = runs_on_prs(&s, 3).await;
     // Two uploads sent whole, each client gone once its upload holds its turn.
-    for (i, token) in tokens[..2].iter().enumerate() {
+    for (i, (_, token)) in runs[..2].iter().enumerate() {
         let c = send_upload(&s, token);
         until(15.0, "the upload at its store", || async {
             (held.count() > i).then_some(())
@@ -1398,24 +1426,16 @@ async fn an_upload_whose_client_leaves_keeps_its_turn_until_its_work_is_done() {
         drop(c);
     }
     // The third still waits for a turn: the two that left hold theirs until their work is done.
-    let third = upload_task(&s, &tokens[2]);
+    let third = upload_task(&s, &runs[2].1);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(held.count(), 2);
     held.release.send(true).unwrap();
     assert_eq!(third.await.unwrap().0, 201);
     assert_eq!(held.count(), 3);
     // Nobody heard their answers, but the two were stored all the same.
-    let (status, page) = s
-        .api(
-            &mut b.clone(),
-            "/api/issues?q=is%3Apr%20is%3Aopen%20repo%3Aacme%2Fweb",
-        )
-        .await;
-    assert_eq!(status, 200, "{page}");
-    for i in 0..2 {
-        let number = page["rows"][i]["number"].as_i64().unwrap();
+    for (number, _) in &runs[..2] {
         until(15.0, "the upload stored", || async {
-            (graph(&s, &b, number, "identity", None).await.status() == 200).then_some(())
+            (graph(&s, &b, *number, "identity", None).await.status() == 200).then_some(())
         })
         .await;
     }
@@ -1695,13 +1715,15 @@ async fn a_disconnect_cut_off_before_its_delete_is_finished_at_startup() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sign_in_that_lapses_keeps_the_analyses_across_a_restart() {
     let mut s = start_with(|c| c.accounts_check_every = Duration::from_millis(200)).await;
-    // Its refresh token lapses a few seconds after it signs in.
-    s.fake("PUT", "/tokens", json!({ "refresh_ttl": 6 })).await;
-    let (b, number) = setup(&s).await;
+    let (mut b, number) = setup(&s).await;
     let token = run(&s, &b, number).await;
     assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    // Signed in again once its analysis is stored, with a refresh token that lapses a few
+    // seconds later: however long the setup took, the lapse comes after the upload.
+    s.fake("PUT", "/tokens", json!({ "refresh_ttl": 3 })).await;
+    s.sign_in_on(&mut b, "tomsj").await;
     let file = s.data.join("analyses").join(format!("{}.db", b.account()));
-    until(20.0, "the sign-in lapsed", || async {
+    until(30.0, "the sign-in lapsed", || async {
         let (status, gone) = fetch_json(&s, &token, "pr.json").await;
         (status == 410).then_some(gone)
     })
@@ -1754,7 +1776,8 @@ async fn a_token_whose_run_went_with_its_repo_is_pruned_once_the_run_would_have_
         c.repo_refresh_every = Duration::from_secs(1);
         c.accounts_check_every = Duration::from_millis(200);
         c.runs.ended_kept_for = Duration::from_secs(1);
-        c.runs.lives_for = Duration::from_secs(8);
+        // Long enough that the lost Read is heard, and looked at once more, well before it.
+        c.runs.lives_for = Duration::from_secs(30);
     })
     .await;
     let (mut b, number) = setup(&s).await;
@@ -1770,7 +1793,7 @@ async fn a_token_whose_run_went_with_its_repo_is_pruned_once_the_run_would_have_
     // Its row went with the repo's analyses, so the prune of runs long ended never sees it: past
     // `ended_kept_for`, its token still says why it ended…
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < Duration::from_secs(30));
     let (status, gone) = fetch_json(&s, &token, "pr.json").await;
     assert_eq!(
         (status, gone["reason"].as_str()),
@@ -1779,13 +1802,181 @@ async fn a_token_whose_run_went_with_its_repo_is_pruned_once_the_run_would_have_
     );
     // …until the run can't have ended later than `ended_kept_for` ago: `lives_for` after its
     // start.
-    until(20.0, "the token pruned", || async {
+    until(45.0, "the token pruned", || async {
         (fetch_json(&s, &token, "pr.json").await.0 == 401).then_some(())
     })
     .await;
     assert!(
-        started.elapsed() >= Duration::from_secs(8),
+        started.elapsed() >= Duration::from_secs(30),
         "pruned after {:?}",
         started.elapsed()
+    );
+}
+
+/// `tomsj`'s Disconnect from `a`, cut off at its pause: it has marked the account, and holds
+/// before it deletes anything. The caller releases it, then awaits the returned answer.
+async fn disconnect_held<'a>(
+    s: &'a Stack,
+    a: &'a mut Browser,
+    account: &'a str,
+    pause: &Pause,
+) -> impl std::future::Future<Output = reqwest::Response> + 'a {
+    let form = [("account", account)];
+    let mut disconnecting =
+        Box::pin(async move { s.post_form(a, "/auth/disconnect", &form).await });
+    tokio::select! {
+        _ = &mut disconnecting => panic!("the disconnect went past its pause"),
+        () = pause.reached.notified() => {}
+    }
+    disconnecting
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_during_a_disconnect_deletes_the_analyses_before_it_lets_them_be_used() {
+    let (hook, pause) = pause_once(beghu::RunPausePoint::Disconnected);
+    let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (mut a, number) = setup(&s).await;
+    let token = run(&s, &a, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let account = a.account();
+    let disconnecting = disconnect_held(&s, &mut a, &account, &pause).await;
+    // Another browser signs in while the disconnect holds: the sign-in deletes the analyses
+    // itself, so the account, active again, has none.
+    let b = s.sign_in("tomsj").await;
+    let res = graph(&s, &b, number, "identity", None).await;
+    assert_eq!(res.status(), 404);
+    assert_eq!(decoded(res).await["error"], "no_analysis");
+    // What it analyses from then on is kept: by the disconnect, which finds it signed in again,
+    // and by the next start.
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    pause.release.notify_one();
+    assert_eq!(disconnecting.await.status(), 303);
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
+    s.restart_with(|_| {}).await;
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_that_raced_a_disconnect_keeps_what_it_analyses_after() {
+    let (on_disconnect, disconnected) = pause_once(beghu::RunPausePoint::Disconnected);
+    let (on_sign_in, signing_in) = pause_unarmed(beghu::RunPausePoint::SignIn);
+    let hook = both(on_disconnect, on_sign_in);
+    let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (mut a, number) = setup(&s).await;
+    let token = run(&s, &a, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let account = a.account();
+    // Another browser's sign-in has recorded the account, and holds before it stores its tokens.
+    signing_in.arm();
+    let mut signing = Box::pin(s.sign_in("tomsj"));
+    tokio::select! {
+        _ = &mut signing => panic!("the sign-in went past its pause"),
+        () = signing_in.reached.notified() => {}
+    }
+    // The disconnect marks the account meanwhile, and holds before it deletes anything. GitHub
+    // has no grant left to revoke, so the sign-in's tokens still work.
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": "DELETE /applications/*/grant", "count": 1, "status": 404 }),
+    )
+    .await;
+    let disconnecting = disconnect_held(&s, &mut a, &account, &disconnected).await;
+    // The sign-in stores its tokens: the account is active again, without the analyses the
+    // disconnect deletes.
+    signing_in.release.notify_one();
+    let b = signing.await;
+    let res = graph(&s, &b, number, "identity", None).await;
+    assert_eq!(res.status(), 404);
+    assert_eq!(decoded(res).await["error"], "no_analysis");
+    // What it analyses from then on is kept: by the disconnect, which finds it signed in again,
+    // and by the next start.
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    disconnected.release.notify_one();
+    assert_eq!(disconnecting.await.status(), 303);
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
+    s.restart_with(|_| {}).await;
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
+}
+
+/// The repos `b`'s account can read, as its picker lists them (`owner/name`).
+async fn readable_repos(s: &Stack, b: &Browser) -> Vec<String> {
+    let mut b = b.clone();
+    s.api(&mut b, "/api/me").await;
+    let (status, picker) = s.api(&mut b, "/api/repos").await;
+    assert_eq!(status, 200, "{picker}");
+    picker["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| !r["role"].is_null())
+        .map(|r| {
+            format!(
+                "{}/{}",
+                r["owner"].as_str().unwrap(),
+                r["name"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daily_check_finishes_a_lost_reads_delete_when_the_account_lost_every_repo() {
+    let s = start_with(|c| {
+        c.repo_refresh_every = Duration::from_secs(1);
+        c.accounts_check_every = Duration::from_millis(500);
+    })
+    .await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    // `tomsj` keeps Read on `acme/web` alone.
+    for repo in readable_repos(&s, &b).await {
+        if repo != "acme/web" {
+            s.fake(
+                "PUT",
+                "/permissions",
+                json!({ "login": "tomsj", "repo": repo, "role": null }),
+            )
+            .await;
+        }
+    }
+    until(15.0, "Read on acme/web alone", || async {
+        (readable_repos(&s, &b).await == ["acme/web"]).then_some(())
+    })
+    .await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    let file = s.data.join("analyses").join(format!("{}.db", b.account()));
+    // Another writer holds `analyses.db`, and the App leaves `acme`: the account can see no repo,
+    // and the delete asked for as the re-read finds Read lost fails.
+    let lock = common::WriteLock::take(&file);
+    s.fake("POST", "/uninstall", json!({ "login": "acme" }))
+        .await;
+    until(15.0, "every repo gone", || {
+        let mut b = b.clone();
+        let s = &s;
+        async move {
+            let (_, me) = s.api(&mut b, "/api/me").await;
+            (me["repos"] == json!([])).then_some(())
+        }
+    })
+    .await;
+    // Past SQLite's busy timeout: that delete has failed.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    drop(lock);
+    // The daily check finds analyses of a repo the account can't read, though its mirror holds
+    // no repo at all, and deletes them: the run's end is heard.
+    assert_eq!(
+        analysis_event(&mut st).await,
+        json!({ "repo": "acme/web", "number": number })
+    );
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
     );
 }

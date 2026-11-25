@@ -44,13 +44,14 @@ WHERE status = 'dormant' OR disconnected_at IS NOT NULL
 ORDER BY github_user_id;
 
 -- Disconnect, in the write that marks the account `needs_sign_in`: its `analyses.db` is to be
--- deleted, whatever happens to the process before that's done.
+-- deleted, whatever happens to the process before that's done. `at` is the mark: Unix ms, and
+-- never one used before.
 -- name: mark_disconnected :exec
 -- param: github_user_id i64
--- param: now i64
-UPDATE accounts SET disconnected_at = :now WHERE github_user_id = :github_user_id;
+-- param: at i64
+UPDATE accounts SET disconnected_at = :at WHERE github_user_id = :github_user_id;
 
--- The disconnect's delete marked at :at is done. A newer disconnect's mark stays.
+-- The disconnect's delete marked :at is done. A newer disconnect's mark stays.
 -- name: clear_disconnected :exec
 -- param: github_user_id i64
 -- param: at i64

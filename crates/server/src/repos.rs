@@ -223,6 +223,8 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
                     q::forget_visible_repo(tx, r.id)?;
                 }
             }
+            // Read: an empty list from now on says the account sees no repo.
+            q::set_roles_read(tx, crate::now())?;
             // What the repos are, and apart from that what the account may do in them.
             let after = q::visible_repos(tx)?;
             let differ = |key: &dyn Fn(&q::VisibleReposRow) -> String| {
