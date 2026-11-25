@@ -297,7 +297,7 @@ impl App {
         // Step 3: delete the mirror files of accounts that aren't active (they lost access, or
         // went dormant), before anything can open one.
         accounts::delete_unused_mirrors(&app).await?;
-        accounts::delete_dormant_analyses(&app).await?;
+        accounts::delete_gone_analyses(&app).await?;
         Ok(Opened {
             app,
             sinks,

@@ -1626,3 +1626,66 @@ async fn the_daily_check_prunes_runs_long_ended() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(fetch_json(&s, &live, "pr.json").await.0, 200);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disconnect_cut_off_before_its_delete_is_finished_at_startup() {
+    let (hook, pause) = pause_once(beghu::RunPausePoint::Disconnected);
+    let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (mut b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let account = b.account();
+    let file = s.data.join("analyses").join(format!("{account}.db"));
+    // Disconnect marks the account, and beghu stops (a crash) before it deletes anything.
+    {
+        let form = [("account", account.as_str())];
+        let disconnecting = s.post_form(&mut b, "/auth/disconnect", &form);
+        tokio::select! {
+            _ = disconnecting => panic!("the disconnect went past its pause"),
+            () = pause.reached.notified() => {}
+        }
+    }
+    s.stop();
+    assert!(file.exists());
+    s.restart_with(|_| {}).await;
+    assert!(
+        !file.exists(),
+        "the start deletes the disconnected account's analyses"
+    );
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("sign_in_again")),
+        "{gone}"
+    );
+    // Signed in again, the account starts with none.
+    let b = s.sign_in("tomsj").await;
+    let res = graph(&s, &b, number, "identity", None).await;
+    assert_eq!(res.status(), 404);
+    assert_eq!(decoded(res).await["error"], "no_analysis");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_that_lapses_keeps_the_analyses_across_a_restart() {
+    let mut s = start_with(|c| c.accounts_check_every = Duration::from_millis(200)).await;
+    // Its refresh token lapses a few seconds after it signs in.
+    s.fake("PUT", "/tokens", json!({ "refresh_ttl": 6 })).await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let file = s.data.join("analyses").join(format!("{}.db", b.account()));
+    until(20.0, "the sign-in lapsed", || async {
+        let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+        (status == 410).then_some(gone)
+    })
+    .await;
+    let (_, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(gone["reason"], "sign_in_again", "{gone}");
+    s.restart_with(|_| {}).await;
+    assert!(file.exists(), "a sign-out by GitHub keeps the analyses");
+    // Signed in again, its analysis is there.
+    s.fake("PUT", "/tokens", json!({ "refresh_ttl": 86_400 }))
+        .await;
+    let b = s.sign_in("tomsj").await;
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
+}

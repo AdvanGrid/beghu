@@ -9,7 +9,10 @@
 //!   GitHub's tokens are left alone, so signing back in is quick and other browsers carry on.
 //! - `POST /auth/disconnect` (`account`): revokes the account's grant on GitHub, deletes its
 //!   mirror, its analyses (`analyses.db`), its preferences and its tokens, and takes it out of
-//!   every browser session. It keeps
+//!   every browser session. The analyses' delete is marked in the write that marks the account
+//!   (`disconnected_at`), so one a crash cuts off is finished by the next start, or by the
+//!   account's next sign-in, whichever comes first; a sign-out by GitHub (refused or lapsed
+//!   tokens, a revoke) never marks it, and keeps them. It keeps
 //!   its repo pick, and its row as `needs_sign_in`, so nothing syncs for it until it signs in.
 //!   Without usable tokens it can't reach the grant: it disconnects all the same, and its answer
 //!   says GitHub access wasn't revoked, linking to GitHub's authorized-apps page.
@@ -373,6 +376,7 @@ pub async fn disconnect(
         }
     };
 
+    let at = crate::now();
     let sessions = app
         .control()
         .write(move |tx| {
@@ -385,6 +389,9 @@ pub async fn disconnect(
             }
             q::delete_tokens(tx, account)?;
             q::delete_preferences(tx, account)?;
+            // Its analyses are to go, whatever happens to beghu before that's done: a startup
+            // finishes the delete, and so does a sign-in before it brings the file back.
+            q::mark_disconnected(tx, account, at)?;
             q::set_account_status(tx, account, AccountStatus::NeedsSignIn.as_str()).map(|_| out)
         })
         .await;
@@ -405,7 +412,8 @@ pub async fn disconnect(
             mine = left;
         }
     }
-    lose_access(&app, account, true).await;
+    crate::analyses::pause(&app, crate::RunPausePoint::Disconnected).await;
+    lose_access(&app, account, Some(at)).await;
     let (to, cookies): (&str, Vec<HeaderValue>) = match mine {
         Left::Ended => (SIGNED_OUT, auth::cleared_cookies().into()),
         Left::Switched(to) => ("/issues", auth::session_cookies(&sid, to).into()),
@@ -442,13 +450,15 @@ rel="external">Authorized GitHub Apps</a>, revoke it there.</p>
 /// read again under the lock: a sign-in that landed meanwhile keeps its tabs. What sync missed
 /// in the deleted mirror is forgotten either way.
 pub async fn lost_access(app: &App, account: i64) {
-    lose_access(app, account, false).await
+    lose_access(app, account, None).await
 }
 
-/// [`lost_access`], and with `analyses` (Disconnect) its `analyses.db` is deleted too, asked for
-/// under the same lock as the mirror's delete, so a sign-in's revive comes after the ask and
-/// brings an empty one back.
-async fn lose_access(app: &App, account: i64, analyses: bool) {
+/// [`lost_access`], and with `disconnected` (Disconnect, and when it marked the account) its
+/// `analyses.db` is deleted too, asked for under the same lock as the mirror's delete, so a
+/// sign-in's revive comes after the ask and brings an empty one back. Once it's gone, the mark
+/// is cleared. A sign-in that lands first finishes the delete itself (auth.rs).
+async fn lose_access(app: &App, account: i64, disconnected: Option<i64>) {
+    let analyses = disconnected.is_some();
     let (deleting, deleting_analyses) = {
         let _turn = app.tokens().hold(account).await;
         if status_of(app, account).await != Some(AccountStatus::NeedsSignIn) {
@@ -458,10 +468,14 @@ async fn lose_access(app: &App, account: i64, analyses: bool) {
         let a = analyses.then(|| app.analyses().dbs.delete(account));
         (app.mirrors().delete(account), a)
     };
-    if let Some(d) = deleting_analyses {
+    if let (Some(d), Some(at)) = (deleting_analyses, disconnected) {
         app.analyses().wake_account(account);
         match d.await {
-            Ok(()) => eprintln!("account {account}: disconnected; its analyses are deleted"),
+            Ok(()) => {
+                eprintln!("account {account}: disconnected; its analyses are deleted");
+                cleared_disconnected(app, account, at).await;
+            }
+            // Marked still: the next start deletes them.
             Err(e) => eprintln!("account {account}: deleting its analyses: {e}"),
         }
     }
@@ -507,6 +521,26 @@ async fn lose_access(app: &App, account: i64, analyses: bool) {
     // After the delete, so a tab that signs in again from here finds the mirror gone.
     app.hub()
         .publish(account, Push::switched(Some(account), true));
+}
+
+/// The delete of the account's `analyses.db` that Disconnect marked at `at` is done.
+pub(crate) async fn clear_disconnected(
+    app: &App,
+    account: i64,
+    at: i64,
+) -> Result<(), control_db::Error> {
+    app.control()
+        .write(move |tx| q::clear_disconnected(tx, account, at))
+        .await
+        .map(|_| ())
+}
+
+/// [`clear_disconnected`], a failure logged: the next start deletes the file again (nothing in
+/// it yet, as the account must sign in first, which clears the mark), and clears it then.
+async fn cleared_disconnected(app: &App, account: i64, at: i64) {
+    if let Err(e) = clear_disconnected(app, account, at).await {
+        eprintln!("account {account}: noting its disconnect's analyses deleted: {e}");
+    }
 }
 
 /// Forgets what sync missed in the account's mirror, deleted as it lost access or went dormant:
@@ -733,17 +767,29 @@ pub(crate) fn back_from_dormancy(app: &App, account: i64) {
     app.imports().mark_away(account);
 }
 
-/// Startup step 3, for the analyses: deletes the `analyses.db` of every dormant account (a
-/// delete the drain cut off is finished here). A failure is logged.
-pub async fn delete_dormant_analyses(app: &App) -> Result<(), String> {
+/// Startup step 3, for the analyses: deletes the `analyses.db` of every dormant account, and of
+/// every account whose disconnect may not have finished deleting its own (a delete a crash or the
+/// drain cut off is finished here), clearing its mark once it's gone. A failure is logged; the
+/// mark stays, for the next start. An account that signed in since (its mark left by a failed
+/// clear) may use its file again once it's gone: empty, as after its disconnect.
+pub async fn delete_gone_analyses(app: &App) -> Result<(), String> {
     let accounts = app
         .control()
-        .read(control_db::q::dormant_accounts)
+        .read(control_db::q::analyses_to_delete)
         .await
-        .map_err(|e| format!("can't read the dormant accounts: {e}"))?;
-    for account in accounts {
+        .map_err(|e| format!("can't read the accounts whose analyses go: {e}"))?;
+    for a in accounts {
+        let account = a.github_user_id;
         if let Err(e) = app.analyses().dbs.delete(account).await {
             eprintln!("startup: deleting account {account}'s analyses: {e}");
+            continue;
+        }
+        if let Some(at) = a.disconnected_at {
+            eprintln!("startup: account {account} disconnected; its analyses are deleted");
+            cleared_disconnected(app, account, at).await;
+            if AccountStatus::from_db(&a.status) == AccountStatus::Active {
+                app.analyses().dbs.revive(account);
+            }
         }
     }
     Ok(())

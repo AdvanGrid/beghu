@@ -140,6 +140,9 @@ pub enum RunPausePoint {
     Store,
     /// A call found its run ended (expired, signed out, …) and is about to mark it so.
     End,
+    /// Disconnect has marked the account (`needs_sign_in`, its analyses to delete) and is about
+    /// to delete its mirror and its `analyses.db`.
+    Disconnected,
 }
 
 /// A test's pause: called at each [`RunPausePoint`], and the run goes on once its future does.

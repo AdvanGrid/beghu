@@ -712,15 +712,30 @@ async fn finish(
 ) -> Result<[HeaderValue; 2], ApiError> {
     let t = now();
     let (id, login) = (user.id, user.login.clone());
-    let was = app
+    let found = app
         .control()
         .write(move |tx| {
-            let was = q::account(tx, id)?.map(|a| a.status);
+            let was = q::account(tx, id)?.map(|a| (a.status, a.disconnected_at));
             q::sign_in_account(tx, id, &login, t)?;
             Ok(was)
         })
         .await?;
+    let (was, disconnected) = match found {
+        Some((status, at)) => (Some(status), at),
+        None => (None, None),
+    };
     let created = was.is_none();
+    // Disconnected, and the delete of its analyses may not be done (still under way, or a sign-in
+    // that landed first made Disconnect leave it): done here, before the account is active and
+    // its file comes back.
+    if let Some(at) = disconnected {
+        app.analyses().dbs.delete(id).await.map_err(|e| {
+            ApiError::Internal(format!("deleting a disconnected account's analyses: {e}"))
+        })?;
+        // Cleared before the account is active: left, the next start would delete what it
+        // analyses from now on.
+        crate::accounts::clear_disconnected(app, id, at).await?;
+    }
     app.tokens().sign_in(id, pair).await?;
     if was.as_deref().map(AccountStatus::from_db) == Some(AccountStatus::Dormant) {
         crate::accounts::back_from_dormancy(app, id);

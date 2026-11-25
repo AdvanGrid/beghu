@@ -460,6 +460,10 @@ pub(crate) async fn admit(
     if status == AccountStatus::Dormant {
         return Err(RunError::Ended(Ended::Dormant));
     }
+    // Disconnected, its file deleted: reading it would make an empty one.
+    if status == AccountStatus::NeedsSignIn && !app.analyses().dbs.path(account).exists() {
+        return Err(RunError::Ended(Ended::SignInAgain));
+    }
     let id = t.run_id.clone();
     let run = match app
         .analyses()
