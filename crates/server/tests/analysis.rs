@@ -1539,25 +1539,11 @@ async fn losing_read_on_the_repo_deletes_its_analyses_and_runs() {
     assert_eq!(upload(&s, &token, &sample()).await.0, 201);
     let mut st = s.stream(&b).await;
     st.reset().await;
-    s.fake(
-        "PUT",
-        "/permissions",
-        json!({ "login": "tomsj", "repo": "web", "role": null }),
-    )
-    .await;
-    // The tab's use keeps the account's roles re-read; no call on the run is made, so the
-    // run's end is the lost Read's.
-    let mut heard = None;
-    for _ in 0..30 {
-        s.api(&mut b, "/api/me").await;
-        if let Some(ev) = st.event_within(Duration::from_millis(500)).await
-            && ev.event == "analysis"
-        {
-            heard = Some(serde_json::from_str::<Value>(&ev.data).unwrap());
-            break;
-        }
-    }
-    assert_eq!(heard, Some(json!({ "repo": "acme/web", "number": number })));
+    set_role(&s, Value::Null).await;
+    assert_eq!(
+        heard_while_used(&s, &mut b, &mut st).await,
+        Some(json!({ "repo": "acme/web", "number": number }))
+    );
     let (status, gone) = fetch_json(&s, &token, "pr.json").await;
     assert_eq!(
         (status, gone["reason"].as_str()),
@@ -1566,29 +1552,7 @@ async fn losing_read_on_the_repo_deletes_its_analyses_and_runs() {
     );
 
     // Read again: the analysis went with the Read, and the run is still told why it ended.
-    s.fake(
-        "PUT",
-        "/permissions",
-        json!({ "login": "tomsj", "repo": "web", "role": "admin" }),
-    )
-    .await;
-    until(15.0, "the repo readable again", || {
-        let mut b = b.clone();
-        let s = &s;
-        async move {
-            s.api(&mut b, "/api/me").await;
-            let res = graph(s, &b, number, "identity", None).await;
-            let status = res.status();
-            let body = decoded(res).await;
-            // `no_analysis` either way; readable once a run can start.
-            assert_eq!(
-                (status.as_u16(), &body["error"]),
-                (404, &json!("no_analysis"))
-            );
-            (start_run(s, &b, number).await.0 == 201).then_some(())
-        }
-    })
-    .await;
+    readable_again_without_analysis(&s, &b, number).await;
     let (status, gone) = fetch_json(&s, &token, "pr.json").await;
     assert_eq!(
         (status, gone["reason"].as_str()),
@@ -1625,6 +1589,103 @@ async fn the_daily_check_prunes_runs_long_ended() {
     let live = run(&s, &b, number).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(fetch_json(&s, &live, "pr.json").await.0, 200);
+}
+
+/// `tomsj`'s role on `acme/web` on GitHub: `null` for none.
+async fn set_role(s: &Stack, role: Value) {
+    s.fake(
+        "PUT",
+        "/permissions",
+        json!({ "login": "tomsj", "repo": "web", "role": role }),
+    )
+    .await;
+}
+
+/// The tab's use keeps the account's roles re-read (with `repo_refresh_every` short) until `st`
+/// hears an `analysis` event, for 15 s at most. No call on a run is made, so a run's end heard is
+/// the lost Read's.
+async fn heard_while_used(s: &Stack, b: &mut Browser, st: &mut common::Stream) -> Option<Value> {
+    for _ in 0..30 {
+        s.api(b, "/api/me").await;
+        if let Some(ev) = st.event_within(Duration::from_millis(500)).await
+            && ev.event == "analysis"
+        {
+            return Some(serde_json::from_str(&ev.data).unwrap());
+        }
+    }
+    None
+}
+
+/// Read on `acme/web` back: once a run can start on PR `number` again, it has no analysis.
+async fn readable_again_without_analysis(s: &Stack, b: &Browser, number: i64) {
+    set_role(s, json!("admin")).await;
+    until(15.0, "the repo readable again", || {
+        let mut b = b.clone();
+        async move {
+            s.api(&mut b, "/api/me").await;
+            let res = graph(s, &b, number, "identity", None).await;
+            let status = res.status();
+            let body = decoded(res).await;
+            // `no_analysis` either way; readable once a run can start.
+            assert_eq!(
+                (status.as_u16(), &body["error"]),
+                (404, &json!("no_analysis"))
+            );
+            (start_run(s, &b, number).await.0 == 201).then_some(())
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daily_check_finishes_a_lost_reads_delete_that_failed() {
+    let s = start_with(|c| {
+        c.repo_refresh_every = Duration::from_secs(1);
+        c.accounts_check_every = Duration::from_millis(500);
+    })
+    .await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    let file = s.data.join("analyses").join(format!("{}.db", b.account()));
+    // Another writer holds `analyses.db`: the delete asked for as the re-read finds Read lost
+    // fails.
+    let lock = common::WriteLock::take(&file);
+    set_role(&s, Value::Null).await;
+    until(15.0, "Read on acme/web lost", || {
+        let mut b = b.clone();
+        let s = &s;
+        async move {
+            s.api(&mut b, "/api/me").await;
+            let (status, picker) = s.api(&mut b, "/api/repos").await;
+            assert_eq!(status, 200, "{picker}");
+            let readable = picker["repos"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["owner"] == "acme" && r["name"] == "web" && !r["role"].is_null());
+            (!readable).then_some(())
+        }
+    })
+    .await;
+    // Past SQLite's busy timeout: that delete has failed.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    drop(lock);
+    // The daily check finds analyses of a repo the account can't read, and deletes them: the
+    // run's end is heard.
+    assert_eq!(
+        analysis_event(&mut st).await,
+        json!({ "repo": "acme/web", "number": number })
+    );
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
+    );
+    readable_again_without_analysis(&s, &b, number).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

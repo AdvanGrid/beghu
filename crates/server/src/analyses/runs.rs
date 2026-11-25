@@ -714,6 +714,63 @@ pub(crate) async fn lost_repo(app: &App, account: i64, repo_id: i64, repo: &str)
     }
 }
 
+/// The daily check's part (and so startup's, its first): for every active account, each repo it
+/// has runs or analyses of that its mirror says it can't read goes as [`lost_repo`] has it go.
+/// That runs as a re-read of the roles finds Read lost, once; this retries one whose delete
+/// failed, or that a crash cut off. Only against a mirror that holds the account's repos: an
+/// empty one (just revived, its repos not read yet) says nothing about them.
+pub(crate) async fn heal_lost_repos(app: &App) {
+    let accounts = match app.control().read(control_db::q::active_accounts).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("accounts: reading the active accounts for their lost repos: {e}");
+            return;
+        }
+    };
+    for account in accounts {
+        if !app.analyses().dbs.path(account).exists() {
+            continue;
+        }
+        let repos = match app
+            .analyses()
+            .dbs
+            .read(account, analysis_db::q::repos)
+            .await
+        {
+            Ok(r) if r.is_empty() => continue,
+            Ok(r) => r,
+            Err(dbrt::Error::Deleted) => continue,
+            Err(e) => {
+                eprintln!("account {account}: reading the repos of its analyses: {e}");
+                continue;
+            }
+        };
+        let visible = match app
+            .mirrors()
+            .read(account, mirror_db::Caller::Sweep, |c| {
+                mirror_db::q::visible_repos(c)
+            })
+            .await
+        {
+            Ok(v) if v.is_empty() => continue,
+            Ok(v) => v,
+            Err(mirror_db::Error::Deleted) => continue,
+            Err(e) => {
+                eprintln!("account {account}: reading its repos for its analyses: {e}");
+                continue;
+            }
+        };
+        for r in repos {
+            let readable = visible
+                .iter()
+                .any(|v| v.id == r.repo_id && v.role.is_some());
+            if !readable {
+                lost_repo(app, account, r.repo_id, &format!("{}/{}", r.owner, r.name)).await;
+            }
+        }
+    }
+}
+
 /// The repo a run is for, as the account's mirror holds it: its id, its name as GitHub spells
 /// it, and whether the account can read it.
 pub(crate) struct Repo {

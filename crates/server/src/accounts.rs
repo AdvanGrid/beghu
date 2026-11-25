@@ -571,13 +571,14 @@ pub async fn follow_lost(app: App, mut rx: tokio::sync::mpsc::UnboundedReceiver<
 }
 
 /// The accounts' daily check, from startup on: accounts whose refresh token has lapsed lose
-/// access (their tokens wiped), dead tokens and sessions past their expiry are pruned, so are
-/// analysis runs ended 30 days ago and their tokens, and accounts unused for `dormant_after` go
-/// dormant.
+/// access (their tokens wiped; they keep their analyses), dead tokens and sessions past their
+/// expiry are pruned, so are analysis runs ended 30 days ago and their tokens, a lost Read whose
+/// analyses' delete failed is tried again, and accounts unused for `dormant_after` go dormant.
 pub async fn daily(app: App) {
     loop {
         check(&app).await;
         crate::analyses::runs::prune(&app).await;
+        crate::analyses::runs::heal_lost_repos(&app).await;
         dormancy(&app).await;
         tokio::time::sleep(app.cfg().accounts_check_every).await;
     }

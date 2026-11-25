@@ -73,3 +73,8 @@ SELECT DISTINCT github_user_id FROM run_tokens ORDER BY github_user_id;
 -- name: prune_old_run_tokens :exec
 -- param: before i64
 DELETE FROM run_tokens WHERE created_at < :before;
+
+-- The active accounts: the daily check retries, for each, a loss of Read whose delete of its
+-- analyses failed or was cut off.
+-- name: active_accounts :many
+SELECT github_user_id FROM accounts WHERE status = 'active' ORDER BY github_user_id;

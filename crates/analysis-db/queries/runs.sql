@@ -68,3 +68,11 @@ SELECT id, number, ended_reason FROM runs WHERE repo_id = :repo_id;
 -- name: delete_repo_runs :exec
 -- param: repo_id i64
 DELETE FROM runs WHERE repo_id = :repo_id;
+
+-- Every repo the account has runs or analyses of, as the run or analysis names it: the daily
+-- check deletes them for any repo the account's mirror says it can't read, retrying a loss of
+-- Read whose delete failed or was cut off.
+-- name: repos :many
+SELECT repo_id AS "repo_id!: i64", owner AS "owner!: String", name AS "name!: String"
+FROM (SELECT repo_id, owner, name FROM runs UNION SELECT repo_id, owner, name FROM analyses)
+GROUP BY repo_id ORDER BY repo_id;
