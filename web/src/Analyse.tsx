@@ -3,30 +3,34 @@
 //
 // The label is the state: Analyse; Analyse again (the last run expired, no analysis); ● Waiting
 // for agent (amber, pulsing); ● Agent working or ● CLI working (green, pulsing); ● Upload refused
-// (red, steady); PR view, PR view · N behind or PR view · outdated (accent), with a live run's dot
-// and words after it (● PR view · Agent working: a re-analysis under way). The main part does the
-// obvious thing: with nothing live it copies the prompt and starts a run; otherwise it opens the
-// popover (the two PR view states will open the full-screen view once it has a route). ▾ always
-// opens the popover, which holds the analysis, the live run (its steps, one status line, Copy
-// again, End run, what was copied), or Analyse this PR with the CLI's alternative.
+// (red, steady); PR view, PR view · N behind or PR view · outdated (accent; plain PR view while
+// the count is on its way), with a live run's dot and a short word after it (PR view · 2 behind
+// · ● Working: a re-analysis under way), the full state in its accessible name and title, so the
+// status row's chips keep their room. The main part does the obvious thing: with nothing live it
+// copies the prompt and starts a run; otherwise it opens the popover (the two PR view states will
+// open the full-screen view once it has a route). ▾ always opens the popover, which holds the
+// analysis, the live run (its steps, one status line, Copy again, End run, what was copied), or
+// Analyse this PR with the CLI's alternative.
 //
 // The popover is a non-modal dialog: opening it moves focus to its first control, Escape closes
 // it (before the panel's keys hear it) and puts focus back on the button that opened it, and Tab
-// goes on from its last control to what follows the button. Its ages tick while it's open.
+// goes on from its last control to what follows the button. End run takes its section away, so
+// focus moves to the popover's new first control. Its ages tick while it's open.
 //
 // Starting and ending a run are writes: each absorbs its own failure, saying so in the popover,
 // and the label rolls back to what the detail says. A started run shows as waiting at once, and
 // an ended one as gone, until the PR's detail (refetched on the `analysis` push) says so itself.
+// A detail whose read of the account's analyses failed (`run_unknown`) changes nothing: the
+// button keeps what it showed, and the kept prompts stay.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, onSettled, Show, type Accessor } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack, type Accessor } from "solid-js";
 import { tabAccount } from "./account";
 import { PrTooLarge, readAt } from "./api";
 import type { PullDetail } from "./bindings/PullDetail";
 import type { PrAnalysis } from "./bindings/PrAnalysis";
 import type { PrRun } from "./bindings/PrRun";
 import { writesPaused } from "./live";
-import { forgetPrompts, keepPrompt, keptPrompt, promptsSeen } from "./prompts";
-import { endRun, startRun, type PrAt } from "./runs";
+import { endRun, forgetPrompts, keepPrompt, keptPrompt, promptsSeen, startRun, type PrAt } from "./runs";
 import { ago, fullDate } from "./time";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -105,30 +109,46 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     copiedTimer = setTimeout(() => setCopied(undefined), COPIED_MS);
   };
 
+  /**
+   * The PR's run and analysis as the last detail that could read them has them: one that
+   * couldn't (`run_unknown`) leaves them as they were.
+   */
+  const known = createMemo((prev?: { run?: PrRun; analysis?: PrAnalysis }) => {
+    const pr = props.d.pr;
+    if (pr?.run_unknown) return prev ?? {};
+    return { run: pr?.run, analysis: pr?.analysis };
+  });
   /** The PR's live run, as the detail has it, with this tab's own start and end on top. */
   const run = createMemo((): PrRun | undefined => {
-    const r = props.d.pr?.run;
+    const r = known().run;
     const mine = started();
     const live = r && r.state !== "expired" ? r : undefined;
     if (mine && live?.id !== mine.id) return mine;
     if (live && live.id === ending()) return undefined;
     return live;
   });
-  const expired = () => props.d.pr?.run?.state === "expired" && !started();
-  const analysis = (): PrAnalysis | undefined => props.d.pr?.analysis;
+  const expired = () => known().run?.state === "expired" && !started();
+  const analysis = (): PrAnalysis | undefined => known().analysis;
 
   // The detail caught up with this tab's start (the same run, or a newer one by the server's
   // clock) or end; and the prompts of runs it shows no longer live go.
   createEffect(
-    () => props.d.pr?.run,
-    (r) => {
+    () => props.d.pr,
+    (pr) => {
+      if (pr?.run_unknown) return;
+      const r = pr?.run;
       const live = r && r.state !== "expired" ? r.id : undefined;
-      const mine = started();
-      if (mine && (live === mine.id || (r && r.id !== mine.id && r.startedAt > mine.startedAt))) setStarted(undefined);
-      if (ending() && live !== ending()) setEnding(undefined);
-      // When the read began, on the clock the prompts are kept by.
-      const read = readAt(props.d);
-      if (!started()) promptsSeen(account, at(), r, Number.isFinite(read) ? performance.timeOrigin + read : NaN);
+      // Read as they stand when the detail changes: they don't run this again themselves.
+      untrack(() => {
+        const mine = started();
+        if (mine && (live === mine.id || (r && r.id !== mine.id && r.startedAt > mine.startedAt))) setStarted(undefined);
+        if (ending() && live !== ending()) setEnding(undefined);
+        // When the read began, on the clock the prompts are kept by (`Date.now()`), worked out
+        // now from the page's own clock, which `Date.now()` may have drifted from since the page
+        // loaded.
+        const read = readAt(props.d);
+        if (!started()) promptsSeen(account, at(), r, Number.isFinite(read) ? Date.now() - (performance.now() - read) : NaN);
+      });
     },
   );
 
@@ -142,6 +162,20 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   const state = (): State => {
     if (analysis()) return "view";
     return runState() ?? (expired() ? "again" : "analyse");
+  };
+
+  /** The live run's word beside PR view: short, as the status row has little room. */
+  const runWord = () => {
+    switch (runState()) {
+      case "refused":
+        return "Refused";
+      case "waiting":
+        return "Waiting";
+      case "working":
+        return "Working";
+      default:
+        return undefined;
+    }
   };
 
   /** The live run's words, beside its dot. */
@@ -158,13 +192,18 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     }
   };
 
+  /** PR view, and how far behind (nothing while it's counted). */
+  const view = () => {
+    const b = analysis()?.behind;
+    return b === undefined || b === "counting" ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
+  };
+
+  /** The state in full: what the button shows, or (PR view with a live run) says it means. */
   const label = () => {
     switch (state()) {
       case "view": {
-        const b = analysis()?.behind;
-        const view = b === undefined ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
         const words = runWords();
-        return words ? `${view} · ${words}` : view;
+        return words ? `${view()} · ${words}` : view();
       }
       case "again":
         return "Analyse again";
@@ -248,7 +287,19 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
       setFailed(`Couldn't end the run: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
+      // The run's section went with End run (and came back new, if the end failed): focus moves
+      // to what's first now, enabled again.
+      refocus();
     }
+  };
+
+  /** Once the popover has rendered, focus goes to its first control if it was in the popover. */
+  const refocus = () => {
+    requestAnimationFrame(() => {
+      const f = document.activeElement;
+      if (!pop?.isConnected || (f && f !== document.body && pop.contains(f))) return;
+      pop.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    });
   };
 
   /** Whether the main part opens the popover rather than starting a run. */
@@ -313,6 +364,9 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     };
   });
 
+  /** PR view with a live run, not just copied: its short word, beside the dot. */
+  const short = () => (state() === "view" && !(copied() === "prompt" && !open()) ? runWord() : undefined);
+
   const dot = () => {
     switch (runState()) {
       case "waiting":
@@ -336,10 +390,28 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
         onClick={main}
         aria-haspopup={mainOpens() ? "dialog" : undefined}
         aria-expanded={mainOpens() ? (open() ? "true" : "false") : undefined}
-        title={mainOpens() ? undefined : "Copies a prompt for your agent and starts an analysis run"}
+        aria-label={short() ? label() : undefined}
+        title={mainOpens() ? label() : "Copies a prompt for your agent and starts an analysis run"}
       >
-        <Show when={dot()}>{(d) => <span {...stylex.attrs(s.dot, d())} aria-hidden="true" />}</Show>
-        {copied() === "prompt" && !open() ? "Copied" : label()}
+        <Show
+          when={short()}
+          fallback={
+            <>
+              <Show when={dot()}>{(d) => <span {...stylex.attrs(s.dot, d())} aria-hidden="true" />}</Show>
+              <span {...stylex.attrs(s.labelText)}>{copied() === "prompt" && !open() ? "Copied" : label()}</span>
+            </>
+          }
+        >
+          {(w) => (
+            <>
+              <span {...stylex.attrs(s.labelText)}>{view()} ·</span>
+              {/* A flex box: the space is for the text (`textContent`), the gap for the eye. */}
+              <span {...stylex.attrs(s.word)}>
+                <span {...stylex.attrs(s.dot, dot())} aria-hidden="true" /> {w()}
+              </span>
+            </>
+          )}
+        </Show>
       </button>
       <button
         type="button"
@@ -457,7 +529,7 @@ function AnalysisPart(props: { a: PrAnalysis; tick: Accessor<number> }) {
         <span {...stylex.attrs(s.small, s.muted)} title={fullDate(props.a.createdAt)}>
           at <code {...stylex.attrs(s.code)}>{short(props.a.headSha)}</code>, {(props.tick(), since(props.a.createdAt))}
         </span>
-        <Show when={props.a.behind}>
+        <Show when={props.a.behind !== "counting" && props.a.behind}>
           {(b) => (
             <span {...stylex.attrs(s.chip)} data-perf="analyse-behind" title={b() === "outdated" ? "The analysed head is no longer among the PR's commits" : "The PR has moved past the analysed head"}>
               {b() === "outdated" ? "Outdated" : `${plural(b() as number, "commit")} behind`}
@@ -497,7 +569,10 @@ function Steps(props: { r: PrRun; uploaded: boolean }) {
 const pulse = stylex.keyframes({ "0%": { opacity: 1 }, "50%": { opacity: 0.35 }, "100%": { opacity: 1 } });
 
 const s = stylex.create({
-  wrap: { display: "inline-flex", flexShrink: 0, position: "relative" },
+  // Gives way before the status row's chips do: its text ellipsises (`labelText`; a live run's
+  // word and the caret stay). A PR's row wraps (IssuePanel.tsx), so it gets a line of its own,
+  // with the actions after it, before it has to.
+  wrap: { display: "inline-flex", flexShrink: 1, position: "relative", minWidth: 0 },
   main: {
     borderColor: colors.line,
     borderRadius: 6,
@@ -516,7 +591,12 @@ const s = stylex.create({
     fontSize: 12,
     fontWeight: 600,
     height: 24,
+    minWidth: 0,
   },
+  // The label's text: the part that ellipsises.
+  labelText: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 },
+  // A live run's short word beside PR view: kept whole.
+  word: { gap: 6, alignItems: "center", display: "inline-flex", flexShrink: 0, whiteSpace: "nowrap" },
   mainView: { borderColor: colors.accent, color: colors.accent },
   caret: {
     borderColor: colors.line,
@@ -529,6 +609,7 @@ const s = stylex.create({
     borderStartStartRadius: 0,
     color: colors.muted,
     cursor: "pointer",
+    flexShrink: 0,
     fontFamily: fonts.ui,
     fontSize: 12,
     borderLeftWidth: 0,

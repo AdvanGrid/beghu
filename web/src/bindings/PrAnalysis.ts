@@ -13,8 +13,9 @@ headSha: string,
  */
 createdAt: number, parts: number, purposes: number, conflicts: number, 
 /**
- * How many commits the PR's head is past `headSha`, or `outdated` when that can't be
- * counted, or isn't yet (a count is on its way, and its `analysis` event brings it);
- * absent when the analysis is at the PR's head (or the mirror has no head for it).
+ * How many commits the PR's head is past `headSha`; `outdated` when that can't be counted;
+ * `counting` when it isn't yet (a count is on its way, or waits for GitHub, and its
+ * `analysis` event brings it). Absent when the analysis is at the PR's head (or the mirror
+ * has no head for it).
  */
-behind?: number | "outdated", };
+behind?: number | "outdated" | "counting", };

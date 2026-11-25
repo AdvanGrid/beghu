@@ -118,6 +118,12 @@ pub struct PullDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub analysis: Option<PrAnalysis>,
+    /// `true` when the account's analyses couldn't be read: `run` and `analysis` are absent
+    /// because they aren't known, not because there are none, and the panel keeps what it
+    /// showed. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "true")]
+    pub run_unknown: Option<bool>,
 }
 
 #[derive(Serialize, TS)]
@@ -376,7 +382,7 @@ async fn detail(
     let pr = match item.kind == "pr" {
         false => None,
         true => {
-            let (run, analysis) = panel::read(
+            let panel = panel::read(
                 &app,
                 PanelPr {
                     account,
@@ -394,8 +400,9 @@ async fn detail(
                 base: item.base_ref.take(),
                 review: ReviewDecision::parse(item.review_decision.as_deref()),
                 merged_at: item.merged_at,
-                run,
-                analysis,
+                run: panel.run,
+                analysis: panel.analysis,
+                run_unknown: panel.unknown.then_some(true),
             })
         }
     };

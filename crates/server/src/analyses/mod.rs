@@ -89,9 +89,8 @@ pub(crate) struct Store {
     /// Each live run's timer ([`runs::watch`]), by run ID, with its account: woken when the run
     /// ends otherwise, so it stops then rather than at its deadline.
     timers: Mutex<HashMap<String, (i64, Arc<tokio::sync::Notify>)>>,
-    /// The "N behind" counts on their way or resting ([`panel`]): `None` while one is counted,
-    /// or until when the pair isn't asked about again.
-    counts: Mutex<HashMap<panel::CountKey, Option<std::time::Instant>>>,
+    /// The "N behind" counts on their way, waiting for their turn or resting ([`panel`]).
+    pub counts: panel::Counts,
     /// When each attached run's calls last told the account's streams it was heard from, by run
     /// ID ([`runs::admit`]).
     heard: Mutex<HashMap<String, i64>>,
@@ -133,32 +132,9 @@ impl Store {
             locks: Mutex::default(),
             uploads: Arc::new(tokio::sync::Semaphore::new(UPLOADS_AT_ONCE)),
             timers: Mutex::default(),
-            counts: Mutex::default(),
+            counts: panel::Counts::default(),
             heard: Mutex::default(),
         })
-    }
-
-    /// Whether a count of `key` may start now: none is on its way, nor resting. If so, it's on
-    /// its way until [`Store::count_done`].
-    fn count_begins(&self, key: &panel::CountKey) -> bool {
-        let mut all = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        let now = std::time::Instant::now();
-        all.retain(|_, until| until.is_none_or(|u| u > now));
-        if all.contains_key(key) {
-            return false;
-        }
-        all.insert(key.clone(), None);
-        true
-    }
-
-    /// The count of `key` is done: a read may count it again at once, or (`rest`) not before
-    /// then.
-    fn count_done(&self, key: &panel::CountKey, rest: Option<std::time::Instant>) {
-        let mut all = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        match rest {
-            Some(until) => all.insert(key.clone(), Some(until)),
-            None => all.remove(key),
-        };
     }
 
     /// Whether a call to the attached run `run` at `now` should tell the account's streams it

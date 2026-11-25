@@ -1,15 +1,19 @@
 // The PR panel's Analyse button (#177) in a real browser: each label from its state, the popover's
 // three shapes, Copy (the clipboard), Copy again and Copy a new link, End run, the live change from
 // Waiting for agent to Agent working to PR view as an agent fetches and uploads, "N behind" after
-// a push and "outdated" after a force push, a re-analysis's dot and words beside PR view, the
-// pulse stopping under reduced motion, the dots' token colours in both themes, the popover's
-// focus from the keyboard, and the kept prompt going at sign-out.
+// a push and "outdated" after a force push, a re-analysis's dot and short word beside PR view (its
+// full state in the accessible name) leaving the status row's chips whole, the pulse stopping
+// under reduced motion, the dots' token colours in both themes, the popover's focus from the
+// keyboard (End run's included), and the kept prompts: another tab's, read by the `storage` event,
+// and an account's going at its sign-out while another account's stay.
 //
 // The agent's side goes through the run API with the token from the copied prompt, as `curl`
 // would; the PR is set up as the analysis crate's sample's (its description and a push of its two
 // files to its head) through Fake GitHub's control port. Two labels need what the stack can't
 // give: "CLI working" (CLI runs start with slice 5's credential) and "Analyse again" for an
 // expired run (24 h); the server's tests cover both states (crates/server/tests/analyse_button.rs).
+// Nor can it fail a read of the account's `analyses.db` (only a disk fault does that): the
+// server's test checks the detail's `run_unknown`, and Analyse.tsx keeps what it showed for it.
 //
 // It edits PR bodies and pushes to PRs, which reorders the list other specs read, so it runs on
 // its own after prs.spec.ts (playwright.config.ts). Each test takes a PR with no run or analysis
@@ -170,7 +174,9 @@ test("Analyse copies the prompt and starts a run, whose label follows it live to
   // An accepted upload: PR view, and the popover's analysis. The run is still live, so its dot
   // and words stay beside it.
   expect((await upload(token, sample(head))).status).toBe(201);
-  await expect(main(page)).toHaveText("PR view · Agent working");
+  await expect(main(page)).toHaveText("PR view · Working");
+  await expect(main(page)).toHaveAccessibleName("PR view · Agent working");
+  await expect(main(page)).toHaveAttribute("title", "PR view · Agent working");
   await expect(button(page)).toHaveAttribute("data-state", "view");
   await expect(button(page)).toHaveAttribute("data-run", "working");
   await expect(pop(page).locator('[data-perf="analyse-analysis"]')).toContainText(new RegExp(`Analysisat ${head.slice(0, 7)}, (just now|\\dm ago)`));
@@ -179,7 +185,8 @@ test("Analyse copies the prompt and starts a run, whose label follows it live to
 
   // A push to the PR: PR view · 1 behind, and the chip.
   await control("/push", { repo: "acme/web", number: pr.number });
-  await expect(main(page)).toHaveText("PR view · 1 behind · Agent working");
+  await expect(main(page)).toHaveText("PR view · 1 behind · Working");
+  await expect(main(page)).toHaveAccessibleName("PR view · 1 behind · Agent working");
   await expect(pop(page).locator('[data-perf="analyse-behind"]')).toHaveText("1 commit behind");
 
   // End run: the run goes; the analysis stays, with Analyse again.
@@ -220,7 +227,8 @@ test("A re-analysis keeps PR view on the button, with its run's dot and words", 
   // Analyse again from the popover: waiting, amber and pulsing.
   await page.locator('[data-perf="analyse-more"]').click();
   await pop(page).getByRole("button", { name: "Analyse again" }).click();
-  await expect(main(page)).toHaveText("PR view · Waiting for agent");
+  await expect(main(page)).toHaveText("PR view · Waiting");
+  await expect(main(page)).toHaveAccessibleName("PR view · Waiting for agent");
   await expect(button(page)).toHaveAttribute("data-run", "waiting");
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
   expect(await colour()).toBe("rgb(138, 92, 0)");
@@ -229,7 +237,7 @@ test("A re-analysis keeps PR view on the button, with its run's dot and words", 
 
   // The agent fetches: working, green.
   expect(await agent(token, "instructions")).toBe(200);
-  await expect(main(page)).toHaveText("PR view · Agent working");
+  await expect(main(page)).toHaveText("PR view · Working");
   await expect(button(page)).toHaveAttribute("data-run", "working");
   // The open token: #1a7f37 in light.
   expect(await colour()).toBe("rgb(26, 127, 55)");
@@ -238,7 +246,8 @@ test("A re-analysis keeps PR view on the button, with its run's dot and words", 
   const bad = sample(pr.head!);
   delete (bad.nodes as Record<string, unknown>[])[1]!.kind;
   expect((await upload(token, bad)).status).toBe(422);
-  await expect(main(page)).toHaveText("PR view · Upload refused");
+  await expect(main(page)).toHaveText("PR view · Refused");
+  await expect(main(page)).toHaveAccessibleName("PR view · Upload refused");
   await expect(button(page)).toHaveAttribute("data-run", "refused");
   // The danger token: #cf222e in light.
   expect(await colour()).toBe("rgb(207, 34, 46)");
@@ -378,9 +387,12 @@ test("The popover takes focus from the keyboard, keeps Tab in order, and gives i
   await page.keyboard.press("Tab");
   await page.keyboard.press("Tab");
   await expect(pop(page)).toHaveCount(0);
+  // End run from the keyboard: its section goes, and focus moves to the popover's first control.
   await main(page).click();
-  await pop(page).getByRole("button", { name: "End run" }).click();
+  await pop(page).getByRole("button", { name: "End run" }).focus();
+  await page.keyboard.press("Enter");
   await expect(main(page)).toHaveText("Analyse");
+  await expect(pop(page).getByRole("button", { name: "Analyse this PR" })).toBeFocused();
 });
 
 test("Signing out drops the account's kept prompts", async ({ context }) => {
@@ -415,7 +427,85 @@ test("A second tab of the browser that started the run offers Copy again, not a 
   await second.evaluate(() => navigator.clipboard.writeText(""));
   await pop(second).getByRole("button", { name: "Copy again" }).click();
   await expect.poll(() => clipboard(second)).toBe(prompt);
+
+  // With no change to the run, the second tab reads storage again on the first's `storage`
+  // events: the prompt dropped there, then kept again.
+  const [key, value] = await page.evaluate(() => {
+    const k = Object.keys(localStorage).find((k) => k.startsWith("beghu.prompt."))!;
+    return [k, localStorage.getItem(k)!] as const;
+  });
+  await page.evaluate((k) => localStorage.removeItem(k), key);
+  await expect(pop(second).getByRole("button", { name: "Copy a new link" })).toBeVisible();
+  await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, value] as const);
+  await expect(pop(second).getByRole("button", { name: "Copy again" })).toBeVisible();
+
   await pop(second).getByRole("button", { name: "End run" }).click();
   await expect(main(page)).toHaveText("Analyse");
   await second.close();
+});
+
+test("Signing out of one account keeps another account's prompts", async ({ context }) => {
+  // tomsj starts a run, then ilze-k signs in to the same browser and starts one on another PR.
+  const { page } = await openPr(context, "any");
+  await main(page).click();
+  await expect(main(page)).toHaveText("Waiting for agent");
+  const cookieAccount = () => page.evaluate(() => /(?:^|;\s*)beghu_acct=(\d+)/.exec(document.cookie)?.[1]);
+  const tomsj = await cookieAccount();
+  await page.goto("/auth/login?login=ilze-k");
+  await page.waitForURL((u) => u.pathname === "/issues");
+  const ilze = await cookieAccount();
+  expect(ilze).not.toBe(tomsj);
+  const theirs = await freshPr(page, false);
+  await page.goto(issueUrl(theirs));
+  await main(page).click();
+  await expect(main(page)).toHaveText("Waiting for agent");
+  const kept = (a: string | undefined) => page.evaluate((a) => Object.keys(localStorage).filter((k) => k.startsWith(`beghu.prompt.${a}.`)).length, a);
+  expect([await kept(tomsj), await kept(ilze)]).toEqual([1, 1]);
+
+  // Back to tomsj, and signed out of it: the browser is ilze-k's alone, whose prompt stays.
+  await page.locator('[data-perf="account"]').click();
+  const menu = page.locator('[data-perf="account-menu"]');
+  await expect(menu).toHaveCSS("position", "absolute");
+  await menu.getByRole("menuitem", { name: "Switch to tomsj" }).click();
+  await expect(page.locator('[data-perf="account"]')).toHaveText("tomsj");
+  await page.locator('[data-perf="account"]').click();
+  await expect(menu).toHaveCSS("position", "absolute");
+  await menu.getByRole("menuitem", { name: "Sign out of tomsj" }).click();
+  await expect(page.locator('[data-perf="account"]')).toHaveText("ilze-k");
+  await expect.poll(() => kept(tomsj)).toBe(0);
+  // Past the load's sweep and `/api/me`, which lists ilze-k alone.
+  await expect(page.locator('[data-perf="row"]').first()).toBeVisible();
+  expect(await kept(ilze)).toBe(1);
+
+  // ilze-k's run still offers Copy again.
+  await page.goto(issueUrl(theirs));
+  await page.locator('[data-perf="analyse-more"]').click();
+  await expect(pop(page).getByRole("button", { name: "Copy again" })).toBeVisible();
+  await pop(page).getByRole("button", { name: "End run" }).click();
+  await expect(main(page)).toHaveText("Analyse");
+});
+
+test("The longest label leaves the status row's chips whole at the panel's default width", async ({ context }) => {
+  const { page, pr } = await analysedPr(context);
+  // A 1200 px window, the panel at its default half: the full label (PR view · 100 behind ·
+  // Waiting for agent) with no room to wrap cut the number to 45 px of its 50 here.
+  await page.setViewportSize({ width: 1200, height: 800 });
+  // 100 commits pushed since the analysis, and a re-analysis waiting: PR view · 100 behind · ● Waiting.
+  await control("/push", { repo: "acme/web", number: pr.number, commits: 100 });
+  await expect(main(page)).toHaveText("PR view · 100 behind");
+  await page.locator('[data-perf="analyse-more"]').click();
+  await pop(page).getByRole("button", { name: "Analyse again" }).click();
+  await expect(main(page)).toHaveText("PR view · 100 behind · Waiting");
+  await expect(main(page)).toHaveAccessibleName("PR view · 100 behind · Waiting for agent");
+  await page.keyboard.press("Escape");
+  const whole = (perf: string) =>
+    page.locator(`[data-perf="${perf}"]`).evaluate((e) => ({ text: e.textContent, scroll: e.scrollWidth, client: e.clientWidth }));
+  const ref = await whole("detail-ref");
+  expect(ref.text).toBe(`web#${pr.number}`);
+  expect(ref.scroll, "the number is cut short").toBeLessThanOrEqual(ref.client);
+  const focus = await whole("focus-issue");
+  expect(focus.scroll, "Focus issue is cut short").toBeLessThanOrEqual(focus.client);
+  await page.locator('[data-perf="analyse-more"]').click();
+  await pop(page).getByRole("button", { name: "End run" }).click();
+  await expect(main(page)).toHaveText("PR view · 100 behind");
 });

@@ -32,4 +32,10 @@ run?: PrRun,
 /**
  * The account's analysis of the PR, if it has one.
  */
-analysis?: PrAnalysis, };
+analysis?: PrAnalysis, 
+/**
+ * `true` when the account's analyses couldn't be read: `run` and `analysis` are absent
+ * because they aren't known, not because there are none, and the panel keeps what it
+ * showed. Absent otherwise.
+ */
+run_unknown?: true, };

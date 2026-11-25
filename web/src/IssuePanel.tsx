@@ -774,7 +774,7 @@ function Body(props: {
         </div>
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
-        <div {...stylex.attrs(s.status)} data-k="status">
+        <div {...stylex.attrs(s.status, d().pr && s.statusPr)} data-k="status">
           <Show
             when={d().pr}
             fallback={
@@ -788,7 +788,7 @@ function Body(props: {
           </Show>
           <button
             type="button"
-            {...stylex.attrs(s.ref)}
+            {...stylex.attrs(s.ref, d().pr && s.keepsWhole)}
             data-perf="detail-ref"
             title={`${d().owner}/${d().repo}#${d().number} · click to copy the number`}
             onClick={(e) => copyRef(e, d())}
@@ -798,7 +798,7 @@ function Body(props: {
           <a
             href={focusHref()}
             noscroll
-            {...stylex.attrs(s.focus, focused() && s.focusOn)}
+            {...stylex.attrs(s.focus, focused() && s.focusOn, d().pr && s.keepsWhole)}
             data-perf="focus-issue"
             aria-current={focused() ? "true" : undefined}
             title={focused() ? "Focus view is on this issue" : "Show this issue's sub-issues or blocking chain as a tree of its own"}
@@ -1624,6 +1624,16 @@ const s = stylex.create({
     alignItems: "center",
     display: "flex",
     whiteSpace: "nowrap",
+  },
+  // A PR's row also holds the Analyse button, whose label gives way first (Analyse.tsx), and
+  // wraps in a panel too narrow for it all.
+  statusPr: {
+    flexWrap: "wrap",
+    rowGap: 8,
+  },
+  // A PR's number and Focus issue keep their text whole: the Analyse button gives way instead.
+  keepsWhole: {
+    flexShrink: 0,
   },
   badge: {
     borderRadius: 999,

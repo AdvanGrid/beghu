@@ -3,8 +3,10 @@
 //! accepted upload, the end call, an expiry); "N behind" as Fake GitHub's pushes move the PR's
 //! head, by `synchronize` webhooks and by the sweeps' probes when a webhook is lost; a force push
 //! that leaves the analysed head out of the PR's commits; GitHub refusing the commit list, lagging
-//! the head, or listing only 250 commits; the count coming later by its event while the read
-//! answers at once; an `analyses.db` that can't be read; and "last heard" told at most once a while.
+//! the head, or listing only 250 commits; a rate limit resting the count; GitHub down, and the
+//! counts read meanwhile made once it's back; the count coming later by its event while the read
+//! answers at once, one call however many reads; an `analyses.db` that can't be read; and "last
+//! heard" told at most once a while.
 
 mod common;
 
@@ -153,6 +155,21 @@ async fn analysed(s: &Stack, b: &Browser, number: i64) {
     assert_eq!(end_run(s, b, number).await, 204);
 }
 
+/// The PR's commit list, as Fake GitHub's fault rules name it.
+const COMMITS: &str = "GET /repos/*/*/pulls/*/commits";
+
+/// How many more calls to [`COMMITS`] the fake's `kind` rule (`fail` or `latency`) applies to:
+/// each call GitHub got uses one.
+async fn commit_calls_left(s: &Stack, kind: &str) -> u64 {
+    let st = s.fake("GET", "/state", Value::Null).await;
+    st["faults"][kind]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["endpoint"] == COMMITS)
+        .map_or(0, |f| f["remaining"].as_u64().unwrap())
+}
+
 /// A push to the PR's head branch: a derived commit on top, or with `force`, new history.
 async fn push(s: &Stack, number: i64, force: bool) -> String {
     let at = s
@@ -171,7 +188,10 @@ async fn the_pr_detail_shows_the_run_and_the_analysis_in_each_state() {
     let (mut b, number) = setup(&s).await;
     // Nothing yet: no run, no analysis, and neither field.
     let p = pr(&s, &mut b, number).await;
-    assert!(p.get("run").is_none() && p.get("analysis").is_none(), "{p}");
+    assert!(
+        p.get("run").is_none() && p.get("analysis").is_none() && p.get("run_unknown").is_none(),
+        "{p}"
+    );
 
     // Started from the panel: waiting for its agent, for 24 h.
     let (token, started) = start_run(&s, &b, number).await;
@@ -378,7 +398,7 @@ async fn a_commit_list_github_refuses_reads_as_outdated_and_is_asked_for_once() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_commit_list_github_fails_to_answer_reads_as_outdated_until_it_does() {
+async fn a_commit_list_github_fails_to_answer_reads_as_counting_until_it_does() {
     let s = start().await;
     let (b, number) = setup(&s).await;
     analysed(&s, &b, number).await;
@@ -389,8 +409,8 @@ async fn a_commit_list_github_fails_to_answer_reads_as_outdated_until_it_does() 
     )
     .await;
     push(&s, number, false).await;
-    pr_until(&s, &b, number, "outdated while GitHub fails", |p| {
-        p["analysis"]["behind"] == "outdated"
+    pr_until(&s, &b, number, "counting while GitHub fails", |p| {
+        p["analysis"]["behind"] == "counting"
     })
     .await;
     // Not kept: the next read counts.
@@ -412,17 +432,17 @@ async fn a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event() 
     let s = start().await;
     let (mut b, number) = setup(&s).await;
     analysed(&s, &b, number).await;
-    // GitHub takes 4 s to list the PR's commits.
+    // GitHub takes 4 s to list the PR's commits, for the next 100 calls.
     s.fake(
         "POST",
         "/faults/latency",
-        json!({ "endpoint": "GET /repos/*/*/pulls/*/commits", "ms": 4000 }),
+        json!({ "endpoint": COMMITS, "ms": 4000, "count": 100 }),
     )
     .await;
     let mut st = s.stream(&b).await;
     st.reset().await;
     push(&s, number, false).await;
-    // Until the mirror has the new head the PR reads at head; then outdated while it's counted.
+    // Until the mirror has the new head the PR reads at head; then counting while it's counted.
     // Every read answers at once.
     let read_at = until(10.0, "the mirror's head moved", || {
         let mut b = b.clone();
@@ -432,7 +452,7 @@ async fn a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event() 
             let p = pr(s, &mut b, number).await;
             let took = t.elapsed();
             assert!(took < Duration::from_secs(2), "the read took {took:?}");
-            (p["analysis"]["behind"] == "outdated").then_some(std::time::Instant::now())
+            (p["analysis"]["behind"] == "counting").then_some(std::time::Instant::now())
         }
     })
     .await;
@@ -440,7 +460,7 @@ async fn a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event() 
     let t = std::time::Instant::now();
     assert_eq!(
         pr(&s, &mut b, number).await["analysis"]["behind"],
-        "outdated"
+        "counting"
     );
     assert!(t.elapsed() < Duration::from_secs(2));
     // The count lands and tells the stream, which reads the PR again.
@@ -461,6 +481,8 @@ async fn a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event() 
     );
     assert_eq!(got["repo"], "acme/web");
     assert_eq!(pr(&s, &mut b, number).await["analysis"]["behind"], 1);
+    // However many reads there were, GitHub was asked once.
+    assert_eq!(commit_calls_left(&s, "latency").await, 99);
     s.fake("DELETE", "/faults", json!({})).await;
 }
 
@@ -520,6 +542,119 @@ async fn a_head_past_the_250_commits_github_lists_reads_as_outdated() {
         pr(&s, &mut b2, number).await["analysis"]["behind"],
         "outdated"
     );
+    // Resting: reads meanwhile don't ask GitHub again.
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({ "endpoint": COMMITS, "count": 50, "status": 500 }),
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(
+            pr(&s, &mut b2, number).await["analysis"]["behind"],
+            "outdated"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(commit_calls_left(&s, "fail").await, 50);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rate_limited_commit_list_rests_until_githubs_wait_is_over() {
+    let s = start().await;
+    let (mut b, number) = setup(&s).await;
+    analysed(&s, &b, number).await;
+    // GitHub's secondary rate limit, a minute's wait named.
+    s.fake(
+        "POST",
+        "/faults/fail",
+        json!({
+            "endpoint": COMMITS, "count": 50, "status": 403,
+            "limit": "secondary", "retry_after": 60,
+        }),
+    )
+    .await;
+    push(&s, number, false).await;
+    pr_until(&s, &b, number, "counting", |p| {
+        p["analysis"]["behind"] == "counting"
+    })
+    .await;
+    until(10.0, "the count asked GitHub", || async {
+        (commit_calls_left(&s, "fail").await == 49).then_some(())
+    })
+    .await;
+    // Past the passing failures' retries (2 s, then 4 s): every read still counting, and GitHub
+    // not asked again.
+    for _ in 0..8 {
+        assert_eq!(
+            pr(&s, &mut b, number).await["analysis"]["behind"],
+            "counting"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(commit_calls_left(&s, "fail").await, 49);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_count_read_while_github_is_down_is_made_once_its_back() {
+    let s = start_with(|c| {
+        c.github_probe_every = Duration::from_millis(300);
+        c.reconcile.feed_every = Duration::from_millis(50);
+    })
+    .await;
+    let (mut b, number) = setup(&s).await;
+    analysed(&s, &b, number).await;
+    let (_, d) = s.api(&mut b, &format!("/api/at/acme/web/{number}")).await;
+    let id = d["id"].as_i64().unwrap();
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(5)).await.as_deref(),
+        Some("up")
+    );
+    // The mirror has the push, unread by the panel.
+    push(&s, number, false).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "the push's read-back");
+        match st.event_within(Duration::from_millis(500)).await {
+            Some(e) if e.event == "ids" && common::ids_of(&e).contains(&id) => break,
+            _ => {}
+        }
+    }
+    // GitHub goes down: the stream's poller finds it so.
+    s.fake("POST", "/faults/down", json!({ "down": true }))
+        .await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(10)).await.as_deref(),
+        Some("down")
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            pr(&s, &mut b, number).await["analysis"]["behind"],
+            "counting"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    // Back: the count is made with no read to start it, and its event tells the stream.
+    s.fake("POST", "/faults/down", json!({ "down": false }))
+        .await;
+    assert_eq!(
+        st.github_within(Duration::from_secs(10)).await.as_deref(),
+        Some("up")
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no analysis event for the count"
+        );
+        let evs = analysis_events(&mut st, Duration::from_millis(200)).await;
+        if evs.iter().any(|e| e["number"] == number) {
+            break;
+        }
+    }
+    assert_eq!(pr(&s, &mut b, number).await["analysis"]["behind"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -527,7 +662,8 @@ async fn an_analyses_db_that_cant_be_read_leaves_the_pr_detail_without_run_or_an
     let s = start().await;
     let (mut b, number) = setup(&s).await;
     // Before this server first opens the account's `analyses.db`, it's made into a file that
-    // isn't a database (a disk fault): every use of it fails.
+    // isn't a database (a disk fault): every use of it fails. Written to the data dir, not
+    // through a public seam: no HTTP surface, the server's or Fake GitHub's, makes a disk fail.
     let dir = s.data.join("analyses");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("{}.db", b.account()));
@@ -539,6 +675,8 @@ async fn an_analyses_db_that_cant_be_read_leaves_the_pr_detail_without_run_or_an
         d["pr"].get("run").is_none() && d["pr"].get("analysis").is_none(),
         "{d}"
     );
+    // Not known, rather than none: the panel keeps what it showed.
+    assert_eq!(d["pr"]["run_unknown"], true, "{d}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

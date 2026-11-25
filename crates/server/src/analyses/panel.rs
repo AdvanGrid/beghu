@@ -1,31 +1,37 @@
 //! What the PR panel's Analyse button shows (#177), read with the PR's detail: the PR's run, when
 //! one is live or the last one expired, and a summary of its analysis, with how far the PR's head
-//! has moved past the analysed one ("N behind"). The read never waits on GitHub, and a failure to
-//! read the account's `analyses.db` leaves the run and the analysis out, logged: the PR's detail
-//! answers all the same.
+//! has moved past the analysed one ("N behind"). The read never waits on GitHub. A failure to
+//! read the account's `analyses.db` leaves the run and the analysis out, logged, and says so
+//! (`run_unknown`), so the panel keeps what it showed rather than take the run as gone: the PR's
+//! detail answers all the same.
 //!
 //! **"N behind"** is the analysed head's place in the PR's commit list (`GET …/pulls/{n}/commits`,
 //! 250 commits at most), counted up to the head the mirror has. A read that finds the heads
-//! differ and nothing kept for the pair says "outdated" and starts a count in the background, one
-//! per (account, PR, analysed head, current head) at a time, none while GitHub is down. A count
-//! is kept in `analyses.db`, so a new head costs one GitHub call however often the PR is opened,
-//! and tells the account's streams (`analysis`), so the panel reads the PR again. An analysed head
+//! differ and nothing kept for the pair says "counting" and starts a count in the background, one
+//! per (account, PR, analysed head, current head) at a time and [`COUNTS_AT_ONCE`] in all. While
+//! GitHub is down none starts: the pairs read meanwhile are counted once it's back. A count is
+//! kept in `analyses.db`, so a new head costs one GitHub call however often the PR is opened, and
+//! tells the account's streams (`analysis`), so the panel reads the PR again. An analysed head
 //! that isn't in the list (force-pushed away) is kept as "outdated". So is a list GitHub refuses
 //! (403, or a 404 while the PR is in sight): whether the App's Pull requests: read covers it
 //! without Contents: read is unproven against real GitHub (spec #174, "Checks against real
 //! GitHub"), so a refusal is logged once per process for each status. Nothing is kept when the
 //! mirror's head isn't in the list: GitHub's REST list may lag the GraphQL head the mirror read
-//! (tried again shortly, a few times), or the PR has more than the 250 commits it lists ("outdated",
-//! not asked about again for a while). A call that fails for a passing reason (no answer in time,
-//! a rate limit, a 301) is tried again the same way, and a later read counts afresh.
+//! (tried again shortly, a few times), or the PR has more than the 250 commits it lists
+//! ("outdated", not asked about again for a while). A rate limit rests the pair until GitHub's
+//! wait is over, and a 301 (the repo renamed, its webhooks bringing the new name) for a minute,
+//! "counting" meanwhile; a call that fails for another passing reason (no answer in time, a 5xx)
+//! is tried again shortly, and a later read counts afresh.
 
 use super::announce;
 use super::runs::{Producer, deadline_of};
 use crate::App;
 use crate::github::Shown;
 use serde::{Serialize, Serializer};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use ts_rs::TS;
 
 /// The PR's run, as the panel shows it.
@@ -72,11 +78,12 @@ pub struct PrAnalysis {
     pub parts: i64,
     pub purposes: i64,
     pub conflicts: i64,
-    /// How many commits the PR's head is past `headSha`, or `outdated` when that can't be
-    /// counted, or isn't yet (a count is on its way, and its `analysis` event brings it);
-    /// absent when the analysis is at the PR's head (or the mirror has no head for it).
+    /// How many commits the PR's head is past `headSha`; `outdated` when that can't be counted;
+    /// `counting` when it isn't yet (a count is on its way, or waits for GitHub, and its
+    /// `analysis` event brings it). Absent when the analysis is at the PR's head (or the mirror
+    /// has no head for it).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number | \"outdated\"")]
+    #[ts(optional, type = "number | \"outdated\" | \"counting\"")]
     pub behind: Option<Behind>,
 }
 
@@ -84,9 +91,10 @@ pub struct PrAnalysis {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Behind {
     Commits(i64),
-    /// The analysed head isn't in the PR's commit list, the list couldn't be read, or it's being
-    /// counted.
+    /// The analysed head isn't in the PR's commit list, or GitHub won't list it.
     Outdated,
+    /// Not known yet: a count is on its way, or waits for GitHub (down, or a rate limit).
+    Counting,
 }
 
 impl Serialize for Behind {
@@ -94,6 +102,7 @@ impl Serialize for Behind {
         match self {
             Behind::Commits(n) => s.serialize_i64(*n),
             Behind::Outdated => s.serialize_str("outdated"),
+            Behind::Counting => s.serialize_str("counting"),
         }
     }
 }
@@ -109,12 +118,22 @@ pub(crate) struct PanelPr<'a> {
     pub head_sha: Option<&'a str>,
 }
 
+/// The PR's panel, as read.
+#[derive(Debug, Default)]
+pub(crate) struct Panel {
+    pub run: Option<PrRun>,
+    pub analysis: Option<PrAnalysis>,
+    /// The account's `analyses.db` couldn't be read: whether the PR has a run or an analysis
+    /// isn't known.
+    pub unknown: bool,
+}
+
 /// The PR's run and analysis for its panel. Nothing for an account that has no `analyses.db`
-/// (it never started a run), which isn't made for the read, nor when it can't be read.
-pub(crate) async fn read(app: &App, pr: PanelPr<'_>) -> (Option<PrRun>, Option<PrAnalysis>) {
+/// (it never started a run), which isn't made for the read; unknown when it can't be read.
+pub(crate) async fn read(app: &App, pr: PanelPr<'_>) -> Panel {
     let account = pr.account;
     if !app.analyses().dbs.path(account).exists() {
-        return (None, None);
+        return Panel::default();
     }
     let (repo_id, number) = (pr.repo_id, pr.number);
     let read = app
@@ -130,13 +149,16 @@ pub(crate) async fn read(app: &App, pr: PanelPr<'_>) -> (Option<PrRun>, Option<P
     let (run, analysis) = match read {
         Ok(r) => r,
         // Deleted since (dormant, or disconnected): nothing left of it.
-        Err(dbrt::Error::Deleted) => return (None, None),
+        Err(dbrt::Error::Deleted) => return Panel::default(),
         Err(e) => {
             eprintln!(
-                "account {account}: reading the run and analysis of {}/{}#{number} for its panel: {e}; the PR's detail shows neither",
+                "account {account}: reading the run and analysis of {}/{}#{number} for its panel: {e}; the PR's detail says it doesn't know them",
                 pr.owner, pr.name
             );
-            return (None, None);
+            return Panel {
+                unknown: true,
+                ..Panel::default()
+            };
         }
     };
     let lifetimes = &app.cfg().runs;
@@ -179,11 +201,15 @@ pub(crate) async fn read(app: &App, pr: PanelPr<'_>) -> (Option<PrRun>, Option<P
             })
         }
     };
-    (run, analysis)
+    Panel {
+        run,
+        analysis,
+        unknown: false,
+    }
 }
 
-/// How far the PR's head is past `analysed`, as kept from a count; "outdated" while none is,
-/// with a count started for it.
+/// How far the PR's head is past `analysed`, as kept from a count; while none is, "counting"
+/// with a count started for it, or as the pair's rest says.
 async fn behind(app: &App, pr: &PanelPr<'_>, analysed: &str) -> Option<Behind> {
     let head = pr.head_sha?;
     if head == analysed {
@@ -210,19 +236,14 @@ async fn behind(app: &App, pr: &PanelPr<'_>, analysed: &str) -> Option<Behind> {
             return Some(Behind::Outdated);
         }
     }
-    start_count(
-        app,
-        CountKey {
-            account,
-            repo_id,
-            number,
-            analysed: analysed.to_owned(),
-            head: head.to_owned(),
-        },
-        pr.owner,
-        pr.name,
-    );
-    Some(Behind::Outdated)
+    let key = CountKey {
+        account,
+        repo_id,
+        number,
+        analysed: analysed.to_owned(),
+        head: head.to_owned(),
+    };
+    Some(start_count(app, key, pr.owner, pr.name))
 }
 
 /// What's kept, as the panel shows it: 0 (the mirror's head is at or before the analysed one) is
@@ -245,32 +266,156 @@ pub(crate) struct CountKey {
     pub head: String,
 }
 
+/// How many counts call GitHub at once, across accounts. A count is one to three calls with the
+/// account's own token, nothing a reader waits on: four keep a burst of PRs (a fixture's, a
+/// reviewer opening many in a row) from spending GitHub's secondary limit, which counts
+/// concurrent requests, while a PR's count still lands in seconds.
+const COUNTS_AT_ONCE: usize = 4;
 /// How long one call for the commit list waits for GitHub.
 const COUNT_WITHIN: Duration = Duration::from_secs(10);
 /// How many times a count is tried when it fails for a passing reason, the wait before the
-/// second try (doubled for each one after), and how long a PR past GitHub's list rests.
+/// second try (doubled for each one after), how long a PR past GitHub's list rests, and how long
+/// one GitHub answered 301 for.
 const COUNT_TRIES: u32 = 3;
 const COUNT_RETRY: Duration = Duration::from_secs(2);
 const PAST_LIST_RESTS: Duration = Duration::from_secs(10 * 60);
+const MOVED_RESTS: Duration = Duration::from_secs(60);
 /// The most commits GitHub lists for a PR ("Lists a maximum of 250 commits for a pull request").
 const LISTED_AT_MOST: usize = 250;
 
-/// Counts `key` in the background, unless a count of it is on its way or resting, or GitHub is
-/// down (the next read starts one).
-fn start_count(app: &App, key: CountKey, owner: &str, name: &str) {
-    if app.github().is_down() || !app.analyses().count_begins(&key) {
-        return;
+/// The counts on their way, their turns at GitHub, and the pairs resting or waiting for GitHub to
+/// be back. The app's, in [`super::Store`].
+pub(crate) struct Counts {
+    /// Each pair with a count on its way (`None`), or resting until when, read as what.
+    at: Mutex<HashMap<CountKey, Option<(Instant, Behind)>>>,
+    /// A count's turn at GitHub: see [`COUNTS_AT_ONCE`].
+    turns: tokio::sync::Semaphore,
+    /// The pairs read while GitHub was down, with their repo's owner and name: counted once it's
+    /// back.
+    after_down: Mutex<HashMap<CountKey, (String, String)>>,
+}
+
+impl Default for Counts {
+    fn default() -> Counts {
+        Counts {
+            at: Mutex::default(),
+            turns: tokio::sync::Semaphore::new(COUNTS_AT_ONCE),
+            after_down: Mutex::default(),
+        }
     }
+}
+
+impl Counts {
+    /// Whether a count of `key` may start now; if not, what the pair reads as meanwhile. If so,
+    /// it's on its way until its [`Counting`] guard drops.
+    fn begins(&self, key: &CountKey) -> Result<(), Behind> {
+        let mut all = self.at.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        all.retain(|_, rest| rest.is_none_or(|(until, _)| until > now));
+        match all.get(key) {
+            Some(None) => Err(Behind::Counting),
+            Some(Some((_, shows))) => Err(*shows),
+            None => {
+                all.insert(key.clone(), None);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A count on its way: dropped (done, stopped by the drain, or panicked), the pair is free to be
+/// counted again, or rests if the count said so.
+struct Counting {
+    app: App,
+    key: CountKey,
+    rest: Option<(Instant, Behind)>,
+}
+
+impl Counting {
+    /// The count is done, and the pair rests as `rest` says.
+    fn done(mut self, rest: Option<(Instant, Behind)>) {
+        self.rest = rest;
+    }
+}
+
+impl Drop for Counting {
+    fn drop(&mut self) {
+        let mut all = self
+            .app
+            .analyses()
+            .counts
+            .at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match self.rest {
+            Some(rest) => all.insert(self.key.clone(), Some(rest)),
+            None => all.remove(&self.key),
+        };
+    }
+}
+
+/// Counts `key` in the background, unless a count of it is on its way or resting; while GitHub is
+/// down, once it's back. What the pair reads as meanwhile.
+fn start_count(app: &App, key: CountKey, owner: &str, name: &str) -> Behind {
+    if app.github().is_down() {
+        after_down(app, key, owner, name);
+        return Behind::Counting;
+    }
+    if let Err(shows) = app.analyses().counts.begins(&key) {
+        return shows;
+    }
+    let on_way = Counting {
+        app: app.clone(),
+        key,
+        rest: None,
+    };
     let (owner, name) = (owner.to_owned(), name.to_owned());
     app.spawn(move |app| async move {
-        let rest = counted(&app, &key, &owner, &name).await;
-        app.analyses().count_done(&key, rest);
+        let Ok(_turn) = app.analyses().counts.turns.acquire().await else {
+            return;
+        };
+        let rest = counted(&app, &on_way.key, &owner, &name).await;
+        on_way.done(rest);
+    });
+    Behind::Counting
+}
+
+/// Keeps `key` to count once GitHub is back, with a job waiting for that if none is.
+fn after_down(app: &App, key: CountKey, owner: &str, name: &str) {
+    let mut waiting = app
+        .analyses()
+        .counts
+        .after_down
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let first = waiting.is_empty();
+    waiting.insert(key, (owner.to_owned(), name.to_owned()));
+    if !first {
+        return;
+    }
+    drop(waiting);
+    app.spawn(|app| async move {
+        let mut health = app.github().health();
+        if health.wait_for(|down| !*down).await.is_err() {
+            return;
+        }
+        let back = std::mem::take(
+            &mut *app
+                .analyses()
+                .counts
+                .after_down
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (key, (owner, name)) in back {
+            start_count(&app, key, &owner, &name);
+        }
     });
 }
 
-/// The count of `key`: kept and announced, or tried again for a passing failure. When the pair
-/// isn't to be asked about again before some time.
-async fn counted(app: &App, key: &CountKey, owner: &str, name: &str) -> Option<std::time::Instant> {
+/// The count of `key`: kept and announced, or tried again for a passing failure. Until when the
+/// pair isn't to be asked about again, if it rests, and what it reads as meanwhile.
+async fn counted(app: &App, key: &CountKey, owner: &str, name: &str) -> Option<(Instant, Behind)> {
     let (account, number) = (key.account, key.number);
     let mut wait = COUNT_RETRY;
     for tries in 1..=COUNT_TRIES {
@@ -280,15 +425,22 @@ async fn counted(app: &App, key: &CountKey, owner: &str, name: &str) -> Option<s
         let behind = match count(app, key, owner, name).await {
             Count::Kept(n) => n,
             Count::PastList => {
-                return Some(std::time::Instant::now() + PAST_LIST_RESTS);
+                return Some((Instant::now() + PAST_LIST_RESTS, Behind::Outdated));
+            }
+            Count::Rests(d, why) => {
+                eprintln!(
+                    "account {account}: counting how far {owner}/{name}#{number} is past its analysis: {why}; not asked again for {} s",
+                    d.as_secs()
+                );
+                return Some((Instant::now() + d, Behind::Counting));
             }
             Count::Passing(why) => {
                 eprintln!(
-                    "account {account}: counting how far {owner}/{name}#{number} is past its analysis: {why}; it reads as outdated for now{}",
+                    "account {account}: counting how far {owner}/{name}#{number} is past its analysis: {why}{}",
                     if tries < COUNT_TRIES {
-                        ", and is tried again"
+                        "; tried again"
                     } else {
-                        ""
+                        "; the next read counts again"
                     }
                 );
                 if tries < COUNT_TRIES {
@@ -325,6 +477,8 @@ enum Count {
     Kept(Option<i64>),
     /// The mirror's head is past the 250 commits GitHub lists: "outdated", kept nowhere.
     PastList,
+    /// Not to be asked for again for this long: a rate limit's wait, or a 301's rest.
+    Rests(Duration, String),
     /// It failed for a passing reason, or GitHub's list doesn't have the mirror's head yet:
     /// nothing to keep.
     Passing(String),
@@ -358,10 +512,13 @@ async fn count(app: &App, key: &CountKey, owner: &str, name: &str) -> Count {
     let shas = match listed {
         Ok(Shown::It(shas)) => shas,
         Ok(Shown::Gone) => return refused(&NOT_FOUND_LOGGED, "404"),
-        // Transferred since: its webhooks bring it under its new name.
-        Ok(Shown::Moved) => return Count::Passing("moved (301)".into()),
+        // Renamed since: its webhooks bring it under its new name.
+        Ok(Shown::Moved) => return Count::Rests(MOVED_RESTS, "moved (301)".into()),
         Err(crate::tokens::Error::GitHub(crate::github::Error::Status(403))) => {
             return refused(&FORBIDDEN_LOGGED, "403");
+        }
+        Err(crate::tokens::Error::GitHub(crate::github::Error::RateLimited(d))) => {
+            return Count::Rests(d, format!("GitHub's rate limit, for {} s", d.as_secs()));
         }
         Err(e) => return Count::Passing(e.to_string()),
     };
