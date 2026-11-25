@@ -22,12 +22,16 @@ import { issueUrl } from "./urls";
 test.describe.configure({ mode: "serial" });
 
 const SAMPLE = fileURLToPath(new URL("../../crates/analysis/tests/sample/analysis.json", import.meta.url));
-/** The sample's head: the PR is pushed to it. */
-const HEAD = "2222222222222222222222222222222222222222";
 
-/** The sample analysis, as a first analysis of the PR. */
-function sample(): Record<string, unknown> {
-  return { ...(JSON.parse(readFileSync(SAMPLE, "utf8")) as Record<string, unknown>), carried: [] };
+/** A head SHA no PR has had: each test's pushes are its own, however often the suite runs. */
+function newHead(): string {
+  return [...crypto.getRandomValues(new Uint8Array(20))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The sample analysis, as a first analysis of the PR at `head`. */
+function sample(head: string): Record<string, unknown> {
+  const a = JSON.parse(readFileSync(SAMPLE, "utf8")) as Record<string, unknown> & { pr: Record<string, unknown> };
+  return { ...a, pr: { ...a.pr, headSha: head }, carried: [] };
 }
 
 async function control(path: string, body: unknown): Promise<unknown> {
@@ -40,37 +44,42 @@ async function control(path: string, body: unknown): Promise<unknown> {
   return res.json();
 }
 
-type Pr = { owner: string; repo: string; number: number; kind: "pr" };
+type Pr = { owner: string; repo: string; number: number; kind: "pr"; head?: string };
 
 /** PRs this run of the spec has taken, so no two tests share one. */
 const taken = new Set<number>();
 
-/** An open PR of acme/web with no run and no analysis for tomsj, set up as the sample's PR. */
-async function freshPr(page: Page): Promise<Pr> {
+/**
+ * An open PR of acme/web with no run and no analysis for tomsj; with `asSample`, set up as the
+ * sample's PR (its description, and a push of its two files to a new head), to upload to.
+ */
+async function freshPr(page: Page, asSample: boolean): Promise<Pr> {
   const res = await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr is:open repo:acme/web")}`);
   for (const r of ((await res.json()) as { rows: { number: number }[] }).rows) {
     if (taken.has(r.number)) continue;
     const d = (await (await page.request.get(`/api/at/acme/web/${r.number}`)).json()) as { pr: { run?: unknown; analysis?: unknown } };
     if (d.pr.run || d.pr.analysis) continue;
     taken.add(r.number);
-    const description = (sample().pr as { description: string }).description;
+    if (!asSample) return { owner: "acme", repo: "web", number: r.number, kind: "pr" };
+    const head = newHead();
+    const description = (sample(head).pr as { description: string }).description;
     await control("/edit", { repo: "acme/web", number: r.number, body: description });
     await control("/push", {
       repo: "acme/web",
       number: r.number,
-      sha: HEAD,
+      sha: head,
       files: [
         { filename: "api/main.go", status: "modified", additions: 1, deletions: 0 },
         { filename: "api/orders/refund.go", status: "added", additions: 21, deletions: 0 },
       ],
     });
-    return { owner: "acme", repo: "web", number: r.number, kind: "pr" };
+    return { owner: "acme", repo: "web", number: r.number, kind: "pr", head };
   }
   throw new Error("no open PR in acme/web without a run or an analysis: ./dev-ctl reset");
 }
 
 /** Signed in as tomsj in `context`, with the clipboard allowed, the stream open, at the PR. */
-async function openPr(context: BrowserContext, pr?: Pr): Promise<{ page: Page; pr: Pr }> {
+async function openPr(context: BrowserContext, pr: Pr | "sample" | "any"): Promise<{ page: Page; pr: Pr }> {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const page = await context.newPage();
   await recordPushes(page);
@@ -78,7 +87,7 @@ async function openPr(context: BrowserContext, pr?: Pr): Promise<{ page: Page; p
   await page.goto("/auth/login?login=tomsj");
   await page.waitForURL((u) => u.pathname === "/issues");
   await live;
-  const at = pr ?? (await freshPr(page));
+  const at = typeof pr === "string" ? await freshPr(page, pr === "sample") : pr;
   await page.goto(issueUrl(at));
   await expect(button(page)).toBeVisible();
   return { page, pr: at };
@@ -115,7 +124,8 @@ async function newContext(browser: Browser): Promise<BrowserContext> {
 }
 
 test("Analyse copies the prompt and starts a run, whose label follows it live to PR view and N behind", async ({ context }) => {
-  const { page, pr } = await openPr(context);
+  const { page, pr } = await openPr(context, "sample");
+  const head = pr.head!;
   await expect(main(page)).toHaveText("Analyse");
   await expect(button(page)).toHaveAttribute("data-state", "analyse");
 
@@ -142,11 +152,11 @@ test("Analyse copies the prompt and starts a run, whose label follows it live to
   expect(await agent(token, "instructions")).toBe(200);
   await expect(main(page)).toHaveText("Agent working");
   await main(page).click();
-  await expect(pop(page).locator('[data-perf="analyse-status"]')).toHaveText(/^An agent is working at 2222222, last heard (just now|\dm ago)\. The run ends after 2 h idle\.$/);
+  await expect(pop(page).locator('[data-perf="analyse-status"]')).toHaveText(new RegExp(`^An agent is working at ${head.slice(0, 7)}, last heard (just now|\\dm ago)\\. The run ends after 2 h idle\\.$`));
   await expect(pop(page).locator("li[data-done]")).toHaveCount(2);
 
   // A refused upload: red, with its error count only.
-  const bad = sample();
+  const bad = sample(head);
   delete (bad.nodes as Record<string, unknown>[])[1]!.kind;
   const refused = await upload(token, bad);
   expect(refused.status).toBe(422);
@@ -156,9 +166,9 @@ test("Analyse copies the prompt and starts a run, whose label follows it live to
   await expect(pop(page).locator('[data-perf="analyse-status"]')).toHaveText(`Last upload refused: ${n} error${n === 1 ? "" : "s"}. The agent got the report and can upload again.`);
 
   // An accepted upload: PR view, and the popover's analysis.
-  expect((await upload(token, sample())).status).toBe(201);
+  expect((await upload(token, sample(head))).status).toBe(201);
   await expect(main(page)).toHaveText("PR view");
-  await expect(pop(page).locator('[data-perf="analyse-analysis"]')).toContainText(/Analysisat 2222222, (just now|\dm ago)/);
+  await expect(pop(page).locator('[data-perf="analyse-analysis"]')).toContainText(new RegExp(`Analysisat ${head.slice(0, 7)}, (just now|\\dm ago)`));
   await expect(pop(page).locator('[data-perf="analyse-analysis"]')).toContainText("5 parts · 2 purposes · 1 conflict");
   await expect(pop(page).locator("li[data-done]")).toHaveCount(3);
 
@@ -176,7 +186,7 @@ test("Analyse copies the prompt and starts a run, whose label follows it live to
 });
 
 test("Copy again copies the kept prompt; another browser's Copy a new link supersedes the run, and End run ends it", async ({ context, browser }) => {
-  const { page, pr } = await openPr(context);
+  const { page, pr } = await openPr(context, "any");
   await main(page).click();
   await expect(main(page)).toHaveText("Waiting for agent");
   const first = await clipboard(page);
@@ -217,7 +227,7 @@ test("Copy again copies the kept prompt; another browser's Copy a new link super
 });
 
 test("With no run the popover offers Analyse this PR and the CLI's command, which copies", async ({ context }) => {
-  const { page, pr } = await openPr(context);
+  const { page, pr } = await openPr(context, "any");
   await page.locator('[data-perf="analyse-more"]').click();
   const none = pop(page).locator('[data-perf="analyse-none"]');
   await expect(none.getByRole("button", { name: "Analyse this PR" })).toBeVisible();
@@ -234,7 +244,7 @@ test("With no run the popover offers Analyse this PR and the CLI's command, whic
 });
 
 test("The dot pulses, stops under reduced motion, and takes its token colour in both themes", async ({ context }) => {
-  const { page } = await openPr(context);
+  const { page } = await openPr(context, "any");
   await main(page).click();
   await expect(main(page)).toHaveText("Waiting for agent");
   const dot = main(page).locator("span[aria-hidden]");
