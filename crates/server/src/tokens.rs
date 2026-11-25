@@ -181,16 +181,39 @@ impl Tokens {
     /// Stores the pair a sign-in got for `account`, encrypted, and makes the account active
     /// again. Takes the account's lock, so it can't land in the middle of a refresh: one that
     /// was refused (and signs the account out) finishes first, and this pair wins.
-    pub async fn sign_in(&self, account: i64, pair: &TokenPair) -> Result<(), Error> {
+    ///
+    /// Never while Disconnect's mark is on it (`disconnected_at`: its `analyses.db` is to be
+    /// deleted). The write that activates it checks for the mark, and with one stores nothing:
+    /// `disconnected` is called with the mark, under the lock, to delete the file and clear that
+    /// mark, and the write is tried again. Disconnect marks the account in the write that signs
+    /// it out, so it lands wholly before the activating write (which then finishes the delete
+    /// first) or after it (and the account is signed out again, its delete to come): an active
+    /// account never has a mark, and nothing deletes what it analyses from then on.
+    pub async fn sign_in<F, Fut>(
+        &self,
+        account: i64,
+        pair: &TokenPair,
+        disconnected: F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(i64) -> Fut,
+        Fut: Future<Output = Result<(), control_db::Error>>,
+    {
         let _turn = self.lock(account).lock_owned().await;
-        store(
-            &self.control,
-            &self.key,
-            account,
-            pair,
-            AccountOnStore::Activate,
-        )
-        .await
+        loop {
+            match store(
+                &self.control,
+                &self.key,
+                account,
+                pair,
+                AccountOnStore::Activate,
+            )
+            .await?
+            {
+                None => return Ok(()),
+                Some(at) => disconnected(at).await?,
+            }
+        }
     }
 
     /// The stored pair, opened, if there's an active one that opens with this key.
@@ -363,20 +386,21 @@ async fn sign_out(control: &Control, lost: &Lost, account: i64, issued_at: i64) 
 /// What [`store`] does with the account's status.
 #[derive(Clone, Copy)]
 enum AccountOnStore {
-    /// A sign-in: the account is active again.
+    /// A sign-in: the account is active again, unless Disconnect's mark is on it.
     Activate,
     /// A refresh: the status stays as it is.
     Leave,
 }
 
-/// Writes `pair` for `account`, encrypted.
+/// Writes `pair` for `account`, encrypted. With [`AccountOnStore::Activate`] and Disconnect's
+/// mark on the account, writes nothing and returns the mark.
 async fn store(
     control: &Control,
     key: &crate::crypto::Keys,
     account: i64,
     pair: &TokenPair,
     then: AccountOnStore,
-) -> Result<(), Error> {
+) -> Result<Option<i64>, Error> {
     let seal = &key.tokens;
     let (a, r) = (
         seal.seal(&aad(account, Column::Access), pair.access.as_bytes()),
@@ -387,16 +411,21 @@ async fn store(
         pair.refresh_expires_at,
         crate::now_ms(),
     );
-    control
+    let marked = control
         .write(move |tx| {
+            if let AccountOnStore::Activate = then
+                && let Some(at) = q::account(tx, account)?.and_then(|a| a.disconnected_at)
+            {
+                return Ok(Some(at));
+            }
             q::put_tokens(tx, account, &a, ae, &r, re, issued)?;
             if let AccountOnStore::Activate = then {
                 q::set_account_status(tx, account, AccountStatus::Active.as_str())?;
             }
-            Ok(())
+            Ok(None)
         })
         .await?;
-    Ok(())
+    Ok(marked)
 }
 
 /// [`store`], retried while it fails for a passing reason: the old pair is already spent, so
@@ -425,7 +454,8 @@ async fn store_retrying(
                 );
                 return Err(e);
             }
-            Ok(()) => return Ok(()),
+            // A refresh never finds a mark: it leaves the status alone.
+            Ok(_) => return Ok(()),
         }
     }
     unreachable!("the loop returns by its last attempt")

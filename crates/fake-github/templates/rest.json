@@ -2360,6 +2360,175 @@
     },
     "status": 200
   },
+  "rest.pull": {
+    "request": "GET /repos/{owner}/{repo}/pulls/{number}",
+    "shape": {
+      "active_lock_reason": "never",
+      "additions": "number",
+      "assignee": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ],
+      "assignees": {
+        "[]": {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        }
+      },
+      "author_association": "string",
+      "auto_merge": "never",
+      "base": {
+        "label": "string",
+        "ref": "string",
+        "repo": {
+          "archived": "boolean",
+          "disabled": "boolean",
+          "full_name": "string",
+          "has_issues": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "owner": {
+            "login": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "private": "boolean",
+          "url": "string",
+          "visibility": "string"
+        },
+        "sha": "string"
+      },
+      "body": [
+        "string",
+        "null"
+      ],
+      "changed_files": "number",
+      "closed_at": [
+        "string",
+        "null"
+      ],
+      "comments": "number",
+      "commits": "number",
+      "created_at": "string",
+      "deletions": "number",
+      "diff_url": "string",
+      "draft": "boolean",
+      "head": {
+        "label": "string",
+        "ref": "string",
+        "repo": {
+          "archived": "boolean",
+          "disabled": "boolean",
+          "full_name": "string",
+          "has_issues": "boolean",
+          "html_url": "string",
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "owner": {
+            "login": "string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "private": "boolean",
+          "url": "string",
+          "visibility": "string"
+        },
+        "sha": "string"
+      },
+      "html_url": "string",
+      "id": "number",
+      "issue_url": "string",
+      "labels": {
+        "[]": {
+          "color": "string",
+          "default": "boolean",
+          "description": [
+            "string",
+            "null"
+          ],
+          "id": "number",
+          "name": "string",
+          "node_id": "string",
+          "url": "string"
+        }
+      },
+      "locked": "boolean",
+      "maintainer_can_modify": "boolean",
+      "merge_commit_sha": "never",
+      "mergeable": "never",
+      "merged": "boolean",
+      "merged_at": [
+        "string",
+        "null"
+      ],
+      "milestone": "never",
+      "node_id": "string",
+      "number": "number",
+      "patch_url": "string",
+      "requested_reviewers": {
+        "[]": "never"
+      },
+      "requested_teams": {
+        "[]": "never"
+      },
+      "review_comments": "number",
+      "state": "string",
+      "title": "string",
+      "updated_at": "string",
+      "url": "string",
+      "user": [
+        {
+          "avatar_url": "string",
+          "gravatar_id": "string",
+          "html_url": "string",
+          "id": "number",
+          "login": "string",
+          "node_id": "string",
+          "site_admin": "boolean",
+          "type": [
+            "string",
+            "null"
+          ],
+          "url": "string",
+          "user_view_type": "string"
+        },
+        "null"
+      ]
+    },
+    "status": 200
+  },
   "rest.pull_as_issue": {
     "request": "GET /repos/{owner}/{repo}/issues/{number} (a PR)",
     "shape": {
@@ -2466,6 +2635,115 @@
         },
         "null"
       ]
+    },
+    "status": 200
+  },
+  "rest.pull_commits": {
+    "request": "GET /repos/{owner}/{repo}/pulls/{number}/commits",
+    "shape": {
+      "[]": {
+        "author": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "comments_url": "string",
+        "commit": {
+          "author": [
+            {
+              "date": "string",
+              "email": [
+                "string",
+                "null"
+              ],
+              "name": "string"
+            },
+            "null"
+          ],
+          "comment_count": "number",
+          "committer": {
+            "date": "string",
+            "email": [
+              "string",
+              "null"
+            ],
+            "name": "string"
+          },
+          "message": "string",
+          "tree": {
+            "sha": "string",
+            "url": "string"
+          },
+          "url": "string",
+          "verification": {
+            "payload": "never",
+            "reason": "string",
+            "signature": "never",
+            "verified": "boolean",
+            "verified_at": "never"
+          }
+        },
+        "committer": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "html_url": "string",
+        "node_id": "string",
+        "parents": {
+          "[]": {
+            "html_url": "string",
+            "sha": "string",
+            "url": "string"
+          }
+        },
+        "sha": "string",
+        "url": "string"
+      }
+    },
+    "status": 200
+  },
+  "rest.pull_files": {
+    "request": "GET /repos/{owner}/{repo}/pulls/{number}/files",
+    "shape": {
+      "[]": {
+        "additions": "number",
+        "blob_url": "string",
+        "changes": "number",
+        "contents_url": "string",
+        "deletions": "number",
+        "filename": "string",
+        "previous_filename?": "string",
+        "raw_url": "string",
+        "sha": "string",
+        "status": "string"
+      }
     },
     "status": 200
   },

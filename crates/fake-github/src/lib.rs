@@ -243,6 +243,7 @@ impl Fake {
             .merge(hook_deliveries::router())
             .merge(graphql::router())
             .merge(repos::router())
+            .merge(pulls::router())
             .merge(events::router())
             .merge(attachments::router())
             // Not GitHub: the web's image hosts, which posts name (`web_hosts.rs`).

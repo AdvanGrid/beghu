@@ -51,8 +51,8 @@ fn collect<T: TS + 'static + ?Sized>(
     T::visit_dependencies(&mut Visit { cfg, seen, out });
 }
 
-/// The types in reading order: the analysis top-down, then the split procedure's, the previous
-/// analysis's skeleton and the report. `body` checks the list against what the roots reach.
+/// The types in reading order: the analysis top-down, then the split procedure's, the run's
+/// `pr.json`, the previous analysis's skeleton and the report. `body` checks the list against what the roots reach.
 macro_rules! in_order {
     ($cfg:expr, $out:expr, $names:expr; $($t:ty),* $(,)?) => {
         $(
@@ -93,6 +93,7 @@ pub fn body() -> String {
     );
     out.push(FRAGMENT.trim_end().to_owned());
     in_order!(cfg, out, names;
+        PinnedPr, PinnedBase, PinnedFile, PinnedStats, PinnedIssue, PinnedComment, Unreached,
         PreviousIds, PreviousNode, PreviousEdge, Vocabulary, VocabularyFacet, VocabularyPurpose,
         Report, Finding,
     );
@@ -102,6 +103,7 @@ pub fn body() -> String {
     collect::<Analysis>(cfg, &mut seen, &mut reached);
     collect::<Split>(cfg, &mut seen, &mut reached);
     collect::<Hint>(cfg, &mut seen, &mut reached);
+    collect::<PinnedPr>(cfg, &mut seen, &mut reached);
     collect::<PreviousIds>(cfg, &mut seen, &mut reached);
     collect::<Vocabulary>(cfg, &mut seen, &mut reached);
     collect::<Report>(cfg, &mut seen, &mut reached);

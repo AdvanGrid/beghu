@@ -29,6 +29,17 @@ SELECT r.id, r.owner, r.name, r.private AS "private: bool", r.archived AS "archi
        r.installation_id AS "installation_id!"
 FROM repos r WHERE r.installation_id IS NOT NULL ORDER BY r.owner, r.name;
 
+-- The re-read of the visible repos has written them, at :now (Unix seconds).
+-- name: set_roles_read :exec
+-- param: now i64
+INSERT INTO roles_read (id, at) VALUES (1, :now)
+ON CONFLICT (id) DO UPDATE SET at = excluded.at;
+
+-- Whether the visible repos were ever read into this mirror: an empty list then means the
+-- account sees no repo.
+-- name: roles_read :one
+SELECT EXISTS (SELECT 1 FROM roles_read) AS "read!: bool";
+
 -- The account can no longer see the repo: no installation, no role. Its row stays while stubs
 -- point into it.
 -- name: forget_visible_repo :exec

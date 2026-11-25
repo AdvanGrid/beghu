@@ -97,6 +97,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis-db"
+version = "0.0.0"
+dependencies = [
+ "dbrt",
+ "rusqlite",
+ "sqlcheck",
+ "tokio",
+]
+
+[[package]]
 name = "analysis-wasm"
 version = "0.0.0"
 dependencies = [
@@ -193,6 +203,8 @@ name = "beghu"
 version = "0.0.0"
 dependencies = [
  "aes-gcm",
+ "analysis",
+ "analysis-db",
  "axum",
  "base64 0.22.1",
  "brotli 8.0.4",

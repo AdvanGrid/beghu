@@ -54,7 +54,8 @@ CI runs all of these; run them before you commit:
 ## Rules
 
 - **SQL lives only in the database crates**: `crates/sqlcheck`, `crates/dbrt`, `crates/mirror-db`,
-  `crates/control-db` and `crates/fake-db` (Fake GitHub's truth). Add a named query to a schema
+  `crates/control-db`, `crates/fake-db` (Fake GitHub's truth) and `crates/analysis-db` (each
+  account's analysis runs and analyses, migrated in place only). Add a named query to a schema
   crate's `queries/` (or a migration to its `migrations/`) and call the function the build
   generates for it. Clippy fails on rusqlite `prepare`/`execute`/`query_*`/`pragma*` anywhere
   else.

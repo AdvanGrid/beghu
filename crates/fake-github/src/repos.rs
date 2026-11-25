@@ -66,7 +66,7 @@ pub(crate) fn router() -> Router<Fake> {
 }
 
 #[derive(Deserialize)]
-struct Params {
+pub(crate) struct Params {
     per_page: Option<i64>,
     page: Option<i64>,
     state: Option<String>,
@@ -76,15 +76,15 @@ struct Params {
 }
 
 impl Params {
-    fn per_page(&self) -> i64 {
+    pub(crate) fn per_page(&self) -> i64 {
         self.per_page.unwrap_or(30).clamp(1, 100)
     }
 
-    fn page(&self) -> i64 {
+    pub(crate) fn page(&self) -> i64 {
         self.page.unwrap_or(1).max(1)
     }
 
-    fn offset(&self) -> i64 {
+    pub(crate) fn offset(&self) -> i64 {
         (self.page() - 1) * self.per_page()
     }
 
@@ -99,7 +99,7 @@ impl Params {
 }
 
 /// A page of JSON with GitHub's `Link` header: `next` while the page came back full.
-fn paged(
+pub(crate) fn paged(
     headers: &HeaderMap,
     path: &str,
     p: &Params,
@@ -138,7 +138,7 @@ fn paged(
 }
 
 /// The repo `owner/name` if the token can see it; GitHub's 404 if not.
-async fn visible_repo(
+pub(crate) async fn visible_repo(
     fake: &Fake,
     token: AnyToken,
     owner: String,

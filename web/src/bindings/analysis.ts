@@ -1273,6 +1273,123 @@ export type Fragment = Pick<Analysis, "version"> & Partial<Omit<Analysis, "purpo
 };
 
 /**
+ * `pr.json`: the PR as the run pinned it on its first fetch. It doesn't change during the run: a
+ * push after the pin needs a new run.
+ */
+export type PinnedPr = {
+  /**
+   * `owner/repo`.
+   */
+  repo: string,
+  number: number,
+  title: string,
+  /**
+   * The description, verbatim. Quote it word for word in `description` evidence.
+   */
+  body: string,
+  url: string,
+  /**
+   * The author's login.
+   */
+  author: string,
+  /**
+   * The head commit the run pinned: check it out, and write it to `pr.headSha`.
+   */
+  headSha: string,
+  base: PinnedBase,
+  /**
+   * Every changed file, as GitHub lists them. Each one goes on exactly one node.
+   */
+  files: Array<PinnedFile>,
+  stats: PinnedStats,
+  /**
+   * The issues the PR links to that the run could read: its closing references, and the
+   * issues its description names (`#N`, `owner/repo#N`, an issue URL), one hop, in repos the
+   * account syncs. Only these may be quoted in `issue` evidence.
+   */
+  issues: Array<PinnedIssue>,
+  /**
+   * Every other reference, with why the run didn't serve it. You may read them with your own
+   * tools; list each in `coverage.references`.
+   */
+  unreached: Array<Unreached>,
+};
+
+/**
+ * The PR's base branch, and its tip when the run pinned it. Your merge base is
+ * `git merge-base <sha> <head SHA>`.
+ */
+export type PinnedBase = {
+  ref: string,
+  sha: string,
+};
+
+export type PinnedFile = {
+  /**
+   * Repo-relative, at head (for a removed file, where it was).
+   */
+  path: string,
+  /**
+   * Where a renamed file was before.
+   */
+  previousPath?: string,
+  /**
+   * GitHub's word for the change: `added`, `removed`, `modified`, `renamed`, `copied`,
+   * `changed` or `unchanged`.
+   */
+  status: string,
+  additions: number,
+  deletions: number,
+};
+
+export type PinnedStats = {
+  files: number,
+  additions: number,
+  deletions: number,
+};
+
+/**
+ * A linked issue the run served, with its comments, as the account's mirror held them when the
+ * run pinned.
+ */
+export type PinnedIssue = {
+  /**
+   * `owner/repo`.
+   */
+  repo: string,
+  number: number,
+  title: string,
+  body: string,
+  /**
+   * Oldest first.
+   */
+  comments: Array<PinnedComment>,
+};
+
+export type PinnedComment = {
+  /**
+   * The author's login, when GitHub still knows it.
+   */
+  author?: string,
+  body: string,
+};
+
+/**
+ * A reference the run didn't serve.
+ */
+export type Unreached = {
+  /**
+   * As the PR wrote it, normalised to `owner/repo#N`.
+   */
+  ref: string,
+  /**
+   * Why, in words: the repo isn't one the account syncs, or the number names a PR or nothing
+   * the mirror holds.
+   */
+  reason: string,
+};
+
+/**
  * `previous-ids.json`: the previous analysis's node and line IDs, nothing else. Reuse them where
  * the code is the same; every one this analysis drops goes in `carried`.
  */

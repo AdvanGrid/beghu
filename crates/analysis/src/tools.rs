@@ -1,6 +1,7 @@
 //! The shapes the split procedure's tools read and write (`split.json`, a fragment's `hints`),
-//! the previous analysis's skeleton the run serves (`previous-ids.json`, `vocabulary.json`) and
-//! the validator's report. They're generated into `schema.ts` with the analysis's own types.
+//! the PR as the run pins it (`pr.json`), the previous analysis's skeleton the run serves
+//! (`previous-ids.json`, `vocabulary.json`) and the validator's report. They're generated into
+//! `schema.ts` with the analysis's own types.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -208,6 +209,107 @@ pub enum ResolutionHow {
     Added,
     Folded,
     Rejected,
+}
+
+/// `pr.json`: the PR as the run pinned it on its first fetch. It doesn't change during the run: a
+/// push after the pin needs a new run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedPr {
+    /// `owner/repo`.
+    pub repo: String,
+    pub number: u32,
+    pub title: String,
+    /// The description, verbatim. Quote it word for word in `description` evidence.
+    pub body: String,
+    pub url: String,
+    /// The author's login.
+    pub author: String,
+    /// The head commit the run pinned: check it out, and write it to `pr.headSha`.
+    pub head_sha: String,
+    pub base: PinnedBase,
+    /// Every changed file, as GitHub lists them. Each one goes on exactly one node.
+    pub files: Vec<PinnedFile>,
+    pub stats: PinnedStats,
+    /// The issues the PR links to that the run could read: its closing references, and the
+    /// issues its description names (`#N`, `owner/repo#N`, an issue URL), one hop, in repos the
+    /// account syncs. Only these may be quoted in `issue` evidence.
+    pub issues: Vec<PinnedIssue>,
+    /// Every other reference, with why the run didn't serve it. You may read them with your own
+    /// tools; list each in `coverage.references`.
+    pub unreached: Vec<Unreached>,
+}
+
+/// The PR's base branch, and its tip when the run pinned it. Your merge base is
+/// `git merge-base <sha> <head SHA>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedBase {
+    #[serde(rename = "ref")]
+    #[ts(rename = "ref")]
+    pub reference: String,
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(optional_fields)]
+pub struct PinnedFile {
+    /// Repo-relative, at head (for a removed file, where it was).
+    pub path: String,
+    /// Where a renamed file was before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    /// GitHub's word for the change: `added`, `removed`, `modified`, `renamed`, `copied`,
+    /// `changed` or `unchanged`.
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedStats {
+    pub files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// A linked issue the run served, with its comments, as the account's mirror held them when the
+/// run pinned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedIssue {
+    /// `owner/repo`.
+    pub repo: String,
+    pub number: u32,
+    pub title: String,
+    pub body: String,
+    /// Oldest first.
+    pub comments: Vec<PinnedComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(optional_fields)]
+pub struct PinnedComment {
+    /// The author's login, when GitHub still knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub body: String,
+}
+
+/// A reference the run didn't serve.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Unreached {
+    /// As the PR wrote it, normalised to `owner/repo#N`.
+    #[serde(rename = "ref")]
+    #[ts(rename = "ref")]
+    pub reference: String,
+    /// Why, in words: the repo isn't one the account syncs, or the number names a PR or nothing
+    /// the mirror holds.
+    pub reason: String,
 }
 
 /// `previous-ids.json`: the previous analysis's node and line IDs, nothing else. Reuse them where

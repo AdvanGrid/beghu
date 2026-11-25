@@ -4938,3 +4938,123 @@ async fn relationship_writes_need_triage_and_an_other_end_the_user_can_see() {
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["message"], "Resource not accessible by integration");
 }
+
+/// Every page of a paged list, followed by its `Link` headers' `next`.
+async fn all_pages(fake: &Fake, path: &str, token: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut next = Some(format!("{}{path}", fake.api));
+    while let Some(url) = next.take() {
+        let res = fake
+            .http
+            .get(&url)
+            .bearer_auth(token.as_str().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{url}");
+        next = res
+            .headers()
+            .get("link")
+            .and_then(|l| l.to_str().ok())
+            .and_then(|l| {
+                l.split(',')
+                    .find(|p| p.contains("rel=\"next\""))
+                    .and_then(|p| p.split(['<', '>']).nth(1))
+                    .map(str::to_owned)
+            });
+        let page: Vec<Value> = res.json().await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        out.extend(page);
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_prs_head_files_and_commits_follow_its_pushes_up_to_githubs_caps() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let items: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pr = items
+        .iter()
+        .find(|i| i.get("pull_request").is_some())
+        .unwrap()["number"]
+        .as_i64()
+        .unwrap();
+    let issue = items
+        .iter()
+        .find(|i| i.get("pull_request").is_none())
+        .unwrap()["number"]
+        .as_i64()
+        .unwrap();
+    let base = format!("/repos/acme/web/pulls/{pr}");
+
+    // The PR, its files and its commits agree: the last commit is the head.
+    let check = |pull: &Value, files: &[Value], commits: &[Value]| {
+        let sha = pull["head"]["sha"].as_str().unwrap();
+        assert_eq!(sha.len(), 40);
+        assert_eq!(pull["commits"], commits.len());
+        assert_eq!(commits.last().unwrap()["sha"], sha);
+        assert_eq!(pull["changed_files"], files.len());
+    };
+    let pull: Value = fake.get(&base, &token).await.json().await.unwrap();
+    let files = all_pages(&fake, &format!("{base}/files"), &token).await;
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    check(&pull, &files, &commits);
+    let added: i64 = files.iter().map(|f| f["additions"].as_i64().unwrap()).sum();
+    assert_eq!(pull["additions"], added);
+    // An issue's number isn't a PR's.
+    let res = fake
+        .get(&format!("/repos/acme/web/pulls/{issue}"), &token)
+        .await;
+    assert_eq!(res.status(), 404);
+
+    // A push moves the head and adds a commit; one naming files makes them the PR's.
+    let sha = "abcdef0123456789abcdef0123456789abcdef01";
+    let pushed = fake
+        .control(
+            reqwest::Method::POST,
+            "/push",
+            json!({
+                "repo": "acme/web", "number": pr, "sha": sha,
+                "files": [{ "filename": "b.rs", "previous_filename": "a.rs", "status": "renamed", "additions": 2, "deletions": 1 }],
+            }),
+        )
+        .await;
+    assert_eq!(pushed["head"], sha);
+    let pull: Value = fake.get(&base, &token).await.json().await.unwrap();
+    let files = all_pages(&fake, &format!("{base}/files"), &token).await;
+    let now = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    check(&pull, &files, &now);
+    assert_eq!(now.len(), commits.len() + 1);
+    assert_eq!(
+        now[commits.len() - 1]["sha"],
+        commits.last().unwrap()["sha"]
+    );
+    assert_eq!(files[0]["previous_filename"], "a.rs");
+    assert_eq!(
+        (pull["additions"].clone(), pull["deletions"].clone()),
+        (json!(2), json!(1))
+    );
+
+    // Past 3,000 files the PR counts them all, and the list stops at 3,000.
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": pr, "file_count": 3001 }),
+    )
+    .await;
+    let pull: Value = fake.get(&base, &token).await.json().await.unwrap();
+    assert_eq!(pull["changed_files"], 3001);
+    let files = all_pages(&fake, &format!("{base}/files?per_page=100"), &token).await;
+    assert_eq!(files.len(), 3000);
+}

@@ -1,0 +1,17 @@
+[package]
+name = "analysis-db"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "The per-account analyses schema (`analyses.db`): its migrations, its checked named queries, and `Analyses`, which opens each account's file on first use."
+
+[dependencies]
+rusqlite = { workspace = true }
+dbrt = { workspace = true }
+tokio = { workspace = true }
+
+[build-dependencies]
+sqlcheck = { workspace = true }
+
+[lints]
+workspace = true
