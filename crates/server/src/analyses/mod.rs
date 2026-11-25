@@ -124,17 +124,18 @@ impl Store {
         })
     }
 
-    /// A new timer for the live run: what wakes it.
-    fn timer(&self, account: i64, run: &str) -> Arc<tokio::sync::Notify> {
+    /// A new timer for the live run: what wakes it. `None` when the run has one already.
+    fn timer(&self, account: i64, run: &str) -> Option<Arc<tokio::sync::Notify>> {
+        let mut all = self.timers.lock().unwrap_or_else(|e| e.into_inner());
+        if all.contains_key(run) {
+            return None;
+        }
         let woken = Arc::new(tokio::sync::Notify::new());
-        self.timers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(run.to_owned(), (account, woken.clone()));
-        woken
+        all.insert(run.to_owned(), (account, woken.clone()));
+        Some(woken)
     }
 
-    /// The run's timer stopped: it's forgotten, unless a newer one replaced it.
+    /// The run's timer stopped: it's forgotten.
     fn timer_done(&self, run: &str, woken: &Arc<tokio::sync::Notify>) {
         let mut all = self.timers.lock().unwrap_or_else(|e| e.into_inner());
         if all.get(run).is_some_and(|(_, w)| Arc::ptr_eq(w, woken)) {

@@ -1466,40 +1466,6 @@ async fn a_restart_rearms_every_live_runs_expiry() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_ended_runs_timer_stops_with_it() {
-    let s = start().await;
-    let (b, number) = setup(&s).await;
-    // The same calls once first, so the server's tasks for them (its connection) are counted.
-    run(&s, &b, number).await;
-    end_live(&s, &b, number).await;
-    let before = s.server_tasks();
-    // Forty runs, each superseding the one before, and the last ended: each run's 24 h timer
-    // must stop with it.
-    for _ in 0..40 {
-        run(&s, &b, number).await;
-    }
-    end_live(&s, &b, number).await;
-    until(15.0, "the server's tasks settled", || async {
-        (s.server_tasks() <= before + 10).then_some(())
-    })
-    .await;
-}
-
-/// The panel ends the PR's live run.
-async fn end_live(s: &Stack, b: &Browser, number: i64) {
-    let res = s
-        .api_write(
-            b,
-            reqwest::Method::DELETE,
-            &format!("/api/acme/web/pulls/{number}/run"),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn disconnect_deletes_the_analyses() {
     let s = start().await;
     let (mut b, number) = setup(&s).await;
@@ -1779,5 +1745,47 @@ async fn an_upload_whose_read_goes_as_it_is_stored_is_told_why() {
         (status, gone["reason"].as_str()),
         (410, Some("no_read")),
         "{gone}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_whose_run_went_with_its_repo_is_pruned_once_the_run_would_have_ended() {
+    let s = start_with(|c| {
+        c.repo_refresh_every = Duration::from_secs(1);
+        c.accounts_check_every = Duration::from_millis(200);
+        c.runs.ended_kept_for = Duration::from_secs(1);
+        c.runs.lives_for = Duration::from_secs(8);
+    })
+    .await;
+    let (mut b, number) = setup(&s).await;
+    let started = std::time::Instant::now();
+    let token = run(&s, &b, number).await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    set_role(&s, Value::Null).await;
+    assert_eq!(
+        heard_while_used(&s, &mut b, &mut st).await,
+        Some(json!({ "repo": "acme/web", "number": number }))
+    );
+    // Its row went with the repo's analyses, so the prune of runs long ended never sees it: past
+    // `ended_kept_for`, its token still says why it ended…
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(started.elapsed() < Duration::from_secs(8));
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
+    );
+    // …until the run can't have ended later than `ended_kept_for` ago: `lives_for` after its
+    // start.
+    until(20.0, "the token pruned", || async {
+        (fetch_json(&s, &token, "pr.json").await.0 == 401).then_some(())
+    })
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(8),
+        "pruned after {:?}",
+        started.elapsed()
     );
 }

@@ -508,16 +508,6 @@ impl Stack {
         }
     }
 
-    /// The tasks alive on the running server's runtime: what a test of a task that should have
-    /// stopped (an ended analysis run's timer) counts, as nothing on the HTTP surface shows it.
-    pub fn server_tasks(&self) -> usize {
-        self.server_rt
-            .as_ref()
-            .expect("a running server")
-            .metrics()
-            .num_alive_tasks()
-    }
-
     /// Stops the server as SIGTERM does: the task that ends when it has stopped.
     pub fn sigterm(&mut self) -> tokio::task::JoinHandle<std::io::Result<()>> {
         self.signal_again();

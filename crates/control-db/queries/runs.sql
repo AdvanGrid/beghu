@@ -63,9 +63,14 @@ WHERE github_user_id = :github_user_id AND disconnected_at = :at;
 -- param: reason &str
 UPDATE run_tokens SET ended_reason = :reason WHERE run_id = :run_id;
 
--- The accounts with runs' tokens: the daily check prunes their long-ended runs.
+-- The accounts with runs' tokens whose `analyses.db` may hold runs: startup re-arms their live
+-- runs' timers, and the daily check prunes their long-ended runs. Not a dormant account, nor one
+-- whose disconnect's delete may be under way: their files are gone, or going.
 -- name: run_token_accounts :many
-SELECT DISTINCT github_user_id FROM run_tokens ORDER BY github_user_id;
+SELECT DISTINCT t.github_user_id FROM run_tokens t
+JOIN accounts a ON a.github_user_id = t.github_user_id
+WHERE a.status <> 'dormant' AND a.disconnected_at IS NULL
+ORDER BY t.github_user_id;
 
 -- Why the run ended, as its token keeps it once its row is gone with its repo's analyses: NULL
 -- while the row says.

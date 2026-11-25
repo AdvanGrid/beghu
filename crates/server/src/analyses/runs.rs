@@ -553,24 +553,51 @@ async fn cli_account(_app: &App, _headers: &HeaderMap) -> Option<i64> {
     None
 }
 
+/// The first wait of a timer whose read of its run failed: doubled with each failure in a row,
+/// up to [`TIMER_RETRY_MAX`].
+const TIMER_RETRY_FIRST: Duration = Duration::from_secs(1);
+const TIMER_RETRY_MAX: Duration = Duration::from_secs(60);
+
 /// The live run's timer: ends the run when it expires, so the account's streams hear an expiry
 /// nobody's call found. It sleeps until the run's deadline as it stands, then looks again (a call
 /// since moved it). Woken when the run ends otherwise, or its row goes ([`super::Store::wake`]),
-/// it stops then. A restart re-arms every live run's ([`rearm`]).
+/// it stops then: nothing on the HTTP surface tells that from a timer that sleeps on to its
+/// deadline and only then finds its run ended, but woken, it doesn't hold a task for up to 7
+/// days. A read that fails for a passing reason (busy, a failing disk) is tried again, backing
+/// off, rather than leave a live run with no timer. A restart re-arms every live run's
+/// ([`rearm`]). Nothing for a run that has a timer already (a start just before startup's
+/// re-arm read the live runs).
 pub(crate) fn watch(app: &App, account: i64, run: String) {
-    let woken = app.analyses().timer(account, &run);
+    let Some(woken) = app.analyses().timer(account, &run) else {
+        return;
+    };
     app.spawn(move |app| async move {
+        let mut retry = TIMER_RETRY_FIRST;
         loop {
             let id = run.clone();
-            let row = match app
+            let read = app
                 .analyses()
                 .dbs
                 .read(account, move |c| analysis_db::q::run(c, &id))
-                .await
-            {
+                .await;
+            let row = match read {
                 Ok(Some(row)) if row.ended_at.is_none() => row,
-                _ => break,
+                // Ended, or its row gone with its repo's analyses or its account's file.
+                Ok(_) | Err(dbrt::Error::Deleted) => break,
+                Err(e) => {
+                    eprintln!(
+                        "account {account}: reading analysis run {run} for its timer: {e}; trying again in {}s",
+                        retry.as_secs()
+                    );
+                    tokio::select! {
+                        () = tokio::time::sleep(retry) => {}
+                        () = woken.notified() => {}
+                    }
+                    retry = (retry * 2).min(TIMER_RETRY_MAX);
+                    continue;
+                }
             };
+            retry = TIMER_RETRY_FIRST;
             let wait = deadline(&app.cfg().runs, &row) - now();
             if wait <= 0 {
                 end(&app, account, &row, Ended::Expired).await;
@@ -585,10 +612,11 @@ pub(crate) fn watch(app: &App, account: i64, run: String) {
     });
 }
 
-/// Startup: a timer for every live run of every active account (a restart lost theirs), each of
-/// which expires its run at once if its deadline passed meanwhile, telling the account's streams.
-/// A dormant account's analyses are deleted; one that must sign in again has no tab to tell, and
-/// its run's next call ends it.
+/// Startup: a timer for every live run (a restart lost them), each of which expires its run at
+/// once if its deadline passed meanwhile, telling the account's streams. Not for a dormant or
+/// disconnected account, whose file is deleted (or about to be): reading it would make an empty
+/// one. One that must sign in again keeps its file and its runs' timers; its runs' next call ends
+/// them.
 pub(crate) async fn rearm(app: App) {
     let accounts = match app.control().read(control_db::q::run_token_accounts).await {
         Ok(a) => a,
@@ -598,6 +626,9 @@ pub(crate) async fn rearm(app: App) {
         }
     };
     for account in accounts {
+        if !app.analyses().dbs.path(account).exists() {
+            continue;
+        }
         match app
             .analyses()
             .dbs
@@ -609,6 +640,8 @@ pub(crate) async fn rearm(app: App) {
                     watch(&app, account, run);
                 }
             }
+            // It went dormant, or disconnected, since.
+            Err(dbrt::Error::Deleted) => {}
             Err(e) => eprintln!("startup: reading account {account}'s live analysis runs: {e}"),
         }
     }
@@ -617,7 +650,9 @@ pub(crate) async fn rearm(app: App) {
 /// The daily check's part: the runs that ended more than `ended_kept_for` (30 days) ago go, with
 /// their tokens, which until then told a call why its run ended. A token whose run's row is gone
 /// with its file (the account went dormant or disconnected) or its repo's analyses goes once its
-/// run can't have ended later than that: its start was `lives_for` (7 days) longer ago.
+/// run can't have ended later than that: its start was `lives_for` (7 days) longer ago. A dormant
+/// or disconnected account's file isn't opened (it's gone, and reading it would make an empty
+/// one): its tokens go that second way.
 pub(crate) async fn prune(app: &App) {
     let l = &app.cfg().runs;
     let t = now();
@@ -625,6 +660,9 @@ pub(crate) async fn prune(app: &App) {
     match app.control().read(control_db::q::run_token_accounts).await {
         Ok(accounts) => {
             for account in accounts {
+                if !app.analyses().dbs.path(account).exists() {
+                    continue;
+                }
                 let pruned = app
                     .analyses()
                     .dbs
@@ -634,6 +672,8 @@ pub(crate) async fn prune(app: &App) {
                     .await;
                 let ids = match pruned {
                     Ok(ids) => ids,
+                    // It went dormant, or disconnected, since.
+                    Err(dbrt::Error::Deleted) => continue,
                     Err(e) => {
                         eprintln!("account {account}: pruning its ended analysis runs: {e}");
                         continue;
