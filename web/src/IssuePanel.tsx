@@ -815,20 +815,22 @@ function Body(props: {
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
           <span {...stylex.attrs(s.spacer)} />
-          <Show
-            when={d().pr}
-            fallback={
-              <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
-                GitHub ↗
-              </a>
-            }
-          >
-            <AnalyseButton d={d()} />
-            <OpenOnGitHub href={githubUrl(d())} />
-          </Show>
-          <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
-            ×
-          </a>
+          <span {...stylex.attrs(s.actions, d().pr && s.actionsPr)}>
+            <Show
+              when={d().pr}
+              fallback={
+                <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
+                  GitHub ↗
+                </a>
+              }
+            >
+              <AnalyseButton d={d()} />
+              <OpenOnGitHub href={githubUrl(d())} />
+            </Show>
+            <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
+              ×
+            </a>
+          </span>
         </div>
         <HeldUnit unit="parent" cue={held.unitCue("parent")} tint={held.unitTint("parent")}>
           <ParentCrumb d={d()} search={props.search} write={allows(d(), "relationships")} />
@@ -1630,6 +1632,22 @@ const s = stylex.create({
   statusPr: {
     flexWrap: "wrap",
     rowGap: 8,
+  },
+  // The row's actions (a PR's Analyse button and Open on GitHub, an issue's GitHub link, and
+  // Close) wrap as one, kept at the row's end: none is left alone on a line of its own.
+  actions: {
+    gap: 10,
+    alignItems: "center",
+    display: "flex",
+    flexShrink: 0,
+    marginInlineStart: "auto",
+  },
+  // On a PR's row they may narrow, down to the row's width, so the Analyse button's label is
+  // what gives way.
+  actionsPr: {
+    flexShrink: 1,
+    maxWidth: "100%",
+    minWidth: 0,
   },
   // A PR's number and Focus issue keep their text whole: the Analyse button gives way instead.
   keepsWhole: {
