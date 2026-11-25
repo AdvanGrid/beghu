@@ -6,14 +6,15 @@ SELECT id, repo_id, owner, name, number, producer, state, created_at, attached_a
        ended_at, ended_reason, pinned, refused, last_report
 FROM runs WHERE id = :id;
 
--- The PR's latest run, live or ended, as the PR panel shows it.
+-- The PR's run as the PR panel shows it: the live one, else the latest to end. Starts within one
+-- second tie on `created_at`: the later insert (rowid) is the later start.
 -- name: latest_run :opt
 -- param: repo_id i64
 -- param: number i64
 SELECT id, producer, state, created_at, attached_at, last_heard_at, ended_reason, pinned_head,
        refused_errors
 FROM runs WHERE repo_id = :repo_id AND number = :number
-ORDER BY created_at DESC, id DESC LIMIT 1;
+ORDER BY state = 'ended', created_at DESC, rowid DESC LIMIT 1;
 
 -- The PR's live run, if any.
 -- name: live_run :opt
