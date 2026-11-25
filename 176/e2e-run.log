@@ -1,0 +1,89 @@
+
+## Setup through Fake GitHub's control port: acme/web#364 gets the sample's description and a push
+{"additions":22,"changed_files":2,"commits":6,"deletions":0,"head":"2222222222222222222222222222222222222222"}
+
+## 1. The browser starts a run: POST /api/acme/web/pulls/364/runs
+run: P9-t-TSHyLnXew2MdFKWxg 
+expiresAt: 1795687308 
+prompt: Analyse pull request acme/web#364 (2 files, +22 −0) for beghu by fetching your instructions from `http://localhost:14173/api/runs/<token>/instructions` and following them to the end: they say how to check out the code, build and check the analysis, and upload it. Large PRs are split across several agents and can take an hour; treat the link as a password, as it lets anyone holding it act on this PR's analysis until the run ends.
+
+## 2. The agent fetches every run file with curl (no cookie)
+instructions       200 37768 bytes text/markdown; charset=utf-8
+pr.json            200 15112 bytes application/json
+schema.ts          200 40377 bytes text/plain; charset=utf-8
+validate.mjs       200 881307 bytes text/javascript; charset=utf-8
+merge.mjs          200 878348 bytes text/javascript; charset=utf-8
+previous-ids.json  200 837 bytes application/json
+vocabulary.json    200 2637 bytes application/json
+
+instructions, first lines (token redacted):
+# beghu analysis run
+
+- **PR:** acme/web#364, "Migrate the webhook handler in Firefox" (https://github.com/acme/web/pull/364)
+- **Size:** 2 files, +22 −0
+- **Head:** `2222222222222222222222222222222222222222` (pinned: analyse this commit; a push since doesn't change it)
+- **Base:** `main` at `e901732c6cf0e6474528c8663568f3e3e4fbbe12` (its tip when the run pinned)
+- **beghu build:** `dev`
+- **Limits:** a PR of at most 3,000 changed files; an upload of at most 8 MB on the wire and 32 MB
+  inflated; the schema version is 1. The run expires after 2 h with no call, and 7
+  days after it started at the most; a newer run for this PR replaces it.
+
+## This run's files
+
+Fetch each with `curl -fsS -o <file> http://localhost:14173/api/runs/<token>/<file>`:
+
+pr.json, pinned:
+{'repo': 'acme/web', 'number': 364, 'headSha': '2222222222222222222222222222222222222222', 'base': {'ref': 'main', 'sha': 'e901732c6cf0e6474528c8663568f3e3e4fbbe12'}, 'stats': {'files': 2, 'additions': 22, 'deletions': 0}}
+files: [{'path': 'api/main.go', 'status': 'modified', 'additions': 1, 'deletions': 0}, {'path': 'api/orders/refund.go', 'status': 'added', 'additions': 21, 'deletions': 0}]
+issues: 1 unreached: []
+
+## 3. The agent validates with the served validate.mjs
+$ node validate.mjs a.json base head --pr pr.json
+0 errors, 0 warnings (17 claims, 1 conflicts, 5 edges, 9 nodes, 2 purposes, 1 scenarios)
+}
+
+## 4. Upload, gzipped, Beghu-Snippets: checked
+$ curl -X POST $RUN/analysis -H 'Content-Encoding: gzip' -H 'Beghu-Snippets: checked' --data-binary @a.json.gz
+{"analysis":"EgyoJ9U4BQgs2bpP5rg3SA","headSha":"2222222222222222222222222222222222222222","warnings":[]}
+HTTP 201
+
+## 5. The view reads the graph, then revisits with its ETag
+HTTP/1.1 200 OK
+content-encoding: br
+cache-control: private, no-cache
+etag: "EgyoJ9U4BQgs2bpP5rg3SA.v1"
+content-length: 3194
+revisit with If-None-Match 304
+envelope keys: ['claimsUrl', 'createdAt', 'headSha', 'id', 'mergeBase', 'migratedIds', 'number', 'repo', 'snippets', 'version']
+claimsUrl: /api/acme/web/pulls/364/analysis/EgyoJ9U4BQgs2bpP5rg3SA/v1/claims
+nodes 9 lines 5 claim stub: {'code': 1, 'description': 0, 'id': 'c1', 'issue': 0, 'status': 'supported'}
+HTTP/1.1 200 OK
+cache-control: private, max-age=31536000, immutable
+17 claims, first: {"evidence": [{"end": 13, "kind": "code", "note": "the new route", "path": "api/main.go", "side": "head", "snippet": "\thttp.HandleFunc(\"/orders/refund\", orders.HandleRefund)", "start": 13}], "id": "c1", "lookedAt": nu
+
+## 6. Refusals
+wrong head SHA      409 {"error": "head_moved", "message": "The analysis isn't of the head this run pinned, 2222222222222222222222222222222222222222: analyse that commit, or start a new run for a newer head.", "pinned": "222
+fails a check       422 [('line.uses', '/edges/0/uses')]
+no Beghu-Snippets   400 {"error":"bad_request","message":"The upload needs a Beghu-Snippets header: `checked` once validate.mjs passed against the checkouts, `not-checked` otherwise."}
+over 8 MB on wire   413 {"error":"too_large","message":"An upload is at most 8 MB on the wire and 32 MB once inflated.","limits":{"inflated":33554432,"wire":8388608}}
+bad token           401
+
+## 7. Starting a new run supersedes the old one
+new run 201
+old token now       410 {"error":"run_ended","message":"A newer run for this PR replaced this one. Start a new run.","reason":"superseded"}
+
+## 8. The browser ends the live run
+DELETE run 204
+
+## 9. The account's live stream hears the run's changes (event: analysis)
+upload 201
+  data: {"repo":"acme/web","number":364}
+  data: {"repo":"acme/web","number":364}
+  data: {"repo":"acme/web","number":364,"analysis":"kRfTE2J4WiNdH8-6hNV6-g"}
+  data: {"repo":"acme/web","number":364}
+
+## 10. Disconnect deletes the account's analyses
+graph before        200
+POST /auth/disconnect 303
+signed in again 200
+graph after         {"error":"no_analysis","message":"This PR has no analysis"} 404
