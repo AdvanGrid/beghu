@@ -1283,8 +1283,20 @@ async fn a_run_ended_first_by_another_call_is_reported_as_that() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn two_uploads_at_most_do_the_heavy_work_at_once() {
+/// Every upload holds at its store, its turn held, until `release` says `true`: how many got
+/// there is `arrived`.
+struct HeldAtStore {
+    arrived: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    release: tokio::sync::watch::Sender<bool>,
+}
+
+impl HeldAtStore {
+    fn count(&self) -> usize {
+        self.arrived.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+fn held_at_store() -> (beghu::RunPause, HeldAtStore) {
     let arrived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (release, released) = tokio::sync::watch::channel(false);
     let hook: beghu::RunPause = {
@@ -1300,47 +1312,113 @@ async fn two_uploads_at_most_do_the_heavy_work_at_once() {
             })
         })
     };
-    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
-    let (mut b, first) = setup(&s).await;
-    let mut tokens = vec![run(&s, &b, first).await];
-    for i in 1..3 {
-        let number = setup_pr(&s, &mut b, i).await;
-        tokens.push(run(&s, &b, number).await);
+    (hook, HeldAtStore { arrived, release })
+}
+
+/// `tomsj`'s browser, and a run's token for each of `n` PRs of `acme/web` set up as [`setup`]
+/// sets up the first.
+async fn runs_on_prs(s: &Stack, n: usize) -> (Browser, Vec<String>) {
+    let (mut b, first) = setup(s).await;
+    let mut tokens = vec![run(s, &b, first).await];
+    for i in 1..n {
+        let number = setup_pr(s, &mut b, i).await;
+        tokens.push(run(s, &b, number).await);
     }
+    (b, tokens)
+}
+
+/// The sample uploaded with `token`, in a task of its own: its status.
+fn upload_task(s: &Stack, token: &str) -> tokio::task::JoinHandle<(u16, Value)> {
+    let (http, url) = (
+        s.http.clone(),
+        format!("{}/api/runs/{token}/analysis", s.server),
+    );
+    tokio::spawn(async move {
+        let res = http
+            .post(url)
+            .header("content-type", "application/json")
+            .header("beghu-snippets", "checked")
+            .body(serde_json::to_vec(&sample()).unwrap())
+            .send()
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or(Value::Null))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_uploads_at_most_do_the_heavy_work_at_once() {
+    let (hook, held) = held_at_store();
+    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     // One upload per PR, so no PR's lock holds one back.
-    let uploads: Vec<_> = tokens
-        .iter()
-        .map(|token| {
-            let (http, url) = (
-                s.http.clone(),
-                format!("{}/api/runs/{token}/analysis", s.server),
-            );
-            tokio::spawn(async move {
-                http.post(url)
-                    .header("content-type", "application/json")
-                    .header("beghu-snippets", "checked")
-                    .body(serde_json::to_vec(&sample()).unwrap())
-                    .send()
-                    .await
-                    .unwrap()
-                    .status()
-                    .as_u16()
-            })
-        })
-        .collect();
-    let count = || arrived.load(std::sync::atomic::Ordering::SeqCst);
+    let (_b, tokens) = runs_on_prs(&s, 3).await;
+    let uploads: Vec<_> = tokens.iter().map(|t| upload_task(&s, t)).collect();
     until(15.0, "two uploads at their store", || async {
-        (count() >= 2).then_some(())
+        (held.count() >= 2).then_some(())
     })
     .await;
     // The third waits for a turn while the two hold theirs.
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(count(), 2);
-    release.send(true).unwrap();
+    assert_eq!(held.count(), 2);
+    held.release.send(true).unwrap();
     for u in uploads {
-        assert_eq!(u.await.unwrap(), 201);
+        assert_eq!(u.await.unwrap().0, 201);
     }
-    assert_eq!(count(), 3);
+    assert_eq!(held.count(), 3);
+}
+
+/// The sample sent whole as an upload with `token` over a connection of its own, which the
+/// caller closes once it likes: a client that leaves without waiting for the answer.
+fn send_upload(s: &Stack, token: &str) -> std::net::TcpStream {
+    let addr = s.server.trim_start_matches("http://");
+    let body = serde_json::to_vec(&sample()).unwrap();
+    let mut c = std::net::TcpStream::connect(addr).unwrap();
+    let head = format!(
+        "POST /api/runs/{token}/analysis HTTP/1.1\r\nhost: {addr}\r\ncontent-type: application/json\r\nbeghu-snippets: checked\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    );
+    c.write_all(head.as_bytes()).unwrap();
+    c.write_all(&body).unwrap();
+    c
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_whose_client_leaves_keeps_its_turn_until_its_work_is_done() {
+    let (hook, held) = held_at_store();
+    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (b, tokens) = runs_on_prs(&s, 3).await;
+    // Two uploads sent whole, each client gone once its upload holds its turn.
+    for (i, token) in tokens[..2].iter().enumerate() {
+        let c = send_upload(&s, token);
+        until(15.0, "the upload at its store", || async {
+            (held.count() > i).then_some(())
+        })
+        .await;
+        drop(c);
+    }
+    // The third still waits for a turn: the two that left hold theirs until their work is done.
+    let third = upload_task(&s, &tokens[2]);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(held.count(), 2);
+    held.release.send(true).unwrap();
+    assert_eq!(third.await.unwrap().0, 201);
+    assert_eq!(held.count(), 3);
+    // Nobody heard their answers, but the two were stored all the same.
+    let (status, page) = s
+        .api(
+            &mut b.clone(),
+            "/api/issues?q=is%3Apr%20is%3Aopen%20repo%3Aacme%2Fweb",
+        )
+        .await;
+    assert_eq!(status, 200, "{page}");
+    for i in 0..2 {
+        let number = page["rows"][i]["number"].as_i64().unwrap();
+        until(15.0, "the upload stored", || async {
+            (graph(&s, &b, number, "identity", None).await.status() == 200).then_some(())
+        })
+        .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

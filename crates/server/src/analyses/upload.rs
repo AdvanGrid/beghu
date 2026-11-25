@@ -5,7 +5,10 @@
 //! is a 400 before the body is read, which isn't counted as a refused upload.
 //!
 //! Two uploads at a time do the heavy work (inflating, the checks, the split and compressing,
-//! [`super::Store::uploads`]); the others wait for a turn with their bodies read.
+//! [`super::Store::uploads`]); the others wait for a turn with their bodies read. From its turn
+//! on, an upload is a job of its own, which the request waits for: a client that leaves once it
+//! has its turn doesn't stop it, so its turn and its PR's lock are held until its work is done.
+//! One that leaves while it waits for a turn leaves nothing behind.
 //!
 //! The checks, in order, each answering as it fails:
 //!
@@ -76,20 +79,44 @@ pub async fn upload(
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
-    match take(&app, &a, &headers, body).await {
-        Ok(res) => res,
-        Err(e) => {
-            let counts = matches!(
-                e,
-                RunError::Refused { .. } | RunError::HeadMoved { .. } | RunError::TooLarge
-            );
-            let res = e.into_response();
-            if counts {
-                refused(&app, &a, res).await
-            } else {
-                res
+    let got = match receive(&app, &a, &headers, body).await {
+        Ok(got) => got,
+        Err(e) => return answer(&app, &a, e).await,
+    };
+    // Waited for in the request: a client that leaves before its turn leaves nothing behind.
+    let Ok(turn) = app.analyses().uploads.clone().acquire_owned().await else {
+        return RunError::Internal("the uploads' turns closed".into()).into_response();
+    };
+    // From its turn on, the job owns it. Waited for to its end by the drain, too: cut short, the
+    // agent's work would be lost.
+    let job = app.jobs().spawn_whole({
+        let app = app.clone();
+        async move {
+            match take(&app, &a, got, turn).await {
+                Ok(res) => res,
+                Err(e) => answer(&app, &a, e).await,
             }
         }
+    });
+    match job {
+        Some(job) => job.await.unwrap_or_else(|_| {
+            RunError::Internal("an upload's job panicked".into()).into_response()
+        }),
+        None => RunError::from(crate::tokens::Error::Restarting).into_response(),
+    }
+}
+
+/// The failed upload's answer: a refused one counts on the run ([`refused`]).
+async fn answer(app: &App, a: &Admitted, e: RunError) -> Response {
+    let counts = matches!(
+        e,
+        RunError::Refused { .. } | RunError::HeadMoved { .. } | RunError::TooLarge
+    );
+    let res = e.into_response();
+    if counts {
+        refused(app, a, res).await
+    } else {
+        res
     }
 }
 
@@ -125,12 +152,21 @@ enum Encoding {
     Gzip,
 }
 
-async fn take(
+/// An upload as it arrived, before its turn: its body read, and what the run pinned.
+struct Received {
+    snippets: &'static str,
+    pinned: PinnedPr,
+    encoding: Encoding,
+    wire: Vec<u8>,
+}
+
+/// The upload's headers checked, the run's pin read, and its body read.
+async fn receive(
     app: &App,
     a: &Admitted,
     headers: &HeaderMap,
     body: Body,
-) -> Result<Response, RunError> {
+) -> Result<Received, RunError> {
     let snippets = match headers.get("beghu-snippets").map(|v| v.to_str()) {
         Some(Ok("checked")) => "checked",
         Some(Ok("not-checked")) => "not-checked",
@@ -155,13 +191,29 @@ async fn take(
         Some(_) => return Err(RunError::Encoding),
     };
     let wire = read_body(body).await?;
+    Ok(Received {
+        snippets,
+        pinned,
+        encoding,
+        wire,
+    })
+}
+
+/// The heavy work, in its `turn`: inflating, the checks under the PR's lock, and the store.
+async fn take(
+    app: &App,
+    a: &Admitted,
+    got: Received,
+    turn: tokio::sync::OwnedSemaphorePermit,
+) -> Result<Response, RunError> {
+    let Received {
+        snippets,
+        pinned,
+        encoding,
+        wire,
+    } = got;
     // Held to the end: the store below is quick, and the turn covers the split's compressing.
-    let _turn = app
-        .analyses()
-        .uploads
-        .acquire()
-        .await
-        .map_err(|_| RunError::Internal("the uploads' turns closed".into()))?;
+    let _turn = turn;
     let text = match encoding {
         Encoding::Identity => wire,
         Encoding::Gzip => tokio::task::spawn_blocking(move || inflate(&wire))

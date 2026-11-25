@@ -77,8 +77,9 @@ pub(crate) struct Store {
     tools: Option<Tools>,
     pub chain: &'static analysis::Chain<'static>,
     locks: Mutex<HashMap<PrKey, Weak<tokio::sync::Mutex<()>>>>,
-    /// An upload's turn at the heavy work: see [`UPLOADS_AT_ONCE`].
-    pub uploads: tokio::sync::Semaphore,
+    /// An upload's turn at the heavy work: see [`UPLOADS_AT_ONCE`]. Owned by the upload's job,
+    /// so a client that leaves doesn't hand its turn on while its work goes on.
+    pub uploads: Arc<tokio::sync::Semaphore>,
     /// Each live run's timer ([`runs::watch`]), by run ID, with its account: woken when the run
     /// ends otherwise, so it stops then rather than at its deadline.
     timers: Mutex<HashMap<String, (i64, Arc<tokio::sync::Notify>)>>,
@@ -118,7 +119,7 @@ impl Store {
             tools,
             chain,
             locks: Mutex::default(),
-            uploads: tokio::sync::Semaphore::new(UPLOADS_AT_ONCE),
+            uploads: Arc::new(tokio::sync::Semaphore::new(UPLOADS_AT_ONCE)),
             timers: Mutex::default(),
         })
     }
