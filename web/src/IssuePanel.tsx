@@ -59,7 +59,7 @@ import { searchOf, type Term } from "./highlight";
 import { refusedKey, touch, type Action } from "./keys";
 import type { Can } from "./bindings/Can";
 import { editorOf, openEditor, type Field } from "./editing";
-import { cantReach, coalesced, onPush, resetAt } from "./live";
+import { cantReach, coalesced, onAnalysis, onPush, resetAt } from "./live";
 import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { focusOf, modeOf, queryOf, withMode } from "./query";
 import { at, atString, idAt, isAt, issuePath, parseAt } from "./at";
@@ -111,6 +111,7 @@ const PullBadge = lazy(() => import("./Pull"), { export: "PullBadge" });
 const PullBranches = lazy(() => import("./Pull"), { export: "PullBranches" });
 const OpenOnGitHub = lazy(() => import("./Pull"), { export: "OpenOnGitHub" });
 const ReviewsElsewhere = lazy(() => import("./Pull"), { export: "ReviewsElsewhere" });
+const AnalyseButton = lazy(() => import("./Pull"), { export: "AnalyseButton" });
 
 /** The title and body editors: loaded when one first opens; a failed load is handled as a picker's. */
 const editorChunk = () =>
@@ -121,7 +122,10 @@ const TitleEditor = lazy(editorChunk, { export: "TitleEditor" });
 const BodyEditor = lazy(editorChunk, { export: "BodyEditor" });
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
-let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
+let openDetail: { id: number; onPush: () => Promise<void>; pr?: string } | undefined;
+
+/** A PR as `analysis` pushes name it, to match the open one: `owner/repo#n`, lower case. */
+const prKey = (repo: string, number: number) => `${repo}#${number}`.toLowerCase();
 
 /** The next refetch of the open issue applies at once (HeldDetail.tsx): Back restored the page. */
 let restored = false;
@@ -153,6 +157,11 @@ const unsubscribe = onPush((p) => {
 });
 // A hot reload of this file in development subscribes its new copy instead.
 import.meta.hot?.dispose(unsubscribe);
+// An `analysis` push naming the open PR refetches it: the PR panel's Analyse button shows its run.
+const unsubscribeAnalysis = onAnalysis((a) => {
+  if (openDetail?.pr === prKey(a.repo, a.number)) void refetchOpenIssue([openDetail.id]);
+});
+import.meta.hot?.dispose(unsubscribeAnalysis);
 
 export function IssuePanel(props: RouteSectionProps) {
   const location = useLocation();
@@ -572,7 +581,7 @@ function Detail(props: { at: string; search: string }) {
       if (back) goBack();
       else seek();
       setLost(undefined);
-      openDetail = { id, onPush: refetchForPush };
+      openDetail = { id, onPush: refetchForPush, pr: detail.kind === "pr" ? prKey(`${detail.owner}/${detail.repo}`, detail.number) : undefined };
       // A remembered detail is on screen (its first page), maybe minutes old: replace it with the
       // read the click's own preload started (the router's cache keys on every argument: pass the
       // id alone). If that fails, the detail shows the failure, with Retry, which opens the issue
@@ -814,6 +823,7 @@ function Body(props: {
               </a>
             }
           >
+            <AnalyseButton d={d()} />
             <OpenOnGitHub href={githubUrl(d())} />
           </Show>
           <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">

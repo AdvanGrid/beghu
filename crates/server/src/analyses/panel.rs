@@ -50,6 +50,8 @@ pub struct PrRun {
     /// How many errors the last upload had when it was refused; 0 when it wasn't, or there was
     /// none.
     pub refused: i64,
+    /// When the run started (Unix seconds): an analysis made since was uploaded by it.
+    pub started_at: i64,
     /// When the run expires as it stands (Unix seconds); for `expired`, when it did.
     pub expires_at: i64,
 }
@@ -150,6 +152,7 @@ pub(crate) async fn read(
             pinned_sha: r.pinned_head,
             last_heard: attached.then_some(r.last_heard_at),
             refused: r.refused_errors.unwrap_or(0),
+            started_at: r.created_at,
             expires_at,
         })
     });

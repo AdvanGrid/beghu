@@ -31,6 +31,10 @@ lastHeard?: number,
  */
 refused: number, 
 /**
+ * When the run started (Unix seconds): an analysis made since was uploaded by it.
+ */
+startedAt: number, 
+/**
  * When the run expires as it stands (Unix seconds); for `expired`, when it did.
  */
 expiresAt: number, };

@@ -20,7 +20,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|analyse|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts with held.spec.ts, held-restore.spec.ts and held-detail.spec.ts,
     // relationships.spec.ts with relationship-writes.spec.ts, tree.spec.ts and focus.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
@@ -50,7 +50,9 @@ export default defineConfig({
     { name: "sync", testMatch: /sync\.spec\.ts$/, dependencies: ["repos"], timeout: 60_000 },
     // prs.spec.ts edits PRs and links them to issues, whose panels other specs read.
     { name: "prs", testMatch: /prs\.spec\.ts$/, dependencies: ["sync"], timeout: 60_000, workers: 1 },
-    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["prs"], timeout: 60_000 },
+    // analyse.spec.ts edits PRs' bodies and pushes to them, which moves them in every tab's list.
+    { name: "analyse", testMatch: /analyse\.spec\.ts$/, dependencies: ["prs"], timeout: 60_000, workers: 1 },
+    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["analyse"], timeout: 60_000 },
     // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
     // label every tab shows: alone, after the rest but create and prefs.
     { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["lost-access"], timeout: 60_000, workers: 1 },
