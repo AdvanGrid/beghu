@@ -420,11 +420,27 @@ pub(crate) async fn end(app: &App, account: i64, run: &RunRow, why: Ended) -> Ru
             RunError::Ended(why)
         }
         Ok(Ending::Already(stored)) => RunError::Ended(stored),
-        Ok(Ending::Gone) => RunError::Gone,
+        Ok(Ending::Gone) => gone(app, &run.id).await,
         Err(e) => {
             eprintln!("account {account}: ending run {}: {e}", run.id);
             RunError::Ended(why)
         }
+    }
+}
+
+/// The run's row is gone: the call is told why its token says the run ended (its account lost
+/// Read on the repo, which notes why on each run's token before deleting the rows), as [`admit`]
+/// tells it; [`RunError::Gone`] when the token doesn't say.
+pub(crate) async fn gone(app: &App, run: &str) -> RunError {
+    let id = run.to_owned();
+    match app
+        .control()
+        .read(move |c| control_db::q::run_token_ended(c, &id))
+        .await
+    {
+        Ok(Some(Some(why))) => RunError::Ended(Ended::from_db(&why)),
+        Ok(_) => RunError::Gone,
+        Err(e) => e.into(),
     }
 }
 

@@ -67,6 +67,12 @@ UPDATE run_tokens SET ended_reason = :reason WHERE run_id = :run_id;
 -- name: run_token_accounts :many
 SELECT DISTINCT github_user_id FROM run_tokens ORDER BY github_user_id;
 
+-- Why the run ended, as its token keeps it once its row is gone with its repo's analyses: NULL
+-- while the row says.
+-- name: run_token_ended :opt
+-- param: run_id &str
+SELECT ended_reason FROM run_tokens WHERE run_id = :run_id;
+
 -- Tokens of runs started before :before: a run lasts at most its 7 days from its start, so these
 -- are of runs that ended before `before` + 7 days, whatever their rows (gone with a deleted
 -- `analyses.db`, or with their repo's analyses) say.

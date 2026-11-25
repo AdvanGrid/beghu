@@ -29,7 +29,7 @@
 //! A refused one stores nothing, counts on the run, and keeps its report there. Either way the
 //! account's streams hear it.
 
-use super::runs::{Admitted, Ended, RunError, admit, deadline, end};
+use super::runs::{Admitted, Ended, RunError, admit, deadline, end, gone};
 use super::stored::{self, Envelope};
 use super::{MAX_INFLATED, MAX_WIRE, announce, new_id, pause, pin};
 use crate::{App, RunPausePoint, now};
@@ -378,7 +378,8 @@ async fn accept(
         Store::Stored => {}
         Store::Ended(why) => return Err(RunError::Ended(why)),
         Store::Expired(row) => return Err(end(app, a.account, &row, Ended::Expired).await),
-        Store::Gone => return Err(RunError::Gone),
+        // Deleted with its repo's analyses: its token says why.
+        Store::Gone => return Err(gone(app, &a.run.id).await),
     }
     eprintln!(
         "account {}: an analysis of {}#{} was accepted ({id})",

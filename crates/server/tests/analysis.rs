@@ -1750,3 +1750,34 @@ async fn a_sign_in_that_lapses_keeps_the_analyses_across_a_restart() {
     let b = s.sign_in("tomsj").await;
     assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 200);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_whose_read_goes_as_it_is_stored_is_told_why() {
+    let (hook, pause) = pause_once(beghu::RunPausePoint::Store);
+    let s = start_with(move |c| {
+        c.analysis_pause = Some(hook);
+        c.repo_refresh_every = Duration::from_secs(1);
+    })
+    .await;
+    let (mut b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    // Pinned first, so the stream hears nothing of the upload's own.
+    assert_eq!(fetch_json(&s, &token, "pr.json").await.0, 200);
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    let up = upload_task(&s, &token);
+    pause.reached.notified().await;
+    // Read goes, and the run's row with it, while the upload holds at its store.
+    set_role(&s, Value::Null).await;
+    assert_eq!(
+        heard_while_used(&s, &mut b, &mut st).await,
+        Some(json!({ "repo": "acme/web", "number": number }))
+    );
+    pause.release.notify_one();
+    let (status, gone) = up.await.unwrap();
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
+    );
+}
