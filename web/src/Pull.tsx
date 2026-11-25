@@ -1,13 +1,16 @@
 // What only a PR's panel shows (its own chunk, loaded when a PR opens, or when the pointer reaches a
 // PR's row): the status badge (Open, Draft, Merged, Closed), `head → base` with the review chip,
 // "Open on GitHub" as the primary action, and the link out to reviews and diff comments over the
-// thread. A PR is read-only in beghu: its panel offers no writes.
+// thread, and the Analyse button for the PR view's analysis runs (Analyse.tsx). A PR is read-only
+// in beghu: its panel offers no writes to GitHub.
 import * as stylex from "@stylexjs/stylex";
 import { Show } from "solid-js";
 import { PR_LABEL, PrIcon, ReviewChip } from "./bits";
 import type { PrStatus } from "./bindings/PrStatus";
 import type { PullDetail } from "./bindings/PullDetail";
 import { colors, fonts } from "./tokens.stylex";
+
+export { AnalyseButton } from "./Analyse";
 
 const BADGE_TEXT: Record<PrStatus, string> = { open: "Open", draft: "Draft", merged: "Merged", closed: "Closed" };
 

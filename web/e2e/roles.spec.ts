@@ -33,9 +33,10 @@ async function signIn(page: Page, login: string): Promise<void> {
   await page.waitForURL((u) => u.pathname === "/issues");
 }
 
-/** Open issues in `repo` that `login` didn't open, from the top of its list. */
+/** Open issues (not PRs: a PR panel has no composer, and analyse.spec.ts moves PRs to the top) in
+ * `repo` that `login` didn't open, from the top of its list. */
 async function othersIssues(page: Page, repo: string, login: string, n: number): Promise<Detail[]> {
-  const res = await page.request.get(`/api/issues?q=${encodeURIComponent(`is:open repo:${repo}`)}`);
+  const res = await page.request.get(`/api/issues?q=${encodeURIComponent(`is:issue is:open repo:${repo}`)}`);
   const rows = ((await res.json()) as { rows: { id: number }[] }).rows;
   const out: Detail[] = [];
   for (const r of rows) {

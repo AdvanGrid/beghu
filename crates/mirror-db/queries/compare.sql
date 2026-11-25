@@ -22,7 +22,7 @@ FROM milestones m ORDER BY m.id;
 SELECT i.id, i.node_id, i.repo_id, i.number, i.kind, i.is_stub, i.title, i.body, i.state,
        i.state_reason, i.locked, i.author_id, i.milestone_id, i.created_at, i.updated_at,
        i.closed_at, i.last_commented_at, i.comments_count, i.pr_id, i.draft, i.merged_at,
-       i.head_ref, i.base_ref, i.review_decision, i.issue_type
+       i.head_ref, i.base_ref, i.review_decision, i.issue_type, i.head_sha
 FROM items i ORDER BY i.id;
 
 -- name: dump_item_labels :many

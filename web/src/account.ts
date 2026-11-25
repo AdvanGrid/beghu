@@ -6,6 +6,7 @@
 // and drafts stay where they are, to copy out. It learns from the server's `switched` (an answer
 // or a push), and checks the cookie itself whenever it gets focus or becomes visible.
 import { createSignal } from "solid-js";
+import { forgetAccountPrompts, sweepPrompts } from "./prompts";
 
 /** Why the tab's account is no longer the one it can use. */
 export type Stale = "switched" | "signed_out" | "sign_in_again";
@@ -17,7 +18,20 @@ export function cookieAccount(): number | undefined {
 }
 
 const mine = cookieAccount();
-const [stale, setStale] = createSignal<Stale>();
+const [stale, setStaleTo] = createSignal<Stale>();
+
+/**
+ * The tab is stale, for `why`. Signed out, or out of GitHub's sight, the account's kept prompts
+ * (prompts.ts) go: their runs end with it, and a prompt holds its run's token.
+ */
+function setStale(why: Stale): void {
+  setStaleTo(why);
+  if (why === "signed_out") forgetAccountPrompts();
+  else if (why === "sign_in_again" && mine !== undefined) forgetAccountPrompts(mine);
+}
+
+// Loaded with nothing signed in, every kept prompt goes; otherwise every expired one.
+sweepPrompts(mine);
 
 /** Whether beghu has answered the tab as its account yet: from then on the tab holds a view. */
 let answered = false;

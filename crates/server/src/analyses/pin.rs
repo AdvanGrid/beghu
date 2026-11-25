@@ -26,13 +26,13 @@ pub(crate) async fn pinned(app: &App, a: &Admitted) -> Result<PinnedPr, RunError
     }
     let pr = read(app, a).await?;
     let json = serde_json::to_string(&pr).expect("plain data");
-    let (id, t) = (a.run.id.clone(), now());
+    let (id, t, head) = (a.run.id.clone(), now(), pr.head_sha.clone());
     let account = a.account;
     let (attached, row) = app
         .analyses()
         .dbs
         .write(account, move |tx| {
-            let n = analysis_db::q::attach_run(tx, &id, &json, t)?;
+            let n = analysis_db::q::attach_run(tx, &id, &json, &head, t)?;
             Ok((n > 0, analysis_db::q::run(tx, &id)?))
         })
         .await?;

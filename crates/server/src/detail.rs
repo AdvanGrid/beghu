@@ -18,6 +18,7 @@
 //! again.
 
 use crate::App;
+use crate::analyses::panel::{self, PanelPr, PrAnalysis, PrRun};
 use crate::api::{CommentOrder, Label, PrStatus, ReviewDecision, User};
 use crate::auth::Session;
 use crate::error::{ApiError, IssueRef};
@@ -108,6 +109,21 @@ pub struct PullDetail {
     pub review: Option<ReviewDecision>,
     /// Unix seconds; `null` unless merged.
     pub merged_at: Option<i64>,
+    /// The account's analysis run on the PR, while one is live or when the last one expired
+    /// (the Analyse button, `analyses/panel.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run: Option<PrRun>,
+    /// The account's analysis of the PR, if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub analysis: Option<PrAnalysis>,
+    /// `true` when the account's analyses couldn't be read: `run` and `analysis` are absent
+    /// because they aren't known, not because there are none, and the panel keeps what it
+    /// showed. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "true")]
+    pub run_unknown: Option<bool>,
 }
 
 #[derive(Serialize, TS)]
@@ -363,13 +379,33 @@ async fn detail(
         },
         item.kind == "pr",
     );
-    let pr = (item.kind == "pr").then(|| PullDetail {
-        status: PrStatus::of(&item.state, item.draft, item.merged_at),
-        head: item.head_ref.take(),
-        base: item.base_ref.take(),
-        review: ReviewDecision::parse(item.review_decision.as_deref()),
-        merged_at: item.merged_at,
-    });
+    let pr = match item.kind == "pr" {
+        false => None,
+        true => {
+            let panel = panel::read(
+                &app,
+                PanelPr {
+                    account,
+                    repo_id: item.repo_id,
+                    owner: &item.owner,
+                    name: &item.repo,
+                    number: item.number,
+                    head_sha: item.head_sha.as_deref(),
+                },
+            )
+            .await;
+            Some(PullDetail {
+                status: PrStatus::of(&item.state, item.draft, item.merged_at),
+                head: item.head_ref.take(),
+                base: item.base_ref.take(),
+                review: ReviewDecision::parse(item.review_decision.as_deref()),
+                merged_at: item.merged_at,
+                run: panel.run,
+                analysis: panel.analysis,
+                run_unknown: panel.unknown.then_some(true),
+            })
+        }
+    };
     let body = Post {
         kind: PostKind::Body,
         id,

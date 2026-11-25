@@ -38,7 +38,7 @@ pub(crate) enum Producer {
 }
 
 impl Producer {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Producer::Button => "button",
             Producer::Cli => "cli",
@@ -49,7 +49,7 @@ impl Producer {
         Producer::from_db(&run.producer)
     }
 
-    fn from_db(s: &str) -> Producer {
+    pub(crate) fn from_db(s: &str) -> Producer {
         match s {
             "cli" => Producer::Cli,
             _ => Producer::Button,
@@ -364,11 +364,21 @@ impl Admitted {
 /// 2 h after its last call, and never later than 7 days after its start (the start call, not the
 /// first fetch: a link nobody used for a day still has 6 days, not 7).
 pub(crate) fn deadline(l: &RunLifetimes, run: &RunRow) -> i64 {
-    let by_use = match run.attached_at {
-        None => run.created_at + l.unused_for.as_secs() as i64,
-        Some(_) => run.last_heard_at + l.idle_for.as_secs() as i64,
+    deadline_of(l, run.created_at, run.attached_at, run.last_heard_at)
+}
+
+/// [`deadline`], from the run's start, its first fetch and its last call.
+pub(crate) fn deadline_of(
+    l: &RunLifetimes,
+    created_at: i64,
+    attached_at: Option<i64>,
+    last_heard_at: i64,
+) -> i64 {
+    let by_use = match attached_at {
+        None => created_at + l.unused_for.as_secs() as i64,
+        Some(_) => last_heard_at + l.idle_for.as_secs() as i64,
     };
-    by_use.min(run.created_at + l.lives_for.as_secs() as i64)
+    by_use.min(created_at + l.lives_for.as_secs() as i64)
 }
 
 /// How [`end`]'s write found the run.
@@ -536,6 +546,14 @@ pub(crate) async fn admit(
         .dbs
         .write(account, move |tx| analysis_db::q::heard_run(tx, &id, t))
         .await?;
+    // The PR panel shows when the agent was last heard from: true to within `heard_every`.
+    if let Some(attached) = run.attached_at {
+        let every = app.cfg().runs.heard_every.as_secs() as i64;
+        if app.analyses().heard_due(&run.id, attached, t, every) {
+            let repo = format!("{}/{}", run.owner, run.name);
+            announce(app, account, &repo, run.number, None);
+        }
+    }
     Ok(Admitted {
         account,
         run: RunRow {
@@ -761,6 +779,7 @@ pub(crate) async fn lost_repo(app: &App, account: i64, repo_id: i64, repo: &str)
         .dbs
         .write(account, move |tx| {
             analysis_db::q::delete_repo_runs(tx, repo_id)?;
+            analysis_db::q::delete_repo_behind(tx, repo_id)?;
             analysis_db::q::delete_repo_analyses(tx, repo_id)
         })
         .await
@@ -882,6 +901,9 @@ pub struct RunStarted {
     pub token: String,
     /// The prompt to paste into an agent, word for word.
     pub prompt: String,
+    /// When the run started (Unix seconds, the server's clock): what the PR detail's
+    /// `run.startedAt` says of it.
+    pub started_at: i64,
     /// When the run expires if nothing fetches from it (Unix seconds).
     pub expires_at: i64,
 }
@@ -1051,6 +1073,7 @@ pub async fn start_button(
             run: started.run,
             token: started.token,
             prompt,
+            started_at: started.created_at,
             expires_at: started.created_at + app.cfg().runs.unused_for.as_secs() as i64,
         }),
     )

@@ -216,6 +216,8 @@ fn newcomer(tx: &Transaction) -> rusqlite::Result<()> {
             pr.then_some("main"),
             pr.then_some("review_required"),
             (!pr && n % 2 == 0).then_some("Task"),
+            // Derived from its id, as for a PR the fixture names no head for (`pulls.rs`).
+            None,
             seq,
         )?;
         m::add_item_label(tx, id, labels[(n % 2) as usize].0)?;

@@ -63,13 +63,14 @@ VALUES (:id, :repo_id, :number, :title, :state, :due_on, :updated_at);
 -- param: base_ref Option<&str>
 -- param: review_decision Option<&str>
 -- param: issue_type Option<&str>
+-- param: head_sha Option<&str>
 -- param: seq i64
 INSERT INTO items (id, node_id, repo_id, number, kind, title, body, state, state_reason, author_id,
   milestone_id, created_at, updated_at, closed_at, pr_id, draft, merged_at, head_ref, base_ref,
-  review_decision, issue_type, seq)
+  review_decision, issue_type, head_sha, seq)
 VALUES (:id, :node_id, :repo_id, :number, :kind, :title, :body, :state, :state_reason, :author_id,
   :milestone_id, :created_at, :updated_at, :closed_at, :pr_id, :draft, :merged_at, :head_ref, :base_ref,
-  :review_decision, :issue_type, :seq);
+  :review_decision, :issue_type, :head_sha, :seq);
 
 -- name: insert_stub :exec
 -- param: id i64

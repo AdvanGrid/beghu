@@ -5058,3 +5058,114 @@ async fn a_prs_head_files_and_commits_follow_its_pushes_up_to_githubs_caps() {
     let files = all_pages(&fake, &format!("{base}/files?per_page=100"), &token).await;
     assert_eq!(files.len(), 3000);
 }
+
+#[tokio::test]
+async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let mut rx = receiver(&fake).await;
+    let items: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pr = items
+        .iter()
+        .find(|i| i.get("pull_request").is_some())
+        .unwrap();
+    let (number, updated) = (pr["number"].as_i64().unwrap(), pr["updated_at"].clone());
+    let base = format!("/repos/acme/web/pulls/{number}");
+    let before: Value = fake.get(&base, &token).await.json().await.unwrap();
+    let old = all_pages(&fake, &format!("{base}/commits"), &token).await;
+
+    // A push: `pull_request` `synchronize`, naming the head before and after, carrying the PR.
+    fake.control(reqwest::Method::PUT, "/clock", json!({ "offset": 120 }))
+        .await;
+    let first = "abcdef0123456789abcdef0123456789abcdef01";
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "sha": first }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "pull_request");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "synchronize");
+    assert_eq!(p["number"], number);
+    assert_eq!(p["before"], before["head"]["sha"]);
+    assert_eq!(p["after"], first);
+    assert_eq!(p["pull_request"]["head"]["sha"], first);
+    assert_eq!(p["pull_request"]["number"], number);
+    assert_eq!(p["repository"]["full_name"], "acme/web");
+    assert!(p["installation"]["id"].is_number());
+    // GitHub always names who pushed: here, nobody named, the PR's author.
+    match pr["user"]["login"].as_str() {
+        Some(author) => assert_eq!(p["sender"]["login"], author, "{p}"),
+        None => assert!(p["sender"]["login"].is_string(), "{p}"),
+    }
+    // It moved the PR's `updated_at`, as GitHub's push does.
+    let issue: Value = fake
+        .get(&format!("/repos/acme/web/issues/{number}"), &token)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(issue["updated_at"], updated);
+
+    // A second push keeps the first's commit in the list under it, and GraphQL names the head.
+    // This one by another account, and bringing three commits, the last the head.
+    let second = "abcdef0123456789abcdef0123456789abcdef02";
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "sha": second, "commits": 3, "login": "ilze-k" }),
+    )
+    .await;
+    let now = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    let shas: Vec<&str> = now.iter().map(|c| c["sha"].as_str().unwrap()).collect();
+    assert_eq!(shas.len(), old.len() + 4);
+    assert_eq!(shas[old.len()], first);
+    assert_eq!(shas[old.len() + 3], second);
+    assert_eq!(shas[old.len() - 1], old.last().unwrap()["sha"]);
+    let node = before["node_id"].as_str().unwrap();
+    let installation = fake.installation_token_value().await;
+    let res = fake
+        .query(
+            &installation,
+            "PullReadBack",
+            json!({ "id": node, "after": null }),
+        )
+        .await;
+    assert_eq!(res["data"]["node"]["headRefOid"], second, "{res}");
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].payload()["sender"]["login"], "ilze-k");
+
+    // A force push: none of the old commits is in the list any more.
+    let pushed = fake
+        .control(
+            reqwest::Method::POST,
+            "/push",
+            json!({ "repo": "acme/web", "number": number, "force": true }),
+        )
+        .await;
+    let rewritten = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(rewritten.last().unwrap()["sha"], pushed["head"]);
+    assert_eq!(rewritten.len() as i64, pushed["commits"].as_i64().unwrap());
+    for c in &now {
+        assert!(
+            !rewritten.iter().any(|r| r["sha"] == c["sha"]),
+            "{}",
+            c["sha"]
+        );
+    }
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].payload()["before"], second);
+}

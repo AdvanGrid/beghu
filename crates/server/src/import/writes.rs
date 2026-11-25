@@ -68,6 +68,8 @@ pub(crate) struct PrData {
     pub(crate) head_ref: Option<String>,
     pub(crate) base_ref: Option<String>,
     pub(crate) review_decision: Option<String>,
+    /// The head commit's SHA (`headRefOid`).
+    pub(crate) head_sha: Option<String>,
 }
 
 /// An issue or PR as the import writes it, from GraphQL or REST.
@@ -270,6 +272,7 @@ pub(crate) fn write_item(
             p.head_ref.as_deref(),
             p.base_ref.as_deref(),
             p.review_decision.as_deref(),
+            p.head_sha.as_deref(),
         )?;
     }
     if let Some(u) = &it.author {

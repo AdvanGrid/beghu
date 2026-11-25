@@ -8,6 +8,7 @@ import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { noteBuild, whileWriting } from "./build";
 import { accountHeaders, cookieAccount, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
+import { keepPromptsOf } from "./prompts";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -30,7 +31,7 @@ import type { DropCheck } from "./bindings/DropCheck";
 import type { TreePage } from "./bindings/TreePage";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
-import { issuePath, learn, parseAt, pathOf } from "./at";
+import { at, atString, idAt, issuePath, learn, parseAt, pathOf } from "./at";
 
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
@@ -478,6 +479,8 @@ export function prefsSetHere(): void {
 export const getMe = query(async () => {
   const at = performance.now();
   const me = await request<Me>("/api/me");
+  // The prompts kept for accounts the browser no longer has (signed out, disconnected) go.
+  keepPromptsOf([me.account.id, ...me.accounts.map((a) => a.id)]);
   if (tabAccount() !== undefined && me.account.id !== tabAccount()) noteActive(me.account.id);
   else if (at >= prefsAt) {
     prefsAt = at;
@@ -760,6 +763,18 @@ export function forgetPushed(ids: readonly number[]): void {
   }
   remembered = remembered.filter((r) => !ids.includes(r.id));
   revalidate(ids.map((id) => getIssue.keyFor(id)));
+}
+
+/**
+ * For an `analysis` push naming PR `number` of `repo` (`owner/name`): its run or analysis
+ * changed, and nothing else did. Only its reads go, by id once the tab knows it, and by where.
+ */
+export function forgetPull(repo: string, number: number): void {
+  const [owner = "", name = ""] = repo.split("/");
+  const where = at(owner, name, String(number));
+  const id = idAt(where);
+  if (id !== undefined) forgetPushed([id]);
+  void revalidate(getIssueAt.keyFor(atString(where)));
 }
 
 /**

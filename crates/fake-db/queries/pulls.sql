@@ -2,17 +2,43 @@
 
 -- name: pull_head :opt
 -- param: issue_id i64
-SELECT head_sha, pushes, files_set AS "files_set: bool" FROM fake_pull_heads WHERE issue_id = :issue_id;
+SELECT head_sha, pushes, files_set AS "files_set: bool", rewrites FROM fake_pull_heads
+WHERE issue_id = :issue_id;
 
 -- name: set_pull_head :exec
 -- param: issue_id i64
 -- param: head_sha &str
 -- param: pushes i64
 -- param: files_set bool
-INSERT INTO fake_pull_heads (issue_id, head_sha, pushes, files_set)
-VALUES (:issue_id, :head_sha, :pushes, :files_set)
+-- param: rewrites i64
+INSERT INTO fake_pull_heads (issue_id, head_sha, pushes, files_set, rewrites)
+VALUES (:issue_id, :head_sha, :pushes, :files_set, :rewrites)
 ON CONFLICT (issue_id) DO UPDATE SET head_sha = excluded.head_sha, pushes = excluded.pushes,
-  files_set = excluded.files_set;
+  files_set = excluded.files_set, rewrites = excluded.rewrites;
+
+-- The SHA of the PR's `k`th commit, when a push named it.
+-- name: pull_commit :opt
+-- param: issue_id i64
+-- param: k i64
+SELECT sha FROM fake_pull_commits WHERE issue_id = :issue_id AND k = :k;
+
+-- name: add_pull_commit :exec
+-- param: issue_id i64
+-- param: k i64
+-- param: sha &str
+INSERT INTO fake_pull_commits (issue_id, k, sha) VALUES (:issue_id, :k, :sha)
+ON CONFLICT (issue_id, k) DO UPDATE SET sha = excluded.sha;
+
+-- A force push: the PR's pushed commits go with its old history.
+-- name: clear_pull_commits :exec
+-- param: issue_id i64
+DELETE FROM fake_pull_commits WHERE issue_id = :issue_id;
+
+-- A push bumps the PR's `updated_at`, as GitHub's does.
+-- name: touch_pull :exec
+-- param: issue_id i64
+-- param: at i64
+UPDATE items SET updated_at = :at WHERE id = :issue_id;
 
 -- name: clear_pull_files :exec
 -- param: issue_id i64

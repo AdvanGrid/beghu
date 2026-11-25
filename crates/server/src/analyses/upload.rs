@@ -120,20 +120,26 @@ async fn answer(app: &App, a: &Admitted, e: RunError) -> Response {
     }
 }
 
-/// A refused upload counts on the run, which keeps its answer as the last report; the account's
-/// streams hear it. The answer goes out as it was.
+/// A refused upload counts on the run, which keeps its answer as the last report, and how many
+/// errors it had for the PR panel (a 422's report's, or 1 for a 409 or 413, which have one
+/// problem each); the account's streams hear it. The answer goes out as it was.
 async fn refused(app: &App, a: &Admitted, res: Response) -> Response {
     let (parts, body) = res.into_parts();
     let bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .unwrap_or_default();
     let report = String::from_utf8_lossy(&bytes).into_owned();
+    let errors = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v["report"]["errors"].as_array().map(|e| e.len() as i64))
+        .unwrap_or(1)
+        .max(1);
     let id = a.run.id.clone();
     match app
         .analyses()
         .dbs
         .write(a.account, move |tx| {
-            analysis_db::q::refuse_upload(tx, &id, &report)
+            analysis_db::q::refuse_upload(tx, &id, &report, errors)
         })
         .await
     {
@@ -371,6 +377,8 @@ async fn accept(
                 &blobs.claims_br,
                 &blobs.claims_gz,
             )?;
+            analysis_db::q::accept_upload(tx, &run)?;
+            analysis_db::q::delete_pr_behind(tx, repo_id, env.number)?;
             Ok(Store::Stored)
         })
         .await?;
