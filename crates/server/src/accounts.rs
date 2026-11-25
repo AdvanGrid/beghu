@@ -532,15 +532,17 @@ async fn lose_access(app: &App, account: i64, disconnected: Option<i64>) {
 /// inside one tick of the clock can't have the first one's clear take the second one's mark.
 fn disconnect_mark() -> i64 {
     static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    use std::sync::atomic::Ordering::SeqCst;
     let now = crate::now_ms();
-    let prev = LAST
-        .fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |last| Some(now.max(last + 1)),
-        )
-        .unwrap_or_else(|last| last);
-    now.max(prev + 1)
+    // A plain compare-and-swap loop: `fetch_update`'s name moves between toolchains.
+    let mut last = LAST.load(SeqCst);
+    loop {
+        let mark = now.max(last + 1);
+        match LAST.compare_exchange_weak(last, mark, SeqCst, SeqCst) {
+            Ok(_) => return mark,
+            Err(seen) => last = seen,
+        }
+    }
 }
 
 /// A sign-in found the account marked by Disconnect at `at`, its `analyses.db` maybe not deleted
