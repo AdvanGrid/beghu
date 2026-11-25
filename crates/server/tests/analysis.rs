@@ -34,18 +34,48 @@ fn description() -> String {
 /// a push to [`HEAD`] changing the sample's two files.
 async fn setup(s: &Stack) -> (Browser, i64) {
     let mut b = s.sign_in("tomsj").await;
+    let number = setup_pr(s, &mut b, 0).await;
+    (b, number)
+}
+
+/// The `index`th open PR of `acme/web`, set up as [`setup`] sets up the first.
+async fn setup_pr(s: &Stack, b: &mut Browser, index: usize) -> i64 {
     let (status, page) = s
-        .api(
-            &mut b,
-            "/api/issues?q=is%3Apr%20is%3Aopen%20repo%3Aacme%2Fweb",
-        )
+        .api(b, "/api/issues?q=is%3Apr%20is%3Aopen%20repo%3Aacme%2Fweb")
         .await;
     assert_eq!(status, 200, "{page}");
-    let number = page["rows"][0]["number"].as_i64().unwrap();
+    let number = page["rows"][index]["number"].as_i64().unwrap();
     s.edit(json!({ "repo": "acme/web", "number": number, "body": description() }))
         .await;
     push(s, number, HEAD).await;
-    (b, number)
+    number
+}
+
+/// A test's pause at `point` ([`beghu::Config::analysis_pause`]): the first run that gets there
+/// says so on `reached` and waits there until `release`; every other passes.
+struct Pause {
+    reached: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+fn pause_once(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let p = Pause {
+        reached: Default::default(),
+        release: Default::default(),
+    };
+    let (reached, release) = (p.reached.clone(), p.release.clone());
+    let hook: beghu::RunPause = std::sync::Arc::new(move |at| {
+        if at != point || !armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Box::pin(async {});
+        }
+        let (reached, release) = (reached.clone(), release.clone());
+        Box::pin(async move {
+            reached.notify_one();
+            release.notified().await;
+        })
+    });
+    (hook, p)
 }
 
 /// A push to the PR's head: `sha`, changing the sample's two files.
@@ -764,10 +794,16 @@ async fn the_graph_and_its_claims_are_served_as_stored_with_their_etag() {
         let res = s.get(&mut b.clone(), &url).await;
         assert_eq!(res.status(), 404, "{url}");
     }
-    // Only the account's own: another account has none.
-    let ilze = s.sign_in("ilze-k").await;
+    // Only the account's own: another account has none, and its claims URL is no one else's.
+    let mut ilze = s.sign_in("ilze-k").await;
     let res = graph(&s, &ilze, number, "br", None).await;
     assert_eq!(res.status(), 404);
+    let url = format!(
+        "/api/acme/web/pulls/{number}/analysis/{id}/v{}/claims",
+        analysis::VERSION
+    );
+    let res = s.get(&mut ilze, &url).await;
+    assert_eq!(res.status(), 404, "{url}");
 }
 
 /// `v` as the schema's types write it: what the server stores of an upload.
@@ -1140,4 +1176,375 @@ async fn an_upload_without_a_known_beghu_snippets_is_a_400_and_not_counted() {
     assert_eq!(seen.len(), 1, "only the 422 is a refusal: {seen:?}");
     // Nothing was stored by either.
     assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 404);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_lives_at_most_its_lifetime_from_its_start() {
+    let s = start_with(|c| {
+        c.runs.unused_for = Duration::from_secs(60);
+        c.runs.idle_for = Duration::from_secs(60);
+        c.runs.lives_for = Duration::from_secs(6);
+    })
+    .await;
+    let (b, number) = setup(&s).await;
+    let started = std::time::Instant::now();
+    let token = run(&s, &b, number).await;
+    // Attached halfway through: the cap still counts from the start.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(fetch_json(&s, &token, "pr.json").await.0, 200);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(fetch_json(&s, &token, "schema.ts").await.0, 200);
+    // Busy, but 7 s after its start (6 s after it attached would be 9 s).
+    tokio::time::sleep(Duration::from_secs(7).saturating_sub(started.elapsed())).await;
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("expired")),
+        "{gone}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_superseded_while_it_is_checked_stores_nothing() {
+    let (hook, pause) = pause_once(beghu::RunPausePoint::Store);
+    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    let uploading = {
+        let (http, url) = (
+            s.http.clone(),
+            format!("{}/api/runs/{token}/analysis", s.server),
+        );
+        tokio::spawn(async move {
+            let res = http
+                .post(url)
+                .header("content-type", "application/json")
+                .header("beghu-snippets", "checked")
+                .body(serde_json::to_vec(&sample()).unwrap())
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        })
+    };
+    // Checked and about to be stored, the upload's run is superseded.
+    tokio::time::timeout(Duration::from_secs(15), pause.reached.notified())
+        .await
+        .expect("the upload reached its store");
+    let newer = run(&s, &b, number).await;
+    pause.release.notify_one();
+    let (status, gone) = uploading.await.unwrap();
+    assert_eq!(
+        (status, gone["error"].as_str(), gone["reason"].as_str()),
+        (410, Some("run_ended"), Some("superseded")),
+        "{gone}"
+    );
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 404);
+    // The newer run's upload is stored.
+    assert_eq!(upload(&s, &newer, &sample()).await.0, 201);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_ended_first_by_another_call_is_reported_as_that() {
+    let (hook, pause) = pause_once(beghu::RunPausePoint::End);
+    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (mut b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(fetch_json(&s, &token, "pr.json").await.0, 200);
+    // Signed out of the only browser: the next call finds the run revoked, and is held as it
+    // goes to mark it so.
+    let account = b.account();
+    s.post_form(&mut b, "/auth/logout", &[("account", &account)])
+        .await;
+    let fetching = {
+        let (http, url) = (
+            s.http.clone(),
+            format!("{}/api/runs/{token}/pr.json", s.server),
+        );
+        tokio::spawn(async move {
+            let res = http.get(url).send().await.unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(15), pause.reached.notified())
+        .await
+        .expect("the call reached its end");
+    // Meanwhile, signed in again, a newer run supersedes it.
+    let b = s.sign_in("tomsj").await;
+    run(&s, &b, number).await;
+    pause.release.notify_one();
+    let (status, gone) = fetching.await.unwrap();
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("superseded")),
+        "{gone}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_uploads_at_most_do_the_heavy_work_at_once() {
+    let arrived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (release, released) = tokio::sync::watch::channel(false);
+    let hook: beghu::RunPause = {
+        let arrived = arrived.clone();
+        std::sync::Arc::new(move |at| {
+            if at != beghu::RunPausePoint::Store {
+                return Box::pin(async {});
+            }
+            arrived.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut released = released.clone();
+            Box::pin(async move {
+                let _ = released.wait_for(|r| *r).await;
+            })
+        })
+    };
+    let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
+    let (mut b, first) = setup(&s).await;
+    let mut tokens = vec![run(&s, &b, first).await];
+    for i in 1..3 {
+        let number = setup_pr(&s, &mut b, i).await;
+        tokens.push(run(&s, &b, number).await);
+    }
+    // One upload per PR, so no PR's lock holds one back.
+    let uploads: Vec<_> = tokens
+        .iter()
+        .map(|token| {
+            let (http, url) = (
+                s.http.clone(),
+                format!("{}/api/runs/{token}/analysis", s.server),
+            );
+            tokio::spawn(async move {
+                http.post(url)
+                    .header("content-type", "application/json")
+                    .header("beghu-snippets", "checked")
+                    .body(serde_json::to_vec(&sample()).unwrap())
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            })
+        })
+        .collect();
+    let count = || arrived.load(std::sync::atomic::Ordering::SeqCst);
+    until(15.0, "two uploads at their store", || async {
+        (count() >= 2).then_some(())
+    })
+    .await;
+    // The third waits for a turn while the two hold theirs.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(count(), 2);
+    release.send(true).unwrap();
+    for u in uploads {
+        assert_eq!(u.await.unwrap(), 201);
+    }
+    assert_eq!(count(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_rearms_every_live_runs_expiry() {
+    let adjust = |c: &mut beghu::Config| c.runs.unused_for = Duration::from_secs(3);
+    let mut s = start_with(adjust).await;
+    let (b, number) = setup(&s).await;
+
+    // Past its deadline by the time beghu is back: expired as it starts, and the tabs hear it.
+    let token = run(&s, &b, number).await;
+    s.stop();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let held = s.restart_held(adjust).await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    held.start().await;
+    assert_eq!(
+        analysis_event(&mut st).await,
+        json!({ "repo": "acme/web", "number": number }),
+        "expired at startup"
+    );
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("expired")),
+        "{gone}"
+    );
+
+    // Not yet due: its timer, re-armed, expires it on time with no call made.
+    let token = run(&s, &b, number).await;
+    s.restart_with(adjust).await;
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    assert_eq!(
+        analysis_event(&mut st).await,
+        json!({ "repo": "acme/web", "number": number }),
+        "expired by its re-armed timer"
+    );
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("expired")),
+        "{gone}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ended_runs_timer_stops_with_it() {
+    let s = start().await;
+    let (b, number) = setup(&s).await;
+    // The same calls once first, so the server's tasks for them (its connection) are counted.
+    run(&s, &b, number).await;
+    end_live(&s, &b, number).await;
+    let before = s.server_tasks();
+    // Forty runs, each superseding the one before, and the last ended: each run's 24 h timer
+    // must stop with it.
+    for _ in 0..40 {
+        run(&s, &b, number).await;
+    }
+    end_live(&s, &b, number).await;
+    until(15.0, "the server's tasks settled", || async {
+        (s.server_tasks() <= before + 10).then_some(())
+    })
+    .await;
+}
+
+/// The panel ends the PR's live run.
+async fn end_live(s: &Stack, b: &Browser, number: i64) {
+    let res = s
+        .api_write(
+            b,
+            reqwest::Method::DELETE,
+            &format!("/api/acme/web/pulls/{number}/run"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disconnect_deletes_the_analyses() {
+    let s = start().await;
+    let (mut b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let account = b.account();
+    let file = s.data.join("analyses").join(format!("{account}.db"));
+    assert!(file.exists());
+    let res = s
+        .post_form(&mut b, "/auth/disconnect", &[("account", &account)])
+        .await;
+    assert_eq!(res.status(), 303);
+    until(15.0, "the analyses deleted", || async {
+        (!file.exists()).then_some(())
+    })
+    .await;
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("sign_in_again")),
+        "{gone}"
+    );
+    // Signed in again, the account starts with none.
+    let b = s.sign_in("tomsj").await;
+    let res = graph(&s, &b, number, "identity", None).await;
+    assert_eq!(res.status(), 404);
+    assert_eq!(decoded(res).await["error"], "no_analysis");
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!((status, gone["error"].as_str()), (410, Some("run_ended")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn losing_read_on_the_repo_deletes_its_analyses_and_runs() {
+    let s = start_with(|c| c.repo_refresh_every = Duration::from_secs(1)).await;
+    let (mut b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    assert_eq!(upload(&s, &token, &sample()).await.0, 201);
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    s.fake(
+        "PUT",
+        "/permissions",
+        json!({ "login": "tomsj", "repo": "web", "role": null }),
+    )
+    .await;
+    // The tab's use keeps the account's roles re-read; no call on the run is made, so the
+    // run's end is the lost Read's.
+    let mut heard = None;
+    for _ in 0..30 {
+        s.api(&mut b, "/api/me").await;
+        if let Some(ev) = st.event_within(Duration::from_millis(500)).await
+            && ev.event == "analysis"
+        {
+            heard = Some(serde_json::from_str::<Value>(&ev.data).unwrap());
+            break;
+        }
+    }
+    assert_eq!(heard, Some(json!({ "repo": "acme/web", "number": number })));
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
+    );
+
+    // Read again: the analysis went with the Read, and the run is still told why it ended.
+    s.fake(
+        "PUT",
+        "/permissions",
+        json!({ "login": "tomsj", "repo": "web", "role": "admin" }),
+    )
+    .await;
+    until(15.0, "the repo readable again", || {
+        let mut b = b.clone();
+        let s = &s;
+        async move {
+            s.api(&mut b, "/api/me").await;
+            let res = graph(s, &b, number, "identity", None).await;
+            let status = res.status();
+            let body = decoded(res).await;
+            // `no_analysis` either way; readable once a run can start.
+            assert_eq!(
+                (status.as_u16(), &body["error"]),
+                (404, &json!("no_analysis"))
+            );
+            (start_run(s, &b, number).await.0 == 201).then_some(())
+        }
+    })
+    .await;
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!(
+        (status, gone["reason"].as_str()),
+        (410, Some("no_read")),
+        "{gone}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daily_check_prunes_runs_long_ended() {
+    let s = start_with(|c| {
+        c.accounts_check_every = Duration::from_millis(200);
+        c.runs.ended_kept_for = Duration::from_secs(1);
+    })
+    .await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    let res = s
+        .http
+        .post(format!("{}/api/runs/{token}/end", s.server))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    // Told why at first; once kept long enough, its token is gone with its row.
+    let (status, gone) = fetch_json(&s, &token, "pr.json").await;
+    assert_eq!((status, gone["reason"].as_str()), (410, Some("ended")));
+    until(15.0, "the ended run pruned", || async {
+        let (status, body) = fetch_json(&s, &token, "pr.json").await;
+        (status == 401).then_some(body)
+    })
+    .await;
+    // A live run is kept, however old the check's limit.
+    let live = run(&s, &b, number).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(fetch_json(&s, &live, "pr.json").await.0, 200);
 }

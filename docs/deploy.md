@@ -158,7 +158,7 @@ What's on it:
 | `control.db` (with `-wal`, `-shm` while running) | Accounts, sessions, encrypted tokens, synced repos, webhook deliveries, preferences. The only state that can't be rebuilt. |
 | `backups/` | The control DB's backups. See [Backups and restore](#backups-and-restore). |
 | `mirrors/<github user id>.db` | Each account's mirror. It's disposable: it's rebuilt from GitHub if it's lost, and never backed up. |
-| `analyses/<github user id>.db` | Each account's PR view analysis runs and latest analyses. Not backed up (an analysis is made again by running the agent again); deleted with the mirror when the account goes dormant. |
+| `analyses/<github user id>.db` | Each account's PR view analysis runs and latest analyses. Not backed up (an analysis is made again by running the agent again); deleted with the mirror when the account goes dormant or disconnects. An account that loses access to a repo loses its analyses of that repo's PRs. An ended run is kept 30 days, to tell its agent why it ended, then pruned by the daily check. |
 | `assets/` | The web build's hashed assets, this build's and the ones still kept from earlier builds. |
 | `builds/<build id>.json` | Each build's asset list, and when a later build superseded it. |
 

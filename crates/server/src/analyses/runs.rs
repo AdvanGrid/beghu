@@ -1,19 +1,22 @@
 //! A run's life: starting one (the browser's `POST /api/{owner}/{repo}/pulls/{n}/runs`, the CLI's
 //! `POST /api/cli/runs`), ending one (`DELETE /api/{owner}/{repo}/pulls/{n}/run`, or the run's own
-//! `POST end`), and what every call on a run checks first ([`admit`]): the token, then each way a
-//! run ends (expired, superseded, ended, the account signed out of every browser, dormant, signed
-//! out by GitHub, or without Read on the repo). A run found ended that way is marked so, and the
-//! account's streams hear it.
+//! `POST end`), and what every call on a run checks first ([`admit`]): the token (and a CLI run's
+//! credential), then each way a run ends (expired, superseded, ended, the account signed out of
+//! every browser, dormant, signed out by GitHub, or without Read on the repo). A run found ended
+//! that way is marked so, and the account's streams hear it. Each live run's timer expires it on
+//! time ([`watch`], re-armed at startup by [`rearm`]); the daily check prunes runs long ended
+//! ([`prune`]); and an account that loses Read on a repo loses its runs and analyses there
+//! ([`lost_repo`]).
 //!
 //! The run API answers in its own terms ([`RunError`]): it's read by an agent with `curl` or by
 //! the CLI, never by the web app, so its failures aren't the app's error kinds.
 
-use super::{PrKey, announce, new_id, new_token};
+use super::{PrKey, announce, new_id, new_token, pause};
 use crate::auth::Session;
 use crate::crypto::{sha256, unb64};
 use crate::error::ApiError;
 use crate::tokens::AccountStatus;
-use crate::{App, now};
+use crate::{App, RunLifetimes, RunPausePoint, now};
 use analysis::Report;
 use analysis_db::q::RunRow;
 use axum::Json;
@@ -43,7 +46,11 @@ impl Producer {
     }
 
     pub fn of(run: &RunRow) -> Producer {
-        match run.producer.as_str() {
+        Producer::from_db(&run.producer)
+    }
+
+    fn from_db(s: &str) -> Producer {
+        match s {
             "cli" => Producer::Cli,
             _ => Producer::Button,
         }
@@ -127,7 +134,8 @@ pub(crate) enum RunError {
     BadToken,
     /// 410: the run ended.
     Ended(Ended),
-    /// 410: the run's account lost its analyses (it went dormant and came back): the run is gone.
+    /// 410: the run's account lost its analyses (it went dormant or disconnected, and came
+    /// back): the run is gone.
     Gone,
     /// 413: past the upload's limits.
     TooLarge,
@@ -353,30 +361,48 @@ impl Admitted {
 }
 
 /// When the run expires, as it stands: 24 h after its start while nothing fetched from it, then
-/// 2 h after its last call, and never later than 7 days after it attached.
-pub(crate) fn deadline(app: &App, run: &RunRow) -> i64 {
-    let l = &app.cfg().runs;
-    match run.attached_at {
+/// 2 h after its last call, and never later than 7 days after its start (the start call, not the
+/// first fetch: a link nobody used for a day still has 6 days, not 7).
+pub(crate) fn deadline(l: &RunLifetimes, run: &RunRow) -> i64 {
+    let by_use = match run.attached_at {
         None => run.created_at + l.unused_for.as_secs() as i64,
-        Some(at) => {
-            (run.last_heard_at + l.idle_for.as_secs() as i64).min(at + l.lives_for.as_secs() as i64)
-        }
-    }
+        Some(_) => run.last_heard_at + l.idle_for.as_secs() as i64,
+    };
+    by_use.min(run.created_at + l.lives_for.as_secs() as i64)
 }
 
-/// Ends the run if it's still live, telling the account's streams. The error the call that found
-/// it so answers.
+/// How [`end`]'s write found the run.
+enum Ending {
+    /// Live: this call ended it.
+    Now,
+    /// Ended already, for the reason stored.
+    Already(Ended),
+    /// Its row is gone (its repo's analyses were deleted).
+    Gone,
+}
+
+/// Ends the run if it's still live, telling the account's streams and waking its timer. The error
+/// the call that found it so answers: `why`, or, when something else ended it first (a supersede
+/// between the call's check and this write), the reason stored.
 pub(crate) async fn end(app: &App, account: i64, run: &RunRow, why: Ended) -> RunError {
+    pause(app, RunPausePoint::End).await;
     let (id, t) = (run.id.clone(), now());
-    match app
+    let ending = app
         .analyses()
         .dbs
         .write(account, move |tx| {
-            analysis_db::q::end_run(tx, &id, why.as_str(), t)
+            if analysis_db::q::end_run(tx, &id, why.as_str(), t)? > 0 {
+                return Ok(Ending::Now);
+            }
+            Ok(match analysis_db::q::run(tx, &id)? {
+                Some(r) => Ending::Already(Ended::from_db(r.ended_reason.as_deref().unwrap_or(""))),
+                None => Ending::Gone,
+            })
         })
-        .await
-    {
-        Ok(n) if n > 0 => {
+        .await;
+    app.analyses().wake(&run.id);
+    match ending {
+        Ok(Ending::Now) => {
             eprintln!(
                 "account {account}: the analysis run on {}/{}#{} ended ({})",
                 run.owner,
@@ -391,18 +417,23 @@ pub(crate) async fn end(app: &App, account: i64, run: &RunRow, why: Ended) -> Ru
                 run.number,
                 None,
             );
+            RunError::Ended(why)
         }
-        Ok(_) => {}
-        Err(e) => eprintln!("account {account}: ending run {}: {e}", run.id),
+        Ok(Ending::Already(stored)) => RunError::Ended(stored),
+        Ok(Ending::Gone) => RunError::Gone,
+        Err(e) => {
+            eprintln!("account {account}: ending run {}: {e}", run.id);
+            RunError::Ended(why)
+        }
     }
-    RunError::Ended(why)
 }
 
-/// What every call on a run checks first, in order: the token names a run; its account isn't
-/// dormant or signed out by GitHub; the run exists and hasn't ended or expired; for a button
-/// run, the account is still signed in on some browser, and for a CLI run the call carries its
-/// CLI credential; the account can still read the repo. A run found ended on the way is marked
-/// so. The call counts as the run's use (`last_heard_at`).
+/// What every call on a run checks first, in order: the token names a run; for a CLI run, the
+/// call carries the CLI credential of the run's account (before anything else, so the token
+/// alone learns nothing, not even that the run ended); its account isn't dormant or signed out
+/// by GitHub; the run exists and hasn't ended or expired; for a button run, the account is still
+/// signed in on some browser; the account can still read the repo. A run found ended on the way
+/// is marked so. The call counts as the run's use (`last_heard_at`).
 pub(crate) async fn admit(
     app: &App,
     token: &str,
@@ -420,8 +451,13 @@ pub(crate) async fn admit(
         return Err(RunError::BadToken);
     };
     let account = t.github_user_id;
+    let producer = Producer::from_db(&t.producer);
+    if producer == Producer::Cli && cli_account(app, headers).await != Some(account) {
+        return Err(RunError::BadToken);
+    }
+    let status = AccountStatus::from_db(&t.status);
     // Its analyses were deleted with its mirror, or are about to be.
-    if AccountStatus::from_db(&t.status) == AccountStatus::Dormant {
+    if status == AccountStatus::Dormant {
         return Err(RunError::Ended(Ended::Dormant));
     }
     let id = t.run_id.clone();
@@ -432,34 +468,37 @@ pub(crate) async fn admit(
         .await
     {
         Ok(Some(run)) => run,
-        Ok(None) => return Err(RunError::Gone),
+        // Deleted with its repo's analyses (the account lost Read on it): the token says why.
+        Ok(None) => {
+            return Err(match &t.ended_reason {
+                Some(why) => RunError::Ended(Ended::from_db(why)),
+                None => RunError::Gone,
+            });
+        }
+        // Disconnect deletes the account's analyses, and leaves it to sign in again.
+        Err(dbrt::Error::Deleted) if status == AccountStatus::NeedsSignIn => {
+            return Err(RunError::Ended(Ended::SignInAgain));
+        }
         Err(dbrt::Error::Deleted) => return Err(RunError::Ended(Ended::Dormant)),
         Err(e) => return Err(e.into()),
     };
     if let Some(why) = &run.ended_reason {
         return Err(RunError::Ended(Ended::from_db(why)));
     }
-    if AccountStatus::from_db(&t.status) == AccountStatus::NeedsSignIn {
+    if status == AccountStatus::NeedsSignIn {
         return Err(end(app, account, &run, Ended::SignInAgain).await);
     }
     let t = now();
-    if t >= deadline(app, &run) {
+    if t >= deadline(&app.cfg().runs, &run) {
         return Err(end(app, account, &run, Ended::Expired).await);
     }
-    match Producer::of(&run) {
-        Producer::Button => {
-            let signed_in = app
-                .control()
-                .read(move |c| control_db::q::signed_in_anywhere(c, account, t))
-                .await?;
-            if !signed_in {
-                return Err(end(app, account, &run, Ended::SignedOut).await);
-            }
-        }
-        Producer::Cli => {
-            if cli_account(app, headers).await != Some(account) {
-                return Err(RunError::BadToken);
-            }
+    if producer == Producer::Button {
+        let signed_in = app
+            .control()
+            .read(move |c| control_db::q::signed_in_anywhere(c, account, t))
+            .await?;
+        if !signed_in {
+            return Err(end(app, account, &run, Ended::SignedOut).await);
         }
     }
     let repo = run.repo_id;
@@ -494,9 +533,12 @@ async fn cli_account(_app: &App, _headers: &HeaderMap) -> Option<i64> {
     None
 }
 
-/// Watches a live run until it ends, and ends it when it expires: the account's streams hear an
-/// expiry nobody's call found. A run whose watch a restart lost is found expired by its next call.
+/// The live run's timer: ends the run when it expires, so the account's streams hear an expiry
+/// nobody's call found. It sleeps until the run's deadline as it stands, then looks again (a call
+/// since moved it). Woken when the run ends otherwise, or its row goes ([`super::Store::wake`]),
+/// it stops then. A restart re-arms every live run's ([`rearm`]).
 pub(crate) fn watch(app: &App, account: i64, run: String) {
+    let woken = app.analyses().timer(account, &run);
     app.spawn(move |app| async move {
         loop {
             let id = run.clone();
@@ -507,16 +549,165 @@ pub(crate) fn watch(app: &App, account: i64, run: String) {
                 .await
             {
                 Ok(Some(row)) if row.ended_at.is_none() => row,
-                _ => return,
+                _ => break,
             };
-            let wait = deadline(&app, &row) - now();
+            let wait = deadline(&app.cfg().runs, &row) - now();
             if wait <= 0 {
                 end(&app, account, &row, Ended::Expired).await;
-                return;
+                break;
             }
-            tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(wait as u64)) => {}
+                () = woken.notified() => {}
+            }
         }
+        app.analyses().timer_done(&run, &woken);
     });
+}
+
+/// Startup: a timer for every live run of every active account (a restart lost theirs), each of
+/// which expires its run at once if its deadline passed meanwhile, telling the account's streams.
+/// A dormant account's analyses are deleted; one that must sign in again has no tab to tell, and
+/// its run's next call ends it.
+pub(crate) async fn rearm(app: App) {
+    let accounts = match app.control().read(control_db::q::run_token_accounts).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("startup: reading the accounts with analysis runs: {e}");
+            return;
+        }
+    };
+    for account in accounts {
+        match app
+            .analyses()
+            .dbs
+            .read(account, analysis_db::q::live_runs)
+            .await
+        {
+            Ok(live) => {
+                for run in live {
+                    watch(&app, account, run);
+                }
+            }
+            Err(e) => eprintln!("startup: reading account {account}'s live analysis runs: {e}"),
+        }
+    }
+}
+
+/// The daily check's part: the runs that ended more than `ended_kept_for` (30 days) ago go, with
+/// their tokens, which until then told a call why its run ended. A token whose run's row is gone
+/// with its file (the account went dormant or disconnected) or its repo's analyses goes once its
+/// run can't have ended later than that: its start was `lives_for` (7 days) longer ago.
+pub(crate) async fn prune(app: &App) {
+    let l = &app.cfg().runs;
+    let t = now();
+    let before = t - l.ended_kept_for.as_secs() as i64;
+    match app.control().read(control_db::q::run_token_accounts).await {
+        Ok(accounts) => {
+            for account in accounts {
+                let pruned = app
+                    .analyses()
+                    .dbs
+                    .write(account, move |tx| {
+                        analysis_db::q::prune_ended_runs(tx, before)
+                    })
+                    .await;
+                let ids = match pruned {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        eprintln!("account {account}: pruning its ended analysis runs: {e}");
+                        continue;
+                    }
+                };
+                if ids.is_empty() {
+                    continue;
+                }
+                if let Err(e) = app
+                    .control()
+                    .write(move |tx| {
+                        for id in &ids {
+                            control_db::q::delete_run_token(tx, id)?;
+                        }
+                        Ok(())
+                    })
+                    .await
+                {
+                    eprintln!("account {account}: pruning its ended analysis runs' tokens: {e}");
+                }
+            }
+        }
+        Err(e) => eprintln!("accounts: reading the accounts with analysis runs: {e}"),
+    }
+    let started_before = before - l.lives_for.as_secs() as i64;
+    if let Err(e) = app
+        .control()
+        .write(move |tx| control_db::q::prune_old_run_tokens(tx, started_before))
+        .await
+    {
+        eprintln!("accounts: pruning old analysis runs' tokens: {e}");
+    }
+}
+
+/// The account lost Read on the repo: its analyses there go, and so do its runs, each live one
+/// ending first as `no_read` (its token keeps why each ended, for its next call's 410), which the
+/// account's streams hear. Nothing for an account that has no `analyses.db`.
+pub(crate) async fn lost_repo(app: &App, account: i64, repo_id: i64, repo: &str) {
+    if !app.analyses().dbs.path(account).exists() {
+        return;
+    }
+    let runs = match app
+        .analyses()
+        .dbs
+        .read(account, move |c| analysis_db::q::repo_runs(c, repo_id))
+        .await
+    {
+        Ok(r) => r,
+        // Deleted (dormant, or disconnected): nothing left of it.
+        Err(dbrt::Error::Deleted) => return,
+        Err(e) => {
+            eprintln!("account {account}: reading its analysis runs on {repo}: {e}");
+            return;
+        }
+    };
+    let reasons: Vec<(String, String)> = runs
+        .iter()
+        .map(|r| {
+            let why = r.ended_reason.as_deref().unwrap_or(Ended::NoRead.as_str());
+            (r.id.clone(), why.to_owned())
+        })
+        .collect();
+    if let Err(e) = app
+        .control()
+        .write(move |tx| {
+            for (id, why) in &reasons {
+                control_db::q::set_run_token_ended(tx, id, why)?;
+            }
+            Ok(())
+        })
+        .await
+    {
+        eprintln!("account {account}: noting why its analysis runs on {repo} ended: {e}");
+        return;
+    }
+    if let Err(e) = app
+        .analyses()
+        .dbs
+        .write(account, move |tx| {
+            analysis_db::q::delete_repo_runs(tx, repo_id)?;
+            analysis_db::q::delete_repo_analyses(tx, repo_id)
+        })
+        .await
+    {
+        eprintln!("account {account}: deleting its analyses of {repo}: {e}");
+        return;
+    }
+    eprintln!("account {account}: can no longer read {repo}; its analyses there are deleted");
+    for r in runs {
+        app.analyses().wake(&r.id);
+        if r.ended_reason.is_none() {
+            announce(app, account, repo, r.number, None);
+        }
+    }
 }
 
 /// The repo a run is for, as the account's mirror holds it: its id, its name as GitHub spells
@@ -634,7 +825,9 @@ async fn start(
     {
         let run = run.clone();
         app.control()
-            .write(move |tx| control_db::q::insert_run_token(tx, &hash, &run, account, t))
+            .write(move |tx| {
+                control_db::q::insert_run_token(tx, &hash, &run, account, producer.as_str(), t)
+            })
             .await?;
     }
     let (id, repo_id, owner, name) = (run.clone(), repo.id, repo.owner.clone(), repo.name.clone());
@@ -642,7 +835,8 @@ async fn start(
         .analyses()
         .dbs
         .write(account, move |tx| {
-            if let Some(live) = analysis_db::q::live_run(tx, repo_id, number)? {
+            let superseded = analysis_db::q::live_run(tx, repo_id, number)?;
+            if let Some(live) = &superseded {
                 analysis_db::q::end_run(tx, &live.id, Ended::Superseded.as_str(), t)?;
             }
             analysis_db::q::insert_run(
@@ -654,9 +848,13 @@ async fn start(
                 number,
                 producer.as_str(),
                 t,
-            )
+            )?;
+            Ok(superseded.map(|l| l.id))
         })
         .await;
+    if let Ok(Some(superseded)) = &written {
+        app.analyses().wake(superseded);
+    }
     if let Err(e) = written {
         // The token goes with the run it was for.
         let id = run.clone();

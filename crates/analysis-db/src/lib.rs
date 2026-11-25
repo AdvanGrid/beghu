@@ -6,7 +6,7 @@
 //! The files are managed as the mirrors are (`dbrt::Mirrors`: opened and migrated on first use
 //! behind a per-account gate, one writer and two readers each), under a connection budget of
 //! their own. Unlike a mirror, nothing here can be had from GitHub again, so the schema migrates
-//! in place only, and a file is deleted only when its account goes dormant.
+//! in place only, and a file is deleted only when its account goes dormant or disconnects.
 #![allow(clippy::disallowed_methods)] // a database crate: raw rusqlite calls are allowed here
 
 include!(concat!(env!("OUT_DIR"), "/db.rs"));
@@ -35,9 +35,15 @@ impl Analyses {
     }
 
     /// Deletes the account's file once the work in flight on it is done, and refuses every use
-    /// of it ([`Error::Deleted`]) until [`Analyses::revive`]: an account gone dormant.
-    pub async fn delete(&self, account: AccountId) -> Result<(), Error> {
-        self.0.delete(account).await
+    /// of it ([`Error::Deleted`]) until [`Analyses::revive`]: an account gone dormant, or
+    /// disconnected. Asked for as this is called, before the future is first polled, as
+    /// [`dbrt::Mirrors::delete`] is: a revive that comes after the call brings an empty file
+    /// back once the delete is done.
+    pub fn delete(
+        &self,
+        account: AccountId,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+        self.0.delete(account)
     }
 
     /// The account may use its file again (it woke, or signed in): its next use creates an empty

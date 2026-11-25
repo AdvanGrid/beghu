@@ -78,7 +78,8 @@ async fn serve(
             } else {
                 tools.merge.clone()
             };
-            let mut res = axum::body::Body::from(bytes.to_vec()).into_response();
+            // `Bytes` is shared, not copied: every fetch serves the one read at startup.
+            let mut res = axum::body::Body::from(bytes).into_response();
             res.headers_mut().insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("text/javascript; charset=utf-8"),

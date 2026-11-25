@@ -8,7 +8,8 @@
 //!   one; with none left, the session ends and the browser lands on a plain signed-out page.
 //!   GitHub's tokens are left alone, so signing back in is quick and other browsers carry on.
 //! - `POST /auth/disconnect` (`account`): revokes the account's grant on GitHub, deletes its
-//!   mirror, its preferences and its tokens, and takes it out of every browser session. It keeps
+//!   mirror, its analyses (`analyses.db`), its preferences and its tokens, and takes it out of
+//!   every browser session. It keeps
 //!   its repo pick, and its row as `needs_sign_in`, so nothing syncs for it until it signs in.
 //!   Without usable tokens it can't reach the grant: it disconnects all the same, and its answer
 //!   says GitHub access wasn't revoked, linking to GitHub's authorized-apps page.
@@ -51,7 +52,9 @@
 //! hasn't moved since it read it, and keeps the mirror if it has. So a request that came in
 //! meanwhile keeps the account active, and one that comes after finds it dormant and wakes it.
 //! A dormant account's mirror files are deleted at startup too, and so is its `analyses.db`
-//! (`analyses/`), deleted with its mirror as it goes dormant. Any use wakes it ([`used`]), as
+//! (`analyses/`), deleted with its mirror as it goes dormant: asked for in the write that marks
+//! it dormant, so a wake, whose write comes after, revives it after the ask, and the account
+//! that wakes gets an empty one rather than none. Any use wakes it ([`used`]), as
 //! does signing in again: its repo set is read afresh (dropping the repos it can no longer
 //! see), and its mirror comes back empty and imports its whole pick, which the status slot
 //! calls "Re-importing — you've been away a while". The daily check also wipes dead tokens.
@@ -67,6 +70,8 @@ use axum::response::{Html, IntoResponse, Response};
 use control_db::q;
 use mirror_db::Decision;
 use serde::Deserialize;
+use std::future::Future;
+use std::pin::Pin;
 
 /// Where a browser lands once nothing is signed in on it.
 const SIGNED_OUT: &str = "/auth/signed-out";
@@ -400,7 +405,7 @@ pub async fn disconnect(
             mine = left;
         }
     }
-    lost_access(&app, account).await;
+    lose_access(&app, account, true).await;
     let (to, cookies): (&str, Vec<HeaderValue>) = match mine {
         Left::Ended => (SIGNED_OUT, auth::cleared_cookies().into()),
         Left::Switched(to) => ("/issues", auth::session_cookies(&sid, to).into()),
@@ -437,14 +442,29 @@ rel="external">Authorized GitHub Apps</a>, revoke it there.</p>
 /// read again under the lock: a sign-in that landed meanwhile keeps its tabs. What sync missed
 /// in the deleted mirror is forgotten either way.
 pub async fn lost_access(app: &App, account: i64) {
-    let deleting = {
+    lose_access(app, account, false).await
+}
+
+/// [`lost_access`], and with `analyses` (Disconnect) its `analyses.db` is deleted too, asked for
+/// under the same lock as the mirror's delete, so a sign-in's revive comes after the ask and
+/// brings an empty one back.
+async fn lose_access(app: &App, account: i64, analyses: bool) {
+    let (deleting, deleting_analyses) = {
         let _turn = app.tokens().hold(account).await;
         if status_of(app, account).await != Some(AccountStatus::NeedsSignIn) {
             return;
         }
         app.imports().stop(account);
-        app.mirrors().delete(account)
+        let a = analyses.then(|| app.analyses().dbs.delete(account));
+        (app.mirrors().delete(account), a)
     };
+    if let Some(d) = deleting_analyses {
+        app.analyses().wake_account(account);
+        match d.await {
+            Ok(()) => eprintln!("account {account}: disconnected; its analyses are deleted"),
+            Err(e) => eprintln!("account {account}: deleting its analyses: {e}"),
+        }
+    }
     let deleted = match deleting.await {
         Ok(()) => {
             eprintln!("account {account}: lost access; its mirror is deleted");
@@ -475,6 +495,9 @@ pub async fn lost_access(app: &App, account: i64) {
     if status_of(app, account).await == Some(AccountStatus::Active) {
         drop(turn);
         app.mirrors().revive(account);
+        if analyses {
+            app.analyses().dbs.revive(account);
+        }
         crate::repos::refresh_roles_now(app, account).await;
         return;
     }
@@ -514,11 +537,13 @@ pub async fn follow_lost(app: App, mut rx: tokio::sync::mpsc::UnboundedReceiver<
 }
 
 /// The accounts' daily check, from startup on: accounts whose refresh token has lapsed lose
-/// access (their tokens wiped), dead tokens and sessions past their expiry are pruned, and
-/// accounts unused for `dormant_after` go dormant.
+/// access (their tokens wiped), dead tokens and sessions past their expiry are pruned, so are
+/// analysis runs ended 30 days ago and their tokens, and accounts unused for `dormant_after` go
+/// dormant.
 pub async fn daily(app: App) {
     loop {
         check(&app).await;
+        crate::analyses::runs::prune(&app).await;
         dormancy(&app).await;
         tokio::time::sleep(app.cfg().accounts_check_every).await;
     }
@@ -569,8 +594,8 @@ async fn dormancy(app: &App) {
 
 /// The account, last used at `seen`, goes dormant: once the work in flight on its mirror is
 /// done, and with nothing else let in, it's marked dormant if it's still active and unused
-/// since `seen`, its import stops, and its mirror files are deleted. A use since `seen` keeps
-/// it active, with its mirror.
+/// since `seen`, its import stops, and its mirror files and `analyses.db` are deleted. A use
+/// since `seen` keeps it active, with its mirror and analyses.
 async fn go_dormant(app: &App, account: i64, seen: i64) {
     let check = {
         let app = app.clone();
@@ -582,19 +607,43 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
                     let app = app.clone();
                     move |tx| {
                         let n = q::go_dormant(tx, account, seen, t)?;
-                        // Stopped inside the write, which a wake waits for: a request that wakes the
-                        // account right after marks its re-import on an import already stopped.
-                        if n > 0 {
-                            app.imports().stop(account);
+                        // Both inside the write, which a wake's write comes after: a request that
+                        // wakes the account right after marks its re-import on an import already
+                        // stopped, and revives its analyses after their delete was asked for, so
+                        // they come back empty once it's done, rather than refused until the next
+                        // sign-in. (Asked after this write, a wake could revive first, and then
+                        // lose its analyses to the delete.)
+                        if n == 0 {
+                            return Ok(None);
                         }
-                        Ok(n > 0)
+                        app.imports().stop(account);
+                        let deleting: Pin<
+                            Box<dyn Future<Output = Result<(), analysis_db::Error>> + Send>,
+                        > = Box::pin(app.analyses().dbs.delete(account));
+                        Ok(Some(deleting))
                     }
                 })
                 .await;
-            marked.unwrap_or_else(|e| {
-                eprintln!("account {account}: marking it dormant: {e}");
-                false
-            })
+            match marked {
+                Ok(Some(deleting)) => {
+                    app.analyses().wake_account(account);
+                    match deleting.await {
+                        Ok(()) => eprintln!("account {account}: dormant; its analyses are deleted"),
+                        Err(e) => eprintln!(
+                            "account {account}: deleting its analyses as it went dormant: {e}"
+                        ),
+                    }
+                    true
+                }
+                Ok(None) => false,
+                Err(e) => {
+                    // The delete may have been asked for in a write that then failed: the
+                    // account stays active, and so do its analyses (empty, if they went).
+                    app.analyses().dbs.revive(account);
+                    eprintln!("account {account}: marking it dormant: {e}");
+                    false
+                }
+            }
         }
     };
     match app.mirrors().delete_if(account, check).await {
@@ -605,12 +654,8 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
             // afresh. Forgotten now, before that import finds misses of its own, and whether or
             // not it woke: left, the account would show "sync degraded" once it's back.
             forget_sync(app, account).await;
-            // Its analyses go with its mirror: they're the account's, and nothing keeps them past
-            // its dormancy.
-            delete_analyses(app, account).await;
             // A request may have woken it already: its repos stay in the sweeps.
             if status_of(app, account).await != Some(AccountStatus::Dormant) {
-                app.analyses().dbs.revive(account);
                 return;
             }
             // Its repos leave the sweeps, unless an active account syncs them too.
@@ -686,15 +731,6 @@ pub(crate) async fn streaming(app: &App, account: i64) {
 pub(crate) fn back_from_dormancy(app: &App, account: i64) {
     eprintln!("account {account}: in use again after going dormant; re-importing its synced repos");
     app.imports().mark_away(account);
-}
-
-/// Deletes the account's `analyses.db`, as it goes dormant. A failure is logged: startup deletes
-/// a dormant account's analyses again.
-async fn delete_analyses(app: &App, account: i64) {
-    match app.analyses().dbs.delete(account).await {
-        Ok(()) => eprintln!("account {account}: dormant; its analyses are deleted"),
-        Err(e) => eprintln!("account {account}: deleting its analyses as it went dormant: {e}"),
-    }
 }
 
 /// Startup step 3, for the analyses: deletes the `analyses.db` of every dormant account (a

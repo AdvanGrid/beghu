@@ -451,6 +451,7 @@ impl Stack {
             analysis_tools: Some(self.web.join("analysis-tools")),
             analysis_chain: &analysis::CHAIN,
             runs: beghu::RunLifetimes::default(),
+            analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),
@@ -505,6 +506,16 @@ impl Stack {
         if let Some(rt) = self.server_rt.take() {
             rt.shutdown_background();
         }
+    }
+
+    /// The tasks alive on the running server's runtime: what a test of a task that should have
+    /// stopped (an ended analysis run's timer) counts, as nothing on the HTTP surface shows it.
+    pub fn server_tasks(&self) -> usize {
+        self.server_rt
+            .as_ref()
+            .expect("a running server")
+            .metrics()
+            .num_alive_tasks()
     }
 
     /// Stops the server as SIGTERM does: the task that ends when it has stopped.

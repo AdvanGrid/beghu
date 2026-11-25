@@ -39,6 +39,10 @@ pub struct Config {
     pub analysis_chain: &'static analysis::Chain<'static>,
     /// How long analysis runs live (spec #176, "The run"): 24 h unused, 2 h idle, 7 days at most.
     pub runs: RunLifetimes,
+    /// Tests only, always `None` in a deploy: where an analysis run stops for the test, so it
+    /// can act on the run between a request's start and its write, which nothing else can time
+    /// (an upload superseded as it's stored, a run ended twice at once). See [`RunPause`].
+    pub analysis_pause: Option<RunPause>,
     /// How often a signed-in account's visible repos and roles are re-read from GitHub.
     pub repo_refresh_every: Duration,
     /// How long after a failed re-read of the roles the next is tried (a minute): long enough
@@ -110,8 +114,11 @@ pub struct RunLifetimes {
     pub unused_for: Duration,
     /// An attached run expires after this long with no authenticated call (2 h).
     pub idle_for: Duration,
-    /// An attached run expires this long after it attached, however busy (7 days).
+    /// A run expires this long after its start (the start call), however busy (7 days).
     pub lives_for: Duration,
+    /// How long an ended run's row and token are kept, only to tell a call with its token why it
+    /// ended (410), before the daily check prunes them (30 days).
+    pub ended_kept_for: Duration,
 }
 
 impl Default for RunLifetimes {
@@ -120,9 +127,27 @@ impl Default for RunLifetimes {
             unused_for: Duration::from_secs(24 * 3600),
             idle_for: Duration::from_secs(2 * 3600),
             lives_for: Duration::from_secs(7 * 24 * 3600),
+            ended_kept_for: Duration::from_secs(30 * 24 * 3600),
         }
     }
 }
+
+/// Where an analysis run stops for a test ([`Config::analysis_pause`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunPausePoint {
+    /// An upload passed every check and holds its turn (one of the uploads at once), and is
+    /// about to be stored if its run is still live.
+    Store,
+    /// A call found its run ended (expired, signed out, …) and is about to mark it so.
+    End,
+}
+
+/// A test's pause: called at each [`RunPausePoint`], and the run goes on once its future does.
+pub type RunPause = std::sync::Arc<
+    dyn Fn(RunPausePoint) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// The attachment route's and the image proxy's limits (spec, "Markdown and media"), and where
 /// they may fetch from in dev.
@@ -355,6 +380,7 @@ impl Config {
             analysis_tools: std::env::var("BEGHU_ANALYSIS_DIR").ok().map(PathBuf::from),
             analysis_chain: &analysis::CHAIN,
             runs: RunLifetimes::default(),
+            analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),

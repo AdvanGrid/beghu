@@ -4,6 +4,9 @@
 //! uploader's tool checked every snippet against the checkouts; it's required, and anything else
 //! is a 400 before the body is read, which isn't counted as a refused upload.
 //!
+//! Two uploads at a time do the heavy work (inflating, the checks, the split and compressing,
+//! [`super::Store::uploads`]); the others wait for a turn with their bodies read.
+//!
 //! The checks, in order, each answering as it fails:
 //!
 //! 1. the limits (413);
@@ -18,13 +21,15 @@
 //!
 //! The validator runs once, with all it needs; its findings are answered in that order. An
 //! accepted upload replaces the PR's analysis (201, with its ID, the head and the warnings,
-//! which never refuse). A refused one stores nothing, counts on the run, and keeps its report
-//! there. Either way the account's streams hear it.
+//! which never refuse), if its run is still live as it's written: a run superseded, ended or
+//! expired while the upload was being checked stores nothing, and the upload is told why (410).
+//! A refused one stores nothing, counts on the run, and keeps its report there. Either way the
+//! account's streams hear it.
 
-use super::runs::{Admitted, RunError, admit};
+use super::runs::{Admitted, Ended, RunError, admit, deadline, end};
 use super::stored::{self, Envelope};
-use super::{MAX_INFLATED, MAX_WIRE, announce, new_id, pin};
-use crate::{App, now};
+use super::{MAX_INFLATED, MAX_WIRE, announce, new_id, pause, pin};
+use crate::{App, RunPausePoint, now};
 use analysis::{Analysis, Context, Evidence, PinnedPr, Previous, PreviousIds, Report, Vocabulary};
 use axum::Json;
 use axum::body::Body;
@@ -150,6 +155,13 @@ async fn take(
         Some(_) => return Err(RunError::Encoding),
     };
     let wire = read_body(body).await?;
+    // Held to the end: the store below is quick, and the turn covers the split's compressing.
+    let _turn = app
+        .analyses()
+        .uploads
+        .acquire()
+        .await
+        .map_err(|_| RunError::Internal("the uploads' turns closed".into()))?;
     let text = match encoding {
         Encoding::Identity => wire,
         Encoding::Gzip => tokio::task::spawn_blocking(move || inflate(&wire))
@@ -265,9 +277,25 @@ async fn accept(
     let (blobs, env) = blobs;
     let warnings_json = serde_json::to_string(&warnings).expect("plain data");
     let (run, repo_id) = (a.run.id.clone(), a.run.repo_id);
-    app.analyses()
+    let lifetimes = app.cfg().runs.clone();
+    pause(app, RunPausePoint::Store).await;
+    let t = now();
+    // Only while the run is live, checked in the write: the checks took a while, and a newer
+    // run, an end or the run's deadline may have come meanwhile.
+    let stored = app
+        .analyses()
         .dbs
         .write(a.account, move |tx| {
+            match analysis_db::q::run(tx, &run)? {
+                None => return Ok(Store::Gone),
+                Some(r) if r.ended_reason.is_some() => {
+                    return Ok(Store::Ended(Ended::from_db(
+                        r.ended_reason.as_deref().unwrap_or(""),
+                    )));
+                }
+                Some(r) if t >= deadline(&lifetimes, &r) => return Ok(Store::Expired(Box::new(r))),
+                Some(_) => {}
+            }
             analysis_db::q::put_analysis(
                 tx,
                 &env.id,
@@ -290,9 +318,16 @@ async fn accept(
                 &blobs.graph_gz,
                 &blobs.claims_br,
                 &blobs.claims_gz,
-            )
+            )?;
+            Ok(Store::Stored)
         })
         .await?;
+    match stored {
+        Store::Stored => {}
+        Store::Ended(why) => return Err(RunError::Ended(why)),
+        Store::Expired(row) => return Err(end(app, a.account, &row, Ended::Expired).await),
+        Store::Gone => return Err(RunError::Gone),
+    }
     eprintln!(
         "account {}: an analysis of {}#{} was accepted ({id})",
         a.account,
@@ -309,6 +344,14 @@ async fn accept(
         }),
     )
         .into_response())
+}
+
+/// What the accepted upload's write found of its run.
+enum Store {
+    Stored,
+    Ended(Ended),
+    Expired(Box<analysis_db::q::RunRow>),
+    Gone,
 }
 
 /// The body as it came, refused past [`MAX_WIRE`] as soon as it passes it.

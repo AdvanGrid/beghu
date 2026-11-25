@@ -82,3 +82,8 @@ ON CONFLICT (repo_id, number) DO UPDATE SET id = excluded.id, owner = excluded.o
 UPDATE analyses SET version = :version, migrated_ids = :migrated_ids, graph_br = :graph_br,
   graph_gz = :graph_gz, claims_br = :claims_br, claims_gz = :claims_gz
 WHERE id = :id AND version = :from;
+
+-- The account lost Read on the repo: its analyses there go.
+-- name: delete_repo_analyses :exec
+-- param: repo_id i64
+DELETE FROM analyses WHERE repo_id = :repo_id;

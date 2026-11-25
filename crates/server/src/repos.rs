@@ -12,7 +12,8 @@
 //! and one that left is unsynced, its rows deleted except those a relationship from a synced item
 //! still reaches, which become stubs. A repo the account can no longer see leaves `synced_repos` at
 //! the next re-read, so webhooks for it stop reaching the account, and is unsynced the same way,
-//! keeping stubs only when it's public. Nothing is recorded as deleted: syncing the repo again
+//! keeping stubs only when it's public. Its analyses and analysis runs there are deleted
+//! (`analyses::runs::lost_repo`). Nothing is recorded as deleted: syncing the repo again
 //! brings the same ids back.
 //!
 //! A mirror can exist before its account does (the dev stack's pristine mirrors, made before
@@ -239,10 +240,25 @@ async fn refresh_roles(app: &App, account: i64) -> Result<(), ApiError> {
                     was.id == now.id && (was.role != now.role || was.archived != now.archived)
                 })
             });
-            Ok((repos, roles))
+            // The repos the account could read and no longer can.
+            let lost: Vec<(i64, String)> = before
+                .iter()
+                .filter(|was| was.role.is_some())
+                .filter(|was| {
+                    !after
+                        .iter()
+                        .any(|now| now.id == was.id && now.role.is_some())
+                })
+                .map(|was| (was.id, format!("{}/{}", was.owner, was.name)))
+                .collect();
+            Ok((repos, roles, lost))
         })
         .await?;
-    let (changed, roles_changed) = changed;
+    let (changed, roles_changed, lost) = changed;
+    // Its analyses and runs there go with its Read.
+    for (id, repo) in lost {
+        crate::analyses::runs::lost_repo(app, account, id, &repo).await;
+    }
 
     app.control()
         .write(move |tx| {

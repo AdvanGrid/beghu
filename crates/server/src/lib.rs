@@ -43,8 +43,8 @@ mod walker;
 mod webhook;
 
 pub use config::{
-    Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig, RunLifetimes,
-    default_accounts_check_every, default_activity_every, default_assets_kept_for,
+    Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig, RunLifetimes, RunPause,
+    RunPausePoint, default_accounts_check_every, default_activity_every, default_assets_kept_for,
     default_backup_every, default_dormant_after, default_drain_for, default_read_back_retries,
 };
 
@@ -449,6 +449,8 @@ impl Opened {
         app.spawn(|app| follow_installations(app, installs));
         app.spawn(|app| accounts::follow_lost(app, lost));
         app.spawn(accounts::daily);
+        // Every live analysis run's timer: a restart lost them.
+        app.spawn(analyses::runs::rearm);
         app.spawn(repos::keep_live_roles_fresh);
         app.0
             .started

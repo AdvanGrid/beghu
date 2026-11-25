@@ -8,16 +8,20 @@
 //! every producer goes through the run API under `/api/runs/{token}/` ([`run_api`]). One run per
 //! account and PR is live: a start supersedes the live one. A run waits until the first fetch of
 //! any run file pins the PR ([`pin`]); unused for 24 h it expires, and once attached it expires
-//! after 2 h with no call, and 7 days after it attached at the most. It's revoked when the user
-//! ends it, or its account signs out of every browser, goes dormant, must sign in again, or can
-//! no longer read the repo: every call checks all of these first ([`runs::admit`]). Uploads are
-//! unlimited within the run, each accepted one replacing the PR's analysis ([`upload`]).
+//! after 2 h with no call, and 7 days after its start at the most. Each live run has a timer that
+//! expires it on time ([`runs::watch`]), woken when the run ends otherwise, and re-armed at
+//! startup. It's revoked when the user ends it, or its account signs out of every browser, goes
+//! dormant, must sign in again, or can no longer read the repo: every call checks all of these
+//! first ([`runs::admit`]). Uploads are unlimited within the run, each accepted one replacing the
+//! PR's analysis ([`upload`]), and stored only while the run is still live. An ended run's row and
+//! token are kept 30 days, to tell a call with its token why, then pruned by the daily check.
 //!
 //! **The token** is 256 random bits, URL-safe. Only its SHA-256 is stored, in the control DB
 //! (`run_tokens`), beside the run's ID and account: a run call must resolve to an account
 //! before beghu knows whose `analyses.db` to open. The run itself, its pinned `pr.json` and the
 //! analyses are in `analyses.db` ([`analysis_db`]), one per account, deleted when it goes
-//! dormant.
+//! dormant or disconnects. An account that loses Read on a repo loses its analyses and runs
+//! there ([`runs::lost_repo`]).
 //!
 //! **Stored analyses** are split once, at upload, into the graph (everything but the claims'
 //! bodies) and the claims, each compressed at brotli 9 and gzip 9 on the blocking pool and served
@@ -37,6 +41,7 @@ pub(crate) mod upload;
 
 use crate::App;
 use crate::live::{Push, StreamAnalysis};
+use axum::body::Bytes;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
@@ -57,19 +62,32 @@ pub(crate) struct PrKey {
     pub number: i64,
 }
 
+/// Uploads whose inflating, checks, split and compression run at once. Each holds the upload
+/// in several forms at a time (up to 32 MB of JSON, its parsed tree, the typed analysis, the
+/// split and its four compressed blobs), a few hundred MB at the cap, and keeps a blocking thread
+/// busy for seconds: two bound that whatever the number of uploads arriving, and let a small
+/// PR's upload pass a large one's. The others wait their turn, having read their bodies (8 MB
+/// each at most).
+const UPLOADS_AT_ONCE: usize = 2;
+
 /// The analyses side of the app: each account's `analyses.db`, the agent's tools, the migration
-/// chain, and one lock per PR's analysis.
+/// chain, one lock per PR's analysis, the uploads' turns, and the live runs' timers.
 pub(crate) struct Store {
     pub dbs: analysis_db::Analyses,
     tools: Option<Tools>,
     pub chain: &'static analysis::Chain<'static>,
     locks: Mutex<HashMap<PrKey, Weak<tokio::sync::Mutex<()>>>>,
+    /// An upload's turn at the heavy work: see [`UPLOADS_AT_ONCE`].
+    pub uploads: tokio::sync::Semaphore,
+    /// Each live run's timer ([`runs::watch`]), by run ID, with its account: woken when the run
+    /// ends otherwise, so it stops then rather than at its deadline.
+    timers: Mutex<HashMap<String, (i64, Arc<tokio::sync::Notify>)>>,
 }
 
-/// `validate.mjs` and `merge.mjs`, read once at startup.
+/// `validate.mjs` and `merge.mjs`, read once at startup and served as they are, uncopied.
 pub(crate) struct Tools {
-    pub validate: Arc<[u8]>,
-    pub merge: Arc<[u8]>,
+    pub validate: Bytes,
+    pub merge: Bytes,
 }
 
 impl Store {
@@ -86,7 +104,7 @@ impl Store {
                 let read = |name: &str| {
                     let path = t.join(name);
                     std::fs::read(&path)
-                        .map(Arc::from)
+                        .map(Bytes::from)
                         .map_err(crate::io_failed("read the agent's tool", &path))
                 };
                 Some(Tools {
@@ -100,7 +118,47 @@ impl Store {
             tools,
             chain,
             locks: Mutex::default(),
+            uploads: tokio::sync::Semaphore::new(UPLOADS_AT_ONCE),
+            timers: Mutex::default(),
         })
+    }
+
+    /// A new timer for the live run: what wakes it.
+    fn timer(&self, account: i64, run: &str) -> Arc<tokio::sync::Notify> {
+        let woken = Arc::new(tokio::sync::Notify::new());
+        self.timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run.to_owned(), (account, woken.clone()));
+        woken
+    }
+
+    /// The run's timer stopped: it's forgotten, unless a newer one replaced it.
+    fn timer_done(&self, run: &str, woken: &Arc<tokio::sync::Notify>) {
+        let mut all = self.timers.lock().unwrap_or_else(|e| e.into_inner());
+        if all.get(run).is_some_and(|(_, w)| Arc::ptr_eq(w, woken)) {
+            all.remove(run);
+        }
+    }
+
+    /// The run ended, or its row went: its timer looks again, and stops.
+    pub fn wake(&self, run: &str) {
+        let all = self.timers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, w)) = all.get(run) {
+            // A permit when the timer isn't waiting yet: it wakes as soon as it does.
+            w.notify_one();
+        }
+    }
+
+    /// The account's `analyses.db` is being deleted: every timer of its runs looks again, and
+    /// stops.
+    pub fn wake_account(&self, account: i64) {
+        let all = self.timers.lock().unwrap_or_else(|e| e.into_inner());
+        for (a, w) in all.values() {
+            if *a == account {
+                w.notify_one();
+            }
+        }
     }
 
     pub fn tools(&self) -> Option<&Tools> {
@@ -138,6 +196,13 @@ pub(crate) fn announce(app: &App, account: i64, repo: &str, number: i64, analysi
             analysis,
         }),
     );
+}
+
+/// Where a test stops the run ([`crate::Config::analysis_pause`]); nothing in a deploy.
+pub(crate) async fn pause(app: &App, at: crate::RunPausePoint) {
+    if let Some(p) = &app.cfg().analysis_pause {
+        p(at).await;
+    }
 }
 
 /// 256 random bits, URL-safe: a run's token.

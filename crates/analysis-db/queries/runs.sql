@@ -49,3 +49,22 @@ UPDATE runs SET last_heard_at = :now WHERE id = :id AND state <> 'ended';
 -- param: id &str
 -- param: report &str
 UPDATE runs SET refused = refused + 1, last_report = :report WHERE id = :id;
+
+-- Every live run: startup re-arms each one's expiry.
+-- name: live_runs :many
+SELECT id FROM runs WHERE state <> 'ended';
+
+-- The daily check: runs that ended before :before are kept no longer (they only told a call with
+-- their token why they ended). Their IDs, for their tokens.
+-- name: prune_ended_runs :many
+-- param: before i64
+DELETE FROM runs WHERE state = 'ended' AND ended_at < :before RETURNING id;
+
+-- The account lost Read on the repo: its runs there, each with why it ended (NULL: still live).
+-- name: repo_runs :many
+-- param: repo_id i64
+SELECT id, number, ended_reason FROM runs WHERE repo_id = :repo_id;
+
+-- name: delete_repo_runs :exec
+-- param: repo_id i64
+DELETE FROM runs WHERE repo_id = :repo_id;
