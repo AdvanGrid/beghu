@@ -1,7 +1,8 @@
 //! The PR read-back: a PR's own fields and the issues it closes (its linked PRs, from
 //! `closingIssuesReferences`), read from GitHub and written to every account syncing its repo.
 //!
-//! GitHub sends `pull_request` for a PR's own changes (never `issues`), `pull_request_review` for
+//! GitHub sends `pull_request` for a PR's own changes (never `issues`; `synchronize` for a push to
+//! its branch, which moves its head commit, `headRefOid`), `pull_request_review` for
 //! a review (whose decision no payload carries), and nothing at all for a link made in the
 //! Development sidebar, which only the repo's issue events feed shows (`feed.rs`: `connected` and
 //! `disconnected`). Each of them reads the PR back at once, through the relationship read-backs'
