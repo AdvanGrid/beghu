@@ -213,13 +213,16 @@ warnings too; a warning on a quoted identifier can stay.
 ### 9. Upload
 
 Upload `analysis.json` as the run header says. The server runs every check it can without the
-code. An upload carrying `hints` is refused.
+code. An upload carrying `hints` is refused. Every upload says whether its snippets were checked,
+in the `Beghu-Snippets` header: `checked` only after `validate.mjs` passed (step 8), otherwise
+`not-checked`. An upload without it, or with another value, is refused (`400`).
 
 ### Without Node
 
 You can't run `validate.mjs` or `merge.mjs`: work in `single` mode (one agent, every step above
-in order, no merge), check your own work against "The validator's rules", and upload. The server
-still runs its checks, and the reader sees the evidence labelled "not checked".
+in order, no merge), check your own work against "The validator's rules", and upload with
+`Beghu-Snippets: not-checked`. The server still runs its checks, and the reader sees the evidence
+labelled "not checked".
 
 ### Single mode
 

@@ -101,15 +101,12 @@ async fn fetch_json(s: &Stack, token: &str, file: &str) -> (u16, Value) {
     (status, res.json().await.unwrap_or(Value::Null))
 }
 
+/// An upload's `Beghu-Snippets: checked`, alone.
+const CHECKED: &[(&str, &str)] = &[("beghu-snippets", "checked")];
+
 /// An upload of `body` as is, `checked`.
 async fn upload(s: &Stack, token: &str, body: &Value) -> (u16, Value) {
-    upload_raw(
-        s,
-        token,
-        serde_json::to_vec(body).unwrap(),
-        &[("beghu-snippets", "checked")],
-    )
-    .await
+    upload_raw(s, token, serde_json::to_vec(body).unwrap(), CHECKED).await
 }
 
 async fn upload_raw(
@@ -519,7 +516,7 @@ async fn each_upload_answer() {
 
     // Too large: past 8 MB on the wire, or 32 MB inflated.
     let big = vec![b' '; 8 * 1024 * 1024 + 1];
-    let (status, refused) = upload_raw(&s, &token, big, &[]).await;
+    let (status, refused) = upload_raw(&s, &token, big, CHECKED).await;
     assert_eq!(
         (status, refused["error"].as_str()),
         (413, Some("too_large")),
@@ -530,10 +527,21 @@ async fn each_upload_answer() {
         json!({ "wire": 8 << 20, "inflated": 32 << 20 })
     );
     let bomb = gzip(&vec![b' '; 33 * 1024 * 1024]);
-    let (status, _) = upload_raw(&s, &token, bomb, &[("content-encoding", "gzip")]).await;
+    let (status, _) = upload_raw(
+        &s,
+        &token,
+        bomb,
+        &[("content-encoding", "gzip"), ("beghu-snippets", "checked")],
+    )
+    .await;
     assert_eq!(status, 413);
-    let (status, refused) =
-        upload_raw(&s, &token, b"{}".to_vec(), &[("content-encoding", "br")]).await;
+    let (status, refused) = upload_raw(
+        &s,
+        &token,
+        b"{}".to_vec(),
+        &[("content-encoding", "br"), ("beghu-snippets", "checked")],
+    )
+    .await;
     assert_eq!(
         (status, refused["error"].as_str()),
         (415, Some("unsupported_encoding"))
@@ -1094,4 +1102,42 @@ async fn a_cli_run_needs_the_cli_credential() {
         .await
         .unwrap();
     assert_eq!(res.status(), 401);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_without_a_known_beghu_snippets_is_a_400_and_not_counted() {
+    let s = start().await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    // Attached first: its event isn't among the ones counted below.
+    assert_eq!(fetch_json(&s, &token, "pr.json").await.0, 200);
+    let mut st = s.stream(&b).await;
+    st.reset().await;
+    let body = serde_json::to_vec(&sample()).unwrap();
+    for headers in [&[][..], &[("beghu-snippets", "maybe")][..]] {
+        let (status, bad) = upload_raw(&s, &token, body.clone(), headers).await;
+        assert_eq!(
+            (status, bad["error"].as_str()),
+            (400, Some("bad_request")),
+            "{headers:?}: {bad}"
+        );
+        assert!(
+            bad["message"].as_str().unwrap().contains("Beghu-Snippets"),
+            "{bad}"
+        );
+    }
+    // A refused upload counts and the tabs hear it; neither 400 did, so the first event is this
+    // refusal's.
+    let mut a = sample();
+    a["nodes"][1].as_object_mut().unwrap().remove("kind");
+    assert_eq!(upload(&s, &token, &a).await.0, 422);
+    let mut seen = Vec::new();
+    while let Some(ev) = st.event_within(Duration::from_secs(2)).await {
+        if ev.event == "analysis" {
+            seen.push(ev.data);
+        }
+    }
+    assert_eq!(seen.len(), 1, "only the 422 is a refusal: {seen:?}");
+    // Nothing was stored by either.
+    assert_eq!(graph(&s, &b, number, "identity", None).await.status(), 404);
 }

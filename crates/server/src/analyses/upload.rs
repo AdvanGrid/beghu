@@ -1,7 +1,8 @@
 //! `POST /api/runs/{token}/analysis`: an upload. The body is the analysis JSON, gzipped or not
 //! (`Content-Encoding: gzip`), at most 8 MB on the wire and 32 MB inflated, enforced while it
 //! arrives and while it inflates. `Beghu-Snippets: checked | not-checked` says whether the
-//! uploader's tool checked every snippet against the checkouts; left out, it wasn't.
+//! uploader's tool checked every snippet against the checkouts; it's required, and anything else
+//! is a 400 before the body is read, which isn't counted as a refused upload.
 //!
 //! The checks, in order, each answering as it fails:
 //!
@@ -125,17 +126,21 @@ async fn take(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<Response, RunError> {
-    let pinned = pin::pinned(app, a).await?;
     let snippets = match headers.get("beghu-snippets").map(|v| v.to_str()) {
-        None => "not-checked",
         Some(Ok("checked")) => "checked",
         Some(Ok("not-checked")) => "not-checked",
+        None => {
+            return Err(RunError::BadRequest(
+                "The upload needs a Beghu-Snippets header: `checked` once validate.mjs passed against the checkouts, `not-checked` otherwise.".into(),
+            ));
+        }
         Some(_) => {
             return Err(RunError::BadRequest(
-                "Beghu-Snippets is `checked` or `not-checked`".into(),
+                "Beghu-Snippets is `checked` (validate.mjs passed against the checkouts) or `not-checked`, nothing else.".into(),
             ));
         }
     };
+    let pinned = pin::pinned(app, a).await?;
     let encoding = match headers
         .get(header::CONTENT_ENCODING)
         .map(|v| v.to_str().map(str::trim))

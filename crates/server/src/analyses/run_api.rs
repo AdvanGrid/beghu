@@ -182,10 +182,11 @@ curl -sS -X POST --data-binary @analysis.json.gz \\
   -H 'Beghu-Snippets: checked' {base}/analysis
 ```
 
-Send `Beghu-Snippets: checked` only once `validate.mjs` passed with the checkouts; without Node,
-send `Beghu-Snippets: not-checked`, and the reader sees the evidence as not checked. The answer:
-`201` (accepted, with the analysis ID and any warnings), `422` (the error report; fix and upload
-again), `409` (not the pinned head), `413` (too large), `410` (the run ended; ask for a new one).
+Always send the `Beghu-Snippets` header: `checked` only once `validate.mjs` passed against the
+checkouts, and `not-checked` otherwise (without Node, or when it didn't pass), when the reader sees
+the evidence as not checked. The answer: `201` (accepted, with the analysis ID and any warnings),
+`422` (the error report; fix and upload again), `409` (not the pinned head), `413` (too large),
+`400` (no `Beghu-Snippets`, or another value), `410` (the run ended; ask for a new one).
 Uploads are unlimited while the run lasts; each accepted one replaces the PR's analysis. Beyond
 the validator's rules the server checks `evidence.quote-mismatch` (a description or issue quote
 that isn't word for word in `pr.json`) and `evidence.issue-not-served` (issue evidence from an
