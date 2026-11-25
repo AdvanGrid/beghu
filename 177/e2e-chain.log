@@ -1,0 +1,42 @@
+=== relationships
+  19 passed (2.8m)
+=== writes
+  ✓  13 [writes] › e2e/writes.spec.ts:534:1 › a write whose answer a proxy drops without a body is resent, not failed (28.8s)
+  ✘  25 [writes] › e2e/writes.spec.ts:737:1 › after 3 GitHub 5xx in a row, one close's tries, the banner pauses writes and keeps the text, until GitHub is back @alone (1.5m)
+  1 flaky
+  37 passed (3.8m)
+=== pickers
+  ✘   1 [pickers] › e2e/pickers.spec.ts:630:1 › picker code that fails to load reloads the URL once, then says so with Retry (21.8s)
+    Error: expect(locator).toBeVisible() failed
+      646 |   const failed = propRow(page, "labels").getByRole("alert");
+  1 flaky
+  13 passed (59.6s)
+=== repos
+  2 passed (13.7s)
+=== sync
+  1 passed (20.3s)
+=== prs
+  5 passed (32.9s)
+=== analyse
+  4 passed (35.6s)
+=== lost-access
+  6 passed (44.0s)
+=== moves
+  5 passed (35.4s)
+=== create
+    Error Context: test-results/create-a-failed-write-outr-de7bb-s-again-once-it-s-dismissed-create-retry1/error-context.md
+    test-results/create-a-failed-write-outr-de7bb-s-again-once-it-s-dismissed-create-retry1/trace.zip
+        npx playwright show-trace test-results/create-a-failed-write-outr-de7bb-s-again-once-it-s-dismissed-create-retry1/trace.zip
+  1 failed
+    [create] › e2e/create.spec.ts:566:1 › a failed write outranks the word on an issue created while away, which shows again once it's dismissed 
+  13 passed (3.0m)
+=== roles
+  ✘  2 [roles] › e2e/roles.spec.ts:110:1 › a role change on GitHub reaches an open tab through roles, without a reload, keeping typed text (37.7s)
+    Error: expect(locator).toHaveText(expected) failed
+  1 flaky
+  5 passed (1.6m)
+=== prefs
+  11 passed (2.0m)
+=== deploy
+  4 passed (1.1m)
+EXIT 0

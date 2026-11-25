@@ -1,0 +1,229 @@
+
+> e2e
+> playwright test --workers 2 --retries 1
+
+
+Running 260 tests using 2 workers
+
+  ✓    1 [browser] › e2e/accounts.spec.ts:48:1 › the account menu lists every account, and switching shows the other account at the same URL (6.8s)
+  ✓    2 [browser] › e2e/accounts.spec.ts:61:1 › a side-by-side tab gets the switched banner within a second, freezes Comment and Close, and keeps its draft (9.1s)
+  ✓    4 [browser] › e2e/accounts.spec.ts:110:1 › signing out of every account lands on the signed-out page, and a tab left open says so (5.2s)
+  ✓    3 [browser] › e2e/accounts.spec.ts:89:1 › signing out asks in the app only while the tab holds unsaved text (7.7s)
+  ✓    6 [browser] › e2e/accounts.spec.ts:160:1 › a read answered signed-out while the tab has an account asks to sign in again, keeping the draft (5.2s)
+  ✓    7 [browser] › e2e/accounts.spec.ts:178:1 › a stale tab's repo picker can't save the ticks it holds (6.2s)
+  ✓    8 [browser] › e2e/accounts.spec.ts:194:1 › a stale tab that opens another issue says why it can't, and its draft stays to copy (6.8s)
+  ✓    5 [browser] › e2e/accounts.spec.ts:125:1 › one banner at a time: another account, then can't reach beghu, then GitHub unreachable (19.1s)
+  ✓    9 [browser] › e2e/accounts.spec.ts:240:1 › reads beghu answers busy (503) while the account's data is made ready are waited out, not failed (6.5s)
+  ✓   10 [browser] › e2e/accounts.spec.ts:264:1 › a stale tab's title editor keeps the text, can't save it, and says why (7.8s)
+  ✓   11 [browser] › e2e/back-forward.spec.ts:97:1 › Back after signing out never shows the account that signed out (4.0s)
+  ✓   12 [browser] › e2e/back-forward.spec.ts:111:1 › Back after a switch never shows the account switched from (6.9s)
+  ✓   13 [browser] › e2e/back-forward.spec.ts:136:1 › Back to a page whose account another tab switched away from shows nothing of it, at any frame (9.4s)
+  ✓   14 [browser] › e2e/back-forward.spec.ts:156:1 › Back from a link out to GitHub restores the page as it was, with no reload, and refetches what it shows (5.6s)
+  ✓   15 [browser] › e2e/back-forward.spec.ts:187:1 › a page in the back-forward cache holds no stream open, and opens it again as it's restored (3.2s)
+  ✓   16 [browser] › e2e/detail.spec.ts:88:1 › hovering a row preloads its detail, and the click shows it with no placeholder frame (4.7s)
+  ✓   17 [browser] › e2e/detail.spec.ts:111:1 › a click on an issue's number copies it, in the list without opening the issue and in the detail (5.3s)
+  ✓   19 [browser] › e2e/detail.spec.ts:155:1 › an issue URL with leading zeros opens that issue, its first fetch the shell's preload (4.4s)
+  ✓   18 [browser] › e2e/detail.spec.ts:137:1 › a hover longer than a preload lasts still opens the issue with no placeholder frame, then refreshes it (8.9s)
+  ✓   20 [browser] › e2e/detail.spec.ts:173:1 › comments come newest first, 15 at a time: page 2 after paint, later pages near the end (5.4s)
+  ✓   21 [browser] › e2e/detail.spec.ts:216:1 › an issue opened again comes back where it was left, by the comment at the top (6.0s)
+  ✓   22 [browser] › e2e/detail.spec.ts:253:1 › scrolled past the title, a slim bar shows the issue's number and title; a click goes back to the top (4.9s)
+  ✓   23 [browser] › e2e/detail.spec.ts:273:1 › off-screen comments skip rendering until they come near (3.7s)
+  ✓   25 [browser] › e2e/detail.spec.ts:324:1 › below 900 px the panel sits under the list, 40% list to 60% issue (3.5s)
+  ✓   26 [browser] › e2e/detail.spec.ts:337:1 › a narrow list leaves out the labels column, a row with one label as well as one with several (2.9s)
+  ✓   24 [browser] › e2e/detail.spec.ts:282:1 › nothing in the panel moves when a value changes length (8.6s)
+  ✓   28 [browser] › e2e/detail.spec.ts:391:1 › a deleted issue shows its in-place state, and the list stays usable (4.2s)
+  ✓   27 [browser] › e2e/detail.spec.ts:355:1 › the divider resizes, keeps 360 px either side, and is remembered on this device (8.5s)
+  ✓   29 [browser] › e2e/detail.spec.ts:401:1 › an issue outside the synced repos says so in place, with a link out to GitHub (5.5s)
+  ✓   30 [browser] › e2e/detail.spec.ts:417:1 › at the 360 px minimum a long repo name is cut short, and the status row keeps its actions (6.2s)
+  ✓   31 [browser] › e2e/detail.spec.ts:441:1 › a detail that fails to load offers Retry, which loads it (7.2s)
+  ✓   32 [browser] › e2e/detail.spec.ts:469:1 › a revisit shows the issue as it is now, never what an earlier visit fetched (16.8s)
+  ✓   33 [browser] › e2e/detail.spec.ts:495:1 › a long-hovered issue whose refresh fails drops what it showed and offers Retry (15.0s)
+  ✓   35 [browser] › e2e/detail.spec.ts:548:1 › an issue URL's shell modulepreloads the panel's code, and the list's doesn't (993ms)
+  ✓   36 [browser] › e2e/detail.spec.ts:554:1 › while the panel's code is on its way, the list is already usable (7.6s)
+  ✓   34 [browser] › e2e/detail.spec.ts:514:1 › another view on an open issue's URL forgets what a hover fetched (15.1s)
+  ✓   37 [browser] › e2e/detail.spec.ts:570:1 › panel code that fails to load reloads the URL once, then offers Retry, the list usable throughout (7.2s)
+  ✓   38 [browser] › e2e/dormant.spec.ts:19:1 › an account back from dormancy says it's re-importing because the user was away (5.3s)
+  ✓   39 [browser] › e2e/filter-bar.spec.ts:23:1 › a qualifier applies only once it's complete: `crash label` searches until the colon (5.7s)
+  ✓   40 [browser] › e2e/filter-bar.spec.ts:48:1 › suggestion counts are fetched only for a value list that stays open (7.8s)
+  ✓   41 [browser] › e2e/filter-bar.spec.ts:102:1 › the URL holds the query; Back and Forward refill the bar, and typing adds no history (6.0s)
+  ✓   42 [browser] › e2e/filter-bar.spec.ts:129:1 › the sort dropdown and the sort: token follow each other (2.5s)
+  ✓   43 [browser] › e2e/filter-bar.spec.ts:148:1 › a view that takes over 200 ms pulses the list over the old rows, and a stale fetch never ends it (3.3s)
+  ✓   44 [browser] › e2e/filter-bar.spec.ts:220:1 › steady typing pulses 200 ms after the list began waiting, not only once typing stops (3.0s)
+  ✓   45 [browser] › e2e/filter-bar.spec.ts:285:1 › type: suggests the issue types, and filters by one (3.1s)
+  ✓   46 [browser] › e2e/filter-bar.spec.ts:297:1 › suggestions that fail to load say so in the list, and Retry loads them; the list is unharmed (5.0s)
+  ✓   47 [browser] › e2e/filter-bar.spec.ts:319:1 › counts that fail to load say so, and Retry fetches them (4.3s)
+  ✓   49 [browser] › e2e/filter-bar.spec.ts:359:1 › a preset keeps the sort, and shows as pressed under any sort (2.8s)
+  ✓   50 [browser] › e2e/filter-bar.spec.ts:370:1 › presets toggle their own token and keep everything else typed, free text included (3.0s)
+  ✓   51 [browser] › e2e/filter-bar.spec.ts:402:1 › the suggestions load on focus without moving anything on the page (2.0s)
+  ✓   48 [browser] › e2e/filter-bar.spec.ts:338:1 › counts that failed load when the same list opens again, and the failure notice goes (9.9s)
+  ✓   52 [browser] › e2e/filter-bar.spec.ts:419:1 › Enter right after typing a word searches for the word, while views are still loading (4.5s)
+  ✓   53 [browser] › e2e/keys.spec.ts:58:1 › j and k step through the list with the panel following, and a preloaded neighbour shows with no placeholder (5.1s)
+  ✓   54 [browser] › e2e/keys.spec.ts:80:1 › keys pressed faster than the panel opens each still step: five j open the fifth row (3.5s)
+  ✓   56 [browser] › e2e/keys.spec.ts:102:1 › the list is an ARIA listbox: arrows, Home and End move a roving focus, and the panel follows (7.0s)
+  ✓   55 [browser] › e2e/keys.spec.ts:88:1 › after a read longer than the router keeps a preload, the issue before still shows at once (10.1s)
+  ✓   57 [browser] › e2e/keys.spec.ts:133:1 › o moves the focus into the issue, and Escape back to its row in the list (3.3s)
+  ✓   58 [browser] › e2e/keys.spec.ts:145:1 › Shift+J and Shift+K scroll the open issue from the list, the focus and the selection staying put (6.1s)
+  ✓   59 [browser] › e2e/keys.spec.ts:176:1 › single-key shortcuts never fire inside text fields (5.6s)
+  ✓   60 [browser] › e2e/keys.spec.ts:212:1 › an issue's write keys do nothing with the focus in the list, and the hint bar and the overlay say so (4.7s)
+  ✓   62 [browser] › e2e/keys.spec.ts:247:1 › the hint bar and the ? overlay follow the focus: list, issue, filter (4.4s)
+  ✓   61 [browser] › e2e/keys.spec.ts:229:1 › with the selected row scrolled out of the list's window, Tab still reaches the list (9.3s)
+  ✓   64 [browser] › e2e/keys.spec.ts:350:1 › a PR's panel leaves the write keys out of the hint bar, and its write keys do nothing (4.7s)
+  ✓   63 [browser] › e2e/keys.spec.ts:286:1 › on an issue, l opens the labels picker: typing filters it and fires no keys, and Escape closes it (7.5s)
+  ✓   65 [browser] › e2e/markdown.spec.ts:25:1 › a body renders allowlisted DOM only, and its references link in-app or to GitHub (6.0s)
+  ✓   66 [browser] › e2e/markdown.spec.ts:120:1 › a body nested far deeper than the server sends renders, flattened past the walker's depth (4.6s)
+  ✓   67 [browser] › e2e/markdown.spec.ts:153:1 › hovering a reference shows its card, and outlines its row in the list in green while the pointer is on it (5.8s)
+  ✓   68 [browser] › e2e/markdown.spec.ts:190:1 › a link to a comment on the open issue scrolls to it, a reference or a link with its own text (5.7s)
+  ✓   69 [browser] › e2e/markdown.spec.ts:288:1 › a Rust-only thread loads highlight.js's core and its Rust chunk, and colours the Rust (4.6s)
+  ✓   70 [browser] › e2e/markdown.spec.ts:305:1 › a thread whose only code is unlabelled loads no highlighting at all (5.1s)
+  ✓   71 [browser] › e2e/markdown.spec.ts:314:1 › highlighting colours code in place: nothing in the post moves (4.5s)
+  ✓   73 [browser] › e2e/search-text.spec.ts:13:1 › diacritics fold on Latin letters only, as the index folds them (31ms)
+  ✓   74 [browser] › e2e/search-text.spec.ts:29:1 › a quote inside a word joins it, as the server reads it (4ms)
+  ✓   75 [browser] › e2e/search-text.spec.ts:35:1 › a query has free text when the server would search some of it (6ms)
+  ✓   72 [browser] › e2e/markdown.spec.ts:333:1 › a language chunk that fails to load leaves its block plain, the page in place, and the next block tries again (6.1s)
+  ✓   76 [browser] › e2e/search.spec.ts:39:1 › the hint bar shows the search syntax while the filter box has focus (2.4s)
+  ✓   78 [browser] › e2e/search.spec.ts:76:1 › the Match dropdown and the match: token stay in sync, and wait for free text (4.1s)
+  ✓   77 [browser] › e2e/search.spec.ts:54:1 › rows show an icon for each field the search matched in (6.7s)
+  ✓   79 [browser] › e2e/search.spec.ts:97:1 › the detail marks the search's words and scrolls to the first match it has loaded (7.1s)
+  ✓   81 [browser] › e2e/search.spec.ts:176:1 › the detail scrolls to a first match that comment page 2 brings (4.9s)
+  ✓   80 [browser] › e2e/search.spec.ts:121:1 › under a sort Blend can't use, the Match dropdown shows Best match and says why (10.2s)
+  ✓   83 [browser] › e2e/search.spec.ts:208:1 › the detail marks the search's words inside a rendered body's markup, and scrolls to the first (5.5s)
+  ✓   82 [browser] › e2e/search.spec.ts:192:1 › a new search on the open issue scrolls to its first match (6.4s)
+  ✓   84 [browser] › e2e/sign-in.spec.ts:15:1 › a signed-out visit gets a 401, goes to the signed-out page once, and signs in back to the same URL (4.5s)
+  ✓   85 [browser] › e2e/sign-in.spec.ts:47:1 › signed out, then cleared cookies: a load stays signed out and shows no banner (4.6s)
+  ✓   86 [browser] › e2e/sign-in.spec.ts:72:1 › while sign-in is on its way the page offers an external sign-in link, and leaves only once (2.9s)
+  ✓   87 [browser] › e2e/sign-in.spec.ts:88:1 › the URL ./dev-ctl login prints signs that user in (2.3s)
+  ✓   88 [browser] › e2e/sign-in.spec.ts:104:3 › signed in › the list renders only the rows on screen, 34 px each, in strict columns (2.6s)
+  ✓   90 [browser] › e2e/sign-in.spec.ts:161:3 › signed in › a list that fails to load says so, and Retry loads it (3.5s)
+  ✓   89 [browser] › e2e/sign-in.spec.ts:136:3 › signed in › a load fetches /api/me, the facets and its list page once each (the shell's preloads), then opens the stream (6.9s)
+  ✓   91 [browser] › e2e/sign-in.spec.ts:170:3 › signed in › light, dark and system themes switch every colour and stick across reloads (4.6s)
+  ✓   92 [browser] › e2e/site.spec.ts:14:1 › the landing page is whole HTML with no app code, and every page names itself (4.6s)
+  ✓   93 [browser] › e2e/site.spec.ts:35:1 › the landing page follows the theme the app set (861ms)
+  ✓   94 [browser] › e2e/site.spec.ts:46:1 › Sign in with GitHub signs in and lands on the list; signed in, Open beghu opens it and / is still the landing page (3.8s)
+  ✓   95 [live] › e2e/held-detail.spec.ts:212:1 › a comment arriving while the pointer moves over the issue is held, then applies after 5 s of rest behind the cue and an animation (17.5s)
+  ✓   96 [live] › e2e/held-detail.spec.ts:246:1 › scrolled deep in a long thread, a comment arriving above the viewport keeps the reading position to the pixel (12.1s)
+  ✓   97 [live] › e2e/held-detail.spec.ts:281:1 › a label added on GitHub cues only the Labels line, then the row takes it (10.6s)
+  ✓   98 [live] › e2e/held-detail.spec.ts:315:1 › a first blocker opens from the zero-height spot of the empty Blocks section (12.9s)
+  ✓   99 [live] › e2e/held-detail.spec.ts:357:1 › moving the pointer during the cue cancels it, and an animation that has started finishes (11.6s)
+  ✓  100 [live] › e2e/held-detail.spec.ts:394:1 › your own pending comment changes nothing when GitHub confirms it, while the pointer moves (12.5s)
+  ✓  101 [live] › e2e/held-detail.spec.ts:432:1 › opening the next issue while a change animates leaves nothing of it on the new issue (12.3s)
+  ✓  102 [live] › e2e/held-detail.spec.ts:476:1 › scrolling during an animation keeps the user's scroll; the animation still finishes (12.9s)
+  ✓  103 [live] › e2e/held-detail.spec.ts:503:1 › with reduced motion, the cue is a still mark for about 900 ms and the change swaps in unanimated (11.4s)
+  ✓  104 [live] › e2e/held.spec.ts:145:1 › with the pointer moving over the list, an outside reorder doesn't move rows; after 5 s of rest it applies behind the cue (12.0s)
+  ✓  105 [live] › e2e/held.spec.ts:174:1 › the pointer moving on a hover card over the list is still on the list: the change waits (16.4s)
+  ✓  106 [live] › e2e/held.spec.ts:210:1 › a change in the top half moves the top edge, one in the bottom half the bottom edge, and one off screen doesn't shift the viewport (10.1s)
+  ✓  107 [live] › e2e/held.spec.ts:255:1 › at scroll position 0, an arrival at row 0 shows and pushes the rows down (5.0s)
+  ✓  108 [live] › e2e/held.spec.ts:272:1 › j and k step from the selected issue's place after it moves (6.3s)
+  ✓  109 [live] › e2e/held.spec.ts:289:1 › when the selected issue is closed under is:open, the selection moves to the issue that took its row, and stays while the panel holds a draft (9.3s)
+  ✓  110 [live] › e2e/held.spec.ts:321:1 › with reduced motion, a held change swaps in after a still mark, unanimated (5.5s)
+  ✓  111 [live] › e2e/held.spec.ts:336:1 › a key pressed during the cue cancels it and holds the change again; it applies after the rest that follows (9.6s)
+  ✓  112 [live] › e2e/held.spec.ts:372:1 › a change that arrives during the cue restarts it with both, and they apply as one batch (7.7s)
+  ✓  113 [live] › e2e/held.spec.ts:412:1 › when the selected issue's row is on screen and it's closed under is:open, the cue marks it and the selection goes to the row that took its place (10.8s)
+  ✓  114 [live] › e2e/held.spec.ts:437:1 › j while the list checks a selected issue that left steps from where it was, not from an overscan row (11.3s)
+  ✓  115 [live] › e2e/held.spec.ts:466:1 › a parent set from an issue's panel is a write to the parent, yet the selection stays on the issue when it then leaves the view (11.4s)
+  ✓  116 [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (list) (12.8s)
+  ✘  117 [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (tree) (29.5s)
+  ✓  118 [live] › e2e/held.spec.ts:145:1 › with the pointer moving over the list, an outside reorder doesn't move rows; after 5 s of rest it applies behind the cue (retry #1) (13.9s)
+  ✓  119 [live] › e2e/held.spec.ts:174:1 › the pointer moving on a hover card over the list is still on the list: the change waits (retry #1) (15.2s)
+  ✓  120 [live] › e2e/held.spec.ts:210:1 › a change in the top half moves the top edge, one in the bottom half the bottom edge, and one off screen doesn't shift the viewport (retry #1) (9.8s)
+  ✓  121 [live] › e2e/held.spec.ts:255:1 › at scroll position 0, an arrival at row 0 shows and pushes the rows down (retry #1) (4.9s)
+  ✓  122 [live] › e2e/held.spec.ts:272:1 › j and k step from the selected issue's place after it moves (retry #1) (5.4s)
+  ✓  123 [live] › e2e/held.spec.ts:289:1 › when the selected issue is closed under is:open, the selection moves to the issue that took its row, and stays while the panel holds a draft (retry #1) (9.4s)
+  ✓  124 [live] › e2e/held.spec.ts:321:1 › with reduced motion, a held change swaps in after a still mark, unanimated (retry #1) (5.4s)
+  ✓  125 [live] › e2e/held.spec.ts:336:1 › a key pressed during the cue cancels it and holds the change again; it applies after the rest that follows (retry #1) (9.5s)
+  ✓  126 [live] › e2e/held.spec.ts:372:1 › a change that arrives during the cue restarts it with both, and they apply as one batch (retry #1) (7.6s)
+  ✓  127 [live] › e2e/held.spec.ts:412:1 › when the selected issue's row is on screen and it's closed under is:open, the cue marks it and the selection goes to the row that took its place (retry #1) (8.1s)
+  ✓  128 [live] › e2e/held.spec.ts:437:1 › j while the list checks a selected issue that left steps from where it was, not from an overscan row (retry #1) (6.3s)
+  ✓  129 [live] › e2e/held.spec.ts:466:1 › a parent set from an issue's panel is a write to the parent, yet the selection stays on the issue when it then leaves the view (retry #1) (10.1s)
+  ✓  130 [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (list) (retry #1) (7.6s)
+  ✘  131 [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (tree) (retry #1) (24.5s)
+  ✓  132 [live] › e2e/live.spec.ts:64:1 › an outside edit through ./dev-ctl fake edit shows in the open list within 2 s, with no reload (6.3s)
+  ✓  133 [live] › e2e/live.spec.ts:86:1 › a push that refetches the list keeps the focus on its row, moved or not, and the arrows still step from it (16.3s)
+  ✓  134 [live] › e2e/live.spec.ts:111:1 › a burst of pushes costs one immediate refetch and one trailing one, and the last push shows (7.3s)
+  ✓  135 [live] › e2e/live.spec.ts:162:1 › a push refetches a filtered, sorted view through its last loaded row, in its own sort (5.3s)
+  ✓  136 [live] › e2e/live.spec.ts:206:1 › a change between the data response and the stream opening shows within 2 s (4.9s)
+  ✓  137 [live] › e2e/live.spec.ts:234:1 › a killed stream shows reconnecting… after 3 s, retries every second, and reconnecting refetches (9.4s)
+  ✓  138 [live] › e2e/live.spec.ts:289:1 › a failed refetch leaves the rows on screen (6.1s)
+  ✓  139 [live] › e2e/live.spec.ts:309:1 › a page that loads during a refetch is never shown and then dropped (5.1s)
+  ✓  140 [live] › e2e/live.spec.ts:414:1 › a comment made on GitHub shows in the open issue within 2 s, in one request through its last loaded comment (8.1s)
+  ✓  141 [live] › e2e/live.spec.ts:461:1 › a match that a push brings to the open issue later never scrolls it (8.4s)
+  ✓  142 [live] › e2e/live.spec.ts:486:1 › a push for an issue whose detail failed to load acts as Retry (9.1s)
+  ✓  143 [live] › e2e/live.spec.ts:510:1 › a push naming a hovered issue makes its click read it afresh (5.4s)
+  ✓  144 [live] › e2e/live.spec.ts:529:1 › a hover read still on its way when a push names its issue is never shown (12.3s)
+  ✓  145 [live] › e2e/held-restore.spec.ts:17:1 › Back to the list after the order changed meanwhile shows the new order at once, with no cue (5.7s)
+
+
+  1) [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (tree) 
+
+    Error: expect(locator).toHaveCount(expected) failed
+
+    Locator:  locator('[data-perf="row"]')
+    Expected: 2
+    Received: 1
+    Timeout:  20000ms
+
+    Call log:
+      - Expect "toHaveCount" locator('[data-perf="row"]') with timeout 20000ms
+      - waiting for locator('[data-perf="row"]')
+        41 × locator resolved to 1 element
+           - unexpected value "1"
+
+
+      503 |     for (const issue of issues) devCtl(["fake", "edit", issue.ref, "--title", tag]);
+      504 |     await page.goto(`/issues?${new URLSearchParams({ q: `${tag} is:open`, ...(mode === "tree" ? { mode } : {}) })}`);
+    > 505 |     await expect(rows(page)).toHaveCount(2, { timeout: SHOWS_WITHIN_MS });
+          |                              ^
+      506 |     await pointerAway(page);
+      507 |     // Whether a ghost (a leaving row's fading copy) ever showed.
+      508 |     await page.evaluate(() => {
+        at /home/tomsj/.t3/worktrees/beghu/t3-28411fb1/web/e2e/held.spec.ts:505:30
+
+    Error Context: test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toHaveCount(expected) failed
+
+    Locator:  locator('[data-perf="row"]')
+    Expected: 2
+    Received: 0
+    Timeout:  20000ms
+
+    Call log:
+      - Expect "toHaveCount" locator('[data-perf="row"]') with timeout 20000ms
+      - waiting for locator('[data-perf="row"]')
+        42 × locator resolved to 0 elements
+           - unexpected value "0"
+
+
+      503 |     for (const issue of issues) devCtl(["fake", "edit", issue.ref, "--title", tag]);
+      504 |     await page.goto(`/issues?${new URLSearchParams({ q: `${tag} is:open`, ...(mode === "tree" ? { mode } : {}) })}`);
+    > 505 |     await expect(rows(page)).toHaveCount(2, { timeout: SHOWS_WITHIN_MS });
+          |                              ^
+      506 |     await pointerAway(page);
+      507 |     // Whether a ghost (a leaving row's fading copy) ever showed.
+      508 |     await page.evaluate(() => {
+        at /home/tomsj/.t3/worktrees/beghu/t3-28411fb1/web/e2e/held.spec.ts:505:30
+
+    Error Context: test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live-retry1/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/held-rows-that-leave-fade--fd39e-n-they-empty-the-view-tree--live-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [live] › e2e/held.spec.ts:499:3 › rows that leave fade out and are gone, even when they empty the view (tree) 
+  129 did not run
+  130 passed (13.7m)
+EXIT 1

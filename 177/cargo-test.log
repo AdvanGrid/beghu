@@ -1,0 +1,15 @@
+$ cargo test -p beghu --locked --test analyse_button   (at b0e6cc2)
+test an_analyses_db_that_cant_be_read_leaves_the_pr_detail_without_run_or_analysis ... ok
+test a_push_whose_webhook_was_lost_reaches_behind_by_the_next_probe ... ok
+test the_pr_detail_shows_the_run_and_the_analysis_in_each_state ... ok
+test a_run_that_expired_reads_as_expired_until_another_starts ... ok
+test a_commit_list_github_refuses_reads_as_outdated_and_is_asked_for_once ... ok
+test a_count_read_while_github_is_down_is_made_once_its_back ... ok
+test a_commit_list_github_fails_to_answer_reads_as_counting_until_it_does ... ok
+test a_commit_list_that_lags_the_head_is_counted_again_and_never_kept_wrong ... ok
+test an_agents_calls_tell_the_stream_it_was_heard_from_at_most_once_a_while ... ok
+test behind_counts_the_commits_pushed_since_the_analysed_head_once_per_head ... ok
+test a_detail_read_never_waits_on_github_and_the_count_comes_by_its_event ... ok
+test a_rate_limited_commit_list_rests_until_githubs_wait_is_over ... ok
+test a_head_past_the_250_commits_github_lists_reads_as_outdated ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.09s
