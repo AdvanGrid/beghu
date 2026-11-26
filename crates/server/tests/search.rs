@@ -620,9 +620,7 @@ async fn a_crafted_cursor_out_of_range_is_refused() {
 /// stars and column filters are punctuation, and nothing fails the request.
 #[tokio::test(flavor = "multi_thread")]
 async fn fts_syntax_is_searched_as_text() {
-    // On the generated prose only: the recorded PR's real issue text has phrases such as
-    // "it should", which `it's` (whose last word is a prefix) finds and `"it s"` doesn't.
-    let s = common::start_on(common::single_installation_fixture(), |_| {}).await;
+    let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let rows = all(&s, &mut b, "is:open").await;
     let (and, near, not) = (&rows[3], &rows[6], &rows[9]);
@@ -659,7 +657,9 @@ async fn fts_syntax_is_searched_as_text() {
         ("quetzal -\"\"", "quetzal"),
         ("\"\"\"", ""),
         ("-\"\"", ""),
-        ("it's", "\"it s\""),
+        // A quote inside a word is punctuation like any other: its parts are a phrase whose last
+        // is a prefix (so `it's` finds "it should", as `"it s"` wouldn't).
+        ("it's", "it-s"),
     ];
     for (q, plain) in same {
         assert_eq!(
