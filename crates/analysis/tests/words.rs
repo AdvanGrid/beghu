@@ -121,11 +121,20 @@ fn identifiers_are_skipped() {
     not_flagged("The same as_ref call.");
 }
 
-/// Two plain words joined by `-` or `/` (or by `.` before a capital, a missing space) are prose,
-/// unless the analysis writes the pair as code: a path, or a code span.
+/// Words joined by `-`, or two joined by `/` (or by `.` before a capital, a missing space), are
+/// prose, the first one capitalised or not, unless the analysis writes them as code: a path, or a
+/// code span.
 #[test]
 fn a_joined_pair_of_plain_words_is_prose_unless_the_analysis_names_it() {
     flagged("It is better-tested now.");
+    // At a sentence's start too, and any run of words joined by `-`.
+    flagged("Well-designed handler.");
+    flagged("Better-tested paths.");
+    flagged("Cleaner-looking code.");
+    flagged("Clean-looking code.");
+    flagged("A best-in-class split.");
+    flagged("It is less-than-ideal.");
+    flagged("It is better-than-before.");
     flagged("clean/simple");
     flagged("It splits it clean.It reads well.");
     flagged("Writes the pristine-mirrors folder.");

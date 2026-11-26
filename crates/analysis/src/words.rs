@@ -11,12 +11,14 @@ const WORDS: &[&str] = &[
     "recommend",
     "recommended",
     "better",
+    "best",
     "worse",
     "risky",
     "concern",
     "concerning",
     "smell",
     "clean",
+    "cleaner",
     "messy",
     "poorly",
     "overlap",
@@ -26,6 +28,7 @@ const WORDS: &[&str] = &[
     "duplicated",
     "mirrors",
     "redundant",
+    "ideal",
 ];
 
 /// Word pairs that do the same.
@@ -111,9 +114,9 @@ impl Names {
 /// The first judging or comparing word or phrase in `text`, as written there, in an analysis that
 /// writes `names` as code. Code isn't prose: words inside a backtick code span
 /// (`` `clean_path` ``) and words that are part of an identifier are skipped. An identifier is a
-/// token joined by `_` or `::` (`clean_path`, `mirror_db::q`), or by `-`, `/` or `.` other than
-/// between two plain words (`web/src/mirrors.ts`, `self.clean`: `better-tested`, `clean/simple`
-/// and `clean.It` are prose), or written in mixed case (`CleanPath`, `isClean`), or a token the
+/// token joined by `_` or `::` (`clean_path`, `mirror_db::q`), or by `-`, `/` or `.` as code is
+/// ([`code_join`]: `web/src/mirrors.ts` and `self.clean` are code; `Well-designed`,
+/// `best-in-class`, `clean/simple` and `clean.It` are prose), or written in mixed case (`CleanPath`, `isClean`), or a token the
 /// analysis writes as code ([`Names`]: `pristine-mirrors`, once a path or a code span names it).
 /// A capitalised word is a name only that way: `Mirrors` is the type wherever it sits in a
 /// sentence once the analysis writes `dbrt::Mirrors` or `` `Mirrors` `` anywhere, and a word
@@ -235,9 +238,12 @@ fn identifier(token: &str, names: &Names) -> bool {
     joined || mixed
 }
 
-/// Whether `-`, `/` or `.` join alphanumeric runs in `token` as code does: anything but a prose
-/// pair, one separator between two plain words (`better-tested`, `clean/simple`, `clean.It`, the
-/// last a missing space after a full stop; `mirrors.rs` and `self.clean` are code).
+/// Whether `-`, `/` or `.` join alphanumeric runs in `token` as code does. Prose joins are
+/// alphabetic words joined only by `-` (`better-tested`, `Well-designed`, `best-in-class`), and
+/// one `/` between two words (`clean/simple`) or one `.` before a capitalised one (`clean.It`, a
+/// missing space after a full stop), the first word lower-case or capitalised (it may start a
+/// sentence); anything else is code (`mirrors.rs`, `self.clean`, `web/src/clean.ts`). A prose
+/// join the analysis writes as code is a name all the same ([`identifier`]).
 fn code_join(token: &str) -> bool {
     let chars: Vec<char> = token.chars().collect();
     let seps: Vec<usize> = (1..chars.len().saturating_sub(1))
@@ -247,8 +253,18 @@ fn code_join(token: &str) -> bool {
                 && chars[i + 1].is_alphanumeric()
         })
         .collect();
+    if seps.is_empty() {
+        return false;
+    }
+    let hyphenated = seps.iter().all(|&i| chars[i] == '-')
+        && token
+            .split('-')
+            .all(|w| !w.is_empty() && w.chars().all(char::is_alphabetic));
+    if hyphenated {
+        return false;
+    }
     let [at] = seps[..] else {
-        return !seps.is_empty();
+        return true;
     };
     let (a, b): (String, String) = (
         chars[..at].iter().collect(),
@@ -257,11 +273,12 @@ fn code_join(token: &str) -> bool {
     let lower = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_alphabetic() && c.is_lowercase());
     let capitalised = |w: &str| {
         let mut c = w.chars();
-        c.next().is_some_and(char::is_uppercase) && lower(c.as_str())
+        c.next().is_some_and(char::is_uppercase) && (c.as_str().is_empty() || lower(c.as_str()))
     };
+    let first = lower(&a) || capitalised(&a);
     let prose = match chars[at] {
-        '.' => lower(&a) && capitalised(&b),
-        _ => lower(&a) && lower(&b),
+        '.' => first && capitalised(&b),
+        _ => first && lower(&b),
     };
     !prose
 }
