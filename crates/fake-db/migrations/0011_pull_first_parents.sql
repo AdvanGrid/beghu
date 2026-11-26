@@ -3,3 +3,6 @@
 -- history; only a new history (the seed, or a force push, as after a rebase) starts somewhere
 -- else. NULL: the derived tip of the base branch, which never moves.
 ALTER TABLE fake_pull_heads ADD COLUMN first_parent TEXT;
+-- A data dir from before this keeps its PRs' histories where they were: on the base a push named,
+-- or (NULL) on the derived one.
+UPDATE fake_pull_heads SET first_parent = base_sha;
