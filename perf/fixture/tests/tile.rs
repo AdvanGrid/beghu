@@ -1,27 +1,68 @@
 //! The tiler (#178): the recorded analysis grown to #2627's shape and to 3×, each one an upload
 //! the server takes, the same bytes every time and cached by the generator's hash.
 
-use analysis::{Context, NodeKind, PinnedPr, Previous, validate};
-use fixture::tile::{TOP_LEVEL_PARTS, cached};
+use analysis::{Analysis, Context, NodeKind, PinnedPr, Previous, validate};
+use fixture::tile::cached;
+use std::collections::HashMap;
 
-fn top_level_parts(a: &analysis::Analysis) -> usize {
+/// An analysis's shape as #2627's is told (#162): its top-level parts, its lines at the top level
+/// (edges between two different top-level nodes; an edge inside a part isn't drawn there), and
+/// its claims.
+#[derive(Debug, Clone, Copy)]
+struct Shape {
+    parts: usize,
+    lines: usize,
+    claims: usize,
+}
+
+fn shape(a: &Analysis) -> Shape {
     let system = a
         .nodes
         .iter()
         .find(|n| n.kind == NodeKind::System)
         .unwrap()
         .id
-        .clone();
-    a.nodes
+        .as_str();
+    let parts = a
+        .nodes
         .iter()
         .filter(|n| {
-            n.parent.as_deref() == Some(system.as_str())
+            n.parent.as_deref() == Some(system)
                 && matches!(
                     n.kind,
                     NodeKind::Service | NodeKind::App | NodeKind::Library | NodeKind::Module
                 )
         })
-        .count()
+        .count();
+    let parent: HashMap<&str, &str> = a
+        .nodes
+        .iter()
+        .filter_map(|n| Some((n.id.as_str(), n.parent.as_deref()?)))
+        .collect();
+    let lines = a
+        .edges
+        .iter()
+        .filter(|e| top(&parent, system, &e.from) != top(&parent, system, &e.to))
+        .count();
+    Shape {
+        parts,
+        lines,
+        claims: a.claims.len(),
+    }
+}
+
+fn top<'a>(parent: &HashMap<&'a str, &'a str>, system: &str, mut x: &'a str) -> &'a str {
+    while let Some(&p) = parent.get(x).filter(|p| **p != system) {
+        x = p;
+    }
+    x
+}
+
+/// Within 5% of `want`.
+#[track_caller]
+fn near(what: &str, got: usize, want: usize) {
+    let off = got.abs_diff(want) as f64 / want as f64;
+    assert!(off <= 0.05, "{got} {what}, not within 5% of {want}");
 }
 
 #[test]
@@ -50,16 +91,18 @@ fn the_tiles_have_their_shape_pass_the_servers_checks_and_are_cached() {
             "{name}: its pr.json pins its head"
         );
         assert_eq!(pr.number as i64, *number);
-        shapes.push((top_level_parts(&a), a.edges.len(), a.claims.len()));
+        shapes.push(shape(&a));
     }
-    // 1×: #2627's 76 top-level parts; its claims near #2627's ~1,250.
-    let (parts, _, claims) = shapes[0];
-    assert_eq!(parts, TOP_LEVEL_PARTS);
-    assert!((1_000..=1_500).contains(&claims), "{claims} claims");
-    // 3×: three times the 1× (and a wire between copies).
-    assert_eq!(shapes[1].0, 3 * shapes[0].0);
-    assert!(shapes[1].1 >= 3 * shapes[0].1);
-    assert_eq!(shapes[1].2, 3 * shapes[0].2);
+    // 1×: #2627's shape: 76 top-level parts, 167 lines at the top level, ~1,250 claims.
+    let one = shapes[0];
+    assert_eq!(one.parts, 76, "{one:?}");
+    near("lines at the top level", one.lines, 167);
+    near("claims", one.claims, 1_250);
+    // 3×: three copies of the 1×, the two later ones each wired to the first by one line.
+    let three = shapes[1];
+    assert_eq!(three.parts, 3 * one.parts, "{three:?}");
+    assert_eq!(three.lines, 3 * one.lines + 2, "{three:?}");
+    assert_eq!(three.claims, 3 * one.claims, "{three:?}");
 
     // Cached: a second call writes nothing; a fresh directory gets the same bytes.
     let written = std::fs::metadata(&tiles[0].2).unwrap().modified().unwrap();

@@ -3,12 +3,16 @@
 //! cached beside the fixtures, by the generator's hash (which covers the recordings, the analysis
 //! crate and this file).
 //!
-//! - **1×, #2627's shape** (about 76 top-level parts, 167 lines, ~1,250 claims; #2627 itself is
-//!   private): the real analysis whole, then **light copies** of its top-level parts until there
-//!   are [`TOP_LEVEL_PARTS`]. A light copy is a part as an unchanged one is drawn: its
-//!   responsibilities, facets and questions with their claims, none of its modules or files, and
-//!   the lines between the copy's parts. Each copy's first line is wired to the real part it
-//!   calls, so the copies join the graph.
+//! - **1×, #2627's shape** (about 76 top-level parts, 167 lines at the top level, ~1,250 claims;
+//!   #2627 itself is private): the real analysis whole, then **light copies** of its top-level
+//!   parts until there are [`TOP_LEVEL_PARTS`]. A light copy is a part as an unchanged one is
+//!   drawn: its responsibilities and facets with their claims, none of its modules, files or
+//!   questions (an unchanged part has no "What changed?"), and some of the lines between the
+//!   copy's parts: the light copies share the [`TOP_LEVEL_LINES`] the real analysis leaves, by
+//!   their parts. Each copy's first line is wired to the real part it calls, so the copies join
+//!   the graph. A line at the top level is an edge whose ends sit in two different top-level
+//!   nodes (an edge inside one part isn't drawn there): the real analysis has 192 edges, 147 of
+//!   them at the top level.
 //! - **3×**: the 1× three times, each later copy wired to the first.
 //!
 //! Every copy prefixes its IDs (`t1-api`, `purpose:x1-refunds`), renumbers its claims past the
@@ -23,11 +27,14 @@ use analysis::{
     Analysis, Carried, Change, Claim, Conflict, Context, Edge, Evidence, FileChange, Node,
     NodeKind, PinnedFile, PinnedPr, Previous, Purpose, Scenario, Walk,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The top-level parts the 1× holds, as #2627 has.
 pub const TOP_LEVEL_PARTS: usize = 76;
+
+/// The lines at the top level the 1× holds, as #2627 has (#162).
+pub const TOP_LEVEL_LINES: usize = 167;
 
 /// A tiled analysis and its PR.
 pub struct Tiled {
@@ -242,6 +249,27 @@ fn top_level_parts<'a>(a: &'a Analysis, system: &str) -> Vec<&'a Node> {
         .collect()
 }
 
+/// The edges whose ends sit in two different top-level nodes: the lines drawn at the top level.
+fn top_level_lines(a: &Analysis, system: &str) -> usize {
+    let parent: HashMap<&str, &str> = a
+        .nodes
+        .iter()
+        .filter_map(|n| Some((n.id.as_str(), n.parent.as_deref()?)))
+        .collect();
+    a.edges
+        .iter()
+        .filter(|e| top(&parent, system, &e.from) != top(&parent, system, &e.to))
+        .count()
+}
+
+/// The top-level node `x` sits in (itself, at the top level).
+fn top<'a>(parent: &HashMap<&'a str, &'a str>, system: &str, mut x: &'a str) -> &'a str {
+    while let Some(&p) = parent.get(x).filter(|p| **p != system) {
+        x = p;
+    }
+    x
+}
+
 fn max_claim(a: &Analysis) -> u32 {
     a.claims
         .iter()
@@ -324,8 +352,9 @@ fn wire(out: &mut Analysis, src: &Analysis, t: &Tag, system: &str) {
     out.edges.push(w);
 }
 
-/// Adds `tag`'s light copy of the first `count` of `src`'s top-level parts to `out`.
-fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize) {
+/// Adds `tag`'s light copy of the first `count` of `src`'s top-level parts to `out`, with at
+/// most `lines` lines: its wire, then the first of the lines between its parts.
+fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize, lines: usize) {
     let system = system_id(src);
     let parts: Vec<&Node> = top_level_parts(src, &system)
         .into_iter()
@@ -347,24 +376,24 @@ fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize) {
         for f in &mut n.facets {
             f.was = None;
         }
-        let refs = n
-            .responsibilities
-            .iter()
-            .flat_map(|r| &r.claims)
-            .chain(
-                n.facets
-                    .iter()
-                    .flat_map(|f| f.values.iter().flat_map(|v| &v.claims)),
-            )
-            .chain(n.questions.iter().flat_map(|q| &q.claims));
+        n.questions.clear();
+        let refs = n.responsibilities.iter().flat_map(|r| &r.claims).chain(
+            n.facets
+                .iter()
+                .flat_map(|f| f.values.iter().flat_map(|v| &v.claims)),
+        );
         used.extend(refs.cloned());
         out.nodes.push(n);
     }
     let none = HashSet::new();
+    let before = out.edges.len();
+    wire(out, src, t, &system);
+    let wired = out.edges.len() - before;
     for e in src
         .edges
         .iter()
         .filter(|e| chosen.contains(e.from.as_str()) && chosen.contains(e.to.as_str()))
+        .take(lines.saturating_sub(wired))
     {
         let mut e = renamed_edge(e, t, &system, &none);
         e.change = Change::Unchanged;
@@ -374,25 +403,17 @@ fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize) {
         for f in &mut e.facets {
             f.was = None;
         }
+        out.edges.push(e);
+    }
+    // Its lines' claims, but for their questions (as its parts').
+    for e in &mut out.edges[before..] {
+        e.questions.clear();
         used.extend(e.claims.iter().cloned());
         used.extend(
             e.facets
                 .iter()
                 .flat_map(|f| f.values.iter().flat_map(|v| v.claims.iter().cloned())),
         );
-        used.extend(e.questions.iter().flat_map(|q| q.claims.iter().cloned()));
-        out.edges.push(e);
-    }
-    let before = out.edges.len();
-    wire(out, src, t, &system);
-    if let Some(w) = out.edges.get(before) {
-        used.extend(w.claims.iter().cloned());
-        used.extend(
-            w.facets
-                .iter()
-                .flat_map(|f| f.values.iter().flat_map(|v| v.claims.iter().cloned())),
-        );
-        used.extend(w.questions.iter().flat_map(|q| q.claims.iter().cloned()));
     }
     out.claims.extend(
         src.claims
@@ -469,15 +490,20 @@ pub fn tile(analysis: &str, pr: &PinnedPr) -> Result<[Tiled; 2], String> {
     let mut one = real.clone();
     let per_copy = top_level_parts(&real, &system).len();
     let mut have = per_copy;
+    // The lines the light copies share, by their parts.
+    let mut lines = TOP_LEVEL_LINES.saturating_sub(top_level_lines(&real, &system));
     let mut k = 1;
     while have < TOP_LEVEL_PARTS && per_copy > 0 {
         let count = per_copy.min(TOP_LEVEL_PARTS - have);
+        let share = (lines * count).div_ceil(TOP_LEVEL_PARTS - have).min(lines);
         let t = Tag {
             id: format!("t{k}-"),
             path: format!("t{k}/"),
             claims: max_claim(&one),
         };
-        add_light(&mut one, &real, &t, count);
+        let before = one.edges.len();
+        add_light(&mut one, &real, &t, count, share);
+        lines = lines.saturating_sub(one.edges.len() - before);
         have += count;
         k += 1;
     }
