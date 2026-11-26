@@ -782,6 +782,11 @@ impl Received {
 
 /// A webhook receiver standing in for beghu, with the fake pointed at it.
 async fn receiver(fake: &Fake) -> tokio::sync::mpsc::UnboundedReceiver<Received> {
+    receiver_at(fake).await.0
+}
+
+/// [`receiver`], and its URL.
+async fn receiver_at(fake: &Fake) -> (tokio::sync::mpsc::UnboundedReceiver<Received>, String) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let app = axum::Router::new().route(
         "/webhook",
@@ -807,7 +812,7 @@ async fn receiver(fake: &Fake) -> tokio::sync::mpsc::UnboundedReceiver<Received>
     tokio::spawn(async move { axum::serve(listener, app).await });
     fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": url }))
         .await;
-    rx
+    (rx, url)
 }
 
 impl Fake {
@@ -903,6 +908,40 @@ async fn an_outside_edit_sends_its_signed_webhooks_about_a_second_later() {
     assert_eq!(comment["user"]["login"], "ilze-k");
     let guids: std::collections::HashSet<_> = got.iter().map(|r| r.guid.clone()).collect();
     assert_eq!(guids.len(), 4, "every delivery has its own GUID");
+}
+
+#[tokio::test]
+async fn a_change_made_while_webhooks_go_nowhere_is_never_delivered() {
+    let fake = start().await;
+    let (mut rx, url) = receiver_at(&fake).await;
+    // As an inactive webhook: GitHub makes no delivery for these.
+    fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": null }))
+        .await;
+    fake.control(
+        reqwest::Method::POST,
+        "/revoke",
+        json!({ "login": "ilze-k" }),
+    )
+    .await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "Unheard." }))
+        .await;
+    // Pointed at a receiver again well inside the delivery delay, as a restarted beghu is.
+    fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": url }))
+        .await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "Heard." }))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let heard: Vec<(String, Value)> = got
+        .iter()
+        .map(|r| (r.event.clone(), r.payload()["comment"]["body"].clone()))
+        .collect();
+    assert_eq!(heard, [("issue_comment".into(), json!("Heard."))]);
+    // Nor does GitHub's log have an attempt for them.
+    let (log, _) = fake.deliveries("").await;
+    assert!(
+        log.iter().all(|d| d["event"] != "github_app_authorization"),
+        "{log:?}"
+    );
 }
 
 #[tokio::test]

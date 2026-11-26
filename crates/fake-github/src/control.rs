@@ -27,7 +27,8 @@
 //! - `DELETE /faults`: clear every fault rule, webhook ones included. With `{endpoint}`, only
 //!   that endpoint's latency, fail and rewrite rules, so callers sharing the fake (tests running
 //!   side by side) can each remove their own.
-//! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
+//! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere, as when the App's webhook is
+//!   inactive: a change made meanwhile has no delivery, even once a URL is set again).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
 //!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see
