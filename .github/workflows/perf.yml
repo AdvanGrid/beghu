@@ -37,7 +37,7 @@ jobs:
               - crates/**
               - perf/**
               - perf-budgets.toml
-              - fixtures/**
+              - fixtures/pr-view/beghu-*/**
               - web/src/**
               - web/index.html
               - web/theme.js
@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: perf/data
-          key: perf-fixture-50k-${{ hashFiles('perf/fixture/**', 'crates/mirror-db/migrations/**', 'crates/mirror-db/queries/**', 'crates/mirror-db/src/lib.rs', 'crates/dbrt/src/stats.rs', 'fixtures/pr-view/**', 'crates/analysis/src/**', 'crates/analysis/Cargo.toml') }}
+          key: perf-fixture-50k-${{ hashFiles('perf/fixture/**', 'crates/mirror-db/migrations/**', 'crates/mirror-db/queries/**', 'crates/mirror-db/src/lib.rs', 'crates/dbrt/src/stats.rs', 'fixtures/pr-view/beghu-*/**', 'crates/analysis/src/**', 'crates/analysis/Cargo.toml') }}
           restore-keys: perf-fixture-50k-
 
       # `-p fixture` builds the generator and `pr-fixtures`, which tiles the recorded analysis
