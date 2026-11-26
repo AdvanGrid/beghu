@@ -40,7 +40,7 @@ import {
 import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
 import { GITHUB_DATA } from "./github.ts";
 import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
-import { upload, versions, type Uploaded } from "./analyses.ts";
+import { imported, upload, versions, type Uploaded } from "./analyses.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
 
@@ -344,12 +344,16 @@ async function startStack(
     }
     if (Date.now() > deadline) die(`still starting after ${timeout / 1000}s; check ./dev-ctl logs`);
   }
-  // The recorded analyses, as tomsj, through runs: not after reset --fresh, whose mirrors import
-  // on first use (analyse uploads them once tomsj's import is done).
-  if (scale !== "github" && readJson<Seeded>(SEEDED)?.fresh !== true) {
+  // The recorded analyses, as tomsj, through runs. After reset --fresh the mirrors import on
+  // first use: a run needs tomsj's, so the first start after tomsj has imported uploads them.
+  if (scale !== "github" && !existsSync(ANALYSES_SEEDED)) {
     try {
-      const done = await seedAnalyses(json);
-      if (done.length) extra = { ...extra, analyses: done };
+      if (readJson<Seeded>(SEEDED)?.fresh === true && !(await freshImported())) {
+        if (!json) console.log("not uploading the recorded analyses yet: tomsj hasn't imported AdvanGrid/beghu since reset --fresh (a start after that does, or ./dev-ctl analyse AdvanGrid/beghu#191)");
+      } else {
+        const done = await seedAnalyses(json);
+        if (done.length) extra = { ...extra, analyses: done };
+      }
     } catch (e) {
       console.error(`uploading the recorded analyses failed: ${e instanceof Error ? e.message : String(e)}`);
       console.error("the stack is up; ./dev-ctl analyse AdvanGrid/beghu#191 tries again");
@@ -994,6 +998,15 @@ async function reset(args: string[]): Promise<void> {
 
 /** Marks the fixture stack's analyses as uploaded by start; reset deletes it with them. */
 const ANALYSES_SEEDED = join(ANALYSES, "seeded.json");
+
+/**
+ * After reset --fresh: whether tomsj has imported the recorded PR's repo since. Signs tomsj in to
+ * ask only once some account has a mirror, so a fresh stack nobody has used stays untouched.
+ */
+async function freshImported(): Promise<boolean> {
+  const any = existsSync(MIRRORS) && readdirSync(MIRRORS).some((f) => f.endsWith(".db"));
+  return any && (await imported(urls().app, "tomsj", "AdvanGrid/beghu"));
+}
 
 /**
  * The recorded analyses as start and reset leave them: v1 uploaded as tomsj, the PR moved to v2's

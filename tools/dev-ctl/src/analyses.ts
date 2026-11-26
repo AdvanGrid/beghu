@@ -103,6 +103,16 @@ export class Session {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Whether `login`'s mirror holds `repo` (owner/name) with no import running: what a run on it needs. */
+export async function imported(server: string, login: string, repo: string): Promise<boolean> {
+  const s = new Session(server);
+  await s.signIn(login);
+  const res = await s.fetch("/api/me", { headers: { "x-beghu-account": s.cookies.get("beghu_acct") ?? "" } });
+  if (res.status !== 200) return false;
+  const me = (await res.json()) as { import?: unknown; repos?: { owner: string; name: string }[] };
+  return me.import == null && (me.repos ?? []).some((r) => `${r.owner}/${r.name}`.toLowerCase() === repo.toLowerCase());
+}
+
 /** A new run on `repo#number`: its token. */
 async function startRun(s: Session, repo: string, number: number): Promise<string> {
   const res = await s.post(`/api/${repo}/pulls/${number}/runs`);
