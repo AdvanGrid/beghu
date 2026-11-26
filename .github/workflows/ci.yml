@@ -88,6 +88,36 @@ jobs:
             echo "merge.mjs --finish passed unresolved hints"; exit 1
           fi
 
+  pr-view-fixtures:
+    # The PR view's committed analyses (fixtures/pr-view/, #178): the full validator, snippet
+    # check included, on every recording and case in its migrated form, against the real commits
+    # each names (fetched by SHA, read with git, no checkout); and each of those commits reachable
+    # from HEAD: main on a push, and on a PR the merge of the PR into its base, which is what the
+    # base becomes once it merges (merge commits only, so the analysed SHAs stay reachable).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --locked -p analysis-fixtures
+
+      # The repo is public: an anonymous fetch by SHA, for any commit the clone lacks.
+      - name: Fetch the analysed commits
+        run: |
+          for sha in $(target/debug/analysis-fixtures shas); do
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "$sha"
+          done
+
+      - name: Validate against the real commits
+        run: target/debug/analysis-fixtures check --reachable-from HEAD
+
   secrets:
     # gitleaks over the whole history: its default rules, with .gitleaks.toml allowing the dev and
     # test keys committed on purpose. The official image rather than gitleaks-action, which wants
