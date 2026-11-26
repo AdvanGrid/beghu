@@ -285,34 +285,12 @@ pub(crate) async fn delete_comment(
             let Some(item) = q::issue_id(tx, repo.id, x.number)? else {
                 return Ok(Err(not_found()));
             };
-            let mut comment = crate::repos::comment_json(
-                tx,
-                &repo,
-                crate::repos::CommentRow {
-                    number: x.number,
-                    id: x.id,
-                    node_id: &x.node_id,
-                    author: x.author_id,
-                    body: &x.body,
-                    created: x.created_at,
-                    updated: x.updated_at,
-                },
-            )?;
-            // As `issue_comment` `created` carries it (`edits.rs`).
-            comment["performed_via_github_app"] = Value::Null;
             let Some(sender) = q::user_row(tx, user)? else {
                 return Ok(Err(error(StatusCode::UNAUTHORIZED, "Bad credentials")));
             };
-            q::delete_comment(tx, id)?;
-            q::uncount_comment(tx, item)?;
-            let mut p = crate::webhooks::envelope(
-                &repo,
-                &crate::webhooks::user_json(sender.id, &sender.login, sender.avatar_url.as_deref()),
-            );
-            p["action"] = json!("deleted");
-            p["issue"] = crate::webhooks::issue_json(tx, item)?;
-            p["comment"] = comment;
-            Ok(Ok(crate::webhooks::Delivery::new("issue_comment", p)))
+            let sender =
+                crate::webhooks::user_json(sender.id, &sender.login, sender.avatar_url.as_deref());
+            comment_deleted(tx, &repo, item, &x, &sender).map(Ok)
         })
         .await;
     match done {
@@ -323,6 +301,40 @@ pub(crate) async fn delete_comment(
         Ok(Err(res)) => res,
         Err(e) => internal(e),
     }
+}
+
+/// Deletes comment `x` of issue `item`, as `sender` (a user's JSON): the comments count drops,
+/// and `issue_comment` `deleted` carries the comment as it was. The REST delete and an outside
+/// edit's `delete_comment` both.
+pub(crate) fn comment_deleted(
+    tx: &rusqlite::Transaction,
+    repo: &q::RepoRow,
+    item: i64,
+    x: &q::RepoCommentRow,
+    sender: &Value,
+) -> rusqlite::Result<crate::webhooks::Delivery> {
+    let mut comment = crate::repos::comment_json(
+        tx,
+        repo,
+        crate::repos::CommentRow {
+            number: x.number,
+            id: x.id,
+            node_id: &x.node_id,
+            author: x.author_id,
+            body: &x.body,
+            created: x.created_at,
+            updated: x.updated_at,
+        },
+    )?;
+    // As `issue_comment` `created` carries it (`edits.rs`).
+    comment["performed_via_github_app"] = Value::Null;
+    q::delete_comment(tx, x.id)?;
+    q::uncount_comment(tx, item)?;
+    let mut p = crate::webhooks::envelope(repo, sender);
+    p["action"] = json!("deleted");
+    p["issue"] = crate::webhooks::issue_json(tx, item)?;
+    p["comment"] = comment;
+    Ok(crate::webhooks::Delivery::new("issue_comment", p))
 }
 
 /// The fields of a new issue the fake models.

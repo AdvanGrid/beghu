@@ -6,8 +6,13 @@
 //! { "repo": "acme/web" | "web", "number": 12, "as": "tomsj",
 //!   "title": "…", "body": "…", "state": "open" | "closed", "state_reason": "not_planned",
 //!   "add_labels": ["bug"], "remove_labels": ["triage"], "comment": "…",
-//!   "type": "Bug" | null, "locked": true }
+//!   "delete_comment": "…", "type": "Bug" | null, "locked": true }
 //! ```
+//!
+//! `delete_comment` deletes the issue's latest comment with that body, as its author (or anyone
+//! with Write) does from the comment's menu on GitHub, and sends `issue_comment` `deleted`, as
+//! the REST delete does (`writes.rs`). It names the comment by its body, as `comment` makes one,
+//! so a script can undo its own comment without knowing its id.
 //!
 //! Relationship changes name the other issue (`repo#n`, `owner/repo#n` or `#n`), which may be in
 //! a repo the App isn't installed on: `add_sub_issue`/`remove_sub_issue` (the edited issue is the
@@ -74,6 +79,8 @@ pub(crate) struct Edit {
     #[serde(default)]
     remove_labels: Vec<String>,
     comment: Option<String>,
+    /// The body of the issue's comment to delete (its latest with that body).
+    delete_comment: Option<String>,
     /// Absent: unchanged. `null`: untyped. A name: that type.
     #[serde(rename = "type", default, deserialize_with = "present")]
     issue_type: Option<Option<String>>,
@@ -244,6 +251,24 @@ fn apply(
     {
         return refuse("type is a name or null".into());
     }
+    let uncomment = match e.delete_comment.as_deref() {
+        Some(body) => {
+            let latest = q::issue_comments_page(tx, id, i64::MAX, 0)?
+                .into_iter()
+                .rfind(|c| c.body == body);
+            match latest {
+                Some(c) => q::repo_comment(tx, repo.id, c.id)?,
+                None => None,
+            }
+            .map(Some)
+            .ok_or_else(|| format!("{}#{} has no comment {body:?}", e.repo, e.number))
+        }
+        None => Ok(None),
+    };
+    let uncomment = match uncomment {
+        Ok(c) => c,
+        Err(why) => return refuse(why),
+    };
     let mut change = Change {
         title: e.title.clone(),
         body: e.body.clone(),
@@ -278,6 +303,16 @@ fn apply(
         crate::pulls::sidebar(tx, id, issue, add, sender, now)?;
     }
     let mut issue = done.issue;
+    if let Some(c) = &uncomment {
+        deliveries.push(crate::writes::comment_deleted(
+            tx,
+            &repo,
+            id,
+            c,
+            &sender_json,
+        )?);
+        issue = crate::webhooks::issue_json(tx, id)?;
+    }
     if let Some(r) = e.review.as_deref()
         && let Some(d) = crate::pulls::review(tx, &repo, id, r, sender, now)?
     {

@@ -4649,6 +4649,60 @@ async fn a_deleted_comment_is_gone_and_sends_issue_comment_deleted() {
     assert_eq!(status, 404);
 }
 
+/// An outside edit's `delete_comment`: the issue's latest comment with that body goes, as from its
+/// menu on GitHub, with the same `issue_comment` `deleted` the REST delete sends.
+#[tokio::test]
+async fn an_outside_edit_deletes_a_comment_by_its_body() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    for _ in 0..2 {
+        fake.edit(json!({ "repo": "web", "number": 1, "comment": "Twice." }))
+            .await;
+    }
+    let made = received_for(&mut rx, Duration::from_millis(1500)).await;
+    let latest = made.last().unwrap().payload()["comment"].clone();
+    async fn thread(fake: &Fake, token: &Value) -> Vec<Value> {
+        fake.get("/repos/acme/web/issues/1/comments?per_page=100", token)
+            .await
+            .json()
+            .await
+            .unwrap()
+    }
+    let before = thread(&fake, token).await;
+
+    fake.edit(json!({ "repo": "web", "number": 1, "delete_comment": "Twice." }))
+        .await;
+    let after = thread(&fake, token).await;
+    assert_eq!(after.len(), before.len() - 1);
+    assert!(
+        !after.iter().any(|c| c["id"] == latest["id"]),
+        "the latest one goes"
+    );
+    assert!(
+        after.iter().any(|c| c["body"] == "Twice."),
+        "the other stays"
+    );
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "issue_comment");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "deleted");
+    assert_eq!(p["comment"], latest);
+    assert_eq!(p["issue"]["comments"], json!(after.len()));
+
+    // A body the thread doesn't have is refused, and changes nothing.
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&json!({ "repo": "web", "number": 1, "delete_comment": "Never said." }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(thread(&fake, token).await.len(), after.len());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_installation_token_writing_or_asking_for_the_user_is_not_accessible_by_integration() {
     let fake = start().await;

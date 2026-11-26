@@ -97,10 +97,12 @@ pub fn analysis_path(number: u32, version: u32) -> Option<std::path::PathBuf> {
 
 /// The Fake GitHub control calls (`(path, body)`, in order) that take the recorded PR from
 /// `from`'s state to `to`'s, as GitHub got there: outside edits for the PR's and its linked
-/// issues' titles and descriptions that differ, a comment for each one `to`'s thread has and
-/// `from`'s doesn't, then a push to `to`'s head with its files and base (a force push when going
-/// back). An issue `from` doesn't serve is as the fixture made it: from the first version that
-/// serves it. Nothing when the two are the same version.
+/// issues' titles and descriptions that differ, a deleted comment for each one `from`'s thread
+/// has and `to`'s doesn't and a comment for each one `to`'s has and `from`'s doesn't, then a push
+/// to `to`'s head with its files and base (a force push when going back). Symmetric: `moves(a, b)`
+/// then `moves(b, a)` leaves the PR as it was. An issue a version doesn't serve is as the
+/// fixture made it there: as the first version that serves it has it. Nothing when the two are
+/// the same version.
 pub fn moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
     let mut out = Vec::new();
     if from.number != to.number || from.version == to.version {
@@ -122,33 +124,39 @@ pub fn moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
         pr.insert("number".into(), number.into());
         out.push(("/edit", Value::Object(pr)));
     }
-    let issue = |v: &Version, n: &Value| {
+    let ours = |i: &&Value| {
+        i["repo"]
+            .as_str()
+            .is_some_and(|r| r.eq_ignore_ascii_case(REPO))
+    };
+    let served = |v: &Version| -> Vec<Value> {
         v.pr["issues"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|i| {
-                &i["number"] == n
-                    && i["repo"]
-                        .as_str()
-                        .is_some_and(|r| r.eq_ignore_ascii_case(REPO))
-            })
+            .filter(ours)
             .cloned()
+            .collect()
     };
-    for now in to.pr["issues"].as_array().into_iter().flatten() {
-        if !now["repo"]
-            .as_str()
-            .is_some_and(|r| r.eq_ignore_ascii_case(REPO))
-        {
-            continue;
+    let issue = |v: &Version, n: &Value| served(v).into_iter().find(|i| &i["number"] == n);
+    // Every issue either version serves: `to`'s, then the ones only `from` serves.
+    let mut numbers: Vec<Value> = Vec::new();
+    for i in served(to).iter().chain(&served(from)) {
+        if !numbers.contains(&i["number"]) {
+            numbers.push(i["number"].clone());
         }
-        let n = &now["number"];
-        let Some(was) = issue(from, n).or_else(|| all.iter().find_map(|v| issue(v, n))) else {
+    }
+    for n in &numbers {
+        let fixture = || all.iter().find_map(|v| issue(v, n));
+        let (Some(was), Some(now)) = (
+            issue(from, n).or_else(fixture),
+            issue(to, n).or_else(fixture),
+        ) else {
             continue;
         };
         let mut edit = serde_json::Map::new();
         for key in ["title", "body"] {
-            if let Some(x) = changed(&was, now, key) {
+            if let Some(x) = changed(&was, &now, key) {
                 edit.insert(key.into(), x);
             }
         }
@@ -157,19 +165,27 @@ pub fn moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
             edit.insert("number".into(), n.clone());
             out.push(("/edit", Value::Object(edit)));
         }
-        let had: Vec<&Value> = was["comments"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|c| &c["body"])
-            .collect();
-        for c in now["comments"].as_array().into_iter().flatten() {
-            if !had.contains(&&c["body"]) {
-                out.push((
-                    "/edit",
-                    serde_json::json!({ "repo": REPO, "number": n, "comment": c["body"] }),
-                ));
-            }
+        let bodies = |i: &Value| -> Vec<Value> {
+            i["comments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| c["body"].clone())
+                .collect()
+        };
+        let (had, want) = (bodies(&was), bodies(&now));
+        // The latest first, so a thread is unwound as it was written.
+        for body in had.iter().rev().filter(|b| !want.contains(b)) {
+            out.push((
+                "/edit",
+                serde_json::json!({ "repo": REPO, "number": n, "delete_comment": body }),
+            ));
+        }
+        for body in want.iter().filter(|b| !had.contains(b)) {
+            out.push((
+                "/edit",
+                serde_json::json!({ "repo": REPO, "number": n, "comment": body }),
+            ));
         }
     }
     if from.head_sha() != to.head_sha() {

@@ -1117,7 +1117,19 @@ impl Stack {
         for (path, body) in fixture::recorded::moves(&was, &to) {
             self.fake("POST", path, body).await;
         }
-        until(30.0, "a run pins the recorded pr.json", || async {
+        self.pin_when(b, "a run pins the recorded pr.json", |p| p == &to.pr)
+            .await
+    }
+
+    /// A run on the recorded PR for `b`'s account whose pinned `pr.json` is `ok`: its pin as
+    /// served, and its token. A pin that isn't yet is superseded by a new run until one is.
+    pub async fn pin_when(
+        &self,
+        b: &Browser,
+        what: &str,
+        ok: impl Fn(&Value) -> bool,
+    ) -> (String, String) {
+        until(30.0, what, || async {
             let res = self
                 .api_write(
                     b,
@@ -1141,8 +1153,10 @@ impl Stack {
                 .text()
                 .await
                 .unwrap();
-            (serde_json::from_str::<Value>(&pinned).ok() == Some(to.pr.clone()))
-                .then_some((pinned, token))
+            serde_json::from_str::<Value>(&pinned)
+                .ok()
+                .filter(&ok)
+                .map(|_| (pinned, token))
         })
         .await
     }
