@@ -20,6 +20,25 @@ use dbrt::Caller;
 use rusqlite::TransactionBehavior;
 use std::path::PathBuf;
 
+/// A consistent copy of the `analyses.db` at `path`, in memory, through SQLite's online backup:
+/// for tools that read a file a live server may be writing (`analysis-fixtures record`). The
+/// file is opened read-only and left as it was, WAL and all; a missing one is an error.
+pub fn snapshot(path: &std::path::Path) -> QueryResult<Connection> {
+    use rusqlite::OpenFlags;
+    let src = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let mut copy = Connection::open_in_memory()?;
+    // Every page in one step: one snapshot, which a writer meanwhile can't restart.
+    rusqlite::backup::Backup::new(&src, &mut copy)?.run_to_completion(
+        i32::MAX,
+        std::time::Duration::ZERO,
+        None,
+    )?;
+    Ok(copy)
+}
+
 /// Every account's `analyses.db`, under one directory (`<dir>/<github_user_id>.db`).
 #[derive(Clone)]
 pub struct Analyses(dbrt::Mirrors);

@@ -143,6 +143,9 @@ pub fn committed() -> Vec<Committed> {
     out
 }
 
+/// The repo whose PR the recordings are of: beghu's own.
+pub const RECORDED_REPO: &str = "AdvanGrid/beghu";
+
 /// What [`record`] found: the run's pinned `pr.json` and the accepted upload, both as stored.
 pub struct Recorded {
     pub pr: String,
@@ -152,22 +155,12 @@ pub struct Recorded {
 }
 
 /// The run `run`'s pinned `pr.json` and the upload it made, from the `analyses.db` at `db` (`run`
-/// may be the run's ID or the accepted analysis's, which the server's log names). The
-/// file is copied first and read from the copy (in `scratch`), so a live server's file and a
-/// read-only copy are both left alone.
-pub fn record(db: &Path, run: &str, scratch: &Path) -> Result<Recorded, String> {
-    std::fs::create_dir_all(scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
-    let copy = scratch.join("analyses.db");
-    for ext in ["", "-wal"] {
-        let from = PathBuf::from(format!("{}{ext}", db.display()));
-        let to = PathBuf::from(format!("{}{ext}", copy.display()));
-        let _ = std::fs::remove_file(&to);
-        if from.exists() {
-            std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
-        }
-    }
-    let _ = std::fs::remove_file(PathBuf::from(format!("{}-shm", copy.display())));
-    let conn = rusqlite::Connection::open(&copy).map_err(|e| format!("{}: {e}", db.display()))?;
+/// may be the run's ID or the accepted analysis's, which the server's log names). The file is
+/// read through SQLite's online backup ([`analysis_db::snapshot`]), so a live server's file and
+/// a read-only copy are both left alone. Only a run on the recorded PR's repo,
+/// `AdvanGrid/beghu`, is a recording: any other is refused.
+pub fn record(db: &Path, run: &str) -> Result<Recorded, String> {
+    let conn = analysis_db::snapshot(db).map_err(|e| format!("{}: {e}", db.display()))?;
     let an = analysis_db::q::recorded_analysis(&conn, run)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| {
@@ -176,6 +169,13 @@ pub fn record(db: &Path, run: &str, scratch: &Path) -> Result<Recorded, String> 
     let row = analysis_db::q::run(&conn, &an.run_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("analysis {} names run {}, which is gone", an.id, an.run_id))?;
+    let repo = format!("{}/{}", row.owner, row.name);
+    if !repo.eq_ignore_ascii_case(RECORDED_REPO) {
+        return Err(format!(
+            "run {} is on {repo}#{}: only a run on {RECORDED_REPO} is recorded (fixtures/pr-view/ holds beghu's own PR)",
+            an.run_id, row.number
+        ));
+    }
     let pr = row
         .pinned
         .ok_or_else(|| format!("run {} never pinned its PR", an.run_id))?;

@@ -29,8 +29,7 @@ async fn the_recorded_pr_pins_as_recorded_and_its_analysis_is_accepted_and_kept_
         .filter(|p| p.extension().is_some_and(|x| x == "db"))
         .collect();
     assert_eq!(dbs.len(), 1, "only tomsj has an analyses.db: {dbs:?}");
-    let scratch = tempfile::tempdir().unwrap();
-    let got = analysis_fixtures::record(&dbs[0], id, scratch.path()).unwrap();
+    let got = analysis_fixtures::record(&dbs[0], id).unwrap();
     let committed =
         std::fs::read_to_string(fixture::recorded::analysis_path(RECORDED, 1).unwrap()).unwrap();
     assert!(got.analysis == committed, "the upload is kept untouched");
@@ -47,6 +46,41 @@ async fn the_recorded_pr_pins_as_recorded_and_its_analysis_is_accepted_and_kept_
         )
         .await;
     assert_eq!(res.status(), 404);
+}
+
+/// A gzipped upload (`Content-Encoding: gzip`, as an agent's `curl --data-binary @file.gz`) is
+/// kept inflated, byte for byte what the agent compressed, and recorded so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gzipped_upload_is_kept_and_recorded_exactly() {
+    use std::io::Write as _;
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let (_, token) = s.pin_recorded(&b, 1, 1).await;
+    let committed =
+        std::fs::read_to_string(fixture::recorded::analysis_path(RECORDED, 1).unwrap()).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(committed.as_bytes()).unwrap();
+    let res = s
+        .http
+        .post(format!("{}/api/runs/{token}/analysis", s.server))
+        .header("content-type", "application/json")
+        .header("content-encoding", "gzip")
+        .header("beghu-snippets", "checked")
+        .body(gz.finish().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let answer: Value = res.json().await.unwrap();
+    let id = answer["analysis"].as_str().unwrap();
+    let db = std::fs::read_dir(s.data.join("analyses"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "db"))
+        .unwrap();
+    let got = analysis_fixtures::record(&db, id).unwrap();
+    assert!(got.analysis == committed, "kept as the agent wrote it");
 }
 
 /// v2 on top of v1, once recorded: the PR moves to v2's head, a new run pins v2's `pr.json`, and

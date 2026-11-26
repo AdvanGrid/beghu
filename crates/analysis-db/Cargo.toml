@@ -6,7 +6,8 @@ publish.workspace = true
 description = "The per-account analyses schema (`analyses.db`): its migrations, its checked named queries, and `Analyses`, which opens each account's file on first use."
 
 [dependencies]
-rusqlite = { workspace = true }
+# `backup`: SQLite's online backup, for `snapshot`.
+rusqlite = { workspace = true, features = ["backup"] }
 dbrt = { workspace = true }
 tokio = { workspace = true }
 

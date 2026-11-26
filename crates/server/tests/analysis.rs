@@ -620,6 +620,18 @@ async fn each_upload_answer() {
     let id = accepted["analysis"].as_str().unwrap().to_owned();
     assert_eq!(accepted["headSha"], HEAD);
     assert!(accepted["warnings"].is_array(), "{accepted}");
+    // Kept, but no recording: `analysis-fixtures record` takes runs on beghu's own PR only.
+    let db = std::fs::read_dir(s.data.join("analyses"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "db"))
+        .unwrap();
+    let refused = analysis_fixtures::record(&db, &id).err().unwrap();
+    assert!(
+        refused.contains("only a run on AdvanGrid/beghu"),
+        "{refused}"
+    );
     // Every refused upload counted, and their reports are kept on the run; the event names the
     // analysis.
     let mut ev = analysis_event(&mut st).await;

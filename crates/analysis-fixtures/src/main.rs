@@ -75,11 +75,10 @@ fn shas() -> Result<(), String> {
 }
 
 fn run_record(dbs: &[PathBuf], run: &str, version: Option<String>) -> Result<(), String> {
-    let scratch = std::env::temp_dir().join(format!("analysis-fixtures-{}", std::process::id()));
     let mut why = Vec::new();
     let mut found = None;
     for db in dbs {
-        match record(db, run, &scratch) {
+        match record(db, run) {
             Ok(got) => {
                 found = Some(got);
                 break;
@@ -87,7 +86,6 @@ fn run_record(dbs: &[PathBuf], run: &str, version: Option<String>) -> Result<(),
             Err(e) => why.push(e),
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
     let got = found.ok_or_else(|| why.join("\n"))?;
     let folder = dir().join(format!("beghu-{}", got.number));
     let v1 = folder.join("analysis-v1.json").exists();
