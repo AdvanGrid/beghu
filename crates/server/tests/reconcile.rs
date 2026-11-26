@@ -6,20 +6,17 @@ mod common;
 
 use common::*;
 
-/// These tests time and count the org's installation's background reads (its sweeps, probes,
-/// feed poller and redelivery): they run on the fixture without the PR view's recorded PR, whose
-/// installation would sweep and poll beside it. Shadows the harness's own.
-async fn start() -> Stack {
-    start_with(|_| {}).await
-}
-
-async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
-    start_on(single_installation_fixture(), adjust).await
-}
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 const INSTALLATION: i64 = 41000001;
+
+/// The fixture without the PR view's recorded PR, so the org's is the only installation: for a
+/// test that counts or times one installation's background reads, which the other's would add
+/// to. Every other test runs on the default fixture, both installations at work.
+async fn start_single(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+    start_on(single_installation_fixture(), adjust).await
+}
 
 /// Sweeps on a short schedule: probes every 300 ms, counts and orders every 600 ms, and every
 /// change they repair counted as missed.
@@ -105,6 +102,67 @@ async fn webhooks_unanswered(s: &Stack) {
     .await;
 }
 
+// --- both installations --------------------------------------------------------------------------
+
+/// The default fixture has two installations: the org's, and `AdvanGrid`'s, whose
+/// `AdvanGrid/beghu` holds the PR view's recorded PR. Each one's repos are probed and their feeds
+/// polled, and each installation gets its full sweep.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_installation_is_probed_polled_and_swept() {
+    // Each read once a second or so: often enough to see, rarely enough that the quota never
+    // drops low enough to pause the sweeps.
+    let s = start_with(|c| {
+        nightly(c);
+        c.reconcile.probe_every = Duration::from_secs(1);
+        c.reconcile.feed_every = Duration::from_secs(1);
+    })
+    .await;
+    let b = s.sign_in("tomsj").await;
+    let _stream = s.stream(&b).await;
+    const REPOS: [&str; 2] = ["acme/web", "AdvanGrid/beghu"];
+    // Every call counted: a probe lists the repo's issues, a full sweep its labels.
+    let endpoints = |repo: &str| {
+        [
+            format!("GET /repos/{repo}/issues"),
+            format!("GET /repos/{repo}/labels"),
+        ]
+    };
+    for repo in REPOS {
+        for endpoint in endpoints(repo) {
+            s.fake(
+                "POST",
+                "/faults/latency",
+                json!({ "endpoint": endpoint, "ms": 1, "count": 1000 }),
+            )
+            .await;
+        }
+    }
+    until(
+        60.0,
+        "both installations' probes, feed reads and full sweeps",
+        || async {
+            let st = fake_state(&s).await;
+            let calls = |endpoint: &str| {
+                st["faults"]["latency"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|l| l["endpoint"] == endpoint)
+                    .map_or(1000, |l| 1000 - l["remaining"].as_u64().unwrap())
+            };
+            let feed = |repo: &str| st["feeds"][repo]["reads"].as_u64().unwrap_or(0);
+            REPOS
+                .iter()
+                .all(|repo| {
+                    let [probes, sweeps] = endpoints(repo);
+                    calls(&probes) >= 2 && calls(&sweeps) >= 1 && feed(repo) >= 2
+                })
+                .then_some(())
+        },
+    )
+    .await;
+}
+
 // --- redelivery ----------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
@@ -150,7 +208,9 @@ async fn outage(s: &Stack, b: &Browser) -> ((String, i64, i64), String) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn after_a_short_outage_the_next_start_replays_the_missed_deliveries() {
-    let mut s = start().await;
+    // Counts redeliveries and full sweeps: the other installation, with no checkpoint, would be
+    // swept whole at the restart.
+    let mut s = start_single(|_| {}).await;
     let b = s.sign_in("tomsj").await;
     let (me, title) = outage(&s, &b).await;
     s.restart_with(redelivering).await;
@@ -730,7 +790,8 @@ async fn an_account_that_lost_access_with_sync_degraded_signs_in_again_to_health
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unchanged_probe_is_a_304_that_costs_nothing_and_changes_nothing() {
-    let s = start_with(sweeping).await;
+    // Counts the 304s and the org's quota: the other installation's probes would add 304s.
+    let s = start_single(sweeping).await;
     let b = s.sign_in("tomsj").await;
     // The first probes read what changed lately; the next are 304s.
     until(10.0, "probes answered 304", || async {
@@ -790,7 +851,8 @@ async fn all_feed_reads(s: &Stack) -> u64 {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rate_limit_the_feed_poller_meets_pauses_it_and_the_sweeps_until_it_lifts() {
-    let s = start_with(|c| {
+    // Counts every feed read: the other installation's repos would be polled too.
+    let s = start_single(|c| {
         sweeping(c);
         c.reconcile.feed_every = Duration::from_millis(100);
     })
@@ -1150,7 +1212,8 @@ async fn every_repo_gets_a_full_sweep_each_night() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_whose_full_sweep_keeps_failing_holds_back_no_other_repos_nightly_sweep() {
-    let s = start_with(|c| {
+    // Times the org's nightly sweeps, which the other installation's would take turns with.
+    let s = start_single(|c| {
         nightly(c);
         c.reconcile.failure_backoff = Duration::from_secs(3600);
     })
