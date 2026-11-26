@@ -114,6 +114,7 @@ dependencies = [
  "analysis-db",
  "flate2",
  "rusqlite",
+ "serde",
  "serde_json",
 ]
 

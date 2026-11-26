@@ -6,12 +6,15 @@
 //!   never rewritten: a recording keeps the schema version it was written in, and every reader
 //!   migrates it.
 //! - **Cases** (`cases/<feature>.json`): small hand-written analyses of the same PR at v1's head,
-//!   each for a feature the recordings lack (the coverage test, `tests/coverage.rs`).
+//!   each for a feature the recordings lack (the coverage test, `tests/coverage.rs`). A case for
+//!   a feature only a later analysis has (`carried`, "Since the last analysis") is named
+//!   `cases/<feature>.after-v1.json`: it's checked, and uploaded, as a later analysis after v1,
+//!   its `carried` naming v1's IDs.
 //!
 //! [`GitReader`] reads the analysed commits out of a git repo by SHA, for the full validator's
 //! snippet check in CI (`analysis-fixtures check`).
 
-use analysis::{CodeSide, EntryKind, PinnedPr, Reader};
+use analysis::{CodeSide, Context, EntryKind, PinnedPr, Previous, PreviousIds, Reader, Vocabulary};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
@@ -23,6 +26,9 @@ pub fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pr-view")
 }
 
+/// The suffix of a case that is a later analysis after v1: `cases/<feature>.after-v1.json`.
+pub const AFTER_V1: &str = ".after-v1";
+
 /// One committed analysis and the `pr.json` its run pinned (a case's is v1's).
 #[derive(Debug, Clone)]
 pub struct Committed {
@@ -30,6 +36,36 @@ pub struct Committed {
     pub name: String,
     pub analysis: PathBuf,
     pub pr: PathBuf,
+    /// The analysis this one is uploaded after, whose IDs its `carried` names: v1's, for v2 and
+    /// for a case named `<feature>.after-v1.json`. `None` for a first analysis.
+    pub previous: Option<PathBuf>,
+}
+
+impl Committed {
+    /// What this analysis's `carried` is checked against, as the server checks a later upload:
+    /// the IDs and vocabulary of the one it follows, migrated, or none for a first analysis.
+    pub fn previous_ids(&self) -> Result<Previous, String> {
+        let Some(path) = &self.previous else {
+            return Ok(Previous::None);
+        };
+        let ctx = Context {
+            changed_files: None,
+            previous: Previous::Unknown,
+        };
+        let a = analysis::validate(&read(path), &ctx, None)
+            .analysis
+            .ok_or_else(|| format!("{} doesn't pass the shape check", path.display()))?;
+        Ok(Previous::Some {
+            ids: PreviousIds::of(&a),
+            vocabulary: Vocabulary::of(&a),
+        })
+    }
+
+    /// What a case is filed under: its file's name without `.json` or `.after-v1`.
+    pub fn feature(&self) -> Option<&str> {
+        let stem = self.name.strip_prefix("cases/")?.strip_suffix(".json")?;
+        Some(stem.strip_suffix(AFTER_V1).unwrap_or(stem))
+    }
 }
 
 impl Committed {
@@ -79,6 +115,7 @@ pub fn committed() -> Vec<Committed> {
                 name: format!("beghu-{n}/analysis-v{v}.json"),
                 analysis: folder.join(format!("analysis-v{v}.json")),
                 pr,
+                previous: (v == 2).then(|| folder.join("analysis-v1.json")),
             });
         }
     }
@@ -91,11 +128,16 @@ pub fn committed() -> Vec<Committed> {
         .collect();
     cases.sort();
     for c in cases {
-        let pr = v1_pr.clone().expect("cases are of the recorded PR at v1");
+        let pr: PathBuf = v1_pr.clone().expect("cases are of the recorded PR at v1");
+        let name = format!("cases/{}", c.file_name().unwrap().to_string_lossy());
+        let previous = name
+            .ends_with(&format!("{AFTER_V1}.json"))
+            .then(|| pr.with_file_name("analysis-v1.json"));
         out.push(Committed {
-            name: format!("cases/{}", c.file_name().unwrap().to_string_lossy()),
+            name,
             analysis: c,
             pr,
+            previous,
         });
     }
     out

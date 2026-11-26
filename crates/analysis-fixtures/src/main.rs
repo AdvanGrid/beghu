@@ -16,7 +16,7 @@
 //!     The commits the committed analyses name, one per line: what CI fetches by SHA first.
 //! ```
 
-use analysis::{Context, Previous, PreviousIds, Vocabulary, validate};
+use analysis::{Context, Previous, validate};
 use analysis_fixtures::{GitReader, committed, dir, record};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -143,14 +143,11 @@ fn check(repo: &Path, reachable_from: Option<&str>) -> Result<(), String> {
         return Err(format!("nothing committed under {}", dir().display()));
     }
     let mut failed = 0;
-    let mut previous: Option<(String, Previous)> = None;
     for c in &all {
         let pinned = c.pinned();
-        // v2's `carried` is checked against v1, migrated, as the server did when it took v2.
-        let prev = match (&previous, c.name.ends_with("analysis-v2.json")) {
-            (Some((folder, p)), true) if c.name.starts_with(folder.as_str()) => p.clone(),
-            _ => Previous::None,
-        };
+        // A later analysis's `carried` is checked against the one before it, migrated, as the
+        // server did when it took it.
+        let prev = c.previous_ids()?;
         let ctx = Context {
             changed_files: Some(pinned.files.iter().map(|f| f.path.clone()).collect()),
             previous: prev,
@@ -189,18 +186,6 @@ fn check(repo: &Path, reachable_from: Option<&str>) -> Result<(), String> {
         let out = validate(&text, &ctx, Some(&reader));
         for e in &out.report.errors {
             problems.push(format!("{} {}: {}", e.rule, e.path, e.message));
-        }
-        if c.name.ends_with("analysis-v1.json")
-            && let Some(a) = &out.analysis
-        {
-            let folder = c.name.trim_end_matches("analysis-v1.json").to_owned();
-            previous = Some((
-                folder,
-                Previous::Some {
-                    ids: PreviousIds::of(a),
-                    vocabulary: Vocabulary::of(a),
-                },
-            ));
         }
         if problems.is_empty() {
             println!(

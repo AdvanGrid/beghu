@@ -18,10 +18,15 @@ export interface Version {
   headSha: string;
   analysis: string | null;
   pr: string;
+  /** A case uploaded as a later analysis after this recorded version (`<feature>.after-v1.json`). */
+  after?: number;
 }
 
 /** The cases: hand-written analyses of the recorded PR at v1 (fixtures/pr-view/cases/). */
 const CASES = join(ROOT, "fixtures", "pr-view", "cases");
+
+/** A case that is a later analysis after v1, as analysis-fixtures names it. */
+const AFTER_V1 = ".after-v1";
 
 function cargo(args: string[]): string {
   const r = spawnSync("cargo", ["run", "--quiet", ...args], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -35,7 +40,9 @@ export function versions(): Version[] {
   const v1 = all.find((v) => v.version === 1);
   if (v1 && existsSync(CASES)) {
     for (const f of readdirSync(CASES).filter((f) => f.endsWith(".json")).sort()) {
-      all.push({ ...v1, name: f.replace(/\.json$/, ""), version: undefined, analysis: join(CASES, f) });
+      const stem = f.replace(/\.json$/, "");
+      const after = stem.endsWith(AFTER_V1) ? 1 : undefined;
+      all.push({ ...v1, name: after ? stem.slice(0, -AFTER_V1.length) : stem, version: undefined, analysis: join(CASES, f), after });
     }
   }
   return all;
@@ -133,6 +140,12 @@ export interface Uploaded {
  */
 export async function upload(server: string, controlUrl: string, login: string, want: Version, all: Version[]): Promise<Uploaded> {
   if (!want.analysis) throw new Error(`${want.name} has no analysis committed`);
+  if (want.after !== undefined) {
+    // A later analysis: the one it follows goes first, so its `carried` has the IDs it names.
+    const first = all.find((v) => v.number === want.number && v.version === want.after);
+    if (!first) throw new Error(`${want.name} follows v${want.after}, which isn't recorded`);
+    await upload(server, controlUrl, login, first, all);
+  }
   const s = new Session(server);
   await s.signIn(login);
   const expected = JSON.parse(readFileSync(want.pr, "utf8")) as Record<string, unknown>;
@@ -175,7 +188,7 @@ export async function upload(server: string, controlUrl: string, login: string, 
   });
   const body = (await res.json().catch(() => null)) as { analysis?: string; headSha?: string; warnings?: unknown[]; message?: string; report?: unknown } | null;
   const carried = JSON.stringify(body?.report ?? "").includes('"rule":"carry.');
-  if (res.status === 422 && carried && !tile && want.version === undefined) {
+  if (res.status === 422 && carried && !tile && want.version === undefined && want.after === undefined) {
     throw new Error(
       `${want.name} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it as an account with none (--as ilze-k), or after ./dev-ctl reset as another account`,
     );

@@ -13,5 +13,9 @@ flate2 = "1"
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+# The coverage test reads each kind's names from the schema's own Deserialize.
+serde = { workspace = true }
+
 [lints]
 workspace = true
