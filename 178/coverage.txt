@@ -1,0 +1,4 @@
+running 2 tests
+.waiting on v2: ["since-last-analysis", "carried-renamed", "carried-merged", "carried-split", "carried-dropped"]
+.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
