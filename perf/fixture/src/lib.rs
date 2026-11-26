@@ -3,6 +3,9 @@
 //! same generator always give the same bytes. Files are cached by the generator's hash (its
 //! source plus mirror-db's migrations and queries), so a schema change regenerates them.
 
+pub mod recorded;
+pub mod tile;
+
 use mirror_db::q;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -140,6 +143,10 @@ pub enum Variant {
     PrivateRelationship,
     /// `acme/web`'s first issue without a parent has `FULL_PARENT` sub-issues: GitHub's most.
     FullParent,
+    /// Without `AdvanGrid/beghu` (the PR view's recorded PR, which every other fixture holds under
+    /// an installation of its own): the org's installation alone, for the tests that time or count
+    /// one installation's background reads. Everything else is the plain fixture's, ids included.
+    SingleInstallation,
 }
 
 /// How many sub-issues the `FullParent` variant's parent has: GitHub's cap.
@@ -165,6 +172,7 @@ impl Variant {
             Variant::WideLinks => "wide-links-",
             Variant::PrivateRelationship => "private-relationship-",
             Variant::FullParent => "full-parent-",
+            Variant::SingleInstallation => "single-installation-",
         }
     }
 }
@@ -464,7 +472,10 @@ fn generate_as(
     mirror_db::create(path)?;
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;
-    let summary = fill(&tx, scale)?;
+    let mut summary = fill(&tx, scale)?;
+    if variant != Some(Variant::SingleInstallation) {
+        beghu_repo(&tx, &mut summary)?;
+    }
     match variant {
         None => {}
         Some(Variant::TwinRepo) => twin_repo(&tx)?,
@@ -472,6 +483,7 @@ fn generate_as(
         Some(Variant::WideLinks) => wide_links(&tx)?,
         Some(Variant::PrivateRelationship) => private_relationship(&tx)?,
         Some(Variant::FullParent) => full_parent(&tx, &summary)?,
+        Some(Variant::SingleInstallation) => {}
     }
     tx.commit()?;
     mirror_db::optimize(&conn)?;
@@ -903,6 +915,210 @@ fn fill(tx: &Connection, scale: Scale) -> rusqlite::Result<Summary> {
         open_issues: default_order.len(),
         detail_targets,
     })
+}
+
+/// `AdvanGrid/beghu`, at every scale: the PR view's recorded PR (`recorded`) at v1, with the
+/// issues its recorded descriptions link and comment threads as the runs served them, the PRs
+/// they name (as PRs, which a run doesn't serve), and the tiler's two synthetic PRs. Everything
+/// is old, so the default list's top (and its detail targets) stays the generated repos'. The
+/// summary counts it all. A version recorded later (v2) adds what only it names; its texts reach
+/// the fake by outside edits when the PR moves to its head.
+fn beghu_repo(tx: &Connection, summary: &mut Summary) -> rusqlite::Result<()> {
+    use recorded::{INSTALLATION_ID, NAME, OWNER, REPO, REPO_ID, TILED};
+    /// Clear of every generated item's, comment's, PR's and user's id, and of the newcomer's.
+    const FIRST_ITEM_ID: i64 = 3_700_000_000;
+    const FIRST_COMMENT_ID: i64 = 2_970_000_000;
+    const FIRST_PR_ID: i64 = 2_470_000_000;
+    const FIRST_USER_ID: i64 = 1_200;
+    let seq = q::bump_seq(tx)?;
+    q::insert_repo(
+        tx,
+        REPO_ID,
+        &format!("R_kw{REPO_ID}"),
+        OWNER,
+        NAME,
+        false,
+        Some(INSTALLATION_ID),
+        true,
+        Some("write"),
+    )?;
+    let versions = recorded::versions();
+    // Users by login, in order of first appearance.
+    let mut users: Vec<String> = Vec::new();
+    let mut user = |login: &str| -> rusqlite::Result<i64> {
+        if let Some(i) = users.iter().position(|u| u == login) {
+            return Ok(FIRST_USER_ID + i as i64);
+        }
+        users.push(login.to_owned());
+        let id = FIRST_USER_ID + users.len() as i64 - 1;
+        q::insert_user(
+            tx,
+            id,
+            login,
+            &format!("https://avatars.githubusercontent.com/u/{id}?v=4"),
+        )?;
+        Ok(id)
+    };
+    // Each item once, at the first version that names it: (number, kind, title, body, author,
+    // comments, head sha).
+    struct It {
+        number: i64,
+        kind: &'static str,
+        title: String,
+        body: String,
+        author: String,
+        comments: Vec<(String, String)>,
+        head: Option<String>,
+        head_ref: Option<String>,
+    }
+    let mut items: Vec<It> = Vec::new();
+    let mut add = |it: It| {
+        if !items.iter().any(|x| x.number == it.number) {
+            items.push(it);
+        }
+    };
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_owned();
+    for v in &versions {
+        add(It {
+            number: i64::from(v.number),
+            kind: "pr",
+            title: s(&v.pr["title"]),
+            body: s(&v.pr["body"]),
+            author: s(&v.pr["author"]),
+            comments: Vec::new(),
+            head: Some(v.head_sha().to_owned()),
+            head_ref: Some("t3/build-pr-view-feature".into()),
+        });
+        for i in v.pr["issues"].as_array().into_iter().flatten() {
+            if !s(&i["repo"]).eq_ignore_ascii_case(REPO) {
+                continue;
+            }
+            add(It {
+                number: i["number"].as_i64().unwrap_or(0),
+                kind: "issue",
+                title: s(&i["title"]),
+                body: s(&i["body"]),
+                author: s(&v.pr["author"]),
+                comments: i["comments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| (s(&c["author"]), s(&c["body"])))
+                    .collect(),
+                head: None,
+                head_ref: None,
+            });
+        }
+        // The PRs the description names, which the run lists as unreached.
+        for u in v.pr["unreached"].as_array().into_iter().flatten() {
+            let r = s(&u["ref"]);
+            let Some((repo, n)) = r.split_once('#') else {
+                continue;
+            };
+            if repo.eq_ignore_ascii_case(REPO) && s(&u["reason"]).contains("pull request") {
+                let number: i64 = n.parse().unwrap_or(0);
+                add(It {
+                    number,
+                    kind: "pr",
+                    title: format!(
+                        "Pull request #{number}, named in #{}'s description",
+                        v.number
+                    ),
+                    body: String::new(),
+                    author: s(&v.pr["author"]),
+                    comments: Vec::new(),
+                    head: None,
+                    head_ref: Some(format!("t3/pr-{number}")),
+                });
+            }
+        }
+    }
+    if let Some(v1) = versions.iter().find(|v| v.version == 1) {
+        for (number, name) in TILED {
+            add(It {
+                number,
+                kind: "pr",
+                title: format!("{} ({name}, for the perf gates)", s(&v1.pr["title"])),
+                // The recorded description: the tiled analysis quotes it, and its links serve the
+                // same issues.
+                body: s(&v1.pr["body"]),
+                author: s(&v1.pr["author"]),
+                comments: Vec::new(),
+                head: None,
+                head_ref: Some(format!("perf/{name}")),
+            });
+        }
+    }
+    items.sort_by_key(|i| i.number);
+    let mut comment = FIRST_COMMENT_ID;
+    let mut pr_id = FIRST_PR_ID;
+    for (k, it) in items.iter().enumerate() {
+        let id = FIRST_ITEM_ID + k as i64;
+        let at = FIXTURE_NOW - 400 * DAY + it.number * 60;
+        let pr = it.kind == "pr";
+        let author = user(&it.author)?;
+        q::insert_item(
+            tx,
+            id,
+            &format!("I_kw{}", radix36(id)),
+            REPO_ID,
+            it.number,
+            it.kind,
+            &it.title,
+            &it.body,
+            "open",
+            None,
+            author,
+            None,
+            at,
+            at,
+            None,
+            pr.then(|| {
+                pr_id += 1;
+                pr_id - 1
+            }),
+            pr.then_some(false),
+            None,
+            it.head_ref.as_deref(),
+            pr.then_some("main"),
+            pr.then_some("review_required"),
+            None,
+            // Every PR has a head, as the generated ones do (`head_sha`): the recorded one's real.
+            pr.then(|| it.head.clone().unwrap_or_else(|| head_sha(id)))
+                .as_deref(),
+            seq,
+        )?;
+        for (n, (login, body)) in it.comments.iter().enumerate() {
+            let a = user(login)?;
+            q::insert_comment(
+                tx,
+                comment,
+                &format!("IC_kw{}", radix36(comment)),
+                id,
+                a,
+                body,
+                at + (n as i64 + 1) * 60,
+                seq,
+            )?;
+            comment += 1;
+        }
+        if !it.comments.is_empty() {
+            q::set_comment_stats(
+                tx,
+                id,
+                it.comments.len() as i64,
+                at + it.comments.len() as i64 * 60,
+            )?;
+        }
+        if pr {
+            summary.prs += 1;
+        } else {
+            summary.issues += 1;
+            summary.open_issues += 1;
+        }
+        summary.comments += it.comments.len();
+    }
+    Ok(())
 }
 
 /// `acme-labs/web`: a second org's synced repo with the same name as `acme/web`, and

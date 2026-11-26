@@ -388,9 +388,15 @@ async fn repos_seen_by(fake: &Fake, login: &str) -> Vec<(String, Value)> {
         .json()
         .await
         .unwrap();
-    assert_eq!(inst["total_count"], 1, "{inst}");
-    let inst = &inst["installations"][0];
-    assert_eq!(inst["account"]["login"], "acme");
+    // The org's, and, for an account that sees the recorded PR's repo, `AdvanGrid`'s.
+    let inst = inst["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["account"]["login"] == "acme")
+        .unwrap_or_else(|| panic!("{inst}"))
+        .clone();
+    let inst = &inst;
     assert_eq!(inst["account"]["type"], "Organization");
     let id = inst["id"].as_i64().unwrap();
 
@@ -457,6 +463,28 @@ async fn installations_list_the_repos_each_account_sees_with_its_permissions() {
         ext.iter()
             .all(|(_, p)| *p == perms(false, false, false, false))
     );
+
+    // The PR view's recorded PR's repo, under an installation of its own: tomsj and ilze-k see
+    // it, octo-ext doesn't.
+    let fake = &fake;
+    let installations = |login: &'static str| async move {
+        let token = &fake.sign_in(login).await["access_token"];
+        let inst: Value = fake
+            .get("/user/installations", token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        inst["installations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["account"]["login"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(installations("tomsj").await, ["acme", "AdvanGrid"]);
+    assert_eq!(installations("ilze-k").await, ["acme", "AdvanGrid"]);
+    assert_eq!(installations("octo-ext").await, ["acme"]);
 }
 
 #[tokio::test]
@@ -1505,20 +1533,39 @@ async fn the_users_installations_page_as_github_pages_them() {
     let res = fake
         .get("/user/installations?per_page=1&page=1", &user)
         .await;
+    // The org's and `AdvanGrid`'s (the PR view's recorded PR's repo).
     assert!(
-        res.headers().get("link").is_none(),
-        "one installation, one page"
+        res.headers()
+            .get("link")
+            .is_some_and(|l| l.to_str().unwrap().contains("rel=\"next\"")),
+        "two installations, two pages"
     );
     let body = res.json::<Value>().await.unwrap();
-    assert_eq!(body["total_count"], 1);
+    assert_eq!(body["total_count"], 2);
     assert_eq!(body["installations"].as_array().unwrap().len(), 1);
-    let past = fake
+    let last = fake
         .get("/user/installations?per_page=1&page=2", &user)
+        .await;
+    assert!(
+        last.headers()
+            .get("link")
+            .is_none_or(|l| !l.to_str().unwrap().contains("rel=\"next\"")),
+        "page 2 is the last"
+    );
+    assert_eq!(
+        last.json::<Value>().await.unwrap()["installations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let past = fake
+        .get("/user/installations?per_page=1&page=3", &user)
         .await;
     let body = past.json::<Value>().await.unwrap();
     assert_eq!(
         (body["total_count"].clone(), body["installations"].clone()),
-        (json!(1), json!([]))
+        (json!(2), json!([]))
     );
 }
 
@@ -5168,4 +5215,51 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     let got = received_for(&mut rx, Duration::from_secs(3)).await;
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].payload()["before"], second);
+}
+
+/// The PR view's recorded PR (`fixture::recorded`): `AdvanGrid/beghu#191` as its v1 run pinned it,
+/// with its real title, description, head, base and changed files; a push may name the base's new
+/// tip, as v2's does.
+#[tokio::test]
+async fn the_recorded_pr_is_served_at_v1_and_a_push_moves_its_base() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let v1 = fixture::recorded::version(191, 1).expect("v1 is recorded");
+    let base = "/repos/AdvanGrid/beghu/pulls/191";
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["title"], v1.pr["title"]);
+    assert_eq!(pull["body"], v1.pr["body"]);
+    assert_eq!(pull["head"]["sha"], v1.pr["headSha"]);
+    assert_eq!(pull["base"]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(pull["base"]["ref"], "main");
+    assert_eq!(pull["changed_files"], v1.pr["stats"]["files"]);
+    assert_eq!(pull["additions"], v1.pr["stats"]["additions"]);
+    assert_eq!(pull["deletions"], v1.pr["stats"]["deletions"]);
+    let files = all_pages(&fake, &format!("{base}/files?per_page=100"), &token).await;
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|f| f["filename"].as_str().unwrap())
+        .collect();
+    let recorded: Vec<String> = v1.files().into_iter().map(|f| f.0).collect();
+    assert_eq!(paths, recorded);
+    // The first commit's parent is the base.
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(commits.last().unwrap()["sha"], v1.pr["headSha"]);
+
+    let (head, main) = (
+        "1111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222",
+    );
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "AdvanGrid/beghu", "number": 191, "sha": head, "base_sha": main }),
+    )
+    .await;
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["head"]["sha"], head);
+    assert_eq!(pull["base"]["sha"], main);
+    // The files stay v1's until a push names others.
+    assert_eq!(pull["changed_files"], v1.pr["stats"]["files"]);
 }

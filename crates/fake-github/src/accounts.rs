@@ -129,6 +129,7 @@ pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
             }
         }
     }
+    crate::pulls::seed_recorded(tx)?;
     Ok(())
 }
 

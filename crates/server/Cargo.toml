@@ -52,6 +52,8 @@ url = "2"
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
+# What `./dev-ctl analysis record` reads back of an accepted upload (`tests/recorded.rs`).
+analysis-fixtures = { path = "../analysis-fixtures" }
 bytes = "1"
 fake-github = { path = "../fake-github" }
 # GitHub-side facts of a fixture issue (its node id) that no HTTP seam shows.

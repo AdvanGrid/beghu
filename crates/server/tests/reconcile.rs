@@ -5,6 +5,17 @@
 mod common;
 
 use common::*;
+
+/// These tests time and count the org's installation's background reads (its sweeps, probes,
+/// feed poller and redelivery): they run on the fixture without the PR view's recorded PR, whose
+/// installation would sweep and poll beside it. Shadows the harness's own.
+async fn start() -> Stack {
+    start_with(|_| {}).await
+}
+
+async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+    start_on(single_installation_fixture(), adjust).await
+}
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 

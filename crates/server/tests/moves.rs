@@ -600,7 +600,8 @@ async fn uninstalling_the_app_takes_its_repos_out_of_every_mirror_that_synced_th
         accounts.push((login, b));
     }
 
-    // The org uninstalls the App: GitHub sends `installation` `deleted`.
+    // The org uninstalls the App: GitHub sends `installation` `deleted`. What's left is the other
+    // installation's: `AdvanGrid/beghu`, the PR view's recorded PR's repo.
     s.fake("POST", "/uninstall", json!({ "login": "acme" }))
         .await;
     for (login, b) in &mut accounts {
@@ -610,7 +611,13 @@ async fn uninstalling_the_app_takes_its_repos_out_of_every_mirror_that_synced_th
             async move {
                 let (_, page) = s.api(&mut b, "/api/issues?q=is:any").await;
                 let (_, me) = s.api(&mut b, "/api/me").await;
-                (page["rows"] == json!([]) && me["repos"] == json!([])).then_some(())
+                let rows = page["rows"].as_array()?;
+                let repos = me["repos"].as_array()?;
+                let left = !rows.is_empty()
+                    && rows.iter().all(|r| r["owner"] == "AdvanGrid")
+                    && repos.len() == 1
+                    && repos[0]["name"] == "beghu";
+                left.then_some(())
             }
         })
         .await;
