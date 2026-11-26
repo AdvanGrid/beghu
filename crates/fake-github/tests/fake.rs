@@ -5262,4 +5262,25 @@ async fn the_recorded_pr_is_served_at_v1_and_a_push_moves_its_base() {
     assert_eq!(pull["base"]["sha"], main);
     // The files stay v1's until a push names others.
     assert_eq!(pull["changed_files"], v1.pr["stats"]["files"]);
+    // Main moving moves `base.sha` only: the PR's first commit still sits on v1's base.
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(commits.last().unwrap()["sha"], head);
+
+    // A force push (a rebase onto main) starts the new history on the base's tip.
+    let (rebased, newer) = (
+        "3333333333333333333333333333333333333333",
+        "4444444444444444444444444444444444444444",
+    );
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "AdvanGrid/beghu", "number": 191, "sha": rebased, "base_sha": newer, "force": true }),
+    )
+    .await;
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], newer);
+    assert_eq!(commits.last().unwrap()["sha"], rebased);
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["base"]["sha"], newer);
 }

@@ -2,7 +2,8 @@
 
 -- name: pull_head :opt
 -- param: issue_id i64
-SELECT head_sha, pushes, files_set AS "files_set: bool", rewrites, base_sha FROM fake_pull_heads
+SELECT head_sha, pushes, files_set AS "files_set: bool", rewrites, base_sha, first_parent
+FROM fake_pull_heads
 WHERE issue_id = :issue_id;
 
 -- name: set_pull_head :exec
@@ -21,6 +22,13 @@ ON CONFLICT (issue_id) DO UPDATE SET head_sha = excluded.head_sha, pushes = excl
 -- param: issue_id i64
 -- param: base_sha Option<&str>
 UPDATE fake_pull_heads SET base_sha = :base_sha WHERE issue_id = :issue_id;
+
+-- Where the PR's history starts from now on: the seed's, or a force push's; NULL is the derived
+-- base.
+-- name: set_pull_first_parent :exec
+-- param: issue_id i64
+-- param: first_parent Option<&str>
+UPDATE fake_pull_heads SET first_parent = :first_parent WHERE issue_id = :issue_id;
 
 -- The SHA of the PR's `k`th commit, when a push named it.
 -- name: pull_commit :opt
