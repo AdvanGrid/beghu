@@ -8,7 +8,8 @@
 //! wait on v2, and fail here once v2 is committed if it still lacks them. A case for one is named
 //! `cases/<feature>.after-v1.json`, and is checked and uploaded as a later analysis after v1.
 //!
-//! Each conflict kind, `carried` kind and evidence kind is a feature of its own, named by an
+//! Each conflict kind, `carried` kind, evidence kind, line `when` and data direction is a
+//! feature of its own, named by an
 //! exhaustive `match` (a new kind fails the build here) and required by the schema's own list of
 //! them (so, once named, it fails the test until a recording or a case holds it).
 
@@ -34,6 +35,22 @@ fn carried(k: CarriedKind) -> &'static str {
         CarriedKind::Merged => "carried-merged",
         CarriedKind::Split => "carried-split",
         CarriedKind::Dropped => "carried-dropped",
+    }
+}
+
+fn when(w: When) -> &'static str {
+    match w {
+        When::Runtime => "when-runtime",
+        When::Build => "when-build",
+        When::Test => "when-test",
+    }
+}
+
+fn direction(d: Direction) -> &'static str {
+    match d {
+        Direction::Forward => "direction-forward",
+        Direction::Back => "direction-back",
+        Direction::Both => "direction-both",
     }
 }
 
@@ -65,31 +82,30 @@ fn variants<T: DeserializeOwned>(probe: Value) -> Vec<String> {
 }
 
 /// Every feature, by the name a case for it is filed under: these, and one for each conflict,
-/// `carried` and evidence kind ([`kinds`]).
+/// `carried` and evidence kind, line `when` and data direction ([`kinds`]).
 const FEATURES: &[&str] = &[
-    "when-build",
-    "when-test",
     "uses",
-    "direction-forward",
-    "direction-back",
-    "direction-both",
     "drawn-partial",
     "sub-purposes",
     "rule-holds",
     "rule-breaks",
     "shared-cause",
-    "conflict-stated-code",
-    "conflict-purpose-purpose",
-    "conflict-purpose-outside",
     "unclaimed",
     "served-issues",
     "since-last-analysis",
     "chapters",
 ];
 
-/// One feature per kind the schema has: each conflict kind, `carried` kind and evidence kind.
+/// One feature per kind the schema has: each conflict kind, `carried` kind, evidence kind, line
+/// `when` and data direction.
 fn kinds() -> Vec<String> {
     let mut out = Vec::new();
+    for v in variants::<When>(json!("?")) {
+        out.push(format!("when-{v}"));
+    }
+    for v in variants::<Direction>(json!("?")) {
+        out.push(format!("direction-{v}"));
+    }
     for v in variants::<ConflictKind>(json!("?")) {
         out.push(format!("conflict-{v}"));
     }
@@ -125,21 +141,7 @@ fn features(a: &Analysis, pr: &PinnedPr, later: bool) -> BTreeSet<&'static str> 
             f.insert(name);
         }
     };
-    add("when-build", a.edges.iter().any(|e| e.when == When::Build));
-    add("when-test", a.edges.iter().any(|e| e.when == When::Test));
     add("uses", a.edges.iter().any(|e| e.uses.is_some()));
-    for (name, d) in [
-        ("direction-forward", Direction::Forward),
-        ("direction-back", Direction::Back),
-        ("direction-both", Direction::Both),
-    ] {
-        add(
-            name,
-            a.edges
-                .iter()
-                .any(|e| e.data.as_ref().is_some_and(|x| x.direction == d)),
-        );
-    }
     add("drawn-partial", a.nodes.iter().any(|n| n.drawn.is_some()));
     add(
         "sub-purposes",
@@ -189,6 +191,13 @@ fn features(a: &Analysis, pr: &PinnedPr, later: bool) -> BTreeSet<&'static str> 
     add(
         "chapters",
         a.scenarios.iter().any(|s| s.chapters.len() >= 2),
+    );
+    f.extend(a.edges.iter().map(|e| when(e.when)));
+    f.extend(
+        a.edges
+            .iter()
+            .filter_map(|e| e.data.as_ref())
+            .map(|d| direction(d.direction)),
     );
     f.extend(a.conflicts.iter().map(|c| conflict(c.kind)));
     f.extend(a.carried.iter().map(|c| carried(c.kind)));
