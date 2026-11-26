@@ -157,7 +157,7 @@ pub struct Recorded {
 /// The run `run`'s pinned `pr.json` and the upload it made, from the `analyses.db` at `db` (`run`
 /// may be the run's ID or the accepted analysis's, which the server's log names). The file is
 /// read through SQLite's online backup ([`analysis_db::snapshot`]), so a live server's file and
-/// a read-only copy are both left alone. Only a run on the recorded PR's repo,
+/// a read-only copy (but one with a WAL left over) are both read and left alone. Only a run on the recorded PR's repo,
 /// `AdvanGrid/beghu`, is a recording: any other is refused.
 pub fn record(db: &Path, run: &str) -> Result<Recorded, String> {
     let conn = analysis_db::snapshot(db).map_err(|e| format!("{}: {e}", db.display()))?;
