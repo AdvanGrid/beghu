@@ -3,16 +3,19 @@
 //! cached beside the fixtures, by the generator's hash (which covers the recordings, the analysis
 //! crate and this file).
 //!
-//! - **1×, #2627's shape** (about 76 top-level parts, 167 lines at the top level, ~1,250 claims;
+//! - **1×, #2627's shape** (76 top-level parts, 167 lines at the top level, ~1,250 claims;
 //!   #2627 itself is private): the real analysis whole, then **light copies** of its top-level
-//!   parts until there are [`TOP_LEVEL_PARTS`]. A light copy is a part as an unchanged one is
-//!   drawn: its responsibilities and facets with their claims, none of its modules, files or
-//!   questions (an unchanged part has no "What changed?"), and some of the lines between the
-//!   copy's parts: the light copies share the [`TOP_LEVEL_LINES`] the real analysis leaves, by
-//!   their parts. Each copy's first line is wired to the real part it calls, so the copies join
-//!   the graph. A line at the top level is an edge whose ends sit in two different top-level
-//!   nodes (an edge inside one part isn't drawn there): the real analysis has 192 edges, 147 of
-//!   them at the top level.
+//!   parts until there are [`TOP_LEVEL_PARTS`]. A line at the top level is what the layout draws
+//!   there: one per distinct (from, to) pair of top-level nodes an edge's ends sit in, its edges
+//!   rolled up into it (#166, #180); an edge inside one part isn't drawn there. The real analysis
+//!   has 192 edges behind 78 such lines. A light copy is a part as an unchanged one is drawn:
+//!   its responsibilities and facets with their claims, none of its modules, files or questions
+//!   (an unchanged part has no "What changed?"), and lines of its own: the real analysis's edges
+//!   lifted to the copied parts (and the stores, actors and external systems, which the copies
+//!   share), one edge per pair, each citing one claim. The light copies share the
+//!   [`TOP_LEVEL_LINES`] the real analysis leaves, by their parts. Each copy is wired into the
+//!   real analysis (its first line's caller to the original callee, and each part the real
+//!   analysis draws no line for to its original), so no part sits alone.
 //! - **3×**: the 1× three times, each later copy wired to the first.
 //!
 //! Every copy prefixes its IDs (`t1-api`, `purpose:x1-refunds`), renumbers its claims past the
@@ -249,17 +252,24 @@ fn top_level_parts<'a>(a: &'a Analysis, system: &str) -> Vec<&'a Node> {
         .collect()
 }
 
-/// The edges whose ends sit in two different top-level nodes: the lines drawn at the top level.
+/// The lines drawn at the top level: one per distinct (from, to) pair of top-level nodes that
+/// some edge's ends sit in, as the layout rolls edges up (#166, #180). An edge inside one part
+/// isn't drawn there.
 fn top_level_lines(a: &Analysis, system: &str) -> usize {
-    let parent: HashMap<&str, &str> = a
-        .nodes
-        .iter()
-        .filter_map(|n| Some((n.id.as_str(), n.parent.as_deref()?)))
-        .collect();
+    let parent = parents(a);
     a.edges
         .iter()
-        .filter(|e| top(&parent, system, &e.from) != top(&parent, system, &e.to))
-        .count()
+        .map(|e| (top(&parent, system, &e.from), top(&parent, system, &e.to)))
+        .filter(|(f, t)| f != t)
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn parents(a: &Analysis) -> HashMap<&str, &str> {
+    a.nodes
+        .iter()
+        .filter_map(|n| Some((n.id.as_str(), n.parent.as_deref()?)))
+        .collect()
 }
 
 /// The top-level node `x` sits in (itself, at the top level).
@@ -340,20 +350,60 @@ fn wire(out: &mut Analysis, src: &Analysis, t: &Tag, system: &str) {
         return;
     };
     let keep = HashSet::from([e.to.clone()]);
-    let mut w = renamed_edge(e, t, system, &keep);
+    let mut w = unchanged(renamed_edge(e, t, system, &keep));
     w.id = format!("{}-wire", w.id);
-    w.change = Change::Unchanged;
-    w.boundaries.clear();
-    w.walk = None;
-    w.needed_by = None;
-    for f in &mut w.facets {
-        f.was = None;
-    }
     out.edges.push(w);
 }
 
+/// A copied line as an unchanged one is drawn: no change, boundaries, walk or dependants.
+fn unchanged(mut e: Edge) -> Edge {
+    e.change = Change::Unchanged;
+    e.boundaries.clear();
+    e.walk = None;
+    e.needed_by = None;
+    for f in &mut e.facets {
+        f.was = None;
+    }
+    e
+}
+
+/// `src`'s edges lifted to the top-level nodes their ends sit in, the first edge of each
+/// distinct (from, to) in `src`'s order, as `(edge, from, to)`: those between two of `chosen`'s
+/// parts, or between one of them and a top-level node that isn't a part (a store, an actor, an
+/// external system), which a light copy shares with the real analysis.
+fn lifted<'a>(
+    src: &'a Analysis,
+    system: &str,
+    chosen: &HashSet<&str>,
+) -> Vec<(&'a Edge, &'a str, &'a str)> {
+    let parent = parents(src);
+    let shared: HashSet<&str> = src
+        .nodes
+        .iter()
+        .filter(|n| n.parent.as_deref() == Some(system) && !is_part(n))
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for e in &src.edges {
+        let (f, to) = (top(&parent, system, &e.from), top(&parent, system, &e.to));
+        let ok = |x: &str| chosen.contains(x) || shared.contains(x);
+        if f != to
+            && (chosen.contains(f) || chosen.contains(to))
+            && ok(f)
+            && ok(to)
+            && seen.insert((f, to))
+        {
+            out.push((e, f, to));
+        }
+    }
+    out
+}
+
 /// Adds `tag`'s light copy of the first `count` of `src`'s top-level parts to `out`, with at
-/// most `lines` lines: its wire, then the first of the lines between its parts.
+/// most `lines` lines at the top level (each one distinct, so each one drawn): its wire into the
+/// real analysis, a wire from each copied part `src` draws no line for to its original, then
+/// [`lifted`] lines, first one for each part not yet on a line, then the rest in order.
 fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize, lines: usize) {
     let system = system_id(src);
     let parts: Vec<&Node> = top_level_parts(src, &system)
@@ -385,29 +435,84 @@ fn add_light(out: &mut Analysis, src: &Analysis, t: &Tag, count: usize, lines: u
         used.extend(refs.cloned());
         out.nodes.push(n);
     }
-    let none = HashSet::new();
     let before = out.edges.len();
     wire(out, src, t, &system);
-    let wired = out.edges.len() - before;
-    for e in src
-        .edges
-        .iter()
-        .filter(|e| chosen.contains(e.from.as_str()) && chosen.contains(e.to.as_str()))
-        .take(lines.saturating_sub(wired))
-    {
-        let mut e = renamed_edge(e, t, &system, &none);
-        e.change = Change::Unchanged;
-        e.boundaries.clear();
-        e.walk = None;
-        e.needed_by = None;
-        for f in &mut e.facets {
-            f.was = None;
+    let template = out.edges[before..].first().cloned();
+    let candidates = lifted(src, &system, &chosen);
+    let on_line: HashSet<&str> = candidates.iter().flat_map(|&(_, f, to)| [f, to]).collect();
+    // A part `src` draws no line for gets one to its original, so no copy sits alone.
+    let resp = |id: &str| {
+        src.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .and_then(|n| n.responsibilities.first())
+            .map(|r| r.id.clone())
+    };
+    if let Some(w) = &template {
+        for n in parts.iter().filter(|n| !on_line.contains(n.id.as_str())) {
+            let mut e = w.clone();
+            e.id = t.id(&format!("{}-wire", n.id));
+            e.from = t.id(&n.id);
+            e.to = n.id.clone();
+            e.uses = resp(&n.id).or(e.uses);
+            // Its call site: the claims behind the copy's own first responsibility.
+            let copy = out.nodes.iter().rev().find(|c| c.id == e.from);
+            if let Some(r) = copy.and_then(|c| c.responsibilities.first()) {
+                e.claims = r.claims.clone();
+            }
+            out.edges.push(e);
+        }
+    }
+    let room = lines.saturating_sub(out.edges.len() - before);
+    let mut pick = vec![false; candidates.len()];
+    let mut covered: HashSet<&str> = HashSet::new();
+    let mut picked = 0;
+    for (i, &(_, f, to)) in candidates.iter().enumerate() {
+        if picked < room
+            && [f, to]
+                .iter()
+                .any(|x| chosen.contains(x) && !covered.contains(x))
+        {
+            pick[i] = true;
+            picked += 1;
+            covered.extend([f, to]);
+        }
+    }
+    for p in pick.iter_mut().filter(|p| !**p) {
+        if picked < room {
+            *p = true;
+            picked += 1;
+        }
+    }
+    let end = |x: &str| {
+        if chosen.contains(x) {
+            t.id(x)
+        } else {
+            x.to_owned()
+        }
+    };
+    for (&(e, f, to), _) in candidates.iter().zip(&pick).filter(|(_, p)| **p) {
+        let mut e = unchanged(renamed_edge(e, t, &system, &HashSet::new()));
+        e.from = end(f);
+        e.to = end(to);
+        // `uses` names a responsibility of `to` or of a node inside it; the copy has only `to`.
+        if let Some(u) = &e.uses {
+            let own = src
+                .nodes
+                .iter()
+                .find(|n| n.id == to)
+                .is_some_and(|n| n.responsibilities.iter().any(|r| &r.id == u));
+            if !own {
+                e.uses = resp(to);
+            }
         }
         out.edges.push(e);
     }
-    // Its lines' claims, but for their questions (as its parts').
+    // Its lines' claims, but for their questions (as its parts'), and only the first behind each
+    // line: a rolled-up line stands for several of `src`'s, but cites one call site.
     for e in &mut out.edges[before..] {
         e.questions.clear();
+        e.claims.truncate(1);
         used.extend(e.claims.iter().cloned());
         used.extend(
             e.facets

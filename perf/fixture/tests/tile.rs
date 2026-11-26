@@ -3,16 +3,19 @@
 
 use analysis::{Analysis, Context, NodeKind, PinnedPr, Previous, validate};
 use fixture::tile::cached;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// An analysis's shape as #2627's is told (#162): its top-level parts, its lines at the top level
-/// (edges between two different top-level nodes; an edge inside a part isn't drawn there), and
-/// its claims.
+/// (one per distinct pair of top-level nodes some edge's ends sit in, as the layout rolls edges
+/// up, #166; an edge inside a part isn't drawn there), the edges behind them, its claims, and
+/// its top-level parts no line reaches.
 #[derive(Debug, Clone, Copy)]
 struct Shape {
     parts: usize,
     lines: usize,
+    edges: usize,
     claims: usize,
+    isolated: usize,
 }
 
 fn shape(a: &Analysis) -> Shape {
@@ -23,7 +26,7 @@ fn shape(a: &Analysis) -> Shape {
         .unwrap()
         .id
         .as_str();
-    let parts = a
+    let parts: Vec<&str> = a
         .nodes
         .iter()
         .filter(|n| {
@@ -33,21 +36,26 @@ fn shape(a: &Analysis) -> Shape {
                     NodeKind::Service | NodeKind::App | NodeKind::Library | NodeKind::Module
                 )
         })
-        .count();
+        .map(|n| n.id.as_str())
+        .collect();
     let parent: HashMap<&str, &str> = a
         .nodes
         .iter()
         .filter_map(|n| Some((n.id.as_str(), n.parent.as_deref()?)))
         .collect();
-    let lines = a
+    let pairs: HashSet<(&str, &str)> = a
         .edges
         .iter()
-        .filter(|e| top(&parent, system, &e.from) != top(&parent, system, &e.to))
-        .count();
+        .map(|e| (top(&parent, system, &e.from), top(&parent, system, &e.to)))
+        .filter(|(f, t)| f != t)
+        .collect();
+    let on_line: HashSet<&str> = pairs.iter().flat_map(|&(f, t)| [f, t]).collect();
     Shape {
-        parts,
-        lines,
+        parts: parts.len(),
+        lines: pairs.len(),
+        edges: a.edges.len(),
         claims: a.claims.len(),
+        isolated: parts.iter().filter(|p| !on_line.contains(*p)).count(),
     }
 }
 
@@ -93,16 +101,21 @@ fn the_tiles_have_their_shape_pass_the_servers_checks_and_are_cached() {
         assert_eq!(pr.number as i64, *number);
         shapes.push(shape(&a));
     }
-    // 1×: #2627's shape: 76 top-level parts, 167 lines at the top level, ~1,250 claims.
+    // 1×: #2627's shape: 76 top-level parts, 167 lines at the top level, ~1,250 claims, and no
+    // part alone (the three nothing in #191 calls, `bench`, `docs` and `dot-cargo`, are reached
+    // by their light copies' wires).
     let one = shapes[0];
     assert_eq!(one.parts, 76, "{one:?}");
     near("lines at the top level", one.lines, 167);
     near("claims", one.claims, 1_250);
+    assert_eq!(one.isolated, 0, "{one:?}");
     // 3×: three copies of the 1×, the two later ones each wired to the first by one line.
     let three = shapes[1];
     assert_eq!(three.parts, 3 * one.parts, "{three:?}");
     assert_eq!(three.lines, 3 * one.lines + 2, "{three:?}");
+    assert_eq!(three.edges, 3 * one.edges + 2, "{three:?}");
     assert_eq!(three.claims, 3 * one.claims, "{three:?}");
+    assert_eq!(three.isolated, 3 * one.isolated, "{three:?}");
 
     // Cached: a second call writes nothing; a fresh directory gets the same bytes.
     let written = std::fs::metadata(&tiles[0].2).unwrap().modified().unwrap();
