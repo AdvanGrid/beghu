@@ -40,6 +40,7 @@ import {
 import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
 import { GITHUB_DATA } from "./github.ts";
 import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
+import { upload, versions, type Uploaded } from "./analyses.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
 
@@ -207,6 +208,22 @@ Commands:
                               To reclaim its disk (several GB): rm -rf .dev/perf
                               "$(git rev-parse --git-common-dir)/beghu-perf" &&
                               git worktree prune
+  analyse OWNER/REPO#N [--as USER] [--version V]
+                              Upload a committed analysis of the PR through an analysis
+                              run, as an agent does: V is 1 or 2 (the recorded
+                              AdvanGrid/beghu#191's versions; default the latest), tiled-1x
+                              or tiled-3x (the perf sizes, #9001 and #9003), or a case
+                              (a file in fixtures/pr-view/cases/, at v1). Moves the PR on
+                              the fake to the head the version was analysed at first.
+                              USER defaults to tomsj. start and reset upload v1, then v2
+                              (when recorded) as tomsj only; every other account has none.
+  analysis record RUN [--version 1|2] [--data DIR]
+                              Save run RUN's pinned pr.json and its accepted upload (or
+                              those of the analysis named RUN), byte for byte, as
+                              fixtures/pr-view/beghu-<n>/pr-v<N>.json and analysis-v<N>.json:
+                              v1 when there is none yet, else v2 (recording v1 again
+                              deletes v2). Reads every analyses.db in DIR (default the
+                              --github stack's data, then the fixture stack's).
   help                        This help.
 
 ENDPOINT is * (everything) or a path with an optional method: "/user", "GET /user",
@@ -324,6 +341,17 @@ async function startStack(
       process.exit(1);
     }
     if (Date.now() > deadline) die(`still starting after ${timeout / 1000}s; check ./dev-ctl logs`);
+  }
+  // The recorded analyses, as tomsj, through runs: not after reset --fresh, whose mirrors import
+  // on first use (analyse uploads them once tomsj's import is done).
+  if (scale !== "github" && readJson<Seeded>(SEEDED)?.fresh !== true) {
+    try {
+      const done = await seedAnalyses(json);
+      if (done.length) extra = { ...extra, analyses: done };
+    } catch (e) {
+      console.error(`uploading the recorded analyses failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error("the stack is up; ./dev-ctl analyse AdvanGrid/beghu#191 tries again");
+    }
   }
   await status(json ? ["--json"] : [], extra);
 }
@@ -960,6 +988,74 @@ async function reset(args: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// analyses
+
+/** Marks the fixture stack's analyses as uploaded by start; reset deletes it with them. */
+const ANALYSES_SEEDED = join(ANALYSES, "seeded.json");
+
+/**
+ * The recorded analyses as start and reset leave them: v1 uploaded as tomsj, the PR moved to v2's
+ * head, then v2 uploaded (when it's recorded), each through a run. Once per fresh data dir.
+ */
+async function seedAnalyses(json: boolean): Promise<Uploaded[]> {
+  if (existsSync(ANALYSES_SEEDED)) return [];
+  const all = versions();
+  const recorded = all.filter((v) => v.version !== undefined).sort((a, b) => a.version! - b.version!);
+  const done: Uploaded[] = [];
+  for (const v of recorded) {
+    if (!json) console.log(`uploading the recorded analysis v${v.version} of ${v.repo}#${v.number} as tomsj`);
+    done.push(await upload(urls().app, urls().control, "tomsj", v, all));
+  }
+  mkdirSync(ANALYSES, { recursive: true });
+  writeJson(ANALYSES_SEEDED, { done });
+  return done;
+}
+
+async function analyse(args: string[]): Promise<void> {
+  const { opts, pos, json } = parse(args, ["--as", "--version"]);
+  const m = pos.length === 1 ? /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(pos[0]!) : null;
+  if (!m) throw new Usage("usage: ./dev-ctl analyse OWNER/REPO#N [--as USER] [--version 1|2|tiled-1x|tiled-3x|CASE]");
+  const r = running();
+  if (!r || r.state?.mode === "github") die("analyse needs the fixture stack running: ./dev-ctl start");
+  await needFake();
+  const all = versions();
+  const [repo, number] = [m[1]!, Number(m[2])];
+  const forPr = all.filter((v) => v.repo.toLowerCase() === repo.toLowerCase() && v.number === number);
+  const cases = all.filter((v) => v.version === undefined && !v.name.startsWith("tiled-") && v.number === number);
+  const name = opts["--version"];
+  const want = name === undefined
+    ? forPr.filter((v) => v.version !== undefined).at(-1)
+    : [...forPr, ...cases].find((v) => v.name === name);
+  if (!want) {
+    const names = [...new Set([...all.map((v) => `${v.repo}#${v.number} ${v.name}`)])];
+    die(`no committed analysis ${name ?? ""} of ${repo}#${number}; there are:\n  ${names.join("\n  ")}`);
+  }
+  const got = await upload(urls().app, urls().control, opts["--as"] ?? "tomsj", want, all).catch((e: unknown) =>
+    die(e instanceof Error ? e.message : String(e)),
+  );
+  print(json, got, `accepted ${want.name} of ${want.repo}#${want.number} as ${got.analysis} at ${got.headSha.slice(0, 12)} (${got.warnings} warnings)`);
+}
+
+async function analysisCmd(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub !== "record") throw new Usage("usage: ./dev-ctl analysis record RUN [--version 1|2] [--data DIR]");
+  const { opts, pos, json } = parse(rest, ["--version", "--data"]);
+  if (pos.length !== 1) throw new Usage("usage: ./dev-ctl analysis record RUN [--version 1|2] [--data DIR]");
+  const dirs = opts["--data"] ? [join(opts["--data"], "analyses")] : [join(GITHUB_DATA, "analyses"), ANALYSES];
+  const dbs = dirs.filter(existsSync).flatMap((d) => readdirSync(d).filter((f) => f.endsWith(".db")).map((f) => join(d, f)));
+  if (!dbs.length) die(`no analyses.db under ${dirs.map(rel).join(" or ")}`);
+  const extra = opts["--version"] ? ["--version", opts["--version"]] : [];
+  const r = spawnSync("cargo", ["run", "--quiet", "-p", "analysis-fixtures", "--", "record", "--run", pos[0]!, ...extra, ...dbs.flatMap((d) => ["--db", d])], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (r.status !== 0) process.exit(r.status ?? 1);
+  const written = r.stdout.trim().split("\n").filter(Boolean);
+  print(json, { written }, written.map((w) => `wrote ${rel(w)}`).join("\n"));
+}
+
+// ---------------------------------------------------------------------------------------------
 // perf
 
 /**
@@ -1023,6 +1119,10 @@ async function main(): Promise<void> {
       return contract(args);
     case "perf":
       return perf(args);
+    case "analyse":
+      return analyse(args);
+    case "analysis":
+      return analysisCmd(args);
     case "help":
     case "-h":
     case "--help":
