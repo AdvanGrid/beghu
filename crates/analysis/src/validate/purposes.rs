@@ -18,7 +18,7 @@ pub(super) fn check(ix: &Index, r: &mut Report) {
     unclaimed(ix, r);
 }
 
-fn walk(r: &mut Report, p: &str, w: &Walk) {
+fn walk(ix: &Index, r: &mut Report, p: &str, w: &Walk) {
     if w.claims.is_empty() {
         r.error(
             format!("{p}/claims"),
@@ -31,16 +31,16 @@ fn walk(r: &mut Report, p: &str, w: &Walk) {
         ("journey", &w.journey),
         ("destination", &w.destination),
     ] {
-        words(r, format!("{p}/{k}"), t);
+        words(ix, r, format!("{p}/{k}"), t);
     }
 }
 
 fn walks(ix: &Index, r: &mut Report) {
     let a = ix.a;
-    walk(r, "/walk", &a.walk);
+    walk(ix, r, "/walk", &a.walk);
     for (i, n) in a.nodes.iter().enumerate() {
         if let Some(w) = &n.walk {
-            walk(r, &format!("/nodes/{i}/walk"), w);
+            walk(ix, r, &format!("/nodes/{i}/walk"), w);
         } else if ix.is_top_level(n) && Index::is_part(n) && Index::changed(n) {
             r.error(
                 format!("/nodes/{i}/walk"),
@@ -51,7 +51,7 @@ fn walks(ix: &Index, r: &mut Report) {
     }
     for (i, e) in a.edges.iter().enumerate() {
         if let Some(w) = &e.walk {
-            walk(r, &format!("/edges/{i}/walk"), w);
+            walk(ix, r, &format!("/edges/{i}/walk"), w);
         }
     }
 }
@@ -151,7 +151,7 @@ fn purposes(ix: &Index, r: &mut Report) {
                     "a role needs claims",
                 );
             }
-            words(r, format!("{sp}/role"), &s.role);
+            words(ix, r, format!("{sp}/role"), &s.role);
             for other in &p.serves {
                 if other.node != s.node && ix.within(&other.node, &s.node) {
                     r.error(
@@ -182,12 +182,12 @@ fn purposes(ix: &Index, r: &mut Report) {
                     "a carried line needs claims",
                 );
             }
-            words(r, format!("{cp}/why"), &c.why);
+            words(ix, r, format!("{cp}/why"), &c.why);
         }
         for (si, s) in p.stops.iter().enumerate() {
             let sp = format!("{pp}/stops/{si}");
             let id = s.reference.as_str();
-            words(r, format!("{sp}/line"), &s.line);
+            words(ix, r, format!("{sp}/line"), &s.line);
             if let Some(&sub) = ix.purposes.get(id) {
                 if a.purposes[sub].parent.as_deref() != Some(&p.id) {
                     r.error(
@@ -300,7 +300,7 @@ fn conflicts(ix: &Index, r: &mut Report) {
                 }
             }
         }
-        words(r, format!("{p}/question"), &c.question);
+        words(ix, r, format!("{p}/question"), &c.question);
         for (name, s) in [("a", &c.a), ("b", &c.b)] {
             let sp = format!("{p}/{name}");
             if s.claims.is_empty() {
@@ -429,7 +429,7 @@ fn conflicts(ix: &Index, r: &mut Report) {
 fn causes(ix: &Index, r: &mut Report) {
     let a = ix.a;
     for (i, c) in a.causes.iter().enumerate() {
-        words(r, format!("/causes/{i}/text"), &c.text);
+        words(ix, r, format!("/causes/{i}/text"), &c.text);
         let shown = c.claims.iter().any(|id| {
             ix.claims
                 .get(id.as_str())

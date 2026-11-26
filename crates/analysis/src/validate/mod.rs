@@ -122,16 +122,22 @@ pub fn validate_with(
         out.report = report;
         return out;
     };
-    report.extend(check(&a, ctx, reader));
+    let names = crate::words::Names::of(&value);
+    report.extend(check(&a, ctx, reader, names));
     out.report = report;
     out.analysis = Some(a);
     out
 }
 
 /// Every rule on a parsed analysis.
-fn check(a: &Analysis, ctx: &Context, reader: Option<&dyn Reader>) -> Report {
+fn check(
+    a: &Analysis,
+    ctx: &Context,
+    reader: Option<&dyn Reader>,
+    names: crate::words::Names,
+) -> Report {
     let mut r = Report::default();
-    let ix = index::Index::new(a);
+    let ix = index::Index::new(a, names);
     graph::check(&ix, ctx, &mut r);
     claims::check(&ix, &mut r);
     purposes::check(&ix, &mut r);

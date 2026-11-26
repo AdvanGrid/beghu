@@ -20,10 +20,12 @@ pub(crate) struct Index<'a> {
     pub children: HashMap<&'a str, Vec<usize>>,
     /// The `system` node's ID, when there is exactly one.
     pub system: Option<&'a str>,
+    /// What the analysis writes as code, for the judging-word check.
+    pub names: crate::words::Names,
 }
 
 impl<'a> Index<'a> {
-    pub fn new(a: &'a Analysis) -> Self {
+    pub fn new(a: &'a Analysis, names: crate::words::Names) -> Self {
         fn ids<'a, T>(list: &'a [T], id: impl Fn(&'a T) -> &'a str) -> HashMap<&'a str, usize> {
             let mut m = HashMap::new();
             for (i, x) in list.iter().enumerate() {
@@ -64,6 +66,7 @@ impl<'a> Index<'a> {
             } else {
                 None
             },
+            names,
         }
     }
 
