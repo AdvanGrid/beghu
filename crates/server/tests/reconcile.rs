@@ -1000,11 +1000,13 @@ async fn a_repo_whose_only_account_must_sign_in_again_gets_no_probes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_whose_only_account_is_dormant_gets_no_probes() {
-    // The account goes dormant 3 s after signing in: the requests here count as use only hourly.
+    // The account goes dormant 6 s after signing in (the requests here count as use only
+    // hourly): after the 5 s web's probes have, so they're seen before it does, however slow the
+    // rounds (each installation's job sweeps at the same time, on the same mirror).
     let s = start_with(|c| {
         sweeping(c);
         c.accounts_check_every = Duration::from_millis(100);
-        c.dormant_after = Duration::from_secs(3);
+        c.dormant_after = Duration::from_secs(6);
     })
     .await;
     let b = s.sign_in("tomsj").await;
