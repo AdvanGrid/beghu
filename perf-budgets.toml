@@ -230,19 +230,20 @@ measured = 0.04
 reason = "The ids push a write sends on the stream: bytes as framed, far under 14 KB."
 
 # The PR view's analysis (#178, limits per #152), on the tile shaped as #2627 (AdvanGrid/beghu#9001:
-# 76 top-level parts, 167 lines at the top level, 1,249 claims; uploaded through an analysis run
-# before any gate runs, untimed): asked as the view asks, with brotli accepted, and answered as
-# stored (brotli 9 at upload). Timings are the best of three --full runs at a load of 38-56 on
-# 32 cores, +15%.
+# 76 top-level parts, none alone; 167 lines at the top level, each a distinct pair of top-level
+# nodes as the layout rolls edges up (#166), over 281 edges; 1,287 claims; uploaded through an
+# analysis run before any gate runs, untimed): asked as the view asks, with brotli accepted, and
+# answered as stored (brotli 9 at upload). Timings are the best of three --full runs at a load of
+# 36-42 on 32 cores, +15%; bytes the largest of the three, +5%.
 
 [gates."server.analysis.ms"]
-max = 3.6
-measured = 3.1
+max = 2.1
+measured = 1.76
 reason = "The PR view's graph answer (GET /api/{owner}/{repo}/pulls/{n}/analysis, a 200): everything but the claims' bodies, served as stored at brotli 9: its answer time, median of 10."
 
 [gates."server.analysis.kb"]
-max = 76.4
-measured = 72.71
+max = 78.1
+measured = 74.36
 reason = "The PR view's graph answer, brotli bytes as sent. Past the 14 KB first flight on purpose (#152): the view is its own route, never a first page, and the graph is the smallest answer that can draw (the claims' bodies, most of the analysis, come after it)."
 
 [gates."server.analysis.scan"]
@@ -251,13 +252,13 @@ measured = 0
 reason = "The PR view's graph answer: rows its statements stepped through with no index to seek on (x-beghu-scan-steps): none, the analysis read by its PR's key."
 
 [gates."server.analysis-claims.ms"]
-max = 3.7
-measured = 3.2
+max = 2.5
+measured = 2.09
 reason = "The PR view's claims answer (the claims URL the graph names, immutable): every claim with its evidence, served as stored at brotli 9: its answer time, median of 10."
 
 [gates."server.analysis-claims.kb"]
-max = 128.4
-measured = 122.26
+max = 128.8
+measured = 122.64
 reason = "The PR view's claims answer, brotli bytes as sent. Past the 14 KB first flight on purpose (#152): it's one background request after the graph has drawn, which nothing waits on, and its evidence snippets are most of an analysis's bytes."
 
 [gates."server.analysis-claims.scan"]
