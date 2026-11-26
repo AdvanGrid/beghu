@@ -220,11 +220,15 @@ async fn take(
     } = got;
     // Held to the end: the store below is quick, and the turn covers the split's compressing.
     let _turn = turn;
-    let text = match encoding {
-        Encoding::Identity => wire,
-        Encoding::Gzip => tokio::task::spawn_blocking(move || inflate(&wire))
-            .await
-            .map_err(|_| RunError::Internal("inflating an upload panicked".into()))??,
+    // The body as it came, kept gzipped with an accepted analysis (`upload_gz`): a gzip body as
+    // it is, a plain one compressed once it's accepted.
+    let (text, upload_gz) = match encoding {
+        Encoding::Identity => (wire, None),
+        Encoding::Gzip => {
+            tokio::task::spawn_blocking(move || inflate(&wire).map(|t| (t, Some(wire))))
+                .await
+                .map_err(|_| RunError::Internal("inflating an upload panicked".into()))??
+        }
     };
 
     let pr = a.pr();
@@ -239,16 +243,14 @@ async fn take(
     };
     let chain = app.analyses().chain;
     let pinned_for_check = pinned.clone();
-    let checked = tokio::task::spawn_blocking(move || {
+    let (checked, text) = tokio::task::spawn_blocking(move || {
         let value: serde_json::Value = match serde_json::from_slice(&text) {
             Ok(v) => v,
             // The validator says what's wrong with it, as `shape.json`.
             Err(_) => {
-                return analysis::validate(
-                    &String::from_utf8_lossy(&text),
-                    &Context::default(),
-                    None,
-                );
+                let out =
+                    analysis::validate(&String::from_utf8_lossy(&text), &Context::default(), None);
+                return (out, text);
             }
         };
         let ctx = Context {
@@ -267,7 +269,7 @@ async fn take(
                 .errors
                 .extend(quotes(an, &pinned_for_check).errors);
         }
-        out
+        (out, text)
     })
     .await
     .map_err(|_| RunError::Internal("checking an upload panicked".into()))?;
@@ -295,7 +297,26 @@ async fn take(
     if !checked.report.errors.is_empty() {
         return Err(refuse(checked.report));
     }
-    accept(app, a, an, checked.report, checked.renames, snippets).await
+    let upload = Upload {
+        text,
+        gz: upload_gz,
+    };
+    accept(
+        app,
+        a,
+        an,
+        checked.report,
+        checked.renames,
+        snippets,
+        upload,
+    )
+    .await
+}
+
+/// The upload's body, kept with the analysis it made: inflated, and as it came when gzipped.
+struct Upload {
+    text: Vec<u8>,
+    gz: Option<Vec<u8>>,
 }
 
 /// Stores the accepted analysis in place of the PR's, and answers 201.
@@ -306,6 +327,7 @@ async fn accept(
     report: Report,
     renames: Vec<analysis::Rename>,
     snippets: &'static str,
+    upload: Upload,
 ) -> Result<Response, RunError> {
     let (parts, purposes, conflicts) = stored::counts(&an);
     let ids: Vec<serde_json::Value> = renames
@@ -328,11 +350,12 @@ async fn accept(
     let (id, head) = (env.id.clone(), env.head_sha.clone());
     let blobs = tokio::task::spawn_blocking(move || {
         let value = serde_json::to_value(&an).expect("the schema's types serialise");
-        (stored::split(value, &env), env)
+        let upload_gz = upload.gz.unwrap_or_else(|| stored::gzip9(&upload.text));
+        (stored::split(value, &env), env, upload_gz)
     })
     .await
     .map_err(|_| RunError::Internal("splitting an upload panicked".into()))?;
-    let (blobs, env) = blobs;
+    let (blobs, env, upload_gz) = blobs;
     let warnings_json = serde_json::to_string(&warnings).expect("plain data");
     let (run, repo_id) = (a.run.id.clone(), a.run.repo_id);
     let lifetimes = app.cfg().runs.clone();
@@ -376,6 +399,7 @@ async fn accept(
                 &blobs.graph_gz,
                 &blobs.claims_br,
                 &blobs.claims_gz,
+                &upload_gz,
             )?;
             analysis_db::q::accept_upload(tx, &run)?;
             analysis_db::q::delete_pr_behind(tx, repo_id, env.number)?;
