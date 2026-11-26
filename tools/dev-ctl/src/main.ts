@@ -999,13 +999,16 @@ async function reset(args: string[]): Promise<void> {
 /** Marks the fixture stack's analyses as uploaded by start; reset deletes it with them. */
 const ANALYSES_SEEDED = join(ANALYSES, "seeded.json");
 
+/** tomsj's GitHub user id in the fixture (`TOMSJ` in perf/fixture/src/lib.rs): its mirror's file name. */
+const TOMSJ_ID = 1000;
+
 /**
  * After reset --fresh: whether tomsj has imported the recorded PR's repo since. Signs tomsj in to
- * ask only once some account has a mirror, so a fresh stack nobody has used stays untouched.
+ * ask only once tomsj's own mirror exists: signing in without one starts an import nobody asked
+ * for, so a fresh stack stays untouched until tomsj (not just anyone) has used it.
  */
 async function freshImported(): Promise<boolean> {
-  const any = existsSync(MIRRORS) && readdirSync(MIRRORS).some((f) => f.endsWith(".db"));
-  return any && (await imported(urls().app, "tomsj", "AdvanGrid/beghu"));
+  return existsSync(join(MIRRORS, `${TOMSJ_ID}.db`)) && (await imported(urls().app, "tomsj", "AdvanGrid/beghu"));
 }
 
 /**
