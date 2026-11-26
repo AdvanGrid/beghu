@@ -4742,6 +4742,60 @@ async fn an_outside_edit_deletes_a_comment_by_its_body() {
     assert_eq!(thread(&fake, token).await.len(), after.len());
 }
 
+/// `delete_comment` with an author: that author's latest comment with the body goes, though
+/// someone else's with it is later. An edit that both makes and deletes a body is refused.
+#[tokio::test]
+async fn an_outside_edit_deletes_a_comment_by_its_author_and_body() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    for who in ["ilze-k", "tomsj"] {
+        fake.edit(json!({ "repo": "web", "number": 1, "comment": "Same.", "as": who }))
+            .await;
+    }
+    let same = |thread: &[Value]| -> Vec<Value> {
+        thread
+            .iter()
+            .filter(|c| c["body"] == "Same.")
+            .map(|c| c["user"]["login"].clone())
+            .collect()
+    };
+    async fn thread(fake: &Fake, token: &Value) -> Vec<Value> {
+        fake.get("/repos/acme/web/issues/1/comments?per_page=100", token)
+            .await
+            .json()
+            .await
+            .unwrap()
+    }
+    assert_eq!(same(&thread(&fake, token).await), ["ilze-k", "tomsj"]);
+
+    fake.edit(json!({
+        "repo": "web", "number": 1,
+        "delete_comment": { "body": "Same.", "author": "ilze-k" },
+    }))
+    .await;
+    assert_eq!(same(&thread(&fake, token).await), ["tomsj"]);
+
+    // Refused, and nothing changes: no such comment by that author, no such user, and a body the
+    // edit also makes.
+    for edit in [
+        json!({ "repo": "web", "number": 1,
+                "delete_comment": { "body": "Same.", "author": "ilze-k" } }),
+        json!({ "repo": "web", "number": 1,
+                "delete_comment": { "body": "Same.", "author": "nobody-at-all" } }),
+        json!({ "repo": "web", "number": 1, "comment": "Same.", "delete_comment": "Same." }),
+    ] {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{edit}");
+    }
+    assert_eq!(same(&thread(&fake, token).await), ["tomsj"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_installation_token_writing_or_asking_for_the_user_is_not_accessible_by_integration() {
     let fake = start().await;

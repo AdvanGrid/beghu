@@ -63,6 +63,21 @@ impl Version {
     }
 }
 
+/// The entries of `a` that `b` has fewer of, as multisets: of each, the ones past `b`'s count, in
+/// `a`'s order.
+fn extra<'a, T: PartialEq>(a: &'a [T], b: &[T]) -> Vec<&'a T> {
+    let mut left: Vec<&T> = b.iter().collect();
+    a.iter()
+        .filter(|x| match left.iter().position(|y| y == x) {
+            Some(i) => {
+                left.remove(i);
+                false
+            }
+            None => true,
+        })
+        .collect()
+}
+
 /// Every recorded version, in (number, version) order.
 pub fn versions() -> Vec<Version> {
     RECORDED
@@ -98,7 +113,8 @@ pub fn analysis_path(number: u32, version: u32) -> Option<std::path::PathBuf> {
 /// The Fake GitHub control calls (`(path, body)`, in order) that take the recorded PR from
 /// `from`'s state to `to`'s, as GitHub got there: outside edits for the PR's and its linked
 /// issues' titles and descriptions that differ, a deleted comment for each one `from`'s thread
-/// has and `to`'s doesn't and a comment for each one `to`'s has and `from`'s doesn't, then a push
+/// has more of than `to`'s (by author and body, duplicates counted) and a comment by its author
+/// for each one `to`'s has more of than `from`'s, then a push
 /// to `to`'s head with its files and base (a force push when going back). Symmetric: `moves(a, b)`
 /// then `moves(b, a)` leaves the PR as it was. An issue a version doesn't serve is as the
 /// fixture made it there: as the first version that serves it has it. Nothing when the two are
@@ -165,27 +181,34 @@ pub fn moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
             edit.insert("number".into(), n.clone());
             out.push(("/edit", Value::Object(edit)));
         }
-        let bodies = |i: &Value| -> Vec<Value> {
+        let thread = |i: &Value| -> Vec<(Value, Value)> {
             i["comments"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|c| c["body"].clone())
+                .map(|c| (c["author"].clone(), c["body"].clone()))
                 .collect()
         };
-        let (had, want) = (bodies(&was), bodies(&now));
-        // The latest first, so a thread is unwound as it was written.
-        for body in had.iter().rev().filter(|b| !want.contains(b)) {
+        let (had, want) = (thread(&was), thread(&now));
+        // As multisets of (author, body): a comment `had` holds more of than `want` goes (its
+        // latest copies, the latest first, so a thread is unwound as it was written), and one
+        // `want` holds more of comes, by its author.
+        for (author, body) in extra(&had, &want).into_iter().rev() {
+            let mut by = serde_json::json!({ "body": body });
+            if author.is_string() {
+                by["author"] = author.clone();
+            }
             out.push((
                 "/edit",
-                serde_json::json!({ "repo": REPO, "number": n, "delete_comment": body }),
+                serde_json::json!({ "repo": REPO, "number": n, "delete_comment": by }),
             ));
         }
-        for body in want.iter().filter(|b| !had.contains(b)) {
-            out.push((
-                "/edit",
-                serde_json::json!({ "repo": REPO, "number": n, "comment": body }),
-            ));
+        for (author, body) in extra(&want, &had) {
+            let mut edit = serde_json::json!({ "repo": REPO, "number": n, "comment": body });
+            if author.is_string() {
+                edit["as"] = author.clone();
+            }
+            out.push(("/edit", edit));
         }
     }
     if from.head_sha() != to.head_sha() {

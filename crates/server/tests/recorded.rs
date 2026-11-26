@@ -101,8 +101,9 @@ async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
 }
 
 /// Moving the recorded PR to a later version and back restores v1's pin exactly: the PR's title,
-/// description, head, base and files, and its linked issues' descriptions and comment threads (a
-/// comment the later version's thread added is deleted). v2 isn't recorded yet, so the later
+/// description, head, base and files, and its linked issues' descriptions and comment threads,
+/// authors and repeated bodies included (a comment the later version's thread added is made by
+/// its author, and deleted by its author and body). v2 isn't recorded yet, so the later
 /// version is made up here from v1.
 #[tokio::test(flavor = "multi_thread")]
 async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
@@ -122,7 +123,9 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
     files.pop();
     files.push(json!({ "path": "later.md", "status": "added", "additions": 1, "deletions": 0 }));
     let issues = pr["issues"].as_array_mut().unwrap();
-    // A later description, a comment on a thread that had one, and one on a thread that had none.
+    // A later description, a comment on a thread that had one, and one on a thread that had none;
+    // and on the first, its first comment again by its author and by someone else (no beghu
+    // account), so the same body is in the thread three times by two authors.
     let commented = issues
         .iter()
         .position(|i| !i["comments"].as_array().unwrap().is_empty())
@@ -139,6 +142,10 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
             .unwrap()
             .push(json!({ "author": "tomsj", "body": format!("A later comment on #{n}.") }));
     }
+    let thread = issues[commented]["comments"].as_array_mut().unwrap();
+    let again = thread[0].clone();
+    thread.push(json!({ "author": "tomsj", "body": again["body"] }));
+    thread.push(again);
     let (commented, bare) = (issues[commented].clone(), issues[bare].clone());
 
     for (path, body) in fixture::recorded::moves(&v1, &later) {
@@ -153,14 +160,7 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
             .cloned()
             .unwrap()
     };
-    let bodies = |i: &Value| -> Vec<Value> {
-        i["comments"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c["body"].clone())
-            .collect()
-    };
+    let thread = |i: &Value| i["comments"].clone();
     s.pin_when(&b, "a run pins the later version", |p| {
         p["headSha"] == later.pr["headSha"]
             && p["title"] == later.pr["title"]
@@ -168,8 +168,8 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
             && p["files"] == later.pr["files"]
             && p["base"] == later.pr["base"]
             && issue(p, &bare["number"])["body"] == bare["body"]
-            && bodies(&issue(p, &bare["number"])) == bodies(&bare)
-            && bodies(&issue(p, &commented["number"])) == bodies(&commented)
+            && thread(&issue(p, &bare["number"])) == thread(&bare)
+            && thread(&issue(p, &commented["number"])) == thread(&commented)
     })
     .await;
 
