@@ -172,7 +172,7 @@ reason = "The filter bar's suggestions, fetched on every load and push: its answ
 max = 37696
 measured = 37696
 spec = 0
-reason = "The filter bar's suggestions: rows their statements stepped through with no index to seek on, all told. Calibrated as measured, so any scan added to the answer still fails; the spec asks for none (over spec warns). 37693 until the fixture gained AdvanGrid/beghu, the PR view's recorded PR (#178): its repo row and the users it adds are walked whole too (+3), no new scan. Most of it is the issue-type facet (facet_types: SELECT MIN(i.issue_type) … GROUP BY i.issue_type COLLATE NOCASE), which walks the items_issue_type index from end to end to group it: the index exists, but a GROUP BY over it is a full index scan, every typed item at 50k. count_types (a facet's counts for types) does the same under the view. For the owner, a follow-up: a table of distinct issue types kept by the writes, or a skip-scan (a recursive CTE stepping from one type to the next through the index)."
+reason = "The filter bar's suggestions: rows their statements stepped through with no index to seek on, all told. Calibrated as measured, so any scan added to the answer still fails; the spec asks for none (over spec warns). 37693 until the fixture gained AdvanGrid/beghu, the PR view's recorded PR (#178), +3 and no new scan (measured statement by statement with BEGHU_SCAN_STEPS=1, against main): the synced-repos statement walks 11 repos, not 10 (AdvanGrid/beghu's row), and the author and assignee statements each walk 30 users, not 29 (tomsjansons, the recorded PR's author, who also wrote its comments). The rest is unchanged: facet_types 37467, labels 119, milestones 39. Most of it is the issue-type facet (facet_types: SELECT MIN(i.issue_type) … GROUP BY i.issue_type COLLATE NOCASE), which walks the items_issue_type index from end to end to group it: the index exists, but a GROUP BY over it is a full index scan, every typed item at 50k. count_types (a facet's counts for types) does the same under the view. For the owner, a follow-up: a table of distinct issue types kept by the writes, or a skip-scan (a recursive CTE stepping from one type to the next through the index)."
 
 [gates."server.facet-counts.ms"]
 max = 116.7
@@ -229,18 +229,20 @@ max = 0.1
 measured = 0.04
 reason = "The ids push a write sends on the stream: bytes as framed, far under 14 KB."
 
-# The PR view's analysis (#178, limits per #152), on the tile shaped as #2627 (AdvanGrid/beghu#9001,
-# uploaded through an analysis run before any gate runs, untimed): asked as the view asks, with
-# brotli accepted, and answered as stored (brotli 9 at upload).
+# The PR view's analysis (#178, limits per #152), on the tile shaped as #2627 (AdvanGrid/beghu#9001:
+# 76 top-level parts, 167 lines at the top level, 1,249 claims; uploaded through an analysis run
+# before any gate runs, untimed): asked as the view asks, with brotli accepted, and answered as
+# stored (brotli 9 at upload). Timings are the best of three --full runs at a load of 38-56 on
+# 32 cores, +15%.
 
 [gates."server.analysis.ms"]
-max = 3.9
-measured = 3.31
+max = 3.6
+measured = 3.1
 reason = "The PR view's graph answer (GET /api/{owner}/{repo}/pulls/{n}/analysis, a 200): everything but the claims' bodies, served as stored at brotli 9: its answer time, median of 10."
 
 [gates."server.analysis.kb"]
-max = 79.3
-measured = 75.43
+max = 76.4
+measured = 72.71
 reason = "The PR view's graph answer, brotli bytes as sent. Past the 14 KB first flight on purpose (#152): the view is its own route, never a first page, and the graph is the smallest answer that can draw (the claims' bodies, most of the analysis, come after it)."
 
 [gates."server.analysis.scan"]
@@ -249,13 +251,13 @@ measured = 0
 reason = "The PR view's graph answer: rows its statements stepped through with no index to seek on (x-beghu-scan-steps): none, the analysis read by its PR's key."
 
 [gates."server.analysis-claims.ms"]
-max = 3.6
-measured = 3.13
+max = 3.7
+measured = 3.2
 reason = "The PR view's claims answer (the claims URL the graph names, immutable): every claim with its evidence, served as stored at brotli 9: its answer time, median of 10."
 
 [gates."server.analysis-claims.kb"]
-max = 130.3
-measured = 124.01
+max = 128.4
+measured = 122.26
 reason = "The PR view's claims answer, brotli bytes as sent. Past the 14 KB first flight on purpose (#152): it's one background request after the graph has drawn, which nothing waits on, and its evidence snippets are most of an analysis's bytes."
 
 [gates."server.analysis-claims.scan"]
