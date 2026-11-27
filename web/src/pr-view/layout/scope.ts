@@ -167,11 +167,11 @@ export function columnsOf(parts: readonly SPart[], lines: readonly SLine[], insi
         let want = 0;
         for (const p of preds.get(id)!) want = Math.max(want, layer.get(p)! + 1);
         want = Math.min(want, K - 1);
+        // Unbounded: past every used column there's an empty one.
         let best = -1;
-        for (let d = 0; d < K + 8 && best < 0; d++) for (const c of [want - d, want + d]) if (best < 0 && c >= 0 && ok(id, c, W)) best = c;
-        const L = best < 0 ? K + ids.length : best;
-        count[L] = (count[L] ?? 0) + 1;
-        layer.set(id, L);
+        for (let d = 0; best < 0; d++) for (const c of [want - d, want + d]) if (best < 0 && c >= 0 && ok(id, c, W)) best = c;
+        count[best] = (count[best] ?? 0) + 1;
+        layer.set(id, best);
       }
     }
     // Close any empty columns.
