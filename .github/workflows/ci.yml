@@ -13,9 +13,12 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
+      # The whole history: the CLI's tests check the recorded analysis out at its own commits
+      # (crates/cli/tests/cli.rs).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
@@ -28,6 +31,13 @@ jobs:
       # The build runs the SQL checker over every migration and named query.
       - name: Build
         run: cargo build --workspace --all-targets --locked
+
+      # The repo is public: an anonymous fetch by SHA, for any analysed commit the clone lacks.
+      - name: Fetch the analysed commits
+        run: |
+          for sha in $(target/debug/analysis-fixtures shas); do
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "$sha"
+          done
 
       # -D on the command line also covers a crate that forgets `[lints] workspace = true`.
       - name: Lint (SQL only in the database crates)
@@ -333,6 +343,90 @@ jobs:
 
       - name: Smoke test
         run: deploy/smoke.sh beghu:ci
+
+      # The CLI's builds exactly as the image carries them (/app/cli), for the cli-macos job.
+      - name: Take the CLI's builds out of the image
+        run: |
+          docker create --name cli-builds beghu:ci >/dev/null
+          docker cp cli-builds:/app/cli "$RUNNER_TEMP/cli"
+          docker rm cli-builds >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-builds
+          path: ${{ runner.temp }}/cli
+          if-no-files-found: error
+          retention-days: 3
+
+  cli-macos:
+    # The macOS CLI builds the image cross-built on Linux (the Dockerfile's cli stage, with
+    # cargo-zigbuild), run on a real Apple-silicon Mac after a curl download, as install.sh gets
+    # them: no quarantine flag, so no notarisation is needed, and zig's ad-hoc signature has to
+    # satisfy the arm64 kernel. Each prints its version, then makes one HTTPS call (rustls with
+    # its bundled roots) to a host that isn't a beghu, and one to a name that doesn't resolve,
+    # each ending in a clean error. The x86_64 build runs too, under Rosetta when the runner has
+    # it; without Rosetta the job says so, having only downloaded it.
+    needs: image
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cli-builds
+          path: served
+
+      # Served over HTTP on loopback and fetched with curl, as `curl … | sh` installs them.
+      - name: Download them with curl
+        run: |
+          (cd served && exec python3 -m http.server 8901 --bind 127.0.0.1) >/dev/null 2>&1 &
+          for i in $(seq 1 50); do curl -fsS -o /dev/null http://127.0.0.1:8901/version && break; sleep 0.2; done
+          mkdir -p bin
+          for p in macos-aarch64 macos-x86_64; do
+            curl -fsSL -o "bin/beghu-$p" "http://127.0.0.1:8901/$p/beghu"
+            chmod 0755 "bin/beghu-$p"
+            if xattr -p com.apple.quarantine "bin/beghu-$p" 2>/dev/null; then
+              echo "bin/beghu-$p has a quarantine flag; a curl download shouldn't"; exit 1
+            fi
+            file "bin/beghu-$p"
+            codesign --display --verbose=2 "bin/beghu-$p" 2>&1 | tee "codesign-$p.txt" || true
+          done
+          # The arm64 kernel runs only signed code: zig's linker signs it ad hoc. (x86_64 code
+          # needs no signature, natively or under Rosetta, and zig leaves it unsigned.)
+          grep -q 'Signature=adhoc' codesign-macos-aarch64.txt || { echo "the arm64 build isn't ad-hoc signed"; exit 1; }
+
+      # github.com: the TLS handshake (rustls, the bundled roots) works and the answer isn't a
+      # beghu's; a name that doesn't resolve: can't reach it. Either is exit 1 with one line.
+      - name: Run the Apple-silicon build
+        run: |
+          version=$(cat served/version)
+          bin/beghu-macos-aarch64 --version | tee out.txt
+          grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-aarch64)$" out.txt
+          check() {
+            set +e
+            HOME="$RUNNER_TEMP" bin/beghu-macos-aarch64 status --host "$1" >out.txt 2>err.txt
+            code=$?
+            set -e
+            cat out.txt err.txt
+            [ "$code" = 1 ] || { echo "status --host $1 exited $code, not 1"; exit 1; }
+            grep -q "^beghu: $2" err.txt || { echo "status --host $1 didn't fail cleanly"; exit 1; }
+          }
+          check https://github.com "https://github.com isn't answering as a beghu does"
+          check https://beghu-cli-check.invalid "can't reach https://beghu-cli-check.invalid"
+
+      - name: Run the Intel build under Rosetta
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "::notice::Rosetta isn't installed on this runner: the macOS x86_64 build was downloaded, not run"
+            exit 0
+          fi
+          version=$(cat served/version)
+          /usr/bin/arch -x86_64 bin/beghu-macos-x86_64 --version | tee out.txt
+          grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-x86_64)$" out.txt
+          set +e
+          HOME="$RUNNER_TEMP" /usr/bin/arch -x86_64 bin/beghu-macos-x86_64 status --host https://github.com >out.txt 2>err.txt
+          code=$?
+          set -e
+          cat out.txt err.txt
+          [ "$code" = 1 ] && grep -q '^beghu: ' err.txt
 
   e2e:
     # Playwright on full Chromium (new headless mode) against the ./dev-ctl stack in fixture mode.

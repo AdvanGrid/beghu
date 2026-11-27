@@ -1,8 +1,9 @@
 #!/bin/sh
 # Smoke-tests a built beghu image: it runs as nonroot on a fresh named volume, serves /healthz,
 # /readyz, the public site's landing page, the shell at /issues and its assets (an unknown asset
-# is a 404), keeps its state on the volume, and stops cleanly on SIGTERM inside the stop grace
-# period. Removes what it creates.
+# is a 404), serves the beghu CLI (its install.sh installs this machine's build, which runs and
+# names the image's build), keeps its state on the volume, and stops cleanly on SIGTERM inside
+# the stop grace period. Removes what it creates.
 #
 #   deploy/smoke.sh beghu:ci
 #
@@ -95,6 +96,17 @@ grep -qi '^cache-control: public, max-age=31536000, immutable' "$secrets/headers
 grep -qi '^content-encoding: br' "$secrets/headers" || fail "$asset isn't served precompressed"
 status=$(curl -s -o /dev/null -w '%{http_code}' "$base/assets/index-00000000.js")
 [ "$status" = 404 ] || fail "an unknown asset answered $status, not 404"
+
+# The CLI, as an engineer installs it: install.sh from the container, run into a folder of its
+# own. The script names the host it was served for (BEGHU_PUBLIC_URL, port 8080 inside the
+# container), which this machine reaches at the published port instead: only that line changes.
+curl -fsS "$base/cli/manifest.json" | grep -q "\"build\": \"$build\"" ||
+  fail "/cli/manifest.json doesn't name build $build"
+curl -fsS "$base/cli/install.sh" | sed "s|^host='.*'$|host='$base'|" >"$secrets/install.sh"
+BEGHU_INSTALL_DIR="$secrets/bin" sh "$secrets/install.sh" >/dev/null ||
+  fail "install.sh didn't install the CLI"
+"$secrets/bin/beghu" --version | grep -q "^beghu [0-9.]* (build $build, " ||
+  fail "the installed beghu doesn't run, or names another build"
 
 # The state is on the volume: the control DB, its first backup, and the build's asset record.
 $docker cp "$name:/data/builds/$build.json" - >/dev/null || fail "no build record on the volume"
