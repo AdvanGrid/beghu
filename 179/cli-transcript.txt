@@ -1,0 +1,55 @@
+$ ./dev-ctl login tomsj      # also signs the CLI in
+open http://localhost:24373/auth/login?login=tomsj
+(signs in as tomsj through Fake GitHub, without its account picker)
+the beghu CLI is signed in as tomsj too (./dev-ctl cli status)
+
+$ ./dev-ctl cli --version
+beghu 0.1.0 (build dev, linux-x86_64)
+
+$ ./dev-ctl cli status
+host:    http://localhost:24373 (active)
+beghu:   0.1.0 (build dev, linux-x86_64)
+schema:  1
+account: tomsj; the sign-in expires 2027-02-25 unless used
+host's build: dev; it serves beghu 0.1.0 and answers 0.1.0 and newer (schema 1)
+
+$ cd <empty dir> && beghu analyse AdvanGrid/beghu#191 --yes   (first 25 lines)
+191 files, +97328 −246. A large PR is split across several agents and can take an hour.
+--yes: at the checkpoint (step 3), go on without asking.
+
+# beghu analysis run
+
+- **PR:** AdvanGrid/beghu#191, "The PR view (#174)" (https://github.com/AdvanGrid/beghu/pull/191)
+- **Size:** 191 files, +97328 −246
+- **Head:** `67b0b8bec2850ecef7610b02f3663d2df03cc459` (pinned: analyse this commit; a push since doesn't change it)
+- **Base:** `main` at `39e94cf24c82a83de85745d8f6f1d90d1891b997` (its tip when the run pinned)
+- **beghu build:** `dev`
+- **Limits:** a PR of at most 3,000 changed files; an upload of at most 8 MB on the wire and 32 MB
+  inflated; the schema version is 1. The run expires after 2 h with no call, and 7
+  days after it started at the most; a newer run for this PR replaces it.
+
+## This run's files and commands
+
+`beghu analyse` wrote this run's files to `.beghu/run-Z2x12Tj2NJNRYfzWqaUOjw/` in the folder it ran in: these
+instructions, `pr.json`, `schema.ts`, and `previous-ids.json` and `vocabulary.json` when there is
+a previous analysis (with neither, `carried` stays empty). Run every command below from that
+folder: each finds its run in `.beghu/`, so you never handle a token or a URL. Check the code out
+there too, as `base` and `head` (see "The checkout"), or give `--base <dir> --head <dir>` to
+`check` and `upload`.
+
+The CLI is the tools: where these instructions say `node validate.mjs` or `node merge.mjs`, run
+`beghu analyse` instead. It needs no Node, and finds `pr.json` and the previous analysis itself.
+
+$ ls -la .beghu/run-*/
+total 300
+drwx------ 2 tomsj tomsj    125 Nov 27 21:47 .
+drwx------ 3 tomsj tomsj     58 Nov 27 21:47 ..
+-rw-r--r-- 1 tomsj tomsj  37514 Nov 27 21:47 instructions.md
+-rw-r--r-- 1 tomsj tomsj  28803 Nov 27 21:47 previous-ids.json
+-rw-r--r-- 1 tomsj tomsj 172865 Nov 27 21:47 pr.json
+-rw------- 1 tomsj tomsj    193 Nov 27 21:47 run.toml
+-rw-r--r-- 1 tomsj tomsj  40377 Nov 27 21:47 schema.ts
+-rw-r--r-- 1 tomsj tomsj   8700 Nov 27 21:47 vocabulary.json
+
+$ beghu analyse end
+Ended the run on AdvanGrid/beghu#191.

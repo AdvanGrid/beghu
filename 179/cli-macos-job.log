@@ -1,0 +1,133 @@
+ Current runner version: '2.338.2'
+##[group]Runner Image Provisioner
+Hosted Compute Agent
+Version: 20261111.635
+Commit: b8a594ea514ff44cadb5342986c68b1eac6e22ed
+Build Date: 2026-11-11T01:49:01Z
+Worker ID: {714181da-5e4a-4d57-a1b5-beacdaf32c6f}
+Region: westus
+Cloud: MacCloud
+##[endgroup]
+##[group]Operating System
+macOS
+15.8.2
+24H232
+##[endgroup]
+##[group]Runner Image
+Image: macos-15-arm64
+Version: 20261123.0558.1
+Included Software: https://github.com/actions/runner-images/blob/macos-15-arm64/20261123.0558/images/macos/macos-15-arm64-Readme.md
+Image Release: https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20261123.0558
+##[endgroup]
+##[group]GITHUB_TOKEN Permissions
+Contents: read
+Metadata: read
+##[endgroup]
+Secret source: Actions
+Cache mode: write
+Prepare workflow directory
+Prepare all required actions
+Getting action download info
+Download action repository 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093' (SHA:d3f86a106a0bac45b974a628896c90dbdf5c8093)
+Complete job name: cli-macos
+##[group]Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+with:
+  name: cli-builds
+  path: served
+  merge-multiple: false
+  repository: AdvanGrid/beghu
+  run-id: 46056811709
+##[endgroup]
+Downloading single artifact
+(node:990) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Preparing to download the following artifacts:
+- cli-builds (ID: 15226514752, Size: 10176532, Expected Digest: sha256:777c7eeffc5895d82d11f7f41f9b8ab93c2737936fba506b5ffde0eb49481c51)
+Redirecting to blob download url: https://productionresultssa5.blob.core.windows.net/actions-results/f9f8239f-7b25-82fc-8312-f7e44428bebe/workflow-job-run-523a431a-88af-5405-b9c1-28d2478cc2d1/artifacts/074989b5cd0fad327dfa0f1f48a42aad696b48eaeea0152523f14c1acb385be6.zip
+Starting download of artifact to: /Users/runner/work/beghu/beghu/served
+(node:990) [DEP0005] DeprecationWarning: Buffer() is deprecated due to security and usability issues. Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.
+SHA256 digest of downloaded artifact is 777c7eeffc5895d82d11f7f41f9b8ab93c2737936fba506b5ffde0eb49481c51
+Artifact download completed successfully.
+Total of 1 artifact(s) downloaded
+Download artifact has finished successfully
+##[group]Run (cd served && exec python3 -m http.server 8901 --bind 127.0.0.1) >/dev/null 2>&1 &
+(cd served && exec python3 -m http.server 8901 --bind 127.0.0.1) >/dev/null 2>&1 &
+for i in $(seq 1 50); do curl -fsS -o /dev/null http://127.0.0.1:8901/version && break; sleep 0.2; done
+mkdir -p bin
+for p in macos-aarch64 macos-x86_64; do
+  curl -fsSL -o "bin/beghu-$p" "http://127.0.0.1:8901/$p/beghu"
+  chmod 0755 "bin/beghu-$p"
+  if xattr -p com.apple.quarantine "bin/beghu-$p" 2>/dev/null; then
+    echo "bin/beghu-$p has a quarantine flag; a curl download shouldn't"; exit 1
+  fi
+  file "bin/beghu-$p"
+  codesign --display --verbose=2 "bin/beghu-$p" 2>&1 | tee "codesign-$p.txt" || true
+done
+# The arm64 kernel runs only signed code: zig's linker signs it ad hoc. (x86_64 code
+# needs no signature, natively or under Rosetta, and zig leaves it unsigned.)
+grep -q 'Signature=adhoc' codesign-macos-aarch64.txt || { echo "the arm64 build isn't ad-hoc signed"; exit 1; }
+shell: /bin/bash -e {0}
+##[endgroup]
+curl: (7) Failed to connect to 127.0.0.1 port 8901 after 0 ms: Couldn't connect to server
+bin/beghu-macos-aarch64: Mach-O 64-bit executable arm64
+Executable=/Users/runner/work/beghu/beghu/bin/beghu-macos-aarch64
+Identifier=beghu-50566069a1ffbaf4
+Format=Mach-O thin (arm64)
+CodeDirectory v=20400 size=51928 flags=0x20002(adhoc,linker-signed) hashes=1619+0 location=embedded
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Sealed Resources=none
+Internal requirements=none
+bin/beghu-macos-x86_64: Mach-O 64-bit executable x86_64
+bin/beghu-macos-x86_64: code object is not signed at all
+##[group]Run version=$(cat served/version)
+version=$(cat served/version)
+bin/beghu-macos-aarch64 --version | tee out.txt
+grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-aarch64)$" out.txt
+check() {
+  set +e
+  HOME="$RUNNER_TEMP" bin/beghu-macos-aarch64 status --host "$1" >out.txt 2>err.txt
+  code=$?
+  set -e
+  cat out.txt err.txt
+  [ "$code" = 1 ] || { echo "status --host $1 exited $code, not 1"; exit 1; }
+  grep -q "^beghu: $2" err.txt || { echo "status --host $1 didn't fail cleanly"; exit 1; }
+}
+check https://github.com "https://github.com isn't answering as a beghu does"
+check https://beghu-cli-check.invalid "can't reach https://beghu-cli-check.invalid"
+shell: /bin/bash -e {0}
+##[endgroup]
+beghu 0.1.0 (build e126203fc7c478b60f9e7b271650ae82f1fcad9e, macos-aarch64)
+host:    https://github.com
+beghu:   0.1.0 (build e126203fc7c478b60f9e7b271650ae82f1fcad9e, macos-aarch64)
+schema:  1
+beghu: https://github.com isn't answering as a beghu does: the host answered 404
+host:    https://beghu-cli-check.invalid
+beghu:   0.1.0 (build e126203fc7c478b60f9e7b271650ae82f1fcad9e, macos-aarch64)
+schema:  1
+beghu: can't reach https://beghu-cli-check.invalid: error sending request: client error (Connect): dns error: failed to lookup address information: nodename nor servname provided, or not known
+##[group]Run if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+  echo "::notice::Rosetta isn't installed on this runner: the macOS x86_64 build was downloaded, not run"
+  exit 0
+fi
+version=$(cat served/version)
+/usr/bin/arch -x86_64 bin/beghu-macos-x86_64 --version | tee out.txt
+grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-x86_64)$" out.txt
+set +e
+HOME="$RUNNER_TEMP" /usr/bin/arch -x86_64 bin/beghu-macos-x86_64 status --host https://github.com >out.txt 2>err.txt
+code=$?
+set -e
+cat out.txt err.txt
+[ "$code" = 1 ] && grep -q '^beghu: ' err.txt
+shell: /bin/bash -e {0}
+##[endgroup]
+beghu 0.1.0 (build e126203fc7c478b60f9e7b271650ae82f1fcad9e, macos-x86_64)
+host:    https://github.com
+beghu:   0.1.0 (build e126203fc7c478b60f9e7b271650ae82f1fcad9e, macos-x86_64)
+schema:  1
+beghu: https://github.com isn't answering as a beghu does: the host answered 404
+Cleaning up orphan processes
+Terminate orphan process: pid (999) (Python)
+##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

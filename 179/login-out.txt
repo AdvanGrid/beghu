@@ -1,0 +1,6 @@
+To sign in the beghu CLI on "evidence-laptop" to http://localhost:24373, approve it in a browser signed in to beghu:
+  http://localhost:24373/cli/login?code=RZKX-CDFP
+  It shows the code RZKX-CDFP.
+Waiting for the approval…
+Signed in to http://localhost:24373 as tomsj.
+exit 0
