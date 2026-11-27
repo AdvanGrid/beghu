@@ -222,13 +222,14 @@ test("A line's panel: what it carries, when, mode, what it crosses, and its evid
 test("A step's panel: previous and next, and the whole flow", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   const sc = V2.scenarios[0];
-  await open(page, `?sel=step:${sc.id}/2`);
+  const bare = sc.id.slice("scenario:".length);
+  await open(page, `?sel=step:${bare}/2`);
   const st = panel(page).locator('[data-perf="step-panel"]');
   await expect(st).toContainText(`${sc.title} · step 2 of ${sc.steps.length}`);
   await expect(st.locator("h2")).toHaveText(sc.steps[1].action);
   await expect(st.locator('[data-perf="flow"] [aria-current="step"]')).toContainText(sc.steps[1].action);
   await st.getByRole("button", { name: "Next →" }).click();
-  await expect.poll(() => selOf(page)).toBe(`step:${sc.id}/3`);
+  await expect.poll(() => selOf(page)).toBe(`step:${bare}/3`);
   await expect(st.locator("h2")).toHaveText(sc.steps[2].action);
   await st.getByRole("button", { name: "← Previous" }).click();
   await st.getByRole("button", { name: "← Previous" }).click();
@@ -355,6 +356,34 @@ test("v1's IDs forward on v2: merged to the new part, dropped and unknown to the
   // The note goes with the next pick.
   await page.locator('[data-perf="block"]').first().click();
   await expect(note(page)).toHaveCount(0);
+});
+
+test("Typed IDs are written once: a conflict, a purpose and a step without their own prefixes", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  // v2 has no conflict: v1's first, added on the way in.
+  const conflict = read("beghu-191/analysis-v1.json").conflicts[0];
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    g.analysis.conflicts.push(conflict);
+    await route.fulfill({ response: res, json: g });
+  });
+  expect(conflict.id.startsWith("conflict:")).toBe(true);
+  await open(page, `?sel=conflict:${conflict.id.slice("conflict:".length)}`);
+  await expect(panel(page).locator('[data-perf="conflict-panel"] h2')).toHaveText(conflict.question);
+  expect(selOf(page)).toBe(conflict.id);
+
+  const purpose = V2.purposes[0];
+  await open(page, `?sel=purpose:${purpose.id.slice("purpose:".length)}`);
+  await expect(panel(page).locator('[data-perf="purpose-panel"] h2')).toHaveText(purpose.name);
+  expect(selOf(page)).toBe(purpose.id);
+  const sc = V2.scenarios[0];
+  expect(sc.id.startsWith("scenario:")).toBe(true);
+  await open(page, `?sel=step:${sc.id.slice("scenario:".length)}/1`);
+  await expect(panel(page).locator('[data-perf="step-panel"] h2')).toHaveText(sc.steps[0].action);
+  // A pick writes the same form.
+  await panel(page).getByRole("button", { name: "Next →" }).click();
+  await expect.poll(() => selOf(page)).toBe(`step:${sc.id.slice("scenario:".length)}/2`);
 });
 
 test("Both themes: the view's chrome and change colours take their tokens", async ({ context }) => {

@@ -7,13 +7,14 @@
 // - split: to all the new IDs, selected together (the canvas opens down to the level that holds
 //   them all);
 // - dropped: to the nearest surviving parent, or the top level, with the reason;
+// - renamed, merged or split to IDs this analysis doesn't have either: to those of them it has,
+//   or, with none, up as for a drop, the note saying where it went wasn't found (one step only:
+//   a `now` ID that moved again isn't followed);
 // - not there and not carried: the PR, "not found in this analysis". For Show it, which knows the
 //   analysis being left, the level above: the nearest parent the newer analysis still has.
-//
-// One step only: a `now` ID this analysis doesn't have either counts as not found.
 import type { Carried } from "../bindings/analysis";
 import type { Model } from "./model";
-import type { Sel } from "./state";
+import { candidates, type Sel } from "./state";
 
 export interface Forwarded {
   /** Where the selection lands; undefined for the PR. */
@@ -67,6 +68,11 @@ function parentsOf(id: string, kind: Kind, before?: Model): string[] {
   return out;
 }
 
+/** "a", "a and b", "a, b and c". */
+function words(xs: string[]): string {
+  return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+}
+
 /** One ID, forwarded: the IDs it lands on (none: dropped or unknown) and its note. */
 function one(id: string, kind: Kind, m: Model, before?: Model): { ids: string[]; kind: Kind; note?: string; up?: string } {
   if (has(m, kind, id)) return { ids: [id], kind };
@@ -74,60 +80,66 @@ function one(id: string, kind: Kind, m: Model, before?: Model): { ids: string[];
   if (migrated && kindIn(m, migrated.new) !== undefined) return { ids: [migrated.new], kind: kindIn(m, migrated.new)! };
   const c: Carried | undefined = m.a.carried.find((x) => x.was === id);
   const was = before ? label(before, id) : id;
+  // The nearest parent that's still here, for a drop or a move to nowhere here.
+  const up = () => parentsOf(id, kind, before).find((p) => kindIn(m, p) !== undefined && !(kindIn(m, p) === "part" && m.nodes.get(p)?.kind === "system"));
   if (c && c.kind !== "dropped") {
-    const kinds = c.now.map((n) => kindIn(m, n));
-    const k = kinds[0];
-    if (k !== undefined && kinds.every((x) => x === k)) {
-      const names = c.now.map((n) => label(m, n));
-      const how = c.kind === "renamed" ? `was renamed to ${names[0]}` : c.kind === "merged" ? `was merged into ${names[0]}` : `was split into ${names.join(" and ")}`;
-      return { ids: c.now, kind: k, note: `${was} ${how}: ${c.reason}` };
+    const k = c.now.map((n) => kindIn(m, n)).find((x) => x !== undefined);
+    const here = c.now.filter((n) => k !== undefined && kindIn(m, n) === k);
+    const missing = c.now.filter((n) => !here.includes(n));
+    if (here.length > 0) {
+      const names = here.map((n) => label(m, n));
+      const how = c.kind === "renamed" ? `was renamed to ${names[0]}` : c.kind === "merged" ? `was merged into ${names[0]}` : `was split into ${words(names)}`;
+      const rest = missing.length ? ` (${words(missing)} not found in this analysis)` : "";
+      return { ids: here, kind: k!, note: `${was} ${how}: ${c.reason}${rest}` };
     }
+    const where = c.kind === "renamed" ? "renamed to" : c.kind === "merged" ? "merged into" : "split into";
+    return { ids: [], kind, up: up(), note: `${was} was ${where} ${words(c.now)}, not found in this analysis` };
   }
-  // Dropped, or not there at all: the nearest parent that's still here.
-  const up = parentsOf(id, kind, before).find((p) => kindIn(m, p) !== undefined && !(kindIn(m, p) === "part" && m.nodes.get(p)?.kind === "system"));
-  if (c) return { ids: [], kind, up, note: `${was} was dropped: ${c.reason}` };
-  if (before) return { ids: [], kind, up, note: `${was} isn't in the newer analysis` };
+  if (c) return { ids: [], kind, up: up(), note: `${was} was dropped: ${c.reason}` };
+  if (before) return { ids: [], kind, up: up(), note: `${was} isn't in the newer analysis` };
   return { ids: [], kind, note: `${was} was not found in this analysis` };
 }
 
 /** `sel` against `m` (and, for Show it, the analysis being left, `before`). */
 export function forward(sel: Sel | undefined, m: Model, before?: Model): Forwarded {
   if (!sel) return {};
+  const gone = before ? "isn't in the newer analysis" : "was not found in this analysis";
   switch (sel.kind) {
     case "part":
     case "line":
     case "purpose": {
-      const ids = sel.kind === "purpose" ? [sel.id] : sel.ids;
-      const got = ids.map((id) => one(id, sel.kind, m, before));
+      const got = sel.ids.map((id) => one(id, sel.kind, m, before));
       const notes = got.map((g) => g.note).filter((n): n is string => n !== undefined);
       const note = notes.length ? notes.join(" · ") : undefined;
       const landed = got.filter((g) => g.ids.length > 0);
       const kind = landed[0]?.kind;
       if (kind !== undefined && landed.every((g) => g.kind === kind)) {
         const all = [...new Set(landed.flatMap((g) => g.ids))];
-        return { sel: as(kind, all), note };
+        return { sel: { kind, ids: all }, note };
       }
       // Nothing landed: up to the nearest parent still here, or the PR.
       const up = got.find((g) => g.up !== undefined)?.up;
       const upKind = up === undefined ? undefined : kindIn(m, up);
-      if (up !== undefined && upKind !== undefined) return { sel: as(upKind, [up]), note: `${note}; showing ${label(m, up)}` };
+      if (up !== undefined && upKind !== undefined) return { sel: { kind: upKind, ids: [up] }, note: `${note}; showing ${label(m, up)}` };
       return { note: note && `${note}; showing the PR` };
     }
-    case "conflict":
+    case "conflict": {
       // Conflicts don't carry between runs.
-      return m.conflicts.has(sel.id) ? { sel } : { note: `Conflict ${sel.id} was not found in this analysis; showing the PR` };
+      const id = candidates("conflict", sel.id).find((x) => m.conflicts.has(x));
+      if (id !== undefined) return { sel: { kind: "conflict", id } };
+      const was = before?.conflicts.get(sel.id)?.question ?? `Conflict ${sel.id}`;
+      return { note: `${was} ${gone}; showing the PR` };
+    }
     case "step": {
-      const sc = m.scenarios.get(sel.scenario);
-      if (sc && sel.n <= sc.steps.length) return { sel };
-      return { note: `Step ${sel.n} of ${sc?.title ?? sel.scenario} was not found in this analysis; showing the PR` };
+      const scenario = candidates("step", sel.scenario).find((x) => m.scenarios.has(x));
+      const sc = scenario === undefined ? undefined : m.scenarios.get(scenario);
+      if (sc && sel.n <= sc.steps.length) return { sel: { kind: "step", scenario: sc.id, n: sel.n } };
+      const title = sc?.title ?? before?.scenarios.get(sel.scenario)?.title ?? sel.scenario;
+      return { note: `Step ${sel.n} of ${title} ${gone}; showing the PR` };
     }
     case "unclaimed":
       return m.a.unclaimed.length > 0 ? { sel } : { note: "No changed part serves no purpose in this analysis; showing the PR" };
     case "group":
       return { sel };
   }
-}
-
-function as(kind: Kind, ids: string[]): Sel {
-  return kind === "purpose" ? { kind: "purpose", id: ids[0]! } : { kind, ids };
 }

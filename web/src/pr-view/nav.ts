@@ -28,6 +28,13 @@ export function useNav(): Nav {
   return n;
 }
 
+/** What `ids` name in `m`, selected together: parts, lines or purposes (the first's kind). */
+export function selOf(m: Model, ids: string[]): Sel {
+  const first = ids[0] ?? "";
+  const kind = m.edges.has(first) ? "line" : m.purposes.has(first) ? "purpose" : "part";
+  return { kind, ids };
+}
+
 /** A part's selection. */
 export const part = (id: string): Sel => ({ kind: "part", ids: [id] });
 /** A line's selection. */

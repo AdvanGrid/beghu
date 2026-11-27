@@ -17,7 +17,7 @@ import { For, Show, type Element } from "solid-js";
 import type { Carried, CarriedCause, Edge, FacetAssignment, Node, Question } from "../bindings/analysis";
 import { claimCount, ClaimList } from "./claims";
 import type { Model } from "./model";
-import { line, part, useNav } from "./nav";
+import { line, part, selOf, useNav } from "./nav";
 import { hiddenBy, parseLines, type Sel } from "./state";
 import { ChangeWord, changeText, Fold, Mark, ui } from "./ui";
 import { colors, fonts } from "../tokens.stylex";
@@ -56,8 +56,10 @@ function Place(props: { sel: Sel }) {
       return <LinePanel edges={sel.ids.map((id) => m().edges.get(id)).filter((e): e is Edge => e !== undefined)} />;
     case "step":
       return <StepPanel scenario={sel.scenario} n={sel.n} />;
-    case "purpose":
-      return <PurposePanel id={sel.id} />;
+    case "purpose": {
+      const ids = sel.ids.filter((id) => m().purposes.has(id));
+      return ids.length === 1 ? <PurposePanel id={ids[0]!} /> : <PurposesPanel ids={ids} />;
+    }
     case "conflict":
       return <ConflictPanel id={sel.id} />;
     case "unclaimed":
@@ -250,7 +252,6 @@ function SinceLast() {
 function CarriedItem(props: { x: Carried }) {
   const nav = useNav();
   const m = () => nav.model();
-  const to = (id: string): Sel => (m().edges.has(id) ? line(id) : m().purposes.has(id) ? { kind: "purpose", id } : part(id));
   return (
     <li data-perf="carried">
       <Fold
@@ -264,7 +265,7 @@ function CarriedItem(props: { x: Carried }) {
                 {(id, i) => (
                   <>
                     {i() > 0 ? ", " : ""}
-                    <Pick to={to(id)} accent>
+                    <Pick to={selOf(m(), [id])} accent>
                       {m().name(id)}
                     </Pick>
                   </>
@@ -810,6 +811,31 @@ function PurposePanel(props: { id: string }) {
           </For>
         </ul>
       </Show>
+    </div>
+  );
+}
+
+/** A split purpose's halves, selected together. */
+function PurposesPanel(props: { ids: string[] }) {
+  const nav = useNav();
+  const m = () => nav.model();
+  return (
+    <div data-perf="purposes-panel">
+      <p {...stylex.attrs(ui.p, ui.muted)}>{props.ids.length} purposes, selected together</p>
+      <ul {...stylex.attrs(ui.list, s.gap)}>
+        <For each={props.ids}>
+          {(id) => (
+            <li {...stylex.attrs(ui.stack)}>
+              <Pick to={{ kind: "purpose", ids: [id] }} accent>
+                {m().purposes.get(id)!.name}
+              </Pick>
+              <span {...stylex.attrs(ui.p, ui.muted)}>
+                {m().purposes.get(id)!.kind} · serves {m().purposes.get(id)!.serves.length} parts
+              </span>
+            </li>
+          )}
+        </For>
+      </ul>
     </div>
   );
 }

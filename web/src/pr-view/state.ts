@@ -5,10 +5,14 @@
 // isn't its default:
 //
 // - `tab`: `canvas` (the default) or `path`;
-// - `sel`: one typed ID: `part:<node>`, `line:<edge>` (a line that bundles several connections,
-//   or a split's new lines, as `line:<a>,<b>`; `part:<a>,<b>` likewise), `purpose:<slug>` (the
-//   purpose's own ID), `conflict:<id>`, `step:<scenario>/<n>` (1-based), `group:<id>` or
-//   `unclaimed`;
+// - `sel`: one typed ID, each analysis ID written once, without its own kind prefix:
+//   `part:<node>`, `line:<edge>` (a line that bundles several connections, or a split's new
+//   lines, as `line:<a>,<b>`; `part:<a>,<b>` likewise), `purpose:<slug>` (`purpose:<a>,<b>` for a
+//   split's halves; the purpose `purpose:analysis-run` is `purpose:analysis-run`, not
+//   `purpose:purpose:…`), `conflict:<id>` (likewise), `step:<scenario>/<n>` (1-based; the
+//   scenario `scenario:upload`'s second step is `step:upload/2`), `group:<id>` or `unclaimed`.
+//   `selString` and `parseSel` are the one place that adds and strips those prefixes; a `Sel`
+//   holds the analysis's IDs as they are (nav.ts `selOf` makes one from them);
 // - `lens`, `show`, `colour`, `boxes`, `outlines`, `lines`, and `scenario` and `chapter` under
 //   the order lens; `path=a,b,c`, Path's trail.
 //
@@ -21,11 +25,14 @@
 
 export type Tab = "canvas" | "path";
 
-/** What's selected: what the panel shows. */
+/**
+ * What's selected: what the panel shows. Each ID is the analysis's own (`purpose:analysis-run`,
+ * `conflict:cli-run-start`, `scenario:upload`); `selString` writes them without that prefix.
+ */
 export type Sel =
   | { kind: "part"; ids: string[] }
   | { kind: "line"; ids: string[] }
-  | { kind: "purpose"; id: string }
+  | { kind: "purpose"; ids: string[] }
   | { kind: "conflict"; id: string }
   | { kind: "step"; scenario: string; n: number }
   | { kind: "group"; id: string }
@@ -54,6 +61,21 @@ export type Replacing = (typeof REPLACING)[number];
 /** Each view-wide value's default, which the URL leaves out. */
 const DEFAULTS: Partial<Record<Replacing, string>> = { lens: "modules", show: "all", colour: "change", outlines: "none" };
 
+/** The prefix an analysis gives the IDs of a kind of selection, which `sel` leaves out. */
+const PREFIX = { purpose: "purpose:", conflict: "conflict:", step: "scenario:" } as const;
+
+/** `id` without `prefix`, if it has it. */
+const bare = (prefix: string, id: string) => (id.startsWith(prefix) ? id.slice(prefix.length) : id);
+
+/**
+ * The IDs `sel`'s `id` may name in an analysis: as written (with the prefix added back), then as
+ * the URL has it, for an analysis whose IDs don't carry the prefix (only purposes' must).
+ */
+export function candidates(kind: keyof typeof PREFIX, id: string): string[] {
+  const raw = bare(PREFIX[kind], id);
+  return raw === id ? [id] : [id, raw];
+}
+
 /** A selection as `sel` writes it. */
 export function selString(s: Sel): string {
   switch (s.kind) {
@@ -61,18 +83,19 @@ export function selString(s: Sel): string {
     case "line":
       return `${s.kind}:${s.ids.join(",")}`;
     case "purpose":
-      return s.id;
+      return `purpose:${s.ids.map((id) => bare(PREFIX.purpose, id)).join(",")}`;
     case "conflict":
+      return `conflict:${bare(PREFIX.conflict, s.id)}`;
     case "group":
-      return `${s.kind}:${s.id}`;
+      return `group:${s.id}`;
     case "step":
-      return `step:${s.scenario}/${s.n}`;
+      return `step:${bare(PREFIX.step, s.scenario)}/${s.n}`;
     case "unclaimed":
       return "unclaimed";
   }
 }
 
-/** The selection `sel` names, if it names one. */
+/** The selection `sel` names, if it names one: its IDs with their analysis prefixes back on. */
 export function parseSel(v: string | null): Sel | undefined {
   if (!v) return undefined;
   if (v === "unclaimed") return { kind: "unclaimed" };
@@ -81,20 +104,24 @@ export function parseSel(v: string | null): Sel | undefined {
   const kind = v.slice(0, colon);
   const rest = v.slice(colon + 1);
   if (!rest) return undefined;
+  const list = () => rest.split(",").filter((x) => x !== "");
   switch (kind) {
     case "part":
     case "line": {
-      const ids = rest.split(",").filter((x) => x !== "");
+      const ids = list();
       return ids.length ? { kind, ids } : undefined;
     }
-    case "purpose":
-      return { kind: "purpose", id: v };
+    case "purpose": {
+      const ids = list().map((x) => PREFIX.purpose + x);
+      return ids.length ? { kind, ids } : undefined;
+    }
     case "conflict":
+      return { kind, id: PREFIX.conflict + rest };
     case "group":
       return { kind, id: rest };
     case "step": {
       const m = /^(.+)\/(\d+)$/.exec(rest);
-      return m && Number(m[2]) >= 1 ? { kind: "step", scenario: m[1]!, n: Number(m[2]) } : undefined;
+      return m && Number(m[2]) >= 1 ? { kind: "step", scenario: PREFIX.step + m[1]!, n: Number(m[2]) } : undefined;
     }
     default:
       return undefined;
