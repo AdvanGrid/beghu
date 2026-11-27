@@ -41,6 +41,8 @@ export interface Graph {
   /** Where its claims are, per analysis and version (immutable). */
   claimsUrl: string;
   migratedIds: MigratedId[];
+  /** The analysis this one replaced (an upload over an earlier one), or null for the PR's first. */
+  previous?: string | null;
   analysis: GraphAnalysis;
 }
 

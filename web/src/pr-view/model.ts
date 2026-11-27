@@ -3,7 +3,7 @@
 // changes in the stated order ("All changes, by kind"). Built once per graph; everything the
 // panel and the canvas read goes through it.
 import type { Graph, GraphAnalysis, ClaimStub } from "../analysis";
-import type { Boundary, Change, Conflict, Edge, Facet, FileChange, Node, Purpose, Scenario } from "../bindings/analysis";
+import type { Boundary, Change, Conflict, Edge, Facet, FacetAssignment, FileChange, Node, Purpose, Scenario } from "../bindings/analysis";
 
 /** One item of "All changes, by kind": what it names, how it changed, and its words. */
 export interface RankItem {
@@ -44,6 +44,13 @@ export interface Model {
   ancestors(id: string): string[];
   /** Whether `id` is `of` or inside it. */
   within(id: string, of: string): boolean;
+  /** `id` and every node inside it, at any depth. */
+  subtree(id: string): ReadonlySet<string>;
+  /**
+   * Whether a node's path names a file rather than a folder: a changed file's path, or one with
+   * nothing under it and an extension (`crates/server/src/live.rs`).
+   */
+  isFile(path: string): boolean;
   /** Lines out of and into `id` or anything inside it, from or to outside it. */
   connections(id: string): { out: Edge[]; into: Edge[] };
   /** The parts whose lines use the node's responsibility (from the lines' `uses`), in order. */
@@ -109,6 +116,13 @@ export function buildModel(g: Graph): Model {
     return undefined;
   }
 
+  const filePaths = new Set(a.nodes.flatMap((n) => n.files.map((f) => f.path)));
+  /** Every folder some node's path or changed file is under. */
+  const folders = new Set<string>();
+  for (const p of [...filePaths, ...a.nodes.flatMap((n) => n.paths)]) {
+    for (let at = p.indexOf("/"); at > 0; at = p.indexOf("/", at + 1)) folders.add(p.slice(0, at));
+  }
+
   const name = (id: string) => {
     const n = nodes.get(id);
     if (!n) return id;
@@ -134,6 +148,11 @@ export function buildModel(g: Graph): Model {
     name,
     ancestors,
     within,
+    subtree,
+    isFile(path) {
+      const p = path.replace(/\/+$/, "");
+      return filePaths.has(p) || (!folders.has(p) && /\.[^./]+$/.test(p.slice(p.lastIndexOf("/") + 1)));
+    },
     connections(id) {
       const w = subtree(id);
       return {
@@ -153,40 +172,45 @@ export function buildModel(g: Graph): Model {
     },
     ranked() {
       const shape = (c: Change) => c === "added" || c === "removed";
-      const crossings: RankItem[] = a.edges
-        .filter((e) => e.boundaries.length > 0 && e.change !== "unchanged")
-        .map((e) => ({ kind: "line", id: e.id, change: e.change, text: lineText(e) }));
+      const part = (n: Node, change: Change, text: string): RankItem => ({ kind: "part", id: n.id, change, text: `${name(n.id)}: ${text}` });
+      const lineItem = (e: Edge): RankItem => ({ kind: "line", id: e.id, change: e.change, text: lineText(e) });
+      // Every changed line lands in exactly one of the first, second and fourth groups (by what
+      // it crosses, then whether it's new or gone, else an edit); a facet it changed, in the
+      // third as well, as a part's changed responsibilities are beside its edits.
+      const crossings = a.edges.filter((e) => e.boundaries.length > 0 && e.change !== "unchanged").map(lineItem);
       const crossing = new Set(crossings.map((c) => c.id));
       const parts: RankItem[] = [
-        ...a.nodes.filter((n) => n.kind !== "system" && shape(n.change)).map((n): RankItem => ({ kind: "part", id: n.id, change: n.change, text: `${name(n.id)}: ${n.changeSummary ?? n.summary}` })),
-        ...a.edges.filter((e) => shape(e.change) && !crossing.has(e.id)).map((e): RankItem => ({ kind: "line", id: e.id, change: e.change, text: lineText(e) })),
+        ...a.nodes.filter((n) => n.kind !== "system" && shape(n.change)).map((n) => part(n, n.change, n.changeSummary ?? n.summary)),
+        ...a.edges.filter((e) => shape(e.change) && !crossing.has(e.id)).map(lineItem),
       ];
+      /** A facet assignment's change in words: "Storage SQLite → SQLite, blobs". */
+      const facetChange = (f: FacetAssignment) => {
+        const def = a.facets.find((x) => x.id === f.facet);
+        const label = (v: string) => def?.values.find((x) => x.id === v)?.label ?? v;
+        return `${def?.name ?? f.facet} ${(f.was ?? []).map(label).join(", ")} → ${f.values.map((v) => label(v.value)).join(", ")}`;
+      };
       const responsibilities: RankItem[] = [];
       for (const n of a.nodes) {
         if (n.change !== "modified") continue;
         for (const r of n.responsibilities) {
-          if (r.change !== "unchanged") responsibilities.push({ kind: "part", id: n.id, change: r.change, text: `${name(n.id)}: ${r.text}` });
+          if (r.change !== "unchanged") responsibilities.push(part(n, r.change, r.text));
         }
-        for (const f of n.facets) {
-          if (!f.was) continue;
-          const def = a.facets.find((x) => x.id === f.facet);
-          const label = (v: string) => def?.values.find((x) => x.id === v)?.label ?? v;
-          responsibilities.push({
-            kind: "part",
-            id: n.id,
-            change: "modified",
-            text: `${name(n.id)}: ${def?.name ?? f.facet} ${f.was.map(label).join(", ")} → ${f.values.map((v) => label(v.value)).join(", ")}`,
-          });
-        }
+        for (const f of n.facets) if (f.was) responsibilities.push(part(n, "modified", facetChange(f)));
       }
-      const inside: RankItem[] = a.nodes
-        .filter((n) => n.change === "modified" && (children.get(n.id) ?? []).length === 0)
-        .map((n) => ({ kind: "part", id: n.id, change: n.change, text: `${name(n.id)}: ${n.changeSummary ?? n.summary}` }));
+      for (const e of a.edges) {
+        for (const f of e.facets) if (f.was) responsibilities.push({ kind: "line", id: e.id, change: "modified", text: `${lineText(e)} · ${facetChange(f)}` });
+      }
+      // A changed line that crosses no boundary keeps its two ends, so its place in the graph
+      // stays the same: what changed is the code at its ends, an edit, as a changed part's is.
+      const inside: RankItem[] = [
+        ...a.nodes.filter((n) => n.change === "modified" && (children.get(n.id) ?? []).length === 0).map((n) => part(n, n.change, n.changeSummary ?? n.summary)),
+        ...a.edges.filter((e) => e.change === "modified" && !crossing.has(e.id)).map(lineItem),
+      ];
       return [
         { title: "Boundary crossings", rule: "New or changed lines that cross a trust, process, network or tenant boundary.", items: crossings },
         { title: "New and removed parts", rule: "Parts and lines that exist on only one side.", items: parts },
-        { title: "Changed responsibilities or facets", rule: "What existing parts now do, or how they're described.", items: responsibilities },
-        { title: "Edits inside parts", rule: "Changed parts whose place in the graph stays the same.", items: inside },
+        { title: "Changed responsibilities or facets", rule: "What existing parts now do, or how they and their lines are described.", items: responsibilities },
+        { title: "Edits inside parts", rule: "Changed parts, and changed lines between the same two parts, whose place in the graph stays the same.", items: inside },
       ];
     },
   };

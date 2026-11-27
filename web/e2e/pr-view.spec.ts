@@ -123,6 +123,14 @@ test("The PR's panel: All changes by kind, the description, coverage, the facets
   const groups = panel(page).locator('[data-perf="rank-group"] h3');
   await expect(groups).toHaveText([/^Boundary crossings \(\d+\)$/, /^New and removed parts \(\d+\)$/, /^Changed responsibilities or facets \(\d+\)$/, /^Edits inside parts \(\d+\)$/]);
 
+  // Every changed line is in a group: crossing, new or removed, or an edit (one crossing no
+  // boundary between the same two parts).
+  const lineItems = await panel(page).locator('[data-perf="rank-item"][data-kind="line"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-id")));
+  for (const e of V2.edges.filter((x: Json) => x.change !== "unchanged")) expect(lineItems).toContain(e.id);
+  const edits = panel(page).locator('[data-perf="rank-group"]').nth(3);
+  const edit = V2.edges.find((x: Json) => x.change === "modified" && x.boundaries.length === 0);
+  await expect(edits.locator(`[data-perf="rank-item"][data-id="${edit.id}"]`)).toHaveCount(1);
+
   // The description, verbatim, folded.
   const description = panel(page).locator('[data-perf="description"]');
   await expect(description).not.toHaveAttribute("open");
@@ -144,6 +152,23 @@ test("The PR's panel: All changes by kind, the description, coverage, the facets
   await entry.locator("summary").first().click();
   await expect(entry).toContainText(merged.reason);
   await expect(entry.locator('[data-perf="claim"]').first()).toBeVisible();
+});
+
+test("All changes by kind lists a line's changed facet with the parts' changed responsibilities and facets", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  // No recording changes a line's facet: one made so on the way in.
+  const e = V2.edges.find((x: Json) => x.facets.length > 0);
+  const def = V2.facets.find((f: Json) => f.id === e.facets[0].facet);
+  const other = def.values.find((v: Json) => v.id !== e.facets[0].values[0].value);
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    g.analysis.edges.find((x: Json) => x.id === e.id).facets[0].was = [other.id];
+    await route.fulfill({ response: res, json: g });
+  });
+  await open(page);
+  const facets = panel(page).locator('[data-perf="rank-group"]').nth(2);
+  await expect(facets.locator(`[data-perf="rank-item"][data-kind="line"][data-id="${e.id}"]`)).toContainText(`${def.name} ${other.label} →`);
 });
 
 test("A part's panel: questions to evidence, what it does and who uses it, how it's built, connections with hidden ones faded, files", async ({ context }) => {
@@ -186,19 +211,22 @@ test("A part's panel: questions to evidence, what it does and who uses it, how i
   await expect(row.locator('[data-perf="used-by"]')).toHaveText(/used by \d+ parts?/);
 });
 
-test("A part's panel says what's partly drawn, and the PR's coverage lists it", async ({ context }) => {
+test("A part's panel says which folders are partly drawn, at any depth, and the PR's coverage lists it", async ({ context }) => {
   const page = await signIn(context, "tomsj");
-  // No recording has a partly drawn part at v2: one made so on the way in.
+  // No recording has a partly drawn part at v2: one made so on the way in. crates-server draws
+  // folders two deep (src/reconcile/sweep) and file parts (src/accounts.rs, whose folder counts).
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
-    const n = g.analysis.nodes.find((x: Json) => x.id === "crates-dbrt");
-    n.drawn = { partial: true, folders: 9 };
+    const n = g.analysis.nodes.find((x: Json) => x.id === "crates-server");
+    n.drawn = { partial: true, folders: 20 };
     await route.fulfill({ response: res, json: g });
   });
-  await open(page, "?sel=part:crates-dbrt");
-  const kids = V2.nodes.filter((n: Json) => n.parent === "crates-dbrt").length;
-  await expect(panel(page).locator('[data-perf="partly-drawn"]')).toHaveText(`Partly drawn: ${kids} of 9 folders drawn: no line, step, purpose or conflict in this PR reaches the other ${9 - kids}.`);
+  await open(page, "?sel=part:crates-server");
+  const drawn = ["src", "src/analyses", "src/import", "src/reconcile", "src/reconcile/sweep", "tests"];
+  await expect(panel(page).locator('[data-perf="partly-drawn"]')).toHaveText(
+    `Partly drawn: ${drawn.length} of 20 folders drawn (${drawn.join(", ")}): no line, step, purpose or conflict in this PR reaches the other ${20 - drawn.length}.`,
+  );
   await open(page);
   await expect(panel(page).locator('[data-perf="coverage"]')).toContainText("Partly drawn parts (1)");
 });
@@ -480,6 +508,8 @@ test("NoAnalysis: the empty state starts a run, shows it in the button's place, 
   await expect(page.locator('[data-perf="canvas"]')).toBeVisible({ timeout: 20_000 });
   await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
   await expect(page.locator('[data-perf="view-analysed"]')).toContainText(`analysed at ${head.slice(0, 7)}`);
+  // The PR's first analysis: nothing came before it.
+  await expect(panel(page).locator('[data-perf="since-last"]')).toHaveCount(0);
   // The run's still live: the top bar shows its state, which opens the popover, with no End run.
   const main = page.locator('[data-perf="view-bar"] [data-perf="analyse-main"]');
   await expect(main).toHaveText(/Agent working|Waiting for agent/);

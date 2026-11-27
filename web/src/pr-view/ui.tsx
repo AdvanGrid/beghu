@@ -6,6 +6,21 @@ import { createSignal, Show, type Element } from "solid-js";
 import type { Change } from "../bindings/analysis";
 import { colors, fonts } from "../tokens.stylex";
 
+/** `owner/name` for a GitHub URL, each part encoded. */
+export function repoPath(repo: string): string {
+  return repo.split("/").map(encodeURIComponent).join("/");
+}
+
+/** A path in a repo for a GitHub URL, each segment encoded (`#`, `?`, `%` and spaces in a name). */
+export function pathSegments(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+/** A file at a commit on GitHub. */
+export const githubBlob = (repo: string, sha: string, path: string) => `https://github.com/${repoPath(repo)}/blob/${encodeURIComponent(sha)}/${pathSegments(path)}`;
+/** A folder at a commit on GitHub. */
+export const githubTree = (repo: string, sha: string, path: string) => `https://github.com/${repoPath(repo)}/tree/${encodeURIComponent(sha)}/${pathSegments(path)}`;
+
 /** A change's sign, for the eye beside its words. */
 export const SIGN: Record<Change, string> = { added: "+", removed: "−", modified: "~", unchanged: "·" };
 /** A change in words. */
@@ -73,8 +88,9 @@ export const ui = stylex.create({
   stack: { gap: 6, display: "flex", flexDirection: "column" },
   row: { gap: 6, alignItems: "baseline", display: "flex", flexWrap: "wrap" },
   list: { margin: 0, padding: 0, gap: 4, listStyle: "none", display: "flex", flexDirection: "column" },
-  item: { gap: 6, alignItems: "baseline", display: "flex", lineHeight: 1.4 },
-  mark: { flexShrink: 0, fontFamily: fonts.mono, fontWeight: 700, textAlign: "center", width: 12 },
+  // Top-aligned, so a mark sits by the first line of text that wraps.
+  item: { gap: 6, alignItems: "flex-start", display: "flex", lineHeight: 1.4 },
+  mark: { flexShrink: 0, fontWeight: 700, textAlign: "center", width: 12 },
   faded: { opacity: 0.55 },
   // A pick: text that selects what it names.
   pick: {

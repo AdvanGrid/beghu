@@ -19,8 +19,8 @@ import { claimCount, ClaimList } from "./claims";
 import type { Model } from "./model";
 import { line, part, selOf, useNav } from "./nav";
 import { hiddenBy, parseLines, type Sel } from "./state";
-import { ChangeWord, changeText, Fold, Mark, ui } from "./ui";
-import { colors, fonts } from "../tokens.stylex";
+import { ChangeWord, changeText, Fold, githubBlob, githubTree, Mark, ui } from "./ui";
+import { colors } from "../tokens.stylex";
 
 export function Panel(props: { note?: string; dismiss: () => void }) {
   const nav = useNav();
@@ -120,7 +120,7 @@ function PrPanel() {
               <ul {...stylex.attrs(ui.list)}>
                 <For each={g.items}>
                   {(it) => (
-                    <li {...stylex.attrs(ui.item)}>
+                    <li {...stylex.attrs(ui.item)} data-perf="rank-item" data-kind={it.kind} data-id={it.id}>
                       <Mark change={it.change} />
                       <Pick to={it.kind === "line" ? line(it.id) : part(it.id)}>{it.text}</Pick>
                     </li>
@@ -217,7 +217,9 @@ function PrPanel() {
         </For>
       </div>
 
-      <Show when={a().carried.length > 0}>
+      {/* `previous` names the analysis this one replaced; one stored before it said so may
+          still have a `carried`. */}
+      <Show when={m().g.previous || a().carried.length > 0}>
         <H3>Since the last analysis</H3>
         <SinceLast />
       </Show>
@@ -231,11 +233,22 @@ const CAUSES: { cause: CarriedCause; title: string }[] = [
   { cause: "scope", title: "No longer drawn" },
 ];
 
-/** The upload's `carried`, folded, by cause: each entry with its reason and claims. */
+/**
+ * The upload's `carried`, folded, by cause: each entry with its reason and claims. An empty one:
+ * every ID of the last analysis is still here.
+ */
 function SinceLast() {
   const nav = useNav();
   const m = () => nav.model();
   return (
+    <Show
+      when={m().a.carried.length > 0}
+      fallback={
+        <p {...stylex.attrs(ui.p, ui.muted)} data-perf="since-last">
+          Every part, line and purpose of the last analysis is still here, under the same ID.
+        </p>
+      }
+    >
     <Fold summary={`${m().a.carried.length} IDs of the last analysis went`} perf="since-last">
       <For each={CAUSES}>
         {(c) => {
@@ -252,6 +265,7 @@ function SinceLast() {
         }}
       </For>
     </Fold>
+    </Show>
   );
 }
 
@@ -290,12 +304,40 @@ function CarriedItem(props: { x: Carried }) {
 
 // ---- A part ------------------------------------------------------------------------------------
 
-/** "3 of 9 folders drawn: …", for a partly drawn part. */
+/**
+ * The folders inside a part's paths that its drawing reaches, relative to the path they're in
+ * and sorted: every folder, at any depth, on the way to a part drawn inside it (a folder part is
+ * one itself; a file part's folders are), counted as `drawn.folders` counts them (the part's own
+ * paths aside).
+ */
+export function drawnFolders(m: Model, n: Node): string[] {
+  const bases = n.paths.map((p) => p.replace(/\/+$/, ""));
+  const inside = new Set<string>();
+  for (const id of m.subtree(n.id)) {
+    if (id === n.id) continue;
+    const d = m.nodes.get(id);
+    if (!d) continue;
+    for (const raw of d.paths) {
+      const p = raw.replace(/\/+$/, "");
+      const base = bases.find((b) => b === "" || b === "." || p.startsWith(`${b}/`));
+      if (base === undefined) continue;
+      const rel = base === "" || base === "." ? p : p.slice(base.length + 1);
+      const segs = rel.split("/");
+      // A file part reaches its folders; a folder part, itself too.
+      const folders = m.isFile(p) ? segs.length - 1 : segs.length;
+      for (let i = 1; i <= folders; i++) inside.add(segs.slice(0, i).join("/"));
+    }
+  }
+  return [...inside].sort();
+}
+
+/** "6 of 20 folders drawn (src, tests): …", for a partly drawn part. */
 function drawnLine(m: Model, n: Node): string {
   const total = n.drawn?.folders ?? 0;
-  const drawn = (m.children.get(n.id) ?? []).length;
-  const rest = Math.max(0, total - drawn);
-  return `${drawn} of ${total} folders drawn: no line, step, purpose or conflict in this PR reaches the other ${rest}.`;
+  const drawn = drawnFolders(m, n);
+  const rest = Math.max(0, total - drawn.length);
+  const which = drawn.length ? ` (${drawn.join(", ")})` : "";
+  return `${drawn.length} of ${total} folders drawn${which}: no line, step, purpose or conflict in this PR reaches the other ${rest}.`;
 }
 
 const KIND: Record<string, string> = {
@@ -383,7 +425,7 @@ function PartPanel(props: { n: Node }) {
         <div {...stylex.attrs(ui.row, s.gap)}>
           <For each={n.paths}>
             {(p) => (
-              <a href={`https://github.com/${m().g.repo}/tree/${sha()}/${p}`} target="_blank" rel="noreferrer external" {...stylex.attrs(ui.link, ui.mono)}>
+              <a href={githubTree(m().g.repo, sha(), p)} target="_blank" rel="noreferrer external" {...stylex.attrs(ui.link, ui.mono)}>
                 {p}
               </a>
             )}
@@ -475,7 +517,7 @@ function PartPanel(props: { n: Node }) {
                 <span {...stylex.attrs(s.count, f.removed > 0 ? changeText.removed : s.zero)}>−{f.removed.toLocaleString("en")}</span>
                 <span {...stylex.attrs(s.fileCell)} data-perf="file">
                   <a
-                    href={`https://github.com/${m().g.repo}/blob/${f.status === "removed" ? m().g.mergeBase : m().g.headSha}/${f.path}`}
+                    href={githubBlob(m().g.repo, f.status === "removed" ? m().g.mergeBase : m().g.headSha, f.path)}
                     target="_blank"
                     rel="noreferrer external"
                     {...stylex.attrs(ui.link, ui.mono)}
@@ -903,8 +945,6 @@ const s = stylex.create({
     padding: 8,
     borderRadius: 6,
     backgroundColor: colors.bgRaised,
-    fontFamily: fonts.mono,
-    fontSize: 11.5,
     lineHeight: 1.5,
     overflowWrap: "anywhere",
     whiteSpace: "pre-wrap",
@@ -921,7 +961,7 @@ const s = stylex.create({
   key: { color: colors.muted },
   value: { margin: 0, overflowWrap: "anywhere" },
   files: { gap: "2px 10px", display: "grid", fontSize: 12, gridTemplateColumns: "max-content max-content 1fr", },
-  count: { fontFamily: fonts.mono, fontVariantNumeric: "tabular-nums", textAlign: "end" },
+  count: { fontVariantNumeric: "tabular-nums", textAlign: "end" },
   zero: { color: colors.muted },
   fileCell: { overflowWrap: "anywhere", minWidth: 0, },
   fileSummary: { color: colors.muted, display: "block" },

@@ -11,7 +11,7 @@ import type { Claims } from "../analysis";
 import type { Claim, Evidence } from "../bindings/analysis";
 import { Failure } from "../Root";
 import type { Model } from "./model";
-import { Fold, ui } from "./ui";
+import { Fold, githubBlob, repoPath, ui } from "./ui";
 import { colors, fonts } from "../tokens.stylex";
 
 /** The claims read, shared by every place that shows them. */
@@ -145,7 +145,7 @@ function EvidenceItem(props: { m: Model; e: Evidence }) {
               <div {...stylex.attrs(ui.row, ui.small)}>
                 <span {...stylex.attrs(s.side)}>{code().side === "base" ? "before" : "after"}</span>
                 <a
-                  href={`https://github.com/${g.repo}/blob/${sha()}/${code().path}#L${code().start}-L${code().end}`}
+                  href={`${githubBlob(g.repo, sha(), code().path)}#L${code().start}-L${code().end}`}
                   target="_blank"
                   rel="noreferrer external"
                   {...stylex.attrs(ui.link, ui.mono)}
@@ -184,7 +184,7 @@ function EvidenceItem(props: { m: Model; e: Evidence }) {
 function Quote(props: { m: Model; e: Evidence }) {
   const source = () => {
     const e = props.e;
-    if (e.kind === "issue") return { text: `${e.repo}#${e.number}`, href: `https://github.com/${e.repo}/issues/${e.number}` };
+    if (e.kind === "issue") return { text: `${e.repo}#${e.number}`, href: `https://github.com/${repoPath(e.repo)}/issues/${e.number}` };
     return { text: "the PR's description", href: undefined };
   };
   const quote = () => (props.e.kind === "code" ? "" : props.e.quote);
