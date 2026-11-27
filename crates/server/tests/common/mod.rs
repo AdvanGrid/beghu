@@ -336,7 +336,18 @@ impl Stack {
         &mut self,
         adjust: impl FnOnce(&mut beghu_server::Config),
     ) -> Result<(), String> {
-        self.restart_gated(adjust, None).await
+        self.restart_gated(adjust, None, None).await
+    }
+
+    /// As [`Stack::restart_with`], on the same address: a deploy that keeps its URL, for a client
+    /// that keeps it (the CLI's run folder names its host).
+    pub async fn restart_in_place_with(&mut self, adjust: impl FnOnce(&mut beghu_server::Config)) {
+        let addr = self
+            .server
+            .strip_prefix("http://")
+            .expect("the server's URL")
+            .to_owned();
+        self.restart_gated(adjust, None, Some(&addr)).await.unwrap();
     }
 
     /// As [`Stack::restart_with`], but holding the startup back once the server serves, before
@@ -344,7 +355,7 @@ impl Stack {
     /// [`Held::start`].
     pub async fn restart_held(&mut self, adjust: impl FnOnce(&mut beghu_server::Config)) -> Held {
         let (release, gate) = tokio::sync::oneshot::channel();
-        self.restart_gated(adjust, Some((gate, release)))
+        self.restart_gated(adjust, Some((gate, release)), None)
             .await
             .unwrap();
         self.held.take().expect("a held start")
@@ -357,9 +368,26 @@ impl Stack {
             tokio::sync::oneshot::Receiver<()>,
             tokio::sync::oneshot::Sender<()>,
         )>,
+        addr: Option<&str>,
     ) -> Result<(), String> {
         self.stop();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // The same address as before is free once the stopped server's listener has closed.
+        let listener = match addr {
+            None => std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+            Some(a) => {
+                let mut tries = 0;
+                loop {
+                    match std::net::TcpListener::bind(a) {
+                        Ok(l) => break l,
+                        Err(_) if tries < 100 => {
+                            tries += 1;
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        Err(e) => panic!("can't listen on {a} again: {e}"),
+                    }
+                }
+            }
+        };
         listener.set_nonblocking(true).unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
         let mut cfg = self.config(&server);

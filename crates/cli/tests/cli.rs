@@ -301,6 +301,97 @@ async fn beghu_token_overrides_the_credentials_file() {
     assert_eq!(m.token(), token);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn beghu_token_goes_only_to_the_host_beghu_host_names() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let m = Machine::new(&s);
+    assert_eq!(m.login(&s, &b).await.code, 0);
+    let token = m.token();
+    // The same server under another origin: another host, as far as the CLI knows.
+    let other = s.server.replace("127.0.0.1", "localhost");
+    assert_ne!(other, s.server);
+
+    // Without BEGHU_HOST, BEGHU_TOKEN is refused: beghu won't guess where it may go.
+    let mut c = m.command(&["status"]);
+    c.env("BEGHU_TOKEN", &token).env_remove("BEGHU_HOST");
+    let out = Machine::output(c).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(
+        out.stderr.contains("BEGHU_TOKEN is set without BEGHU_HOST"),
+        "{out:?}"
+    );
+
+    // `--host` another origin: BEGHU_TOKEN is left out, and that's said; the file has no
+    // sign-in there.
+    let mut c = m.command(&["status", "--host", &other]);
+    c.env("BEGHU_TOKEN", &token);
+    let out = Machine::output(c).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(out.stdout.contains("account: not signed in"), "{out:?}");
+    assert!(
+        out.stderr.contains(&format!(
+            "BEGHU_TOKEN is for {} (BEGHU_HOST), not {other}",
+            s.server
+        )),
+        "{out:?}"
+    );
+
+    // A run started on the file's host, ended with BEGHU_HOST and BEGHU_TOKEN set for another:
+    // the run's host gets the file's sign-in (a bad BEGHU_TOKEN there would be signed out).
+    let pr = format!("AdvanGrid/beghu#{RECORDED}");
+    assert_eq!(m.run(&["analyse", &pr]).await.code, 0);
+    let mut c = m.command(&["analyse", "end"]);
+    c.env("BEGHU_HOST", &other).env(
+        "BEGHU_TOKEN",
+        "beghu_cli_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
+    let out = Machine::output(c).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(out.stdout.contains("Ended the run"), "{out:?}");
+    assert!(
+        out.stderr.contains(&format!(
+            "BEGHU_TOKEN is for {other} (BEGHU_HOST), not {}",
+            s.server
+        )),
+        "{out:?}"
+    );
+
+    // `logout` with BEGHU_TOKEN for the host signs out BEGHU_TOKEN, and keeps the file's.
+    let ci = Machine::new(&s);
+    assert_eq!(ci.login(&s, &b).await.code, 0);
+    let theirs = ci.token();
+    let mut c = m.command(&["logout"]);
+    c.env("BEGHU_TOKEN", &theirs);
+    let out = Machine::output(c).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stdout
+            .contains(&format!("Signed out BEGHU_TOKEN on {}", s.server)),
+        "{out:?}"
+    );
+    assert!(
+        out.stdout.contains(&format!(
+            "The credentials file's sign-in for {} is kept",
+            s.server
+        )),
+        "{out:?}"
+    );
+    let status = |t: String| {
+        let (http, url) = (s.http.clone(), format!("{}/api/cli/status", s.server));
+        async move {
+            let res = http.get(url).bearer_auth(t).send().await.unwrap();
+            res.json::<Value>().await.unwrap()["account"].clone()
+        }
+    };
+    assert_eq!(status(theirs).await, Value::Null, "BEGHU_TOKEN's is dead");
+    assert_eq!(
+        status(m.token()).await["login"],
+        "tomsj",
+        "the file's lives"
+    );
+}
+
 /// A checkout of this repo at `sha` in `dir`: a clone sharing this clone's objects, so the commit
 /// needs only to be in this clone (CI fetches the recorded ones by SHA).
 fn checkout(dir: &Path, sha: &str) {
@@ -396,6 +487,11 @@ async fn analyse_check_and_upload_the_recorded_pr() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+    // The folders holding it are the user's alone too.
+    for d in [dir.clone(), m.cwd().join(".beghu")] {
+        let mode = std::fs::metadata(&d).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", d.display());
+    }
     assert_eq!(
         std::fs::read_to_string(m.cwd().join(".beghu/.gitignore"))
             .unwrap()
@@ -575,6 +671,87 @@ async fn below_the_floor_it_updates_itself_and_runs_again() {
     assert_eq!(mode & 0o777, 0o755);
 }
 
+/// The newer build of the update mid-run: it ends the run as `beghu analyse end` does, as a CLI
+/// the raised floor lets in, from the run folder the old one left.
+const NEWER_ENDS_THE_RUN: &str = r#"#!/bin/sh
+set -eu
+[ "$*" = "analyse end" ] || { echo "the newer build ran: $*" >&2; exit 3; }
+run=$(ls .beghu/run-*/run.toml)
+field() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$2"; }
+host=$(field host "$run")
+token=$(field token "$run")
+credential=$(field token "$BEGHU_CREDENTIALS")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'user-agent: beghu-cli/0.2.0' \
+  -H "authorization: Bearer $credential" -H 'content-type: application/json' -d '{}' \
+  "$host/api/runs/$token/end")
+[ "$code" = 204 ] || { echo "ending the run: $code" >&2; exit 1; }
+rm "$run"
+echo "Ended the run (beghu 0.2.0, updated from $BEGHU_UPDATED)."
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_survives_a_floor_raised_mid_run_and_the_update_ends_it() {
+    let builds = cli_dir("0.2.0", NEWER_ENDS_THE_RUN.as_bytes());
+    let dir = builds.path().to_owned();
+    let mut s = start_with({
+        let dir = dir.clone();
+        move |c| c.cli_dir = Some(dir)
+    })
+    .await;
+    let b = s.sign_in("tomsj").await;
+    let (_keep, copy) = own_copy();
+    let mut m = Machine::new(&s);
+    m.bin = copy.clone();
+    assert_eq!(m.login(&s, &b).await.code, 0);
+    let out = m
+        .run(&["analyse", &format!("AdvanGrid/beghu#{RECORDED}")])
+        .await;
+    assert_eq!(out.code, 0, "{out:?}");
+    let run = run_dir(&m);
+    let toml = std::fs::read_to_string(run.join("run.toml")).unwrap();
+    let token = toml
+        .lines()
+        .find_map(|l| l.strip_prefix("token = "))
+        .unwrap()
+        .trim_matches('"')
+        .to_owned();
+
+    // A deploy at the same URL raises the floor past this CLI, mid-run.
+    s.restart_in_place_with(move |c| {
+        c.cli_dir = Some(dir);
+        c.cli.min_cli = beghu_server::CliVersion::parse("0.2.0").unwrap();
+    })
+    .await;
+    let out = m.run(&["analyse", "end"]).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stderr.contains(&format!(
+            "updated beghu {} \u{2192} 0.2.0 from {}",
+            env!("CARGO_PKG_VERSION"),
+            s.server
+        )),
+        "{out:?}"
+    );
+    assert!(
+        out.stdout.contains(&format!(
+            "Ended the run (beghu 0.2.0, updated from {}).",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{out:?}"
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), NEWER_ENDS_THE_RUN.as_bytes());
+    assert!(!run.join("run.toml").exists());
+    // Ended on the server, by the run the 426 left alive.
+    let res = s
+        .http
+        .get(format!("{}/api/runs/{token}/pr.json", s.server))
+        .bearer_auth(m.token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 410);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn below_the_floor_and_not_writable_it_says_how_to_update() {
     let builds = cli_dir("0.2.0", NEWER.as_bytes());
@@ -586,6 +763,17 @@ async fn below_the_floor_and_not_writable_it_says_how_to_update() {
     .await;
     let (keep, copy) = own_copy();
     std::fs::set_permissions(keep.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root (or anything with CAP_DAC_OVERRIDE) writes in a read-only folder all the same, so the
+    // CLI could replace itself: nothing to see here.
+    let probe = keep.path().join(".probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(keep.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!(
+            "skipped: this user can write in a read-only folder (root?), so the binary's folder can't be made unwritable"
+        );
+        return;
+    }
     let mut m = Machine::new(&s);
     m.bin = copy.clone();
 
