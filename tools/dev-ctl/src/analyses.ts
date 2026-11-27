@@ -154,6 +154,23 @@ export interface Uploaded {
  */
 export async function upload(server: string, controlUrl: string, login: string, want: Version, all: Version[]): Promise<Uploaded> {
   if (!want.analysis) throw new Error(`${want.name} has no analysis committed`);
+  const tile = want.version === undefined && want.name.startsWith("tiled-");
+  // A first analysis (v1, or a case not after v1; v1 also goes first for a case after it) can't
+  // follow another of the PR's on the same account. Refused before anything moves the PR, so a
+  // refusal leaves the stack as it was.
+  const first = !tile && want.after === undefined && (want.version === undefined || want.version === 1);
+  if (first) {
+    const s = new Session(server);
+    await s.signIn(login);
+    const [owner, repo] = want.repo.split("/");
+    const has = await s.fetch(`/api/${owner}/${repo}/pulls/${want.number}/analysis`);
+    if (has.status === 200) {
+      const other = login === "ilze-k" ? "after ./dev-ctl reset" : "as an account with none (--as ilze-k), or after ./dev-ctl reset";
+      throw new Error(
+        `${want.version === undefined ? want.name : `v${want.version}`} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it ${other}`,
+      );
+    }
+  }
   if (want.after !== undefined) {
     // A later analysis: the one it follows goes first, so its `carried` has the IDs it names.
     const first = all.find((v) => v.number === want.number && v.version === want.after);
@@ -163,7 +180,6 @@ export async function upload(server: string, controlUrl: string, login: string, 
   const s = new Session(server);
   await s.signIn(login);
   const expected = JSON.parse(readFileSync(want.pr, "utf8")) as Record<string, unknown>;
-  const tile = want.version === undefined && want.name.startsWith("tiled-");
   let token = await startRun(s, want.repo, want.number);
   let pinned = await pin(s, token);
   if (pinned.headSha !== want.headSha) {
@@ -202,15 +218,6 @@ export async function upload(server: string, controlUrl: string, login: string, 
     body: readFileSync(want.analysis),
   });
   const body = (await res.json().catch(() => null)) as { analysis?: string; headSha?: string; warnings?: unknown[]; message?: string; report?: unknown } | null;
-  const carried = JSON.stringify(body?.report ?? "").includes('"rule":"carry.');
-  // A first analysis (v1, or a case not after v1; v1 also goes first for a case after it) can't
-  // follow another of the PR's on the same account.
-  const first = !tile && want.after === undefined && (want.version === undefined || want.version === 1);
-  if (res.status === 422 && carried && first) {
-    throw new Error(
-      `${want.version === undefined ? want.name : `v${want.version}`} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it as an account with none (--as ilze-k), or after ./dev-ctl reset as another account`,
-    );
-  }
   if (res.status !== 201 || !body?.analysis) {
     throw new Error(`uploading ${want.name}: ${res.status} ${body?.message ?? ""}${body?.report ? `\n${JSON.stringify(body.report, null, 2).slice(0, 4000)}` : ""}`);
   }
