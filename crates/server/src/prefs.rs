@@ -84,6 +84,13 @@ actions! {
     ScrollDown = "scrollDown",
     ScrollUp = "scrollUp",
     Help = "help",
+    Diff = "diff",
+    FromOlder = "fromOlder",
+    FromNewer = "fromNewer",
+    ToOlder = "toOlder",
+    ToNewer = "toNewer",
+    NextChange = "nextChange",
+    PreviousChange = "previousChange",
 }
 
 /// An account's own bindings, by action: each action's bindings, one per line, `""` for one left

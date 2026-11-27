@@ -48,11 +48,19 @@ UPDATE preferences SET
   key_image_close = CASE :action WHEN 'imageClose' THEN :binding ELSE key_image_close END,
   key_scroll_down = CASE :action WHEN 'scrollDown' THEN :binding ELSE key_scroll_down END,
   key_scroll_up = CASE :action WHEN 'scrollUp' THEN :binding ELSE key_scroll_up END,
+  key_diff = CASE :action WHEN 'diff' THEN :binding ELSE key_diff END,
+  key_from_older = CASE :action WHEN 'fromOlder' THEN :binding ELSE key_from_older END,
+  key_from_newer = CASE :action WHEN 'fromNewer' THEN :binding ELSE key_from_newer END,
+  key_to_older = CASE :action WHEN 'toOlder' THEN :binding ELSE key_to_older END,
+  key_to_newer = CASE :action WHEN 'toNewer' THEN :binding ELSE key_to_newer END,
+  key_next_change = CASE :action WHEN 'nextChange' THEN :binding ELSE key_next_change END,
+  key_previous_change = CASE :action WHEN 'previousChange' THEN :binding ELSE key_previous_change END,
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
   'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'focusIssue', 'collapse', 'expand', 'labels', 'assignees',
   'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
-  'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'help');
+  'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'help', 'diff', 'fromOlder', 'fromNewer',
+  'toOlder', 'toNewer', 'nextChange', 'previousChange');
 
 -- The account's own bindings, by action (as the web app names it): only those it set, '' for
 -- one it left unbound. An action not listed has the preset's.
@@ -86,7 +94,14 @@ UNION ALL SELECT 'imageOpen' AS "action!: String", key_image_open AS "binding!" 
 UNION ALL SELECT 'imageClose' AS "action!: String", key_image_close AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_image_close IS NOT NULL
 UNION ALL SELECT 'scrollDown' AS "action!: String", key_scroll_down AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_scroll_down IS NOT NULL
 UNION ALL SELECT 'scrollUp' AS "action!: String", key_scroll_up AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_scroll_up IS NOT NULL
-UNION ALL SELECT 'help' AS "action!: String", key_help AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_help IS NOT NULL;
+UNION ALL SELECT 'help' AS "action!: String", key_help AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_help IS NOT NULL
+UNION ALL SELECT 'diff' AS "action!: String", key_diff AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_diff IS NOT NULL
+UNION ALL SELECT 'fromOlder' AS "action!: String", key_from_older AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_from_older IS NOT NULL
+UNION ALL SELECT 'fromNewer' AS "action!: String", key_from_newer AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_from_newer IS NOT NULL
+UNION ALL SELECT 'toOlder' AS "action!: String", key_to_older AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_to_older IS NOT NULL
+UNION ALL SELECT 'toNewer' AS "action!: String", key_to_newer AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_to_newer IS NOT NULL
+UNION ALL SELECT 'nextChange' AS "action!: String", key_next_change AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_next_change IS NOT NULL
+UNION ALL SELECT 'previousChange' AS "action!: String", key_previous_change AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_previous_change IS NOT NULL;
 
 -- Disconnect: the account's preferences go.
 -- name: delete_preferences :exec

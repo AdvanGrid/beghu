@@ -101,6 +101,13 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   scrollDown: ["Shift+j"],
   scrollUp: ["Shift+k"],
   help: ["?", "Ctrl+?"],
+  diff: ["d"],
+  fromOlder: ["["],
+  fromNewer: ["]"],
+  toOlder: ["{"],
+  toNewer: ["}"],
+  nextChange: ["n"],
+  previousChange: ["Shift+n"],
 };
 
 /** Every action, in the preset's order. */
@@ -150,6 +157,13 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   scrollDown: BROWSE,
   scrollUp: BROWSE,
   help: ANYWHERE,
+  diff: ["panel"],
+  fromOlder: ["panel"],
+  fromNewer: ["panel"],
+  toOlder: ["panel"],
+  toNewer: ["panel"],
+  nextChange: ["panel"],
+  previousChange: ["panel"],
 };
 
 /**

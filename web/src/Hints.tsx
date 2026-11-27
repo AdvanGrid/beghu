@@ -39,6 +39,13 @@ export const LABEL: Record<Action, string> = {
   scrollDown: "Scroll the issue down",
   scrollUp: "Scroll the issue up",
   help: "All keys",
+  diff: "Diff on / off",
+  fromOlder: "Older end: older",
+  fromNewer: "Older end: newer",
+  toOlder: "Newer end: older",
+  toNewer: "Newer end: newer",
+  nextChange: "Next change",
+  previousChange: "Previous change",
 };
 
 /** The keys that write: dimmed while writes are paused (a banner shows), as their buttons are. */
