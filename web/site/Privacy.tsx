@@ -35,6 +35,11 @@ export function Privacy() {
           <strong>Your browser session</strong>: which GitHub accounts are signed in on a browser.
           beghu stores only a hash of the session's id.
         </li>
+        <li>
+          <strong>CLI sign-ins</strong>: for each machine the beghu CLI signed in, its name, when
+          it signed in and was last used, and a hash of its credential, never the credential
+          itself.
+        </li>
       </ul>
 
       <h2 {...stylex.attrs(page.h2)}>What beghu doesn't do</h2>
@@ -62,7 +67,11 @@ export function Privacy() {
         </li>
         <li>
           Disconnecting an account (from the account menu) also revokes beghu's access on GitHub
-          and deletes its tokens and preferences.
+          and deletes its tokens, preferences and CLI sign-ins.
+        </li>
+        <li>
+          A CLI sign-in is deleted after 90 days without use, when you revoke it or sign the CLI
+          out, and with the account's copy after 30 days without use.
         </li>
         <li>
           beghu backs up its account records, never the copy of your issues, and keeps the

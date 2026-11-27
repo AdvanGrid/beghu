@@ -64,6 +64,9 @@ export function Document(props: { meta: Meta; links: Links; children: JSX.Elemen
           <div {...stylex.attrs(s.bar)}>
             <span>beghu</span>
             <span {...stylex.attrs(s.spacer)} />
+            <a href="/cli" {...stylex.attrs(s.footLink)}>
+              CLI
+            </a>
             <a href="/pricing" {...stylex.attrs(s.footLink)}>
               Pricing
             </a>
