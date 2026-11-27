@@ -21,6 +21,7 @@ createdAt: number,
  */
 expiresAt: number, 
 /**
- * `pending`, `approved` or `denied`.
+ * `pending`, `approved`, `denied`, or `account_gone` (approved, then its account
+ * disconnected or went dormant).
  */
 state: string, };

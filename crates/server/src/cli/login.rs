@@ -17,6 +17,9 @@
 //!
 //! The logins waiting at once, and the wrong codes a browser session may try, are limited
 //! (`cli::limits`): over either, `429` with `Retry-After`.
+//!
+//! A login its account approved, then left (Disconnect, dormancy) before the poll collected it,
+//! is marked `account_gone`: its poll answers `410 login_account_gone`, and it never mints.
 
 use super::limits::{ClientOf, Guesser};
 use super::new_token;
@@ -225,14 +228,16 @@ enum Polled {
     Ended {
         denied: bool,
     },
-    /// Approved, by an account that can't have a credential any more.
+    /// Approved, by an account that can't have a credential any more: one that disconnected or
+    /// went dormant since (state `account_gone`), or must sign in again.
     AccountGone,
     Approved(Approved),
 }
 
 /// `POST /api/cli/login/poll`. An approved login mints its credential only while its account
-/// is active: one that has disconnected or gone dormant since (whose transactions delete its
-/// logins too) or must sign in again ends the login, `410 login_account_gone`.
+/// is active. One whose account has disconnected or gone dormant since (whose transactions mark
+/// the logins it approved `account_gone`, so none mints after a sign-in brings the account
+/// back), or must sign in again, ends the login, `410 login_account_gone`.
 pub async fn poll(State(app): State<App>, Json(body): Json<Poll>) -> Result<Response, RunError> {
     let Some(hash) = unb64(&body.device)
         .filter(|r| r.len() == 32)
@@ -273,6 +278,10 @@ pub async fn poll(State(app): State<App>, Json(body): Json<Poll>) -> Result<Resp
                 ("denied", _) => {
                     control_db::q::delete_cli_login(tx, &hash)?;
                     Ok(Polled::Ended { denied: true })
+                }
+                ("account_gone", _) => {
+                    control_db::q::delete_cli_login(tx, &hash)?;
+                    Ok(Polled::AccountGone)
                 }
                 _ => Ok(Polled::Pending),
             }
@@ -319,7 +328,8 @@ pub struct CliCode {
     pub created_at: i64,
     /// When it expires (Unix seconds).
     pub expires_at: i64,
-    /// `pending`, `approved` or `denied`.
+    /// `pending`, `approved`, `denied`, or `account_gone` (approved, then its account
+    /// disconnected or went dormant).
     pub state: String,
 }
 

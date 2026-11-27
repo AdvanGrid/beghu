@@ -764,7 +764,7 @@ async fn a_machines_name_loses_its_control_and_bidi_characters() {
 #[tokio::test]
 async fn an_approved_login_whose_account_disconnected_or_lost_access_mints_nothing() {
     let s = start().await;
-    // Approved, then Disconnect before the CLI's next poll: the login goes with the account.
+    // Approved, then Disconnect before the CLI's next poll: the login ends with the account.
     let mut ilze = s.sign_in("ilze-k").await;
     let started = login(&s, "ilze's laptop").await;
     assert_eq!(
@@ -780,6 +780,15 @@ async fn an_approved_login_whose_account_disconnected_or_lost_access_mints_nothi
         .post_form(&mut ilze, "/auth/disconnect", &[("account", &account)])
         .await;
     assert_eq!(res.status(), 303);
+    // Signed in again before the poll: the account is active, and the login still mints nothing.
+    let mut ilze = s.sign_in("ilze-k").await;
+    assert_eq!(s.api(&mut ilze, "/api/me").await.0, 200);
+    let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (410, Some("login_account_gone"))
+    );
+    // The login is over.
     let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
     assert_eq!(
         (status, body["error"].as_str()),
@@ -838,6 +847,6 @@ async fn an_approved_login_whose_account_went_dormant_mints_nothing() {
     let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
     assert_eq!(
         (status, body["error"].as_str()),
-        (410, Some("login_expired"))
+        (410, Some("login_account_gone"))
     );
 }

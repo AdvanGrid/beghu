@@ -37,7 +37,7 @@ WHERE code_hash = :code_hash AND state = 'pending' AND expires_at > :now;
 SELECT state, github_user_id, name, expires_at FROM cli_logins
 WHERE device_hash = :device_hash;
 
--- The poll that mints the token, or finds the login denied, ends it.
+-- The poll that mints the token, or finds the login denied or its account gone, ends it.
 -- name: delete_cli_login :exec
 -- param: device_hash &[u8]
 DELETE FROM cli_logins WHERE device_hash = :device_hash;
@@ -79,11 +79,11 @@ ORDER BY created_at DESC, id;
 -- param: id &str
 DELETE FROM cli_tokens WHERE github_user_id = :account AND id = :id;
 
--- Dormancy and Disconnect: every login the account approved that no poll has collected yet, so
--- none mints a token after.
--- name: delete_account_cli_logins :exec
+-- Dormancy and Disconnect: every login the account approved that no poll has collected yet is
+-- `account_gone`, so none mints a token after, and its poll says why.
+-- name: end_account_cli_logins :exec
 -- param: account i64
-DELETE FROM cli_logins WHERE github_user_id = :account;
+UPDATE cli_logins SET state = 'account_gone' WHERE github_user_id = :account;
 
 -- Dormancy and Disconnect: every one of the account's tokens.
 -- name: delete_account_cli_tokens :exec
