@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// An account goes dormant 3 s after its last use (the check runs every 100 ms), and a request
 /// counts as use whenever it comes (`activity_every` zero: no hourly limit).
-fn dormant_after_3s(c: &mut beghu::Config) {
+fn dormant_after_3s(c: &mut beghu_server::Config) {
     c.accounts_check_every = Duration::from_millis(100);
     c.dormant_after = Duration::from_secs(3);
     c.activity_every = Duration::ZERO;
@@ -172,7 +172,7 @@ async fn hold_the_writer(s: &Stack, account: i64) -> (WriteLock, (i64, String)) 
 /// (`last_active_at` is in whole seconds; the check runs every 100 ms). A write held up from
 /// just after that use ([`hold_the_writer`]) holds the delete's window open until about 5 s
 /// after it.
-fn dormant_after_2s(c: &mut beghu::Config) {
+fn dormant_after_2s(c: &mut beghu_server::Config) {
     dormant_after_3s(c);
     c.dormant_after = Duration::from_secs(2);
 }
@@ -231,7 +231,7 @@ async fn a_sign_in_while_the_mirror_is_being_deleted_keeps_the_account_and_its_m
     // Only the sign-in counts as use: requests move `last_active_at` hourly.
     let s = start_with(|c| {
         dormant_after_2s(c);
-        c.activity_every = beghu::default_activity_every();
+        c.activity_every = beghu_server::default_activity_every();
     })
     .await;
     let mut b = s.sign_in("ilze-k").await;

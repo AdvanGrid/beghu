@@ -14,13 +14,13 @@ const INSTALLATION: i64 = 41000001;
 /// The fixture without the PR view's recorded PR, so the org's is the only installation: for a
 /// test that counts or times one installation's background reads, which the other's would add
 /// to. Every other test runs on the default fixture, both installations at work.
-async fn start_single(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+async fn start_single(adjust: impl FnOnce(&mut beghu_server::Config)) -> Stack {
     start_on(single_installation_fixture(), adjust).await
 }
 
 /// Sweeps on a short schedule: probes every 300 ms, counts and orders every 600 ms, and every
 /// change they repair counted as missed.
-fn sweeping(c: &mut beghu::Config) {
+fn sweeping(c: &mut beghu_server::Config) {
     c.reconcile.tick = Duration::from_millis(100);
     c.reconcile.probe_every = Duration::from_millis(300);
     c.reconcile.count_every = Duration::from_millis(600);
@@ -28,7 +28,7 @@ fn sweeping(c: &mut beghu::Config) {
 }
 
 /// Redelivery every half second; sweeps off.
-fn redelivering(c: &mut beghu::Config) {
+fn redelivering(c: &mut beghu_server::Config) {
     c.reconcile.redeliver_every = Duration::from_millis(500);
 }
 
@@ -228,7 +228,7 @@ async fn after_a_short_outage_the_next_start_replays_the_missed_deliveries() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_outage_longer_than_redelivery_covers_gets_a_full_sweep_instead() {
     // 2.5 days, shrunk: an outage past it is too old to replay.
-    let long = |c: &mut beghu::Config| {
+    let long = |c: &mut beghu_server::Config| {
         redelivering(c);
         c.reconcile.outage_after = Duration::from_secs(1);
     };
@@ -330,7 +330,7 @@ async fn more_missed_deliveries_than_the_cap_get_a_full_sweep_instead_of_redeliv
 #[tokio::test(flavor = "multi_thread")]
 async fn a_full_sweep_redelivery_asked_for_is_still_owed_after_a_restart() {
     // Each check reads the log from exactly where the last ended.
-    let capped = |c: &mut beghu::Config| {
+    let capped = |c: &mut beghu_server::Config| {
         redelivering(c);
         c.reconcile.redeliver_cap = 2;
         c.reconcile.redeliver_overlap = Duration::ZERO;
@@ -1073,7 +1073,7 @@ async fn an_issue_deleted_while_its_webhook_was_lost_is_found_by_the_count_check
 
 /// Sweeps on [`sweeping`]'s schedule, with a change counted as missed only once its webhook has
 /// had 3 s to land.
-fn sweeping_with_grace(c: &mut beghu::Config) {
+fn sweeping_with_grace(c: &mut beghu_server::Config) {
     sweeping(c);
     c.reconcile.webhook_grace = Duration::from_secs(3);
 }
@@ -1183,7 +1183,7 @@ async fn opening_a_parent_reads_its_sub_issue_order_back() {
 
 /// A "night" of 2 s: each installation's full sweep falls in it at a time of its own, counted
 /// from its checkpoint (which redelivery's first check of it sets).
-fn nightly(c: &mut beghu::Config) {
+fn nightly(c: &mut beghu_server::Config) {
     c.reconcile.tick = Duration::from_millis(100);
     c.reconcile.redeliver_every = Duration::from_millis(500);
     c.reconcile.full_every = Duration::from_secs(2);

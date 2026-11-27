@@ -48,10 +48,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS server
 COPY --from=planner /src/recipe.json recipe.json
 COPY .cargo .cargo
-RUN cargo chef cook --release --locked -p beghu --recipe-path recipe.json
+RUN cargo chef cook --release --locked -p beghu-server --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked -p beghu \
-    && install -D target/release/beghu /out/beghu \
+RUN cargo build --release --locked -p beghu-server \
+    && install -D target/release/beghu-server /out/beghu-server \
     && install -d /out/data
 
 # 3. The agent's tools, validate.mjs and merge.mjs: the analysis crate built to WASM and inlined
@@ -81,7 +81,7 @@ ENV BEGHU_BUILD_ID=${BEGHU_BUILD_ID} \
     BEGHU_DATA_DIR=/data \
     BEGHU_WEB_DIR=/app/web \
     BEGHU_ANALYSIS_DIR=/app/analysis
-COPY --from=server /out/beghu /app/beghu
+COPY --from=server /out/beghu-server /app/beghu-server
 COPY --from=web /src/web/dist /app/web
 COPY --from=analysis-tools /out/analysis /app/analysis
 COPY --from=server --chown=65532:65532 /out/data /data
@@ -91,4 +91,4 @@ USER nonroot
 # The drain and its WAL checkpoint take up to 25 s: give the stop 30 s (docs/deploy.md,
 # "Stopping"). Docker's default of 10 s cuts the drain short.
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/app/beghu"]
+ENTRYPOINT ["/app/beghu-server"]
