@@ -72,12 +72,27 @@ impl Answer {
 
 impl Api {
     pub fn new(host: &str, token: Option<String>) -> Result<Api, Fail> {
+        Api::build(host, token, reqwest::redirect::Policy::default())
+    }
+
+    /// An API that follows no redirect, for the update's downloads: the build comes from the host
+    /// itself, never from wherever an answer points.
+    pub fn without_redirects(host: &str) -> Result<Api, Fail> {
+        Api::build(host, None, reqwest::redirect::Policy::none())
+    }
+
+    fn build(
+        host: &str,
+        token: Option<String>,
+        redirects: reqwest::redirect::Policy,
+    ) -> Result<Api, Fail> {
         let http = reqwest::Client::builder()
             .user_agent(format!("beghu-cli/{VERSION}"))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(300))
+            .redirect(redirects)
             .build()
-            .map_err(|e| Fail::msg(format!("can't set up HTTPS: {e}")))?;
+            .map_err(|e| Fail::msg(format!("can't set up HTTPS: {}", chain(&e.without_url()))))?;
         Ok(Api {
             http,
             host: host.to_owned(),
@@ -98,15 +113,24 @@ impl Api {
 
     /// Sends the request: its answer, unless it's one every call handles alike.
     pub async fn send(&self, rb: reqwest::RequestBuilder) -> Result<Answer, Fail> {
-        let res = rb
-            .send()
-            .await
-            .map_err(|e| Fail::msg(format!("can't reach {}: {}", self.host, chain(&e))))?;
+        let res = rb.send().await.map_err(|e| {
+            Fail::msg(format!(
+                "can't reach {}: {}",
+                self.host,
+                chain(&e.without_url())
+            ))
+        })?;
         let status = res.status().as_u16();
         let bytes = res
             .bytes()
             .await
-            .map_err(|e| Fail::msg(format!("{} stopped answering: {}", self.host, chain(&e))))?
+            .map_err(|e| {
+                Fail::msg(format!(
+                    "{} stopped answering: {}",
+                    self.host,
+                    chain(&e.without_url())
+                ))
+            })?
             .to_vec();
         let a = Answer { status, bytes };
         let e = a.error();
@@ -139,6 +163,7 @@ impl Api {
 }
 
 /// An error with its causes, as one line: reqwest's own says little ("error sending request").
+/// Give it a reqwest error `without_url()`: a run's URL holds its token, which is never printed.
 fn chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut src = e.source();

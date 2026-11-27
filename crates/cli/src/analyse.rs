@@ -17,7 +17,7 @@
 
 use crate::account::{credentials, host_for, signed_in_api};
 use crate::reader::Checkouts;
-use crate::store::{Doc, Value, write_private};
+use crate::store::{Doc, Value, private_dir, write_private};
 use crate::{Args, Fail};
 use analysis::{Context, PinnedPr, Previous, PreviousIds, Report, Vocabulary};
 use serde::Deserialize;
@@ -207,8 +207,8 @@ async fn start(rest: &[String]) -> Result<(), Fail> {
     }
     let started: Started = res.json("starting the run")?;
     let dir = Path::new(RUNS).join(format!("run-{}", started.run));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| Fail::msg(format!("can't make {}: {e}", dir.display())))?;
+    // Both `0700`, `.beghu` too when this makes it: the folder holds the run's token.
+    private_dir(&dir).map_err(Fail::Msg)?;
     // Never committed: the folder holds the run's token.
     let ignore = Path::new(RUNS).join(".gitignore");
     if !ignore.exists() {

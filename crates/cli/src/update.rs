@@ -1,16 +1,17 @@
 //! `beghu update`, and the update a `426` makes by itself: download the host's build for this
 //! platform (`/cli/{os}-{arch}/beghu`), check its SHA-256 and size against the host's
-//! `/cli/manifest.json`, write it beside this binary and rename it over (atomic: the old one runs
-//! on until it exits). It installs exactly the host's build, newer or older.
+//! `/cli/manifest.json`, write it to a new file beside this binary and rename it over (atomic:
+//! the old one runs on until it exits), then sync the folder. Neither fetch follows a redirect.
+//! It installs exactly the host's build, newer or older.
 
 use crate::account::{credentials, host_for};
 use crate::http::{self, Api};
+use crate::store;
 use crate::{Args, Fail};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 
 #[derive(Deserialize)]
@@ -59,7 +60,7 @@ pub async fn install(host: &str) -> Result<Installed, Error> {
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .map_err(|e| Fail::msg(format!("can't find this binary's own file: {e}")))?;
-    let api = Api::new(host, None)?;
+    let api = Api::without_redirects(host)?;
     let res = api.get("/cli/manifest.json").await?;
     if res.status != 200 {
         return Err(Fail::msg(format!("{host} serves no CLI builds: {}", res.why())).into());
@@ -78,21 +79,13 @@ pub async fn install(host: &str) -> Result<Installed, Error> {
     if hex(&Sha256::digest(&mine)) == b.sha256 {
         return Ok(Installed::Already { version: m.version });
     }
-    let dir = exe.parent().unwrap_or(std::path::Path::new("/"));
-    let tmp = dir.join(format!(".beghu-update.{}", std::process::id()));
-    let mut f = match std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o755)
-        .open(&tmp)
-    {
-        Ok(f) => f,
+    let (mut f, tmp) = match store::temp_beside(&exe, 0o755) {
+        Ok(made) => made,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             return Err(Error::NotWritable(exe));
         }
         Err(e) => {
-            return Err(Fail::msg(format!("can't write {}: {e}", tmp.display())).into());
+            return Err(Fail::msg(format!("can't write beside {}: {e}", exe.display())).into());
         }
     };
     let done = async {
@@ -114,7 +107,7 @@ pub async fn install(host: &str) -> Result<Installed, Error> {
         let failed = |e: std::io::Error| Fail::msg(format!("can't write {}: {e}", tmp.display()));
         f.write_all(&res.bytes).map_err(failed)?;
         f.sync_all().map_err(failed)?;
-        std::fs::rename(&tmp, &exe).map_err(|e| match e.kind() {
+        store::rename_durably(&tmp, &exe).map_err(|e| match e.kind() {
             std::io::ErrorKind::PermissionDenied => {
                 Fail::msg(format!("can't replace {}: {e}", exe.display()))
             }
