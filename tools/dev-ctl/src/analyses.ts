@@ -203,9 +203,12 @@ export async function upload(server: string, controlUrl: string, login: string, 
   });
   const body = (await res.json().catch(() => null)) as { analysis?: string; headSha?: string; warnings?: unknown[]; message?: string; report?: unknown } | null;
   const carried = JSON.stringify(body?.report ?? "").includes('"rule":"carry.');
-  if (res.status === 422 && carried && !tile && want.version === undefined && want.after === undefined) {
+  // A first analysis (v1, or a case not after v1; v1 also goes first for a case after it) can't
+  // follow another of the PR's on the same account.
+  const first = !tile && want.after === undefined && (want.version === undefined || want.version === 1);
+  if (res.status === 422 && carried && first) {
     throw new Error(
-      `${want.name} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it as an account with none (--as ilze-k), or after ./dev-ctl reset as another account`,
+      `${want.version === undefined ? want.name : `v${want.version}`} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it as an account with none (--as ilze-k), or after ./dev-ctl reset as another account`,
     );
   }
   if (res.status !== 201 || !body?.analysis) {
