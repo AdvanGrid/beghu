@@ -38,6 +38,8 @@ test("approving a beghu login signs it in, and the setup page lists and revokes 
   await expect(panel(page).getByRole("heading", { name: "Sign in the beghu CLI" })).toBeVisible();
   await expect(panel(page).getByText(name)).toBeVisible();
   await expect(panel(page).locator('[data-perf="cli-code"]')).toHaveText(code);
+  // When `beghu login` started it, a moment ago.
+  await expect(panel(page).locator('[data-perf="cli-started"]')).toHaveText("now");
   await expect(panel(page).getByText("It will act as tomsj")).toBeVisible();
   await panel(page).getByRole("button", { name: "Approve" }).click();
   await expect(panel(page).getByRole("status")).toContainText(`Approved: the beghu CLI on ${name} is signed in as tomsj`);
@@ -58,8 +60,14 @@ test("approving a beghu login signs it in, and the setup page lists and revokes 
   await expect(row).toContainText("now");
 
   // Revoke: gone from the list at once, and the CLI's next call is refused.
-  await row.getByRole("button", { name: "Revoke" }).click();
+  await row.getByRole("button", { name: `Revoke ${name}` }).click();
   await expect(row).toHaveCount(0);
+  // Shown again without a reload (the list, then back), it isn't listed from the cache.
+  await page.getByRole("link", { name: "Close" }).click();
+  await page.waitForURL((u) => u.pathname === "/issues");
+  await page.goBack();
+  await expect(signIns(page).getByRole("heading", { name: "CLI sign-ins" })).toBeVisible();
+  await expect(signIns(page).locator('[data-perf="cli-sign-in"]', { hasText: name })).toHaveCount(0);
   await expect
     .poll(async () => (await request.get("/api/cli/status", { headers: { authorization: `Bearer ${token}` } })).status())
     .toBe(401);

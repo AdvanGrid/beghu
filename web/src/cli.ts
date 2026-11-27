@@ -3,7 +3,7 @@
 // through `request`, so a failure is one of api.ts's named errors (`Gone` for a code that isn't a
 // live login's, `Unreachable`, …). Never first-load JS: the setup page's chunk and the confirm
 // page's import it.
-import { query } from "@solidjs/router";
+import { query, revalidate } from "@solidjs/router";
 import { request } from "./api";
 import type { CliCode } from "./bindings/CliCode";
 import type { CliSignIn } from "./bindings/CliSignIn";
@@ -13,9 +13,13 @@ export type { CliCode, CliSignIn };
 /** The account's CLI sign-ins, the newest first. */
 export const getCliSignIns = query(() => request<CliSignIn[]>("/api/cli/sign-ins"), "cli-sign-ins");
 
-/** Revokes one: its next call answers 401, and the CLI forgets it. */
+/**
+ * Revokes one: its next call answers 401, and the CLI forgets it. Once the server took it, the
+ * list is read again, so the setup page shown again later doesn't list it from the cache.
+ */
 export async function revokeSignIn(id: string): Promise<void> {
   await request<null>(`/api/cli/sign-ins/${encodeURIComponent(id)}`, { method: "DELETE" });
+  void revalidate(getCliSignIns.key);
 }
 
 /** A code as typed: its letters, upper case, without spaces or the dash; "" when it can't be one. */

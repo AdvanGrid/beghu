@@ -1,13 +1,14 @@
 // `/cli/login`: where a person approves a `beghu login` (#179), in the panel's place beside the
 // list, its own chunk (router.tsx). The CLI opens it with its code in the URL (`?code=BCDF-GHJK`),
-// or prints both over SSH, when the code is typed here. It shows the machine's name, the account
-// the CLI will act as (the browser's active one; another of its accounts is a switch away), and
-// Approve and Deny. Approve signs the CLI in as that account: it can then start analysis runs
+// or prints both over SSH, when the code is typed here. It shows the machine's name, when the
+// login started, the account the CLI will act as (the browser's active one; another of its
+// accounts is a switch away), and Approve and Deny. Approve signs the CLI in as that account: it can then start analysis runs
 // and act within them, never anything else. A decision that fails is undone and says so.
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, Errored, For, Loading, Match, Show, Switch } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { forgetFailure, getMe, Gone, SessionEnded, signIn } from "./api";
+import { forgetFailure, getMe, Gone, SessionEnded, signIn, TooManyCodes } from "./api";
+import { ago, fullDate } from "./time";
 import { decideCliLogin, getCliCode, normaliseCode, shownCode, type CliCode } from "./cli";
 import { Failure } from "./Root";
 import { colors, fonts } from "./tokens.stylex";
@@ -107,7 +108,9 @@ function Confirm(props: { code: string }) {
       setFailed(
         e instanceof Gone
           ? "This sign-in has expired, or was decided already. Run beghu login again."
-          : `Couldn't ${approve ? "approve" : "deny"} it. Try again.`,
+          : e instanceof TooManyCodes
+            ? tooManyCodes(e)
+            : `Couldn't ${approve ? "approve" : "deny"} it. Try again.`,
       );
     } finally {
       setBusy(false);
@@ -177,6 +180,10 @@ function Details(props: { login: CliCode }) {
     <dl {...stylex.attrs(s.details)}>
       <dt {...stylex.attrs(s.muted)}>Machine</dt>
       <dd {...stylex.attrs(s.dd)}>{props.login.name}</dd>
+      <dt {...stylex.attrs(s.muted)}>Started</dt>
+      <dd {...stylex.attrs(s.dd)} title={fullDate(props.login.createdAt)} data-perf="cli-started">
+        {ago(props.login.createdAt)}
+      </dd>
       <dt {...stylex.attrs(s.muted)}>Code</dt>
       <dd {...stylex.attrs(s.dd, s.code)} data-perf="cli-code">
         {props.login.code}
@@ -185,11 +192,17 @@ function Details(props: { login: CliCode }) {
   );
 }
 
+/** What `/cli/login` says once this browser has tried too many wrong codes. */
+function tooManyCodes(e: TooManyCodes): string {
+  const minutes = Math.max(1, Math.ceil(e.retryAfter / 60));
+  return `Too many codes from this browser weren't a waiting sign-in's. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+}
+
 function CodeFailure(props: { error: unknown; code: string; reset: () => void }) {
+  const tooMany = () => (props.error instanceof TooManyCodes ? props.error : undefined);
   return (
     <Failure error={props.error}>
-      <Show
-        when={props.error instanceof Gone}
+      <Switch
         fallback={
           <p {...stylex.attrs(s.body, s.text)} role="alert">
             Couldn't read this sign-in ·{" "}
@@ -206,8 +219,19 @@ function CodeFailure(props: { error: unknown; code: string; reset: () => void })
           </p>
         }
       >
-        <CodeForm said={`No sign-in is waiting with the code ${shownCode(props.code)}: it has expired (codes last 10 minutes), or was used. Check the code, or run beghu login again.`} />
-      </Show>
+        <Match when={tooMany()}>
+          {(e) => (
+            <p {...stylex.attrs(s.body, s.error)} role="alert">
+              {tooManyCodes(e())}
+            </p>
+          )}
+        </Match>
+        <Match when={props.error instanceof Gone}>
+          <CodeForm
+            said={`No sign-in is waiting with the code ${shownCode(props.code)}: it has expired (codes last 10 minutes), or was used. Check the code, or run beghu login again.`}
+          />
+        </Match>
+      </Switch>
     </Failure>
   );
 }

@@ -463,7 +463,13 @@ function SignInList() {
                     {ago(x().lastUsedAt)}
                   </td>
                   <td {...stylex.attrs(s.actions)}>
-                    <button type="button" disabled={paused()} onClick={() => void revoke(x())} {...stylex.attrs(s.button)}>
+                    <button
+                      type="button"
+                      aria-label={`Revoke ${x().name}`}
+                      disabled={paused()}
+                      onClick={() => void revoke(x())}
+                      {...stylex.attrs(s.button)}
+                    >
                       Revoke
                     </button>
                   </td>
