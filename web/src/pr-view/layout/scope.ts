@@ -72,6 +72,8 @@ const MUST = 1e9;
 /** A part's pull back to its packed place, against its neighbours'; a port's is light. */
 const PULL = 1.5;
 const PORT_PULL = 0.05;
+/** Rounds of routing and widening the gaps, at most. */
+const ROUNDS = 8;
 
 /** A trunk's drawn width, from how many lines it carries. */
 export const trunkWidth = (n: number) => Math.min(3 + 1.5 * n, 12);
@@ -719,7 +721,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   let hUse: Int32Array[] = [];
   let paths = new Map<string, { lv: number[]; long: boolean }>();
   const streets = new Streets(colWidth);
-  for (let grow = 0; grow < 8; grow++) {
+  for (let grow = 0; grow < ROUNDS; grow++) {
     place(extra);
     const raw: number[] = [];
     for (const col of partCols) {
@@ -776,7 +778,9 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         return add;
       });
     });
-    if (!grew) break;
+    // On the last round the drawing keeps the room it was placed with: the anchors record that
+    // room, so laying out from them gives this drawing back.
+    if (!grew || grow + 1 === ROUNDS) break;
     extra = widened;
   }
 

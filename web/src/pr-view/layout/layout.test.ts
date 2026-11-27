@@ -194,12 +194,17 @@ function checkRules(L: Layout, input: LayoutInput) {
       }
 }
 
-/** Every part and route in `a` is exactly as in `b`. */
+/** `b` is exactly `a`: every part, route and trunk, every scope's rectangle and group frames, and the size. */
 function same(a: Layout, b: Layout, what: string) {
   assert.deepEqual([...b.parts.keys()].sort(), [...a.parts.keys()].sort(), `${what}: the same parts`);
   for (const [id, p] of a.parts) assert.deepEqual(b.parts.get(id), p, `${what}: ${id} moved`);
   assert.deepEqual([...b.routes.keys()].sort(), [...a.routes.keys()].sort(), `${what}: the same lines`);
   for (const [id, r] of a.routes) assert.deepEqual(b.routes.get(id), r, `${what}: ${id}'s route changed`);
+  assert.equal(b.trunks.length, a.trunks.length, `${what}: the same number of trunks`);
+  a.trunks.forEach((t, i) => assert.deepEqual(b.trunks[i], t, `${what}: trunk ${t.id} changed`));
+  assert.deepEqual([...b.scopes.keys()].sort(), [...a.scopes.keys()].sort(), `${what}: the same scopes`);
+  for (const [id, s] of a.scopes) assert.deepEqual(b.scopes.get(id), s, `${what}: scope ${id}'s rectangle or group frames changed`);
+  assert.deepEqual([b.width, b.height], [a.width, a.height], `${what}: the drawing's size changed`);
 }
 
 /** Each scope's drawing with every block in it folded: what its anchors are, by graph and scope. */
@@ -585,6 +590,23 @@ describe("our layout on random graphs", () => {
       t.openOne();
       t.foldDeep();
       t.foldAll();
+    });
+  }
+});
+
+describe("our layout from its own answer", () => {
+  // A drawing's anchors are the drawing: laid out again from them, it comes back exactly. On
+  // random graphs of 40 to 160 nodes, at the top level and fully open, boxes on and off. (Before
+  // the anchors kept the room the drawing was placed with, seeds 2, 5 and 6 moved parts.)
+  for (let seed = 0; seed < 8; seed++) {
+    const n = 40 + ((seed * 37) % 121);
+    it(`at seed ${seed} (${n} nodes)`, () => {
+      const g = randomGraph(seed, n);
+      const t = openAndFold(g);
+      for (const view of [{ open: new Set<string>() }, { open: new Set<string>(), boxes: true }, { open: t.blocks }, { open: t.blocks, boxes: true }]) {
+        const fresh = t.run(view).L;
+        same(fresh, t.run(view, fresh).L, `${JSON.stringify({ ...view, open: view.open.size })} from itself`);
+      }
     });
   }
 });
