@@ -7,7 +7,7 @@ description = "The contract check: sends Fake GitHub's request set to GitHub (or
 
 [dependencies]
 # beghu's own GraphQL documents and its App JWT signing.
-beghu = { path = "../server" }
+beghu-server = { path = "../server" }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

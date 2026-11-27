@@ -1,0 +1,43 @@
+[package]
+name = "beghu"
+# The CLI's semver: bumped by hand whenever its behaviour changes, since the server's floor
+# (`MIN_CLI`, crates/server/src/cli/mod.rs) compares it. The server reads it from here too, as the
+# version it answers for when it serves no builds of its own.
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "The beghu CLI: signs in to a beghu deployment and drives the PR view's analysis runs."
+
+[[bin]]
+name = "beghu"
+path = "src/main.rs"
+
+[dependencies]
+# The validator, the split check and the merge, run natively over the two checkouts.
+analysis = { path = "../analysis" }
+# `beghu analyse upload` always gzips. Already in the build through the server.
+flate2 = "1"
+# rustls with its bundled roots (webpki-roots), not native-tls: the cross-builds for musl and
+# macOS need no system SDK or OpenSSL, and the binary reads no system certificate store.
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `beghu update` checks its download against the host's manifest.
+sha2 = "0.10"
+tokio = { workspace = true }
+
+[dev-dependencies]
+# The tests run the built binary against the server tests' harness (crates/server/tests/common),
+# which needs what the server's own tests do.
+beghu-server = { path = "../server" }
+bytes = "1"
+fake-github = { path = "../fake-github" }
+fixture = { workspace = true }
+futures-util = { version = "0.3", default-features = false }
+rand = "0.9"
+rusqlite = { workspace = true }
+serde_urlencoded = "0.7"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@
 //! The build writes `site/pages.json` (each page's path and file) next to the files. They name
 //! beghu's own origin (canonical URLs, Open Graph, the sitemap) as [`ORIGIN`], since a build
 //! doesn't know where it will be served; it's filled in from `BEGHU_PUBLIC_URL` once, at
-//! startup.
+//! startup, and so is [`HOST_FLAG`], the `--host` that `/cli`'s `beghu login` needs.
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -18,6 +18,9 @@ use std::path::Path;
 
 /// Where the build writes beghu's origin, as `web/site/build.ts` does.
 pub const ORIGIN: &str = "%BEGHU_ORIGIN%";
+/// Where the build writes what `beghu login` needs to name this deployment (`/cli`): nothing for
+/// the hosted one, the CLI's default host, and ` --host <origin>` for any other.
+pub const HOST_FLAG: &str = "%BEGHU_HOST_FLAG%";
 
 /// The first path segments the server answers itself: no page may take one.
 const RESERVED: &[&str] = &[
@@ -95,7 +98,12 @@ impl Site {
 }
 
 fn file(body: &str, origin: &str, content_type: &'static str) -> File {
-    let body = Bytes::from(body.replace(ORIGIN, origin));
+    let flag = if origin == crate::cli::DEFAULT_HOST {
+        String::new()
+    } else {
+        format!(" --host {origin}")
+    };
+    let body = Bytes::from(body.replace(HOST_FLAG, &flag).replace(ORIGIN, origin));
     let hash = Sha256::digest(&body);
     let tag: String = hash[..12].iter().map(|b| format!("{b:02x}")).collect();
     File {

@@ -165,6 +165,16 @@ export class TooSoon extends Error {
     super(message);
   }
 }
+/** Too many `beghu login` codes from this browser that weren't a waiting sign-in's. */
+export class TooManyCodes extends Error {
+  constructor(
+    message: string,
+    /** Seconds until a code can be tried again. */
+    readonly retryAfter: number,
+  ) {
+    super(message);
+  }
+}
 /** GitHub couldn't be reached for the write: it's down, or kept failing. */
 export class GitHubDown extends Error {}
 /**
@@ -243,6 +253,8 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
       return new Changed(said, body.current ?? "", body.digest ?? "");
     case "too_soon":
       return new TooSoon(said, retryAfter);
+    case "too_many_codes":
+      return new TooManyCodes(said, retryAfter);
     case "github_down":
       return new GitHubDown(said);
     case "lost":

@@ -42,6 +42,15 @@ const PrefsPanel = lazy(
   { export: "PrefsPanel" },
 );
 
+/** `/cli/login`, where a `beghu login` is approved: its own chunk too. */
+const CliLoginPanel = lazy(
+  () =>
+    import("./CliLogin").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load the CLI's sign-in: ${String(e)}`);
+    }),
+  { export: "CliLoginPanel" },
+);
+
 // The list is the root layout and always mounted, at `/issues` (`/` is the public site's landing
 // page, web/site/); the view lives in the query string. An open issue is its own path, GitHub's
 // (`/acme/web/issues/12`, `/acme/web/pull/7` for a PR, at.ts), with the view kept in the query
@@ -72,6 +81,8 @@ export const Router = createRouter({
     { path: "/repos", component: RepoPickerPanel },
     // So do the account's preferences.
     { path: "/prefs", component: PrefsPanel },
+    // And approving a `beghu login`.
+    { path: "/cli/login", component: CliLoginPanel },
   ],
   preloadLinks: [intentPreload(), tapPreload()],
 });

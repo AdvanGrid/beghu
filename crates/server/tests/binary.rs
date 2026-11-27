@@ -1,13 +1,13 @@
-//! The real `beghu` binary, configured from the environment only: it refuses to start without a
+//! The real `beghu-server` binary, configured from the environment only: it refuses to start without a
 //! required variable, naming it, and with a valid environment it serves `/healthz`.
 
 use std::io::Read as _;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_beghu");
+const BIN: &str = env!("CARGO_BIN_EXE_beghu-server");
 
-/// Everything `beghu` needs, for a data directory under `dir` and `port`.
+/// Everything `beghu-server` needs, for a data directory under `dir` and `port`.
 fn valid_env(dir: &std::path::Path, port: u16) -> Vec<(&'static str, String)> {
     vec![
         ("PORT", port.to_string()),
@@ -39,7 +39,7 @@ fn beghu(env: &[(&str, String)]) -> Command {
     cmd
 }
 
-/// A running `beghu`, killed when dropped, so a failing test leaves no process behind.
+/// A running `beghu-server`, killed when dropped, so a failing test leaves no process behind.
 struct Running(Child);
 
 impl Running {

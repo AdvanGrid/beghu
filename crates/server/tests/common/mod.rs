@@ -105,7 +105,7 @@ pub const SITE: &[(&str, &str)] = &[
     ),
     (
         "pricing.html",
-        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/pricing"></head><body>Free in beta</body></html>"#,
+        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/pricing"></head><body>Free in beta<pre>beghu login%BEGHU_HOST_FLAG%</pre></body></html>"#,
     ),
     (
         "robots.txt",
@@ -169,12 +169,12 @@ pub async fn start() -> Stack {
 }
 
 /// Starts a fake and a server, letting the test adjust the server's config first.
-pub async fn start_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+pub async fn start_with(adjust: impl FnOnce(&mut beghu_server::Config)) -> Stack {
     start_on(fixture(), adjust).await
 }
 
 /// Starts a fake and a server on `fixture` (a variant of the 1k fixture, say).
-pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+pub async fn start_on(fixture: PathBuf, adjust: impl FnOnce(&mut beghu_server::Config)) -> Stack {
     start_seeded(fixture, true, adjust).await
 }
 
@@ -185,7 +185,7 @@ pub async fn start_fresh() -> Stack {
 }
 
 /// `start_fresh`, letting the test adjust the server's config first.
-pub async fn start_fresh_with(adjust: impl FnOnce(&mut beghu::Config)) -> Stack {
+pub async fn start_fresh_with(adjust: impl FnOnce(&mut beghu_server::Config)) -> Stack {
     start_seeded(fixture(), false, adjust).await
 }
 
@@ -249,7 +249,7 @@ pub fn full_parent_fixture() -> PathBuf {
 async fn start_seeded(
     fixture: PathBuf,
     pristine: bool,
-    adjust: impl FnOnce(&mut beghu::Config),
+    adjust: impl FnOnce(&mut beghu_server::Config),
 ) -> Stack {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
@@ -326,7 +326,7 @@ impl Stack {
     /// Starts a new server on the same data directory and Fake GitHub, as a deploy or a crash
     /// and restart would, and points the stack (and the fake's webhooks) at it. Nothing in
     /// memory carries over. The old server is stopped first.
-    pub async fn restart_with(&mut self, adjust: impl FnOnce(&mut beghu::Config)) {
+    pub async fn restart_with(&mut self, adjust: impl FnOnce(&mut beghu_server::Config)) {
         self.try_restart_with(adjust).await.unwrap();
     }
 
@@ -334,17 +334,30 @@ impl Stack {
     /// panicking; the stack then has no server running.
     pub async fn try_restart_with(
         &mut self,
-        adjust: impl FnOnce(&mut beghu::Config),
+        adjust: impl FnOnce(&mut beghu_server::Config),
     ) -> Result<(), String> {
-        self.restart_gated(adjust, None).await
+        self.restart_gated(adjust, None, None).await
+    }
+
+    /// As [`Stack::restart_with`], on the same address: a deploy that keeps its URL, for a client
+    /// that keeps it (the CLI's run folder names its host).
+    pub async fn restart_in_place_with(&mut self, adjust: impl FnOnce(&mut beghu_server::Config)) {
+        let addr = self
+            .server
+            .strip_prefix("http://")
+            .expect("the server's URL")
+            .to_owned();
+        self.restart_gated(adjust, None, Some(&addr))
+            .await
+            .unwrap_or_else(|e| panic!("restarting the server on {addr}: {e}"));
     }
 
     /// As [`Stack::restart_with`], but holding the startup back once the server serves, before
     /// it resumes the webhook deliveries and starts the jobs (`Opened::start`), until
     /// [`Held::start`].
-    pub async fn restart_held(&mut self, adjust: impl FnOnce(&mut beghu::Config)) -> Held {
+    pub async fn restart_held(&mut self, adjust: impl FnOnce(&mut beghu_server::Config)) -> Held {
         let (release, gate) = tokio::sync::oneshot::channel();
-        self.restart_gated(adjust, Some((gate, release)))
+        self.restart_gated(adjust, Some((gate, release)), None)
             .await
             .unwrap();
         self.held.take().expect("a held start")
@@ -352,14 +365,34 @@ impl Stack {
 
     async fn restart_gated(
         &mut self,
-        adjust: impl FnOnce(&mut beghu::Config),
+        adjust: impl FnOnce(&mut beghu_server::Config),
         gate: Option<(
             tokio::sync::oneshot::Receiver<()>,
             tokio::sync::oneshot::Sender<()>,
         )>,
+        addr: Option<&str>,
     ) -> Result<(), String> {
         self.stop();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // The same address as before is free once the stopped server's listener has closed: tried
+        // for up to 10 s, then failed by name.
+        let listener = match addr {
+            None => std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+            Some(a) => {
+                let mut tries = 0;
+                loop {
+                    match std::net::TcpListener::bind(a) {
+                        Ok(l) => break l,
+                        Err(_) if tries < 200 => {
+                            tries += 1;
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        Err(e) => panic!(
+                            "restarting the server in place: {a} is still taken 10 s after it stopped (another process may have bound it meanwhile): {e}"
+                        ),
+                    }
+                }
+            }
+        };
         listener.set_nonblocking(true).unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
         let mut cfg = self.config(&server);
@@ -377,9 +410,9 @@ impl Stack {
         // As `main` starts it: serving, then the rest of the startup.
         let (serving, served) = tokio::sync::oneshot::channel();
         let started = rt.spawn(async move {
-            let opened = beghu::App::open(cfg).await?;
+            let opened = beghu_server::App::open(cfg).await?;
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            let _ = serving.send(tokio::spawn(beghu::serve_until(
+            let _ = serving.send(tokio::spawn(beghu_server::serve_until(
                 listener,
                 opened.app(),
                 received,
@@ -442,13 +475,13 @@ impl Held {
 
 impl Stack {
     /// The server's config on this stack's data and Fake GitHub, serving at `public_url`.
-    fn config(&self, public_url: &str) -> beghu::Config {
-        beghu::Config {
+    fn config(&self, public_url: &str) -> beghu_server::Config {
+        beghu_server::Config {
             build_id: BUILD.into(),
             public_url: public_url.to_owned(),
             data_dir: self.data.clone(),
             token_key: b"a test key that is at least 32 bytes long".to_vec(),
-            github: beghu::GitHubConfig {
+            github: beghu_server::GitHubConfig {
                 api_url: self.fake_api.clone(),
                 web_url: self.fake_api.clone(),
                 client_id: CLIENT_ID.into(),
@@ -463,7 +496,13 @@ impl Stack {
             mirrors: mirror_db_config(),
             analysis_tools: Some(self.web.join("analysis-tools")),
             analysis_chain: &analysis::CHAIN,
-            runs: beghu::RunLifetimes::default(),
+            runs: beghu_server::RunLifetimes::default(),
+            cli_dir: None,
+            // `beghu login` polls every second, not every five.
+            cli: beghu_server::CliConfig {
+                poll_every: Duration::from_secs(1),
+                ..beghu_server::CliConfig::default()
+            },
             analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
@@ -476,33 +515,33 @@ impl Stack {
             deliveries_kept_for: Duration::from_secs(3 * 24 * 60 * 60),
             github_probe_every: Duration::from_secs(10),
             github_write_timeout: Duration::from_secs(30),
-            read_back_retries: beghu::default_read_back_retries(),
-            backup_every: beghu::default_backup_every(),
-            assets_kept_for: beghu::default_assets_kept_for(),
-            drain_for: beghu::default_drain_for(),
+            read_back_retries: beghu_server::default_read_back_retries(),
+            backup_every: beghu_server::default_backup_every(),
+            assets_kept_for: beghu_server::default_assets_kept_for(),
+            drain_for: beghu_server::default_drain_for(),
             // The image proxy may fetch from Fake GitHub's stand-in for the web's image hosts.
-            media: beghu::MediaConfig {
+            media: beghu_server::MediaConfig {
                 dev_image_hosts: vec![
                     self.fake_api
                         .trim_start_matches("http://")
                         .parse()
                         .expect("the fake's API listens on ip:port"),
                 ],
-                ..beghu::MediaConfig::default()
+                ..beghu_server::MediaConfig::default()
             },
-            accounts_check_every: beghu::default_accounts_check_every(),
-            dormant_after: beghu::default_dormant_after(),
-            activity_every: beghu::default_activity_every(),
+            accounts_check_every: beghu_server::default_accounts_check_every(),
+            dormant_after: beghu_server::default_dormant_after(),
+            activity_every: beghu_server::default_activity_every(),
             scan_steps: false,
             // Sweeps, periodic redelivery and the events-feed poller stay out of the way of
             // tests about other things: a test about them sets its own schedule
             // (tests/reconcile.rs, tests/prs.rs). Redelivery still runs once at each start, and
             // a full sweep asked for (a Resync) still runs.
-            reconcile: beghu::ReconcileConfig {
+            reconcile: beghu_server::ReconcileConfig {
                 tick: Duration::from_secs(3600),
                 redeliver_every: Duration::from_secs(3600),
                 feed_every: Duration::from_secs(3600),
-                ..beghu::ReconcileConfig::default()
+                ..beghu_server::ReconcileConfig::default()
             },
         }
     }
@@ -542,8 +581,8 @@ impl Drop for Stack {
     }
 }
 
-pub fn mirror_db_config() -> beghu::MirrorsConfig {
-    beghu::MirrorsConfig::default()
+pub fn mirror_db_config() -> beghu_server::MirrorsConfig {
+    beghu_server::MirrorsConfig::default()
 }
 
 /// One browser's cookies, sent back by hand: the session cookie is `Secure`, which a cookie
@@ -779,6 +818,22 @@ impl Stack {
 
     pub fn control_db(&self) -> PathBuf {
         self.data.join("control.db")
+    }
+
+    /// Approves (or, with `approve` false, denies) the `beghu login` showing `code`, as
+    /// `/cli/login` does from `b`: the status.
+    pub async fn decide_cli_login(&self, b: &Browser, code: &str, approve: bool) -> u16 {
+        let what = if approve { "approve" } else { "deny" };
+        self.api_write(
+            b,
+            reqwest::Method::POST,
+            &format!("/api/cli/codes/{code}/{what}"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
     }
 }
 

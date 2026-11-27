@@ -32,6 +32,14 @@ test("the landing page is whole HTML with no app code, and every page names itse
   }
 });
 
+test("/cli names this deployment in its install and login lines", async ({ page }) => {
+  await page.goto("/cli");
+  const origin = new URL(page.url()).origin;
+  await expect(page.getByText(`curl -fsSL ${origin}/cli/install.sh | sh`, { exact: true })).toBeVisible();
+  // Not the hosted beghu, the CLI's default host: `beghu login` needs to be told.
+  await expect(page.getByText(`beghu login --host ${origin}`, { exact: true })).toBeVisible();
+});
+
 test("the landing page follows the theme the app set", async ({ page }) => {
   await page.goto("/");
   const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);

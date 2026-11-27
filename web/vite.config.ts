@@ -12,7 +12,9 @@ import { sitePlugin } from "./site/build.ts";
 
 const server = process.env.BEGHU_SERVER ?? "http://localhost:3000";
 const proxy = Object.fromEntries(
-  ["/api", "/auth", "/healthz", "/readyz", "/webhook"].map((path) => [path, { target: server }]),
+  // The CLI's downloads too (`/cli/install.sh`, `/cli/manifest.json`, `/cli/<os>-<arch>/beghu`),
+  // but not `/cli/login`, the app's own route, nor the site's `/cli` page.
+  ["/api", "/auth", "/healthz", "/readyz", "/webhook", "^/cli/(install\\.sh|manifest\\.json|[a-z]+-[a-z0-9_]+/beghu)$"].map((path) => [path, { target: server }]),
 );
 
 const PRELOAD = "<!--beghu:preload-->";

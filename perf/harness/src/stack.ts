@@ -144,7 +144,7 @@ export async function start(label: string, build: Build, fixture: string, data: 
     "--webhook-secret", DEV.webhookSecret,
     "--setup-url", `${url}/auth/setup`,
   ], {});
-  run("server", join(build.bin, "beghu"), [], {
+  run("server", join(build.bin, "beghu-server"), [], {
     PORT: String(server),
     BEGHU_BUILD_ID: `perf-${label}`,
     BEGHU_PUBLIC_URL: url,

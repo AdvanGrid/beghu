@@ -16,21 +16,28 @@ docker build --build-arg BEGHU_BUILD_ID="$(git rev-parse HEAD)" -t beghu:"$(git 
 deploy/smoke.sh beghu:"$(git rev-parse HEAD)"
 ```
 
-The `Dockerfile` has three stages:
+The `Dockerfile`'s stages:
 
 1. `node:24-bookworm-slim` installs the web app's packages with `npm ci --ignore-scripts`, so no
    package runs an install script, checks their registry signatures with `npm audit signatures`,
    and runs `vite build`. The output has the hashed assets with `.br` and
    `.gz` siblings at maximum compression, and `.vite/manifest.json`, which the server reads at
    startup to find the issue panel's chunk.
-2. `rust:1-slim-bookworm` runs `cargo build --release --locked -p beghu`. It's glibc, not musl,
-   because musl's allocator is slow under multi-threaded tokio and SQLite. The bundled SQLite gets
-   its pinned flags from `.cargo/config.toml`, and the migrations are compiled in.
-3. `gcr.io/distroless/cc-debian13:nonroot` holds `/app/beghu` and the web build in `/app/web`. It
-   runs as `nonroot` (uid 65532), has `/data` as its volume and serves plain HTTP on 8080. It's
-   Debian 13 while the build stages are 12: a binary linked against the older glibc runs on the
-   newer one. `cc-debian12` lagged Debian's libssl3 fix for CVE-2026-84782, which fails
-   deployers' image scans even though beghu (rustls) never loads libssl.
+2. `rust:1-slim-bookworm` runs `cargo build --release --locked -p beghu-server`. It's glibc, not
+   musl, because musl's allocator is slow under multi-threaded tokio and SQLite. The bundled
+   SQLite gets its pinned flags from `.cargo/config.toml`, and the migrations are compiled in.
+3. The same image builds the analysis crate to WASM for the agent's tools, `validate.mjs` and
+   `merge.mjs` (`crates/analysis-wasm/build.sh`).
+4. The same image cross-builds the beghu CLI (`crates/cli`) with `cargo-zigbuild`, zig as the C
+   compiler and linker, for Linux `x86_64` and `aarch64` (static musl) and macOS `aarch64` and
+   `x86_64`, into `/app/cli` (`BEGHU_CLI_DIR`), with its semver as `version`. Zig is pinned by
+   version and SHA-256, cargo-zigbuild by version. The four add about 25 MB to the image.
+5. `gcr.io/distroless/cc-debian13:nonroot` holds `/app/beghu-server`, the web build in
+   `/app/web`, the agent's tools in `/app/analysis` and the CLI in `/app/cli`. It runs as
+   `nonroot` (uid 65532), has `/data` as its volume and serves plain HTTP on 8080. It's Debian 13
+   while the build stages are 12: a binary linked against the older glibc runs on the newer one.
+   `cc-debian12` lagged Debian's libssl3 fix for CVE-2026-84782, which fails deployers' image
+   scans even though beghu (rustls) never loads libssl.
 
 Each base image is pinned by the digest of its multi-arch index. Bump a tag and its digest
 together (`skopeo inspect --raw docker://<image:tag> | sha256sum`). The npm and cargo caches are
@@ -50,6 +57,8 @@ checks that the image:
 - runs as non-root on a fresh named volume;
 - reads its secrets from `_FILE` mounts;
 - serves `/healthz`, `/readyz`, the shell, and a precompressed immutable asset;
+- serves the CLI: its `install.sh` installs this machine's build, which runs and names the
+  image's build;
 - answers 404 for an unknown asset;
 - keeps its state on the volume, the first backup included;
 - exits 0 within the drain after SIGTERM.
@@ -97,6 +106,37 @@ Because the verify command names `publish.yml` and `refs/heads/main`, that workf
 and its trigger are part of what deployers rely on: rename it or give it another trigger, and
 every deployer's check changes meaning.
 
+### The CLI's builds
+
+Each deployment serves the beghu CLI built from its own commit, from `/app/cli`:
+`/cli/{os}-{arch}/beghu` (`linux-x86_64`, `linux-aarch64`, `macos-aarch64`, `macos-x86_64`),
+`/cli/manifest.json` (the CLI's version, the server's build, and each binary's SHA-256 and size)
+and `/cli/install.sh`, which installs the build for the machine it runs on, checked against those
+SHA-256s, with `curl -fsSL https://beghu.example.com/cli/install.sh | sh`. The script names the
+deployment by `BEGHU_PUBLIC_URL`. The `/cli` page of the public site says how engineers install,
+sign in and update it.
+
+The binaries are files in the image, so the image's provenance and SBOM attestations cover them.
+To check a CLI an engineer installed, verify the image as above, then compare the binary with the
+image's copy:
+
+```sh
+docker create --name beghu-cli ghcr.io/advangrid/beghu@sha256:<digest>
+docker cp beghu-cli:/app/cli/linux-x86_64/beghu ./beghu-from-image && docker rm beghu-cli
+sha256sum ./beghu-from-image ~/.local/bin/beghu
+curl -fsS https://beghu.example.com/cli/manifest.json
+```
+
+The macOS builds are cross-built on Linux and never notarised: zig's linker ad-hoc signs them,
+and a download with `curl` (as `install.sh` makes) carries no quarantine flag, so they run. CI's
+`cli-macos` job runs both on a real Apple-silicon Mac (the `x86_64` one under Rosetta) from the
+image CI built.
+
+The server holds every CLI call to `MIN_CLI` (`crates/server/src/cli/mod.rs`): an older CLI's
+calls answer `426`, and it updates itself from the deployment and carries on. A CLI newer than
+the deployment's is refused with `409` and told to run `beghu update`, which installs exactly the
+deployment's build.
+
 ## Environment
 
 A missing or malformed value stops startup with a message that names the variable (exit code 2).
@@ -116,7 +156,9 @@ refused either way.
 | `GITHUB_APP_SLUG` | no | The App's URL name (`github.com/apps/<slug>`). It's where installing starts when GitHub can't be asked. |
 | `PORT` | no (image: 8080) | The plain-HTTP port. Without the image's setting it's 3000. |
 | `BEGHU_BUILD_ID` | no (image: the git SHA, a required build arg) | Letters, digits, `.`, `_` and `-`, up to 64. `dev` if unset. |
-| `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output: the app and the prerendered public site (`site/`: the landing page at `/`, `/pricing`, `/privacy`, `/terms`, `robots.txt` and `sitemap.xml`, whose canonical URLs take their origin from `BEGHU_PUBLIC_URL`). Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app and the site. |
+| `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output: the app and the prerendered public site (`site/`: the landing page at `/`, `/cli`, `/pricing`, `/privacy`, `/terms`, `robots.txt` and `sitemap.xml`, whose canonical URLs take their origin from `BEGHU_PUBLIC_URL`). Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app and the site. |
+| `BEGHU_CLI_DIR` | no (image: `/app/cli`) | The beghu CLI's builds this server serves (see [The CLI's builds](#the-clis-builds)): `version` and `<os>-<arch>/beghu` for each platform built. Set but without `version` or any build refuses startup; unset, `/cli/install.sh`, `/cli/manifest.json` and the binaries answer 404. |
+| `BEGHU_CLIENT_IP_HEADER` | no | The request header your edge overwrites with the address it was called from: `CF-Connecting-IP` (Cloudflare), `Fly-Client-IP` (Fly.io), or `X-Forwarded-For` (the last address in it counts, the one your edge appended). Set, beghu caps the `beghu login`s waiting per client by it. Unset, there's no per-client cap and beghu reads no such header. Name only a header your edge always overwrites: any other is the caller's to forge. Behind more than one proxy, name the outermost edge's header (behind Cloudflare, always `CF-Connecting-IP`): `X-Forwarded-For`'s last address is then the inner proxy's or the outer edge's, not the client's. nginx passes a caller's `X-Forwarded-For` through unless told: with it, set `proxy_set_header X-Forwarded-For $remote_addr;`. See [The edge](#the-edge). |
 | `BEGHU_ANALYSIS_DIR` | no (image: `/app/analysis`) | The agent's tools, `validate.mjs` and `merge.mjs`, built from the same commit (`crates/analysis-wasm/build.sh`). An analysis run serves them as they are. Set but missing either file refuses startup; unset, a run answers 503 for them. |
 | `GITHUB_API_URL` | no | Default `https://api.github.com`. Dev and CI point it at Fake GitHub. |
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
@@ -266,6 +308,18 @@ it (Cloudflare proxied DNS, a Kubernetes ingress, Caddy, nginx) must:
   `private, max-age=300` on the shell (kept by browsers only, so no shared cache serves an old
   build's shell after a deploy), `no-store` on the API, and
   `public, max-age=31536000, immutable` on `/assets/*`.
+- **Rate-limit `POST /api/cli/login` at the edge.** Anyone may start a `beghu login`, signed in
+  or not. beghu caps the logins waiting for approval at 10,000 at once, answering `429` with
+  `Retry-After` past it. That cap keeps the control DB's logins bounded, but one anonymous
+  script can hold it and refuse every `beghu login` for up to 10 minutes at a time. A login
+  starts with one request, so a few a minute per address is plenty.
+- **Set `BEGHU_CLIENT_IP_HEADER` for per-client caps.** beghu never counts by the TCP peer: behind
+  your edge that's the edge, the same for everyone. Name the header your edge overwrites with the
+  caller's address (see [Environment](#environment)), and beghu also caps the logins waiting at
+  20 per client, an IPv6 address counting by its /64.
+- **Without either, one client can block `beghu login`s for everyone** until the logins it holds
+  expire. Browsers are unaffected, and so is every CLI already signed in. The counts are in
+  memory, and a restart forgets them.
 - **Leave `POST /webhook` unchallenged** by WAF, bot and rate rules. GitHub can't answer a
   challenge. beghu checks each delivery's signature itself.
 

@@ -40,7 +40,7 @@ import { GITHUB_DATA, KEY_FILE, SANDBOX, type DevApp, readDevApp } from "./githu
 
 type Proc = "fake" | "server" | "vite" | "smee";
 
-const BINARIES = { fake: join(TARGET, "fake-github"), server: join(TARGET, "beghu") };
+const BINARIES = { fake: join(TARGET, "fake-github"), server: join(TARGET, "beghu-server") };
 
 function log(prefix: string, line: string): void {
   // Strip ANSI escapes so the log reads well in tools.
@@ -83,7 +83,7 @@ function run(cmd: string, args: string[], prefix: string): Promise<{ code: numbe
   });
 }
 
-const build = () => run("cargo", ["build", "-p", "beghu", "-p", "fake-github"], "cargo");
+const build = () => run("cargo", ["build", "-p", "beghu-server", "-p", "fake-github"], "cargo");
 
 /**
  * Builds the agent's tools (validate.mjs, merge.mjs) from this tree into ANALYSIS_TOOLS, as the
@@ -254,7 +254,7 @@ export async function superviseGitHub(): Promise<void> {
     if (!(await portFree(port))) return fail(`port ${port} is already in use; free it or set ${env}`);
   }
   log("dev-ctl", "building the server");
-  if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+  if ((await run("cargo", ["build", "-p", "beghu-server"], "cargo")).code !== 0) {
     return fail("the build failed; see the [cargo] lines above");
   }
   await buildTools();
@@ -315,7 +315,7 @@ export async function superviseGitHub(): Promise<void> {
   watchSources(async (changed) => {
     log("dev-ctl", "sources changed; rebuilding the server");
     const before = mtimes().server;
-    if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+    if ((await run("cargo", ["build", "-p", "beghu-server"], "cargo")).code !== 0) {
       log("dev-ctl", "the build failed; the running server is unchanged");
       return;
     }

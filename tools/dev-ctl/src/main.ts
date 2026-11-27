@@ -1,11 +1,12 @@
 // ./dev-ctl: runs the beghu dev stack (Fake GitHub, the server, Vite) in the background.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, utimesSync, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  CLI_CREDENTIALS,
   DATA,
   DEFAULT_SCALE,
   DEPLOYED,
@@ -26,6 +27,7 @@ import {
   type Seeded,
   STATE,
   SUPERVISOR,
+  TARGET,
   type State,
   URLS,
   WEB_BUILDS,
@@ -40,7 +42,7 @@ import {
 import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
 import { GITHUB_DATA } from "./github.ts";
 import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
-import { imported, upload, versions, type Uploaded } from "./analyses.ts";
+import { imported, Session, upload, versions, type Uploaded } from "./analyses.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
 
@@ -90,7 +92,12 @@ Commands:
   grep PATTERN [PROC]         Search the whole log (regex, case-insensitive) with line
                               numbers; exit 1 if nothing matches.
   login USER                  Print the URL that signs the browser in as a fixture user
-                              (skipping the fake's account picker).
+                              (skipping the fake's account picker), and sign the beghu CLI
+                              in as USER too (./dev-ctl cli), approving its device code.
+  cli ARGS…                   Run the workspace's beghu CLI (rebuilt if its sources changed)
+                              against the stack: BEGHU_HOST is the app, and its credentials
+                              file is under the stack's data (.dev/data/cli/), never your
+                              own. Its exit code is the CLI's. ./dev-ctl cli analyse AdvanGrid/beghu#191.
   fake [state]                The fake's accounts, sign-ins, token lifetimes and faults.
   fake latency ENDPOINT MS [--count N]
                               Delay calls to ENDPOINT by MS (0 removes the rule); with
@@ -549,7 +556,106 @@ async function login(args: string[]): Promise<void> {
     die(`${user} isn't a fixture account; one of ${s.accounts.map((a) => a.login).join(", ")}`);
   }
   const url = `${urls().app}/auth/login?login=${encodeURIComponent(user)}`;
-  print(json, { user, url }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)`);
+  // The browser's URL is printed whatever happens to the CLI's sign-in (its build included).
+  const cli = await cliLogin(user).catch((e: unknown) => `warning: the beghu CLI didn't sign in: ${e instanceof Error ? e.message : String(e)}`);
+  print(json, { user, url, cli }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)\n${cli}`);
+}
+
+/** The newest modification time among `path`'s files (it, if it's a file), in ms; 0 if missing. */
+function newest(path: string): number {
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return 0;
+  }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let most = st.mtimeMs;
+  for (const name of readdirSync(path, { recursive: true, encoding: "utf8" })) {
+    try {
+      most = Math.max(most, statSync(join(path, name)).mtimeMs);
+    } catch {
+      // Gone since the listing.
+    }
+  }
+  return most;
+}
+
+/**
+ * The workspace's `beghu`: its path. Built only when it's missing or older than what it's built
+ * from (its crate's and the analysis crate's sources, the manifests and the lockfile), so a
+ * login or a `./dev-ctl cli` doesn't wait on cargo each time. A failed build throws.
+ */
+function cliBinary(): string {
+  const bin = join(TARGET, "beghu");
+  // Not their tests, which a build of the binary doesn't relink for.
+  const sources = [
+    "crates/cli/src",
+    "crates/cli/Cargo.toml",
+    "crates/analysis/src",
+    "crates/analysis/generated",
+    "crates/analysis/instructions",
+    "crates/analysis/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock",
+  ].map((p) => newest(join(ROOT, p)));
+  if (existsSync(bin) && statSync(bin).mtimeMs > Math.max(...sources)) return bin;
+  const r = spawnSync("cargo", ["build", "--quiet", "-p", "beghu"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
+  if (r.status !== 0) throw new Error("building the beghu CLI failed");
+  // Cargo leaves the binary as it was when nothing it links changed (a touched file, a comment in
+  // a test): newer than its sources now, so the next call doesn't build again.
+  const now = new Date();
+  utimesSync(bin, now, now);
+  return bin;
+}
+
+/** The CLI's environment on the stack: its host is the app, its credentials the stack's. */
+function cliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, BEGHU_HOST: urls().app, BEGHU_CREDENTIALS: CLI_CREDENTIALS };
+  delete env.BEGHU_TOKEN;
+  return env;
+}
+
+/**
+ * Signs the CLI in as `user`: `beghu login --no-browser`, its code approved by a session of
+ * `user`'s, as a person would at /cli/login. What to say about it.
+ */
+async function cliLogin(user: string): Promise<string> {
+  const bin = cliBinary();
+  const s = new Session(urls().app);
+  await s.signIn(user);
+  const child = spawn(bin, ["login", "--no-browser", "--name", "dev-ctl"], { cwd: ROOT, env: cliEnv(), stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+  const exited = new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 1)));
+  const code = await new Promise<string>((resolve, reject) => {
+    child.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+      const m = /the code ([A-Z]{4}-[A-Z]{4})/.exec(out);
+      if (m) resolve(m[1]!);
+    });
+    void exited.then(() => reject(new Error(err.trim() || out.trim() || "beghu login exited")));
+  });
+  const res = await s.post(`/api/cli/codes/${code}/approve`);
+  if (res.status !== 204) {
+    child.kill();
+    throw new Error(`approving its code answered ${res.status}`);
+  }
+  if ((await exited) !== 0) throw new Error(err.trim() || out.trim());
+  return `the beghu CLI is signed in as ${user} too (./dev-ctl cli status)`;
+}
+
+/** `./dev-ctl cli ARGS…`: the CLI against the stack; exits with its code. */
+function cli(args: string[]): void {
+  let bin: string;
+  try {
+    bin = cliBinary();
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  const r = spawnSync(bin, args, { cwd: process.cwd(), env: cliEnv(), stdio: "inherit" });
+  process.exit(r.status ?? 1);
 }
 
 async function control(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -974,6 +1080,8 @@ async function reset(args: string[]): Promise<void> {
   if (set.has("--all")) {
     // The server's names under BEGHU_DATA_DIR (crates/server/src/config.rs).
     for (const f of ["control.db", "control.db-wal", "control.db-shm", "backups"]) remove(join(DATA, f));
+    // Its tokens were in the control DB.
+    remove(join(DATA, "cli"));
     done.push("control DB wiped");
   } else {
     forgetResyncs();
@@ -1127,6 +1235,8 @@ async function main(): Promise<void> {
       return grep(args);
     case "login":
       return login(args);
+    case "cli":
+      return cli(args);
     case "fake":
       return fake(args);
     case "deploy":

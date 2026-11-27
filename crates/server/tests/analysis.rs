@@ -51,7 +51,7 @@ async fn setup_pr(s: &Stack, b: &mut Browser, index: usize) -> i64 {
     number
 }
 
-/// A test's pause at `point` ([`beghu::Config::analysis_pause`]): the first run that gets there
+/// A test's pause at `point` ([`beghu_server::Config::analysis_pause`]): the first run that gets there
 /// while it's armed says so on `reached` and waits there until `release`; every other passes.
 struct Pause {
     armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -67,21 +67,21 @@ impl Pause {
 }
 
 /// A pause at `point`, armed from the start.
-fn pause_once(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
+fn pause_once(point: beghu_server::RunPausePoint) -> (beghu_server::RunPause, Pause) {
     let (hook, p) = pause_unarmed(point);
     p.arm();
     (hook, p)
 }
 
 /// A pause at `point` that passes everything until [`Pause::arm`].
-fn pause_unarmed(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
+fn pause_unarmed(point: beghu_server::RunPausePoint) -> (beghu_server::RunPause, Pause) {
     let p = Pause {
         armed: Default::default(),
         reached: Default::default(),
         release: Default::default(),
     };
     let (armed, reached, release) = (p.armed.clone(), p.reached.clone(), p.release.clone());
-    let hook: beghu::RunPause = std::sync::Arc::new(move |at| {
+    let hook: beghu_server::RunPause = std::sync::Arc::new(move |at| {
         if at != point || !armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(async {});
         }
@@ -95,7 +95,7 @@ fn pause_unarmed(point: beghu::RunPausePoint) -> (beghu::RunPause, Pause) {
 }
 
 /// Both pauses, each at its own point.
-fn both(a: beghu::RunPause, b: beghu::RunPause) -> beghu::RunPause {
+fn both(a: beghu_server::RunPause, b: beghu_server::RunPause) -> beghu_server::RunPause {
     std::sync::Arc::new(move |at| {
         let (a, b) = (a(at), b(at));
         Box::pin(async move {
@@ -1246,7 +1246,7 @@ async fn a_run_lives_at_most_its_lifetime_from_its_start() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upload_superseded_while_it_is_checked_stores_nothing() {
-    let (hook, pause) = pause_once(beghu::RunPausePoint::Store);
+    let (hook, pause) = pause_once(beghu_server::RunPausePoint::Store);
     let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     let (b, number) = setup(&s).await;
     let token = run(&s, &b, number).await;
@@ -1287,7 +1287,7 @@ async fn an_upload_superseded_while_it_is_checked_stores_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_ended_first_by_another_call_is_reported_as_that() {
-    let (hook, pause) = pause_once(beghu::RunPausePoint::End);
+    let (hook, pause) = pause_once(beghu_server::RunPausePoint::End);
     let s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     let (mut b, number) = setup(&s).await;
     let token = run(&s, &b, number).await;
@@ -1336,13 +1336,13 @@ impl HeldAtStore {
     }
 }
 
-fn held_at_store() -> (beghu::RunPause, HeldAtStore) {
+fn held_at_store() -> (beghu_server::RunPause, HeldAtStore) {
     let arrived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (release, released) = tokio::sync::watch::channel(false);
-    let hook: beghu::RunPause = {
+    let hook: beghu_server::RunPause = {
         let arrived = arrived.clone();
         std::sync::Arc::new(move |at| {
-            if at != beghu::RunPausePoint::Store {
+            if at != beghu_server::RunPausePoint::Store {
                 return Box::pin(async {});
             }
             arrived.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1455,7 +1455,7 @@ async fn an_upload_whose_client_leaves_keeps_its_turn_until_its_work_is_done() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_rearms_every_live_runs_expiry() {
-    let adjust = |c: &mut beghu::Config| c.runs.unused_for = Duration::from_secs(3);
+    let adjust = |c: &mut beghu_server::Config| c.runs.unused_for = Duration::from_secs(3);
     let mut s = start_with(adjust).await;
     let (b, number) = setup(&s).await;
 
@@ -1688,7 +1688,7 @@ async fn the_daily_check_finishes_a_lost_reads_delete_that_failed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_disconnect_cut_off_before_its_delete_is_finished_at_startup() {
-    let (hook, pause) = pause_once(beghu::RunPausePoint::Disconnected);
+    let (hook, pause) = pause_once(beghu_server::RunPausePoint::Disconnected);
     let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     let (mut b, number) = setup(&s).await;
     let token = run(&s, &b, number).await;
@@ -1753,7 +1753,7 @@ async fn a_sign_in_that_lapses_keeps_the_analyses_across_a_restart() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upload_whose_read_goes_as_it_is_stored_is_told_why() {
-    let (hook, pause) = pause_once(beghu::RunPausePoint::Store);
+    let (hook, pause) = pause_once(beghu_server::RunPausePoint::Store);
     let s = start_with(move |c| {
         c.analysis_pause = Some(hook);
         c.repo_refresh_every = Duration::from_secs(1);
@@ -1845,7 +1845,7 @@ async fn disconnect_held<'a>(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sign_in_during_a_disconnect_deletes_the_analyses_before_it_lets_them_be_used() {
-    let (hook, pause) = pause_once(beghu::RunPausePoint::Disconnected);
+    let (hook, pause) = pause_once(beghu_server::RunPausePoint::Disconnected);
     let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     let (mut a, number) = setup(&s).await;
     let token = run(&s, &a, number).await;
@@ -1871,8 +1871,8 @@ async fn a_sign_in_during_a_disconnect_deletes_the_analyses_before_it_lets_them_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sign_in_that_raced_a_disconnect_keeps_what_it_analyses_after() {
-    let (on_disconnect, disconnected) = pause_once(beghu::RunPausePoint::Disconnected);
-    let (on_sign_in, signing_in) = pause_unarmed(beghu::RunPausePoint::SignIn);
+    let (on_disconnect, disconnected) = pause_once(beghu_server::RunPausePoint::Disconnected);
+    let (on_sign_in, signing_in) = pause_unarmed(beghu_server::RunPausePoint::SignIn);
     let hook = both(on_disconnect, on_sign_in);
     let mut s = start_with(move |c| c.analysis_pause = Some(hook)).await;
     let (mut a, number) = setup(&s).await;
