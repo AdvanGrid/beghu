@@ -464,6 +464,12 @@ impl Stack {
             analysis_tools: Some(self.web.join("analysis-tools")),
             analysis_chain: &analysis::CHAIN,
             runs: beghu_server::RunLifetimes::default(),
+            cli_dir: None,
+            // `beghu login` polls every second, not every five.
+            cli: beghu_server::CliConfig {
+                poll_every: Duration::from_secs(1),
+                ..beghu_server::CliConfig::default()
+            },
             analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
@@ -779,6 +785,22 @@ impl Stack {
 
     pub fn control_db(&self) -> PathBuf {
         self.data.join("control.db")
+    }
+
+    /// Approves (or, with `approve` false, denies) the `beghu login` showing `code`, as
+    /// `/cli/login` does from `b`: the status.
+    pub async fn decide_cli_login(&self, b: &Browser, code: &str, approve: bool) -> u16 {
+        let what = if approve { "approve" } else { "deny" };
+        self.api_write(
+            b,
+            reqwest::Method::POST,
+            &format!("/api/cli/codes/{code}/{what}"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
     }
 }
 

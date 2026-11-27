@@ -11,6 +11,7 @@ mod api;
 mod assets;
 mod auth;
 mod backups;
+mod cli;
 mod config;
 mod crypto;
 mod detail;
@@ -42,10 +43,12 @@ mod volume;
 mod walker;
 mod webhook;
 
+pub use cli::{CliVersion, MIN_CLI};
 pub use config::{
-    Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig, RunLifetimes, RunPause,
-    RunPausePoint, default_accounts_check_every, default_activity_every, default_assets_kept_for,
-    default_backup_every, default_dormant_after, default_drain_for, default_read_back_retries,
+    CliConfig, Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig, RunLifetimes,
+    RunPause, RunPausePoint, default_accounts_check_every, default_activity_every,
+    default_assets_kept_for, default_backup_every, default_dormant_after, default_drain_for,
+    default_read_back_retries,
 };
 
 pub use installations::app_jwt;
@@ -145,6 +148,10 @@ struct Inner {
     /// Where `/assets/*` is served from: the volume's copy of this build's assets and the
     /// previous builds' (`None` without a web build).
     assets_dir: Option<std::path::PathBuf>,
+    /// The beghu CLI's builds this server serves (`BEGHU_CLI_DIR`).
+    cli: Option<cli::dist::Builds>,
+    /// The CLI version this server answers for: its builds', else its own source's.
+    cli_version: CliVersion,
 }
 
 /// An app opened up to listening, nothing running in the background yet. Startup's steps (#86,
@@ -211,6 +218,20 @@ impl App {
                     .map_err(|e| format!("can't copy the build's assets to the volume: {e}"))?
             }
         };
+        let cli = match cfg.cli_dir.clone() {
+            None => None,
+            Some(dir) => {
+                let (build, host) = (cfg.build_id.clone(), cfg.public_url.clone());
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        cli::dist::Builds::load(&dir, &build, &host)
+                    })
+                    .await
+                    .map_err(|_| "reading the CLI's builds panicked".to_owned())??,
+                )
+            }
+        };
+        let cli_version = cli.as_ref().map_or_else(cli::source_version, |b| b.version);
         let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
         let analyses = analyses::Store::new(
             &cfg.analyses_dir(),
@@ -286,6 +307,8 @@ impl App {
             jobs,
             analyses,
             assets_dir,
+            cli,
+            cli_version,
         }));
         // A read-back measures the images in the comments it writes, which needs the whole app.
         app.edges().set_app(WeakApp(Arc::downgrade(&app.0)));
@@ -322,6 +345,11 @@ impl App {
 
     fn analyses(&self) -> &analyses::Store {
         &self.0.analyses
+    }
+
+    /// The CLI version this server serves, and answers for: a newer one's calls are `409`.
+    fn cli_version(&self) -> CliVersion {
+        self.0.cli_version
     }
 
     fn renders(&self) -> &markdown::Cache {
@@ -567,6 +595,11 @@ pub fn router(app: App) -> Router {
             "/{owner}/{repo}/pulls/{number}/analysis/{id}/{version}/claims",
             get(analyses::serve::claims),
         )
+        .route("/cli/codes/{code}", get(cli::login::by_code))
+        .route("/cli/codes/{code}/approve", post(cli::login::approve))
+        .route("/cli/codes/{code}/deny", post(cli::login::deny))
+        .route("/cli/sign-ins", get(cli::sign_ins::list))
+        .route("/cli/sign-ins/{id}", delete(cli::sign_ins::revoke))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
@@ -592,6 +625,7 @@ pub fn router(app: App) -> Router {
         .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))
+        .route("/cli/login", get(shell::shell))
         .layer(compression());
     let mut site = Router::new();
     for (path, file) in app.0.site.iter().flat_map(|s| s.files()) {
@@ -615,10 +649,12 @@ pub fn router(app: App) -> Router {
             app.clone(),
             auth::require_same_origin,
         ));
-    // The run API: an agent's calls (`curl`, the CLI), let in by the run's token (and a CLI run's
-    // credential), not the browser session, so outside its gate and its `Origin` check. Every
-    // answer is the API's: `no-store`, naming the build, compressed on the fly. An upload reads
-    // its own body, within its own limits.
+    // The run API and the CLI's own calls: an agent's (`curl`, the CLI), let in by the run's
+    // token or the CLI's credential (a device-flow login by its device secret), not the browser
+    // session, so outside its gate and its `Origin` check. A call from a CLI below the floor, or
+    // newer than this server's, is refused first (`cli::gate`). Every answer is the API's:
+    // `no-store`, naming the build, compressed on the fly. An upload reads its own body, within
+    // its own limits.
     let runs = Router::new()
         .route("/api/runs/{token}/{file}", get(analyses::run_api::file))
         .route(
@@ -627,10 +663,34 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/runs/{token}/end", post(analyses::run_api::end_run))
         .route("/api/cli/runs", post(analyses::runs::start_cli))
+        .route("/api/cli/login", post(cli::login::start))
+        .route("/api/cli/login/poll", post(cli::login::poll))
+        .route("/api/cli/logout", post(cli::sign_ins::logout))
+        .route("/api/cli/status", get(cli::sign_ins::status))
         // Route layers: a path none of these match stays the router's plain 404.
+        .route_layer(middleware::from_fn_with_state(app.clone(), cli::gate))
         .route_layer(middleware::from_fn_with_state(app.clone(), api_headers))
         .route_layer(middleware::from_fn_with_state(app.clone(), scan_steps))
         .route_layer(compression());
+    // The CLI's builds: what `install.sh` and `beghu update` download, the same for everyone.
+    let mut downloads = Router::new()
+        .route(
+            "/cli/manifest.json",
+            get(|State(app): State<App>| async move { cli::dist::manifest(app.0.cli.as_ref()) }),
+        )
+        .route(
+            "/cli/install.sh",
+            get(|State(app): State<App>| async move { cli::dist::install(app.0.cli.as_ref()) }),
+        );
+    let mut binaries = Router::new();
+    for (platform, file) in app.0.cli.iter().flat_map(|b| b.binaries.iter()) {
+        binaries = binaries.route_service(
+            &format!("/cli/{platform}/beghu"),
+            tower_http::services::ServeFile::new(file),
+        );
+    }
+    downloads =
+        downloads.merge(binaries.layer(middleware::map_response(cli::dist::binary_headers)));
     // Signing out, switching and Disconnect: form posts from beghu's own pages only.
     let session_forms = Router::new()
         .route("/auth/switch", post(accounts::switch))
@@ -656,6 +716,7 @@ pub fn router(app: App) -> Router {
         .merge(site)
         .merge(media)
         .merge(runs)
+        .merge(downloads)
         .nest("/api", api);
     if let Some(dir) = &app.0.assets_dir {
         // Hashed build assets, this build's and the previous builds' still kept on the volume:

@@ -8,12 +8,12 @@
 //!   one; with none left, the session ends and the browser lands on a plain signed-out page.
 //!   GitHub's tokens are left alone, so signing back in is quick and other browsers carry on.
 //! - `POST /auth/disconnect` (`account`): revokes the account's grant on GitHub, deletes its
-//!   mirror, its analyses (`analyses.db`), its preferences and its tokens, and takes it out of
-//!   every browser session. The analyses' delete is marked in the write that marks the account
-//!   (`disconnected_at`), so one a crash cuts off is finished by the next start, or by the
-//!   account's next sign-in, whichever comes first; a sign-out by GitHub (refused or lapsed
-//!   tokens, a revoke) never marks it, and keeps them. It keeps
-//!   its repo pick, and its row as `needs_sign_in`, so nothing syncs for it until it signs in.
+//!   mirror, its analyses (`analyses.db`), its preferences, its tokens and its CLI sign-ins, and
+//!   takes it out of every browser session. The analyses' delete is marked in the write that
+//!   marks the account (`disconnected_at`), so one a crash cuts off is finished by the next
+//!   start, or by the account's next sign-in, whichever comes first; a sign-out by GitHub
+//!   (refused or lapsed tokens, a revoke) never marks it, and keeps them. It keeps its repo
+//!   pick, and its row as `needs_sign_in`, so nothing syncs for it until it signs in.
 //!   Without usable tokens it can't reach the grant: it disconnects all the same, and its answer
 //!   says GitHub access wasn't revoked, linking to GitHub's authorized-apps page.
 //! - `GET /auth/signed-out?next=…`: the page a browser lands on with nothing signed in, after
@@ -389,6 +389,8 @@ pub async fn disconnect(
             }
             q::delete_tokens(tx, account)?;
             q::delete_preferences(tx, account)?;
+            // Its CLI sign-ins go with it: the next call of each answers 401.
+            q::delete_account_cli_tokens(tx, account)?;
             // Its analyses are to go, whatever happens to beghu before that's done: a startup
             // finishes the delete, and so does a sign-in before it brings the file back. In the
             // write that signs it out, so no sign-in activates it with the mark on (tokens.rs).
@@ -616,6 +618,7 @@ pub async fn daily(app: App) {
     loop {
         check(&app).await;
         crate::analyses::runs::prune(&app).await;
+        crate::cli::prune(&app).await;
         crate::analyses::runs::heal_lost_repos(&app).await;
         dormancy(&app).await;
         tokio::time::sleep(app.cfg().accounts_check_every).await;
@@ -689,6 +692,8 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
                         if n == 0 {
                             return Ok(None);
                         }
+                        // Its CLI sign-ins die with it (#179).
+                        q::delete_account_cli_tokens(tx, account)?;
                         app.imports().stop(account);
                         let deleting: Pin<
                             Box<dyn Future<Output = Result<(), analysis_db::Error>> + Send>,

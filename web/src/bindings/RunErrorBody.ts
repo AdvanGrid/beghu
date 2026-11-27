@@ -6,7 +6,9 @@
 export type RunErrorBody = { 
 /**
  * `bad_token`, `run_ended`, `too_large`, `head_moved`, `refused`, `not_found`,
- * `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`.
+ * `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`;
+ * and for the CLI, `bad_credential`, `cli_too_old`, `cli_too_new`, `sign_in_again`,
+ * `login_denied` or `login_expired`.
  */
 error: string, message: string, 
 /**
@@ -28,4 +30,13 @@ version?: number,
 /**
  * With `too_large`: the limits, in bytes.
  */
-limits?: { wire: number, inflated: number }, };
+limits?: { wire: number, inflated: number }, 
+/**
+ * With `cli_too_old`: the oldest CLI this server answers.
+ */
+minimum?: string, 
+/**
+ * With `cli_too_new` and `cli_too_old`: the CLI this server serves (`beghu update` installs
+ * it).
+ */
+server?: string, };

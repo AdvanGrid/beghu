@@ -196,19 +196,37 @@ issue `pr.json` doesn't list).
 When you're done, end the run: `curl -sS -X POST {base}/end`.
 "
         )),
-        // OPEN QUESTION (#176, #179): the CLI's commands are slice 5's to settle; these are the
-        // names #149 and #151 give them. No CLI run can start until its credential exists.
-        Producer::Cli => h.push_str(
+        Producer::Cli => h.push_str(&format!(
             "
-## This run's files and upload
+## This run's files and commands
 
-`beghu analyse` fetched this run's files into the working folder: `pr.json`, `schema.ts`,
-`validate.mjs`, `merge.mjs`, and `previous-ids.json` and `vocabulary.json` when there is a previous
-analysis. Check the split with `beghu analyse check-split`, merge with `beghu analyse merge`,
-upload with `beghu analyse upload analysis.json` (it validates first, and refuses on errors), and
-end the run with `beghu analyse end`.
+`beghu analyse` wrote this run's files to `.beghu/run-{run}/` in the folder it ran in: these
+instructions, `pr.json`, `schema.ts`, and `previous-ids.json` and `vocabulary.json` when there is
+a previous analysis (with neither, `carried` stays empty). Run every command below from that
+folder: each finds its run in `.beghu/`, so you never handle a token or a URL. Check the code out
+there too, as `base` and `head` (see \"The checkout\"), or give `--base <dir> --head <dir>` to
+`check` and `upload`.
+
+The CLI is the tools: where these instructions say `node validate.mjs` or `node merge.mjs`, run
+`beghu analyse` instead. It needs no Node, and finds `pr.json` and the previous analysis itself.
+
+- Check the split: `beghu analyse check-split split.json` (the skeleton is `skeleton.json`, or
+  `--skeleton <file>`).
+- Merge: `beghu analyse merge --split split.json skeleton.json area-1.json ... > merged.json`,
+  then `beghu analyse merge --finish merged.json > analysis.json`.
+- Validate: `beghu analyse check analysis.json`, the full validator, snippet check included.
+- Upload: `beghu analyse upload analysis.json`. It runs `check` first and refuses on any error,
+  and sends `Beghu-Snippets: checked` itself. The answer: accepted, with the analysis ID and any
+  warnings; refused with the server's report (fix and upload again); or the run ended.
+- When you're done, end the run: `beghu analyse end`.
+
+Uploads are unlimited while the run lasts; each accepted one replaces the PR's analysis. Beyond
+the validator's rules the server checks `evidence.quote-mismatch` (a description or issue quote
+that isn't word for word in `pr.json`) and `evidence.issue-not-served` (issue evidence from an
+issue `pr.json` doesn't list).
 ",
-        ),
+            run = a.run.id
+        )),
     }
     h
 }

@@ -39,6 +39,14 @@ pub struct Config {
     pub analysis_chain: &'static analysis::Chain<'static>,
     /// How long analysis runs live (spec #176, "The run"): 24 h unused, 2 h idle, 7 days at most.
     pub runs: RunLifetimes,
+    /// `BEGHU_CLI_DIR`: the beghu CLI's builds this server serves at `/cli/{os}-{arch}/beghu`,
+    /// built from its own commit (the image's `cli` stage writes `/app/cli`): `version` (the
+    /// CLI's semver) and `<os>-<arch>/beghu` for each platform built. Set but without `version`,
+    /// or with no build, refuses startup; unset, the `/cli/` downloads answer 404, and the CLI
+    /// version this server answers for is the one in its own source (`crates/cli/Cargo.toml`).
+    pub cli_dir: Option<PathBuf>,
+    /// The beghu CLI's sign-ins: the floor its calls are held to and how its device flow runs.
+    pub cli: CliConfig,
     /// Tests only, always `None` in a deploy: where an analysis run stops for the test, so it
     /// can act on the run between a request's start and its write, which nothing else can time
     /// (an upload superseded as it's stored, a run ended twice at once). See [`RunPause`].
@@ -132,6 +140,31 @@ impl Default for RunLifetimes {
             lives_for: Duration::from_secs(7 * 24 * 3600),
             ended_kept_for: Duration::from_secs(30 * 24 * 3600),
             heard_every: Duration::from_secs(60),
+        }
+    }
+}
+
+/// The beghu CLI's floor and sign-ins (spec #179).
+#[derive(Clone, Debug)]
+pub struct CliConfig {
+    /// The oldest CLI this server answers: [`crate::MIN_CLI`]. Every call from an older one is
+    /// `426`. A test raises it to drive the CLI's self-update.
+    pub min_cli: crate::CliVersion,
+    /// How often `beghu login` polls while it waits for its approval (5 s).
+    pub poll_every: Duration,
+    /// How long a `beghu login` waits for its approval (10 min).
+    pub login_for: Duration,
+    /// A CLI credential unused this long expires (90 days).
+    pub unused_for: Duration,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        CliConfig {
+            min_cli: crate::CliVersion::parse(crate::MIN_CLI).expect("MIN_CLI is a semver"),
+            poll_every: Duration::from_secs(5),
+            login_for: Duration::from_secs(10 * 60),
+            unused_for: Duration::from_secs(90 * 24 * 3600),
         }
     }
 }
@@ -389,6 +422,8 @@ impl Config {
             analysis_tools: std::env::var("BEGHU_ANALYSIS_DIR").ok().map(PathBuf::from),
             analysis_chain: &analysis::CHAIN,
             runs: RunLifetimes::default(),
+            cli_dir: std::env::var("BEGHU_CLI_DIR").ok().map(PathBuf::from),
+            cli: CliConfig::default(),
             analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
