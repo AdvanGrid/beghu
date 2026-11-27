@@ -77,7 +77,13 @@ export interface Scope {
 
 export interface LayoutInput {
   root: Scope;
-  /** The last answer: every scope keeps its parts and gutters where they were (its anchors). */
+  /**
+   * The last answer. Each scope it drew with the same parts and lines is laid out from its
+   * anchors (its folded drawing): every part where that drawing had it, pushed down only by the
+   * open blocks above it in its column; every line on that drawing's route, its levels moved
+   * with their columns' parts; every gutter as wide as there, or wider where its tracks need it.
+   * Any other scope is laid out afresh.
+   */
   previous?: Layout;
   /** Room in every gap between columns for a line's count, where it leaves its part (px). */
   countRoom?: number;
@@ -119,10 +125,13 @@ export interface ScopeLayout {
 
 /**
  * What the next layout keeps of one scope: its drawing with every block in it folded, laid out
- * afresh. A scope's every layout is a function of its anchors and what is open in it, so an open
- * or a fold moves only what the changed block pushes, and coming back to an earlier open set gives
- * that drawing back exactly. Anchors are kept only for the same scope: a scope whose parts or lines
- * changed (boxes drawn, lonely parts shown, another analysis) is laid out afresh.
+ * afresh. A scope's every layout is a function of its anchors and what is open in it, so coming
+ * back to an earlier open set gives that drawing back exactly, and an open or a fold moves only
+ * what the changed block pushes: the parts below it in its column, and the columns right of it, by
+ * its column's change of width and the change of the two gutters beside that column (whose
+ * verticals move with its parts). No line is routed again, so every other gutter keeps its width.
+ * Anchors are kept only for the same scope: a scope whose parts or lines changed (boxes drawn,
+ * lonely parts shown, another analysis) is laid out afresh.
  */
 export interface Anchors {
   /** The folded scope they were laid out for: its parts, their folded sizes, and its lines. */
@@ -133,6 +142,8 @@ export interface Anchors {
   ys: Map<string, number>;
   /** The room for routes above each part (in its column). */
   room: Map<string, number>;
+  /** Each line's route: the y it passes each column between its ends at (null: it runs straight). */
+  levels: Map<string, number[] | null>;
   /** Each gutter's width, by the columns either side. */
   gutters: Map<string, number>;
   /** Inside a frame: the frame folded, its size and its ports' y, by the port's part. */

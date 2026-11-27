@@ -1,8 +1,8 @@
 // Our layout's rules (#144, #163, #166, #180), checked through the engine's own seam (graph in,
 // coordinates out) on the layout suite's committed synthetic graph (fixtures/pr-view/layout/:
-// #2627's shape at 1×, and 3×), on a dense scope, and on random graphs; and at 1× through runs of
-// opens and folds as the view lays them out (each from the last answer), boxes and lonely parts
-// turned on and off, and a later analysis laid out from this one's answer. An exception to "tests
+// #2627's shape at 1×, and 3×), on a dense scope, and on random graphs; through runs of opens and
+// folds as the view lays them out (each from the last answer, at 1×), boxes and lonely parts turned on and off, drawings laid out from their own
+// answers, and a later analysis laid out from this one's answer. An exception to "tests
 // go through public seams" (AGENTS.md): the rules are geometry no HTTP answer or page shows.
 // Whether the drawing reads well is the browser suite's and the owner's; how big, crossed and fast
 // it is, the `layout` perf suite's. `npm run test:lint`.
@@ -25,6 +25,7 @@ const CLEAR = 10;
 const EPS = 0.5;
 /** Two stretches closer than this read as one (the engine's NEAR). */
 const NEAR = 4;
+
 
 /** Each input line, with its scope. */
 function linesOf(input: LayoutInput) {
@@ -87,7 +88,7 @@ function checkRules(L: Layout, input: LayoutInput) {
     for (let i = 0; i < sibs.length; i++) {
       const [a, ra] = sibs[i]!;
       assert.ok(ra.x >= frame.x - EPS && ra.y >= frame.y - EPS && ra.x + ra.w <= frame.x + frame.w + EPS && ra.y + ra.h <= frame.y + frame.h + EPS, `${a} sits outside ${scope}`);
-      for (let j = i + 1; j < sibs.length; j++) assert.ok(disjoint(ra, sibs[j]![1]), `${a} overlaps ${sibs[j]![0]} in ${scope}`);
+      for (let j = i + 1; j < sibs.length; j++) if (!disjoint(ra, sibs[j]![1])) assert.fail(`${a} overlaps ${sibs[j]![0]} in ${scope}`);
     }
   }
 
@@ -103,15 +104,30 @@ function checkRules(L: Layout, input: LayoutInput) {
 
   // Both groups, and every frame's inside, packed from the top: in every column of each, the
   // first part sits at the top but for the room the levels routed above it take.
-  const horizontals = [...L.routes.values()].flatMap(segments).filter(flat);
+  // (The horizontals by y, each column's from the first at or below the band's top.)
+  const horizontals = [...L.routes.values()].flatMap(segments).filter(flat).sort((a, b) => a[0].y - b[0].y);
   const packed = (what: string, top: number, ps: Placed[]) => {
     if (!ps.length) return;
     const columns = new Map<number, Placed[]>();
-    for (const p of ps) columns.set(p.x, [...(columns.get(p.x) ?? []), p]);
+    for (const p of ps) {
+      const col = columns.get(p.x);
+      if (col) col.push(p);
+      else columns.set(p.x, [p]);
+    }
+    let from = 0;
+    for (let hi = horizontals.length; from < hi; ) {
+      const m = (from + hi) >> 1;
+      if (horizontals[m]![0].y <= top - 24 - EPS) from = m + 1;
+      else hi = m;
+    }
     const bands = [...columns.values()].map((col) => {
       const first = col.reduce((a, b) => (b.y < a.y ? b : a));
       const x1 = Math.max(...col.map((p) => p.x + p.w));
-      const levels = new Set(horizontals.filter(([p, q]) => p.y > top - 24 - EPS && p.y < first.y && Math.min(p.x, q.x) < x1 && Math.max(p.x, q.x) > first.x).map(([p]) => p.y));
+      const levels = new Set<number>();
+      for (let i = from; i < horizontals.length && horizontals[i]![0].y < first.y; i++) {
+        const [p, q] = horizontals[i]!;
+        if (Math.min(p.x, q.x) < x1 && Math.max(p.x, q.x) > first.x) levels.add(p.y);
+      }
       return { band: first.y - top, room: levels.size ? levels.size * LEVEL + 2 * CLEAR : 0 };
     });
     assert.ok(bands.every((b) => b.band <= b.room + EPS), `${what}: an empty band above (${bands.map((b) => `${b.band} px for ${b.room}`).join(", ")})`);
@@ -146,7 +162,12 @@ function checkRules(L: Layout, input: LayoutInput) {
   // No line passes through a part: only through the frames and boxes it's drawn inside. (Parts
   // found by the 256 px bands of x they cover.)
   const bands = new Map<number, [string, Placed][]>();
-  for (const e of parts) for (let b = Math.floor(e[1].x / 256); b <= Math.floor((e[1].x + e[1].w) / 256); b++) bands.set(b, [...(bands.get(b) ?? []), e]);
+  for (const e of parts)
+    for (let b = Math.floor(e[1].x / 256); b <= Math.floor((e[1].x + e[1].w) / 256); b++) {
+      const es = bands.get(b);
+      if (es) es.push(e);
+      else bands.set(b, [e]);
+    }
   for (const [id, r] of L.routes) {
     const { scope, line } = lines.get(id)!;
     const ends = [line.from, line.to].flatMap((e) => (typeof e === "string" ? [e] : []));
@@ -154,21 +175,21 @@ function checkRules(L: Layout, input: LayoutInput) {
     for (const s of segments(r)) {
       const near = new Set<[string, Placed]>();
       for (let b = Math.floor(Math.min(s[0].x, s[1].x) / 256); b <= Math.floor(Math.max(s[0].x, s[1].x) / 256); b++) for (const e of bands.get(b) ?? []) near.add(e);
-      for (const [pid, p] of near) if (!inside.has(pid)) assert.ok(!through(s, p), `${id} passes through ${pid}`);
+      for (const [pid, p] of near) if (!inside.has(pid) && through(s, p)) assert.fail(`${id} passes through ${pid}`);
     }
   }
 
   // Trunks exactly where lines share a stretch: each carries two or more, all along it, and no
   // two routes run together anywhere but on a trunk carrying both.
-  const rides = new Map<string, number[]>();
+  const rides = new Map<string, Set<number>>();
   const stretches = new Map([...L.routes].map(([id, r]) => [id, segments(r).map(stretch)]));
   L.trunks.forEach((t, k) => {
     assert.ok(new Set(t.lines).size > 1, `${t.id} carries one line`);
-    for (const s of segments(t.points)) for (const id of t.lines) assert.ok(covers(stretches.get(id)!, s), `${id} isn't on all of ${t.id}`);
+    for (const s of segments(t.points)) for (const id of t.lines) if (!covers(stretches.get(id)!, s)) assert.fail(`${id} isn't on all of ${t.id}`);
     for (const id of t.lines) {
       const ks = rides.get(id);
-      if (ks) ks.push(k);
-      else rides.set(id, [k]);
+      if (ks) ks.add(k);
+      else rides.set(id, new Set([k]));
     }
   });
   // Two stretches under NEAR apart read as one. (Compared in runs of stretches each under NEAR
@@ -189,8 +210,15 @@ function checkRules(L: Layout, input: LayoutInput) {
         const [a, b] = [run[i]!, run[j]!];
         const lo = Math.max(a.lo, b.lo), hi = Math.min(a.hi, b.hi);
         if (a.id === b.id || hi - lo < 1 || Math.abs(a.at - b.at) >= NEAR) continue;
-        const shared = (rides.get(a.id) ?? []).some((t) => rides.get(b.id)?.includes(t) && trunkStretches[t]!.some((s) => s.h === a.h && Math.abs(s.at - a.at) < NEAR && Math.min(s.hi, hi) - Math.max(s.lo, lo) > 0));
-        assert.ok(shared, `${a.id} and ${b.id} run together at ${a.h ? "y" : "x"} ${a.at} from ${lo} to ${hi} on no trunk`);
+        let shared = false;
+        const [ra, rb] = [rides.get(a.id), rides.get(b.id)];
+        if (ra && rb)
+          for (const t of ra.size < rb.size ? ra : rb)
+            if ((ra.size < rb.size ? rb : ra).has(t) && trunkStretches[t]!.some((s) => s.h === a.h && Math.abs(s.at - a.at) < NEAR && Math.min(s.hi, hi) - Math.max(s.lo, lo) > 0)) {
+              shared = true;
+              break;
+            }
+        if (!shared) assert.fail(`${a.id} and ${b.id} run together at ${a.h ? "y" : "x"} ${a.at} from ${lo} to ${hi} on no trunk`);
       }
 }
 
@@ -207,39 +235,42 @@ function same(a: Layout, b: Layout, what: string) {
   assert.deepEqual([b.width, b.height], [a.width, a.height], `${what}: the drawing's size changed`);
 }
 
-/** Each scope's drawing with every block in it folded: what its anchors are, by graph and scope. */
+/** Each scope's folded drawing (its anchors), by graph, view and the blocks on the way down to it. */
 const foldedDrawings = new WeakMap<DrawableGraph, Map<string, Layout>>();
-function foldedOf(g: DrawableGraph, scope: string): Layout {
+function foldedOf(g: DrawableGraph, view: Omit<View, "open">, way: readonly string[]): Layout {
   let m = foldedDrawings.get(g);
   if (!m) foldedDrawings.set(g, (m = new Map()));
-  let L = m.get(scope);
+  const key = JSON.stringify([!!view.boxes, !!view.showLonely, way]);
+  let L = m.get(key);
   if (!L) {
-    const sys = g.nodes.find((n) => n.kind === "system")!.id;
-    const open = new Set(scope === sys ? [] : wayTo(g, scope).map(([, c]) => c));
-    m.set(scope, (L = layout(layoutInput(g, { open }).input)));
+    const blocks = blocksOf(g);
+    m.set(key, (L = layout(layoutInput(g, { ...view, open: new Set(way.filter((id) => blocks.has(id))) }).input)));
   }
   return L;
 }
 
 /**
  * Opening (or folding) `block` moved only what it pushes. In each scope on the way down to it
- * (`[scope, the child on the way]`):
+ * (`[scope, the child on the way]`, boxes included):
  * - y: parts below the child in its column move only down on an open (up on a fold); every other
  *   part keeps its y;
  * - x: a column's parts move alike, and every column keeps its width but the child's, which only
- *   widens on an open (narrows on a fold). Every gutter keeps the width it has in the scope's
- *   folded drawing (its anchor) but where its tracks need more, and then it's the least width that
- *   fits them: so a gutter that changed is wider than its anchor in one of the two drawings, and
- *   never narrower in either. Next to the block, that's its lines' ends on the frame's edge
- *   needing more tracks: everything right of the gutter moves the change's way. Further off it's
- *   the lines re-routed round the block (the level grid is shared by every column), which can
- *   need more tracks there or fewer, so a column right of the block can move by less than the
- *   block's growth, or against it.
- * Scopes off the way don't change. Returns whether a column left of the child moved, and whether
- * one right of it moved against the change.
+ *   widens on an open (narrows on a fold). Every line keeps the levels the scope's folded drawing
+ *   routed it on, moved down with its column's parts, so only the child's column moves anything
+ *   up or down, and only the two gutters beside it (for a frame's first column, the gutter from
+ *   its left ports) get other verticals: every other gutter keeps its width exactly. Those two are
+ *   never narrower than in the folded drawing (their anchors), and a change leaves them wider than
+ *   that in one of the two drawings: as wide as their tracks need, compressed down to 6 px apart.
+ *   So the columns left of the child's keep their places, and every column right of it moves by
+ *   the same amount: the child column's change of width, and those two gutters'.
+ * Scopes off the way don't change. The two gutters' tracks depend on how far both their columns'
+ * parts are pushed: opening a block can line its column's ends back up with the next column's
+ * (pushed by an earlier open), and the gutter then needs fewer tracks than it had. Returns how far
+ * a column right of the child moved against the change for that, at most (px), which is never
+ * more than the two gutters were wider than their anchors.
  */
-function pushedOnly(g: DrawableGraph, before: Layout, after: Layout, block: string, opening: boolean, what: string) {
-  const path = wayTo(g, block);
+function pushedOnly(g: DrawableGraph, view: Omit<View, "open">, before: Layout, after: Layout, block: string, opening: boolean, what: string) {
+  const path = wayTo(before, block);
   const on = new Set(path.map(([s]) => s));
   const rel = (L: Layout, id: string) => {
     const p = L.parts.get(id)!, s = L.scopes.get(p.scope)!.rect;
@@ -251,16 +282,17 @@ function pushedOnly(g: DrawableGraph, before: Layout, after: Layout, block: stri
     const [b, a] = [rel(before, id), rel(after, id)];
     const step = path.find(([s]) => s === p.scope);
     if (!step) {
-      if (!on.has(id) && !path.some(([, c]) => c === id)) assert.deepEqual(a, b, `${what}: ${id} changed in a scope off the way`);
+      if (!on.has(id) && !path.some(([, c]) => c === id) && (a.x !== b.x || a.y !== b.y || a.w !== b.w || a.h !== b.h)) assert.deepEqual(a, b, `${what}: ${id} changed in a scope off the way`);
       continue;
     }
     const c = rel(before, step[1]);
-    if (Math.abs(b.x - c.x) < EPS && b.y > c.y) assert.ok(way(a.y - b.y), `${what}: ${id}, below ${step[1]}, moved the wrong way`);
-    else assert.equal(a.y, b.y, `${what}: ${id} moved up or down`);
+    if (Math.abs(b.x - c.x) < EPS && b.y > c.y) {
+      if (!way(a.y - b.y)) assert.fail(`${what}: ${id}, below ${step[1]}, moved the wrong way`);
+    } else if (a.y !== b.y) assert.equal(a.y, b.y, `${what}: ${id} moved up or down`);
   }
-  let left = false, against = false;
-  for (const [scope, child] of path) {
-    const folded = foldedOf(g, scope);
+  let against = 0;
+  path.forEach(([scope, child], i) => {
+    const folded = foldedOf(g, view, path.slice(0, i).map(([, c]) => c));
     // The scope's columns, left to right, as their parts.
     const byX = new Map<number, string[]>();
     for (const [id, p] of before.parts) if (p.scope === scope) byX.set(rel(before, id).x, [...(byX.get(rel(before, id).x) ?? []), id]);
@@ -273,19 +305,37 @@ function pushedOnly(g: DrawableGraph, before: Layout, after: Layout, block: stri
       });
     const [b, a, f] = [geo(before), geo(after), geo(folded)];
     const k0 = cols.findIndex((ids) => ids.includes(child));
-    cols.forEach((ids, k) => {
+    cols.forEach((_, k) => {
       if (k === k0) assert.ok(way(a[k]!.w - b[k]!.w), `${what}: ${child}'s column changed width the wrong way`);
       else assert.equal(a[k]!.w, b[k]!.w, `${what}: a column of ${scope} changed width`);
-      if (k < k0 && a[k]!.x !== b[k]!.x) left = true;
-      if (k > k0 && !way(a[k]!.x - b[k]!.x)) against = true;
-      if (k + 1 === cols.length) return;
-      const gap = (m: typeof b) => m[k + 1]!.x - m[k]!.x - m[k]!.w;
-      const [gb, ga, gf] = [gap(b), gap(a), gap(f)];
-      assert.ok(Math.min(gb, ga) >= gf - 1e-6, `${what}: the gutter right of ${ids[0]} in ${scope} is narrower than its anchor`);
-      if (Math.abs(gb - ga) > 1e-6) assert.ok(Math.max(gb, ga) > gf + 1e-6, `${what}: the gutter right of ${ids[0]} in ${scope} changed at its anchor's width`);
     });
-  }
-  return { left, against };
+    // Gutter j runs right of column j; gutter -1 is the room left of the first column (none right of the last).
+    const gap = (m: typeof b, j: number) => (j < 0 ? m[0]!.x : j + 1 < m.length ? m[j + 1]!.x - m[j]!.x - m[j]!.w : 0);
+    let room = 0;
+    for (let j = -1; j + 1 < cols.length; j++) {
+      const [gb, ga, gf] = [gap(b, j), gap(a, j), gap(f, j)];
+      const name = `${what}: the gutter ${j < 0 ? `left of ${cols[0]![0]}` : `right of ${cols[j]![0]}`} in ${scope}`;
+      if (j !== k0 - 1 && j !== k0) {
+        assert.equal(ga, gb, `${name} changed: only the two beside ${child}'s column may`);
+        continue;
+      }
+      assert.ok(Math.min(gb, ga) >= gf - 1e-6, `${name} is narrower than its anchor`);
+      if (Math.abs(gb - ga) > 1e-6) assert.ok(Math.max(gb, ga) > gf + 1e-6, `${name} changed at its anchor's width`);
+      room += Math.max(gb, ga) - gf;
+    }
+    const by = a[k0]!.x - b[k0]!.x + a[k0]!.w - b[k0]!.w + gap(a, k0) - gap(b, k0);
+    cols.forEach((_, k) => {
+      const d = a[k]!.x - b[k]!.x;
+      if (k < k0) assert.equal(d, 0, `${what}: a column of ${scope} left of ${child}'s moved`);
+      if (k <= k0) return;
+      assert.ok(Math.abs(d - by) < 1e-6, `${what}: a column of ${scope} right of ${child}'s moved ${d}, not ${by}`);
+    });
+    if (k0 + 1 < cols.length && !way(by)) {
+      assert.ok(Math.abs(by) <= room + 1e-6, `${what}: the columns of ${scope} right of ${child}'s moved against the change by more than its gutters gave back`);
+      against = Math.max(against, Math.abs(by));
+    }
+  });
+  return against;
 }
 
 /** A seeded random number generator (mulberry32). */
@@ -324,17 +374,11 @@ function randomGraph(seed: number, n: number): DrawableGraph {
   return { nodes, edges, facets: [{ id: "outside-kind", appliesTo: "node", multi: false, values: [{ id: "db" }, { id: "api" }] }] };
 }
 
-/** The chain of [scope, child] pairs from the drawing down to `block`. */
-function wayTo(g: DrawableGraph, block: string): [string, string][] {
-  const byId = new Map(g.nodes.map((n) => [n.id, n]));
-  const sys = g.nodes.find((n) => n.kind === "system")!.id;
+/** The chain of [scope, child] pairs from the drawing down to `block` in `L` (boxes included). */
+function wayTo(L: Layout, block: string): [string, string][] {
   const out: [string, string][] = [];
-  for (let id = block; ; ) {
-    const p = byId.get(id)!.parent ?? sys;
-    out.unshift([p, id]);
-    if (p === sys) return out;
-    id = p;
-  }
+  for (let id = block; L.parts.has(id); id = L.parts.get(id)!.scope) out.unshift([L.parts.get(id)!.scope, id]);
+  return out;
 }
 
 /**
@@ -353,14 +397,14 @@ function session(g: DrawableGraph, view: Omit<View, "open"> = {}) {
   let open = new Set<string>();
   let L = layout(layoutInput(g, { ...view, open }).input);
   const seen = new Map([[keyOf(open), L]]);
-  const moved = { left: 0, against: 0, steps: 0 };
+  const moved = { steps: 0, against: 0, most: 0 };
   return {
     get open(): ReadonlySet<string> {
       return open;
     },
     /** The blocks drawn now, open or not. */
     drawn: () => [...L.parts.keys()].filter((id) => blocks.has(id)).sort(),
-    /** How many steps moved a column left of the changed block, and right of it against the change. */
+    /** How many steps moved columns right of the changed block against the change, and how far at most (px). */
     moved,
     /** Opens or folds `block`; folding it folds what's open inside it. */
     toggle(block: string, rules = true) {
@@ -371,8 +415,8 @@ function session(g: DrawableGraph, view: Omit<View, "open"> = {}) {
       const after = layout(input);
       const what = `${opening ? "opening" : "folding"} ${block} (to ${keyOf(next)})`;
       if (rules) checkRules(after, input);
-      const m = pushedOnly(g, L, after, block, opening, what);
-      (moved.left += +m.left), (moved.against += +m.against), moved.steps++;
+      const back = pushedOnly(g, view, L, after, block, opening, what);
+      (moved.steps += 1), (moved.against += +(back > 0)), (moved.most = Math.max(moved.most, back));
       const k = keyOf(next);
       const was = seen.get(k);
       if (was) same(was, after, `${what}: back`);
@@ -436,7 +480,7 @@ function openAndFold(g: DrawableGraph) {
       if (!block) return;
       const opened = run({ open: new Set([block]) }, top.L);
       checkRules(opened.L, opened.input);
-      pushedOnly(g, top.L, opened.L, block, true, `opening ${block}`);
+      pushedOnly(g, {}, top.L, opened.L, block, true, `opening ${block}`);
       same(top.L, run({ open: new Set() }, opened.L).L, `folding ${block}`);
     },
     /** Folds the deepest block from fully open, then opens it again. */
@@ -446,7 +490,7 @@ function openAndFold(g: DrawableGraph) {
       if (!deep || depth(deep) < 1) return;
       const folded = run({ open: new Set([...blocks].filter((b) => b !== deep)) }, full);
       checkRules(folded.L, folded.input);
-      pushedOnly(g, full, folded.L, deep, false, `folding ${deep}`);
+      pushedOnly(g, {}, full, folded.L, deep, false, `folding ${deep}`);
       same(full, run({ open: blocks }, folded.L).L, `reopening ${deep}`);
     },
     /** Folds everything from a fresh fully open drawing, in `view`: the fresh top level's drawing. */
@@ -539,7 +583,12 @@ describe("opens and folds at 1x", () => {
       s.toggle(drawn[Math.floor(r() * drawn.length)]!);
     }
     assert.ok(s.open.size > 0);
-    c.diagnostic(`${s.moved.steps} steps: ${s.moved.left} moved a column left of the block, ${s.moved.against} one right of it against the change`);
+    // Every step moved the columns right of the block by its column's change of width and the two
+    // gutters' beside it (pushedOnly). Only those gutters giving back room they took for an earlier
+    // open can move them against the change: no step of this walk does.
+    // (Longer walks find a few: 300 steps from seeds 11 and 12 have 3 and 1, up to 28.5 px.)
+    c.diagnostic(`${s.moved.steps} steps: ${s.moved.against} moved columns right of the block against the change, at most ${s.moved.most} px`);
+    assert.equal(s.moved.against, 0, `${s.moved.against} steps moved columns against the change, up to ${s.moved.most} px`);
   });
 
   it("folds everything from fully open with boxes into the top level's drawing with boxes", () => t.foldAll({ boxes: true }));

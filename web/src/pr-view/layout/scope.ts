@@ -13,7 +13,8 @@
 // 4. Every line routed as one cheapest path through the levels it can pass each column at:
 //    length, 40 px a bend, ×0.85 on any stretch another line already uses. Long lines first,
 //    then each again against the rest. Lines spanning fewer than 3 gutters are local: no
-//    discount, and they avoid busy stretches.
+//    discount, and they avoid busy stretches. From anchors, no line is routed: each keeps the
+//    folded drawing's levels, moved down with its column's parts.
 // 5. Gaps widen only where routes pass, then everything is routed again (laid out from anchors,
 //    each gap keeps its anchored room).
 // 6. Trunks: long lines on one level through a column ride one trunk there; verticals sharing a
@@ -720,8 +721,59 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   let Y: number[] = [];
   let hUse: Int32Array[] = [];
   let paths = new Map<string, { lv: number[]; long: boolean }>();
+  /** Each line's level in each column it passes, as a y (null: no level could carry it). */
+  let levels = new Map<string, number[] | null>();
+  /**
+   * From anchors, the parts placed and each line's levels as the folded drawing routed them, each
+   * moved down as far as the first part below it in its column moved (below the last part, as far
+   * as its bottom moved). A column's gaps keep their heights, so every level keeps its clearance,
+   * and no line is routed again: a gutter whose columns' parts didn't move keeps its verticals,
+   * and so its tracks and its width. Undefined if a level is no longer clear of its column's parts
+   * (a safety net, never seen: then every line is routed again).
+   */
+  const keptLevels = (k: Anchors) => {
+    place(extra);
+    const moved = partCols.map((col) => {
+      const top = col.map((it) => k.ys.get(it.id)!);
+      const by = col.map((it, i) => it.y - top[i]!);
+      const last = col[col.length - 1];
+      return { top, by, end: last ? by[by.length - 1]! + last.h - last.ch : 0 };
+    });
+    /** The first part of column c whose folded top is below y. */
+    const nextPart = (c: number, y: number) => {
+      const top = moved[c]!.top;
+      let lo = 0, hi = top.length;
+      while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (top[m]! < y) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const out = new Map<string, number[] | null>();
+    for (const l of laid) {
+      const was = k.levels.get(l.id);
+      if (was === undefined || (was !== null && was.length !== l.cb - l.ca - 1)) return undefined;
+      if (was === null) {
+        out.set(l.id, null);
+        continue;
+      }
+      const now: number[] = [];
+      for (const [i, y] of was.entries()) {
+        const c = l.ca + 1 + i, col = partCols[c]!, m = moved[c]!, at = nextPart(c, y);
+        const ny = y + (at < col.length ? m.by[at]! : m.end);
+        const [below, above] = [col[at], col[at - 1]];
+        if ((below && ny > below.y - CLEAR + 0.25) || (above && ny < above.y + above.h + CLEAR - 0.25)) return undefined;
+        now.push(ny);
+      }
+      out.set(l.id, now);
+    }
+    return out;
+  };
+  const kept = keep && keptLevels(keep);
+  if (kept) levels = kept;
   const streets = new Streets(colWidth);
-  for (let grow = 0; grow < ROUNDS; grow++) {
+  for (let grow = 0; !kept && grow < ROUNDS; grow++) {
     place(extra);
     const raw: number[] = [];
     for (const col of partCols) {
@@ -759,6 +811,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         paths.set(l.id, { lv, long });
         streets.mark(l.ca, lv, ya, yb, local, +1);
       }
+    levels = new Map(laid.map((l) => [l.id, paths.get(l.id)?.lv.map((j) => Y[j]!) ?? null]));
     // Widen each gap to fit the levels routed through it, LEVEL apart and clear of the parts. The
     // band above a column's first part is what the levels routed through it need, so it never
     // keeps room a route no longer takes (no empty band); the gaps between parts only widen, so
@@ -788,23 +841,23 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   // of columns with the same riders on the same level are one trunk.
   const riders: Map<number, string[]>[] = cols.map(() => new Map());
   for (const l of laid) {
-    const p = paths.get(l.id);
-    if (!p) continue;
-    p.lv.forEach((j, i) => {
+    const ys = levels.get(l.id);
+    if (!ys) continue;
+    ys.forEach((y, i) => {
       const m = riders[l.ca + 1 + i]!;
-      const ids = m.get(j);
+      const ids = m.get(y);
       if (ids) ids.push(l.id);
-      else m.set(j, [l.id]);
+      else m.set(y, [l.id]);
     });
   }
-  const per: { c: number; j: number; members: string[] }[] = [];
-  riders.forEach((m, c) => m.forEach((ids, j) => ids.length > 1 && per.push({ c, j, members: ids.sort() })));
-  per.sort((a, b) => a.j - b.j || a.c - b.c);
-  const clusters: { members: string[]; from: number; to: number; j: number }[] = [];
+  const per: { c: number; y: number; members: string[] }[] = [];
+  riders.forEach((m, c) => m.forEach((ids, y) => ids.length > 1 && per.push({ c, y, members: ids.sort() })));
+  per.sort((a, b) => a.y - b.y || a.c - b.c);
+  const clusters: { members: string[]; from: number; to: number; y: number }[] = [];
   for (const p of per) {
     const last = clusters[clusters.length - 1];
-    if (last && last.to === p.c - 1 && last.j === p.j && last.members.join() === p.members.join()) last.to = p.c;
-    else clusters.push({ members: p.members, from: p.c, to: p.c, j: p.j });
+    if (last && last.to === p.c - 1 && last.y === p.y && last.members.join() === p.members.join()) last.to = p.c;
+    else clusters.push({ members: p.members, from: p.c, to: p.c, y: p.y });
   }
   // Each line's cluster in each column it rides one.
   const trunkAt = new Map<string, Map<number, number>>();
@@ -826,13 +879,13 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   }
   const stops = new Map<string, Stop[]>();
   for (const l of laid) {
-    const p = paths.get(l.id);
+    const ys = levels.get(l.id);
     const a = partItem.get(l.a)!, b = partItem.get(l.b)!;
     const s: Stop[] = [{ col: l.ca, part: a, y: mid(a) }];
     const at = trunkAt.get(l.id);
-    (p?.lv ?? []).forEach((j, i) => s.push({ col: l.ca + 1 + i, trunk: at?.get(l.ca + 1 + i), y: Y[j]! }));
+    (ys ?? []).forEach((y, i) => s.push({ col: l.ca + 1 + i, trunk: at?.get(l.ca + 1 + i), y }));
     // A line no level could carry runs straight to its part (it never happens on a free column).
-    if (!p) for (let c = l.ca + 1; c < l.cb; c++) s.push({ col: c, y: mid(a) });
+    if (!ys) for (let c = l.ca + 1; c < l.cb; c++) s.push({ col: c, y: mid(a) });
     s.push({ col: l.cb, part: b, y: mid(b) });
     stops.set(l.id, s);
   }
@@ -1122,7 +1175,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   }
   const trunks: STrunk[] = [];
   for (const cl of clusters) {
-    const y = Y[cl.j]!;
+    const y = cl.y;
     trunks.push({ lines: cl.members, pts: [{ x: colX[cl.from]!, y }, { x: colX[cl.to]! + colWidth[cl.to]!, y }], width: trunkWidth(cl.members.length) });
   }
   // Vertical trunks: where two or more lines share a track, each shared stretch is one.
@@ -1218,7 +1271,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   let anchors = keep;
   if (!anchors) {
     const rows = partCols.map((col) => col.map((it) => it.id));
-    anchors = { sig, rows, ys: new Map(), room: new Map(), gutters: gutterWidths, frame: frame && { w: frame.w, h: frame.h, ports: frame.ports } };
+    anchors = { sig, rows, ys: new Map(), room: new Map(), levels, gutters: gutterWidths, frame: frame && { w: frame.w, h: frame.h, ports: frame.ports } };
     for (const [c, col] of partCols.entries())
       for (const [i, it] of col.entries()) anchors.ys.set(it.id, it.y), anchors.room.set(it.id, extra[c]![i] ?? 0);
   }

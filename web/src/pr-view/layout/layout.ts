@@ -12,7 +12,9 @@
 //
 // Opening or folding a block changes no scope's lines, only the block's size, so with the last
 // answer every scope is laid out from the same anchors (its drawing with every block in it
-// folded): only what the changed block pushes moves, and folding it back puts them back.
+// folded): its parts where that drawing had them, pushed down by the open blocks above them, and
+// its lines on that drawing's routes, so only what the changed block pushes moves (the parts below
+// it, and the columns right of it), and folding it back puts them back.
 //
 // Boxes (group frames round some of a scope's parts) are frames too: each is laid out as a scope
 // of its own, its lines crossing its edge through ports, and joined back into one route. A box
@@ -92,6 +94,7 @@ export function layout(input: LayoutInput): Layout {
   // 2. Layout, bottom up.
   for (const w of [...work].reverse()) {
     const parts = sParts(w, (p) => frames.get(p.id) ?? p, portSide);
+    // From the last answer's anchors for this scope, if they're for the same folded scope.
     const out = layoutScope(parts, sLines(w), { inside: w.inside, keep: input.previous?.anchors.get(w.id), countRoom });
     w.out = out;
     if (!out.frame) continue;
