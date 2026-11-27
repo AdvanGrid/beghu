@@ -10,6 +10,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, onSettled, Show } from "solid-js";
 import type { Me } from "./api";
 import { leave } from "./overlay";
+import { forgetAccountPrompts } from "./prompts";
 import { unsavedText } from "./unsaved";
 import { colors } from "./tokens.stylex";
 
@@ -25,6 +26,13 @@ interface Ask {
 }
 
 /** The page to come back to: the same view, under whichever account is active. */
+/** How leaving goes: asking first always (`always`), with `detail`; signing out the tab's account or all. */
+interface Leaving {
+  always?: boolean;
+  detail?: string;
+  signsOut?: "this" | "all";
+}
+
 function here(): string {
   return location.pathname + location.search;
 }
@@ -51,16 +59,19 @@ export function AccountMenu(props: { me: Me; close: () => void }) {
    * Leaves through `go`: at once, or once the user confirms when there's unsaved text (always,
    * with `always`, adding `detail`).
    */
-  const leaveBy = (go: () => void, what: string, yes: string, opts: { always?: boolean; detail?: string } = {}) => {
+  const leaveBy = (go: () => void, what: string, yes: string, opts: Leaving = {}) => {
     const leaveNow = () => {
       leave();
+      // Signing an account out (or disconnecting it) ends its button runs: their kept prompts,
+      // which hold the runs' tokens, go now (prompts.ts).
+      if (opts.signsOut) forgetAccountPrompts(opts.signsOut === "all" ? undefined : props.me.account.id);
       go();
     };
     if (!opts.always && !unsaved()) return leaveNow();
     setAsk({ what, yes, detail: opts.detail, go: leaveNow });
   };
   /** A form post's submit: leaves through the form, asking first if it must. */
-  const submitting = (what: string, yes: string, opts?: { always?: boolean; detail?: string }) => (e: SubmitEvent) => {
+  const submitting = (what: string, yes: string, opts?: Leaving) => (e: SubmitEvent) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     leaveBy(
@@ -130,7 +141,7 @@ export function AccountMenu(props: { me: Me; close: () => void }) {
               Add another account
             </a>
             <hr {...stylex.attrs(s.rule)} />
-            <form method="post" action="/auth/logout" onSubmit={submitting(`Sign out of ${login()}?`, "Sign out")}>
+            <form method="post" action="/auth/logout" onSubmit={submitting(`Sign out of ${login()}?`, "Sign out", { signsOut: "this" })}>
               <input type="hidden" name="account" value={String(props.me.account.id)} />
               <input type="hidden" name="next" value={here()} />
               <button type="submit" role="menuitem" {...stylex.attrs(s.item)}>
@@ -138,7 +149,7 @@ export function AccountMenu(props: { me: Me; close: () => void }) {
               </button>
             </form>
             <Show when={others().length > 0}>
-              <form method="post" action="/auth/logout" onSubmit={submitting("Sign out of every account?", "Sign out of all")}>
+              <form method="post" action="/auth/logout" onSubmit={submitting("Sign out of every account?", "Sign out of all", { signsOut: "all" })}>
                 <input type="hidden" name="all" value="1" />
                 <input type="hidden" name="next" value={here()} />
                 <button type="submit" role="menuitem" {...stylex.attrs(s.item)}>
@@ -152,6 +163,7 @@ export function AccountMenu(props: { me: Me; close: () => void }) {
               action="/auth/disconnect"
               onSubmit={submitting(`Disconnect ${login()} from beghu?`, "Disconnect", {
                 always: true,
+                signsOut: "this",
                 detail:
                   "beghu revokes its access on GitHub, deletes its copy of this account's issues and the account's preferences, and signs it out in every browser. It remembers which repos you picked, for if you connect again. Nothing on GitHub is changed.",
               })}

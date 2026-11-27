@@ -15,7 +15,7 @@ pub struct Config {
     /// the OAuth callback.
     pub public_url: String,
     /// `BEGHU_DATA_DIR`: the volume, on block storage. Holds `control.db`, `backups/`,
-    /// `mirrors/`, and with a web build `assets/` and `builds/`.
+    /// `mirrors/`, `analyses/`, and with a web build `assets/` and `builds/`.
     pub data_dir: PathBuf,
     /// `BEGHU_TOKEN_KEY`: the HKDF master key (base64, at least 32 bytes).
     pub token_key: Vec<u8>,
@@ -27,6 +27,30 @@ pub struct Config {
     /// serves the app.
     pub web_dir: Option<PathBuf>,
     pub mirrors: MirrorsConfig,
+    /// `BEGHU_ANALYSIS_DIR`: the agent's tools, `validate.mjs` and `merge.mjs`, built from this
+    /// server's own commit (`crates/analysis-wasm/build.sh`; the image has them in
+    /// `/app/analysis`, and `./dev-ctl` builds them into `target/analysis-tools`). An analysis
+    /// run serves them as they are. Set but missing either file refuses startup; unset, the run
+    /// answers 503 for them.
+    pub analysis_tools: Option<PathBuf>,
+    /// The migration chain stored and uploaded analyses go through: always
+    /// [`analysis::CHAIN`], this build's. A test may give one a version ahead, with a step of its
+    /// own, to drive a migration through HTTP before the schema has a second version.
+    pub analysis_chain: &'static analysis::Chain<'static>,
+    /// How long analysis runs live (spec #176, "The run"): 24 h unused, 2 h idle, 7 days at most.
+    pub runs: RunLifetimes,
+    /// `BEGHU_CLI_DIR`: the beghu CLI's builds this server serves at `/cli/{os}-{arch}/beghu`,
+    /// built from its own commit (the image's `cli` stage writes `/app/cli`): `version` (the
+    /// CLI's semver) and `<os>-<arch>/beghu` for each platform built. Set but without `version`,
+    /// or with no build, refuses startup; unset, the `/cli/` downloads answer 404, and the CLI
+    /// version this server answers for is the one in its own source (`crates/cli/Cargo.toml`).
+    pub cli_dir: Option<PathBuf>,
+    /// The beghu CLI's sign-ins: the floor its calls are held to and how its device flow runs.
+    pub cli: CliConfig,
+    /// Tests only, always `None` in a deploy: where an analysis run stops for the test, so it
+    /// can act on the run between a request's start and its write, which nothing else can time
+    /// (an upload superseded as it's stored, a run ended twice at once). See [`RunPause`].
+    pub analysis_pause: Option<RunPause>,
     /// How often a signed-in account's visible repos and roles are re-read from GitHub.
     pub repo_refresh_every: Duration,
     /// How long after a failed re-read of the roles the next is tried (a minute): long enough
@@ -90,6 +114,101 @@ pub struct Config {
     /// by default.
     pub scan_steps: bool,
 }
+
+/// How long an analysis run lives.
+#[derive(Clone, Debug)]
+pub struct RunLifetimes {
+    /// A run nothing fetched from yet expires this long after its start (24 h).
+    pub unused_for: Duration,
+    /// An attached run expires after this long with no authenticated call (2 h).
+    pub idle_for: Duration,
+    /// A run expires this long after its start (the start call), however busy (7 days).
+    pub lives_for: Duration,
+    /// How long an ended run's row and token are kept, only to tell a call with its token why it
+    /// ended (410), before the daily check prunes them (30 days).
+    pub ended_kept_for: Duration,
+    /// How often, at most, an attached run's calls tell the account's streams it was heard from
+    /// (an `analysis` event), so the PR panel's "last heard" is true to within this (1 min).
+    pub heard_every: Duration,
+}
+
+impl Default for RunLifetimes {
+    fn default() -> Self {
+        RunLifetimes {
+            unused_for: Duration::from_secs(24 * 3600),
+            idle_for: Duration::from_secs(2 * 3600),
+            lives_for: Duration::from_secs(7 * 24 * 3600),
+            ended_kept_for: Duration::from_secs(30 * 24 * 3600),
+            heard_every: Duration::from_secs(60),
+        }
+    }
+}
+
+/// The beghu CLI's floor and sign-ins (spec #179).
+#[derive(Clone, Debug)]
+pub struct CliConfig {
+    /// The oldest CLI this server answers: [`crate::MIN_CLI`]. Every call from an older one is
+    /// `426`. A test raises it to drive the CLI's self-update.
+    pub min_cli: crate::CliVersion,
+    /// How often `beghu login` polls while it waits for its approval (5 s).
+    pub poll_every: Duration,
+    /// How long a `beghu login` waits for its approval (10 min).
+    pub login_for: Duration,
+    /// A CLI credential unused this long expires (90 days).
+    pub unused_for: Duration,
+    /// At most this many `beghu login`s wait for their approval at once (10,000), and
+    /// ([`CliConfig::logins_per_client`]) from one client (20) when
+    /// [`CliConfig::client_ip_header`] says who clients are: `cli::limits`.
+    pub logins_at_once: usize,
+    pub logins_per_client: usize,
+    /// `BEGHU_CLIENT_IP_HEADER` (optional): the request header the edge overwrites with the
+    /// address it was called from (`CF-Connecting-IP`, `Fly-Client-IP`, or `X-Forwarded-For`,
+    /// whose last address counts), by which `beghu login`s are counted per client. Unset, they
+    /// aren't, and no such header is read: docs/deploy.md, "The edge".
+    pub client_ip_header: Option<axum::http::HeaderName>,
+    /// A browser session that asks for this many codes that aren't a live login's (10) within
+    /// [`CliConfig::wrong_codes_for`] (10 minutes) is refused more until the oldest is that old.
+    pub wrong_codes: usize,
+    pub wrong_codes_for: Duration,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        CliConfig {
+            min_cli: crate::CliVersion::parse(crate::MIN_CLI).expect("MIN_CLI is a semver"),
+            poll_every: Duration::from_secs(5),
+            login_for: Duration::from_secs(10 * 60),
+            unused_for: Duration::from_secs(90 * 24 * 3600),
+            logins_at_once: 10_000,
+            logins_per_client: 20,
+            client_ip_header: None,
+            wrong_codes: 10,
+            wrong_codes_for: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
+/// Where an analysis run stops for a test ([`Config::analysis_pause`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunPausePoint {
+    /// An upload passed every check and holds its turn (one of the uploads at once), and is
+    /// about to be stored if its run is still live.
+    Store,
+    /// A call found its run ended (expired, signed out, …) and is about to mark it so.
+    End,
+    /// Disconnect has marked the account (`needs_sign_in`, its analyses to delete) and is about
+    /// to delete its mirror and its `analyses.db`.
+    Disconnected,
+    /// A sign-in has recorded the account and is about to store its tokens, which activates it.
+    SignIn,
+}
+
+/// A test's pause: called at each [`RunPausePoint`], and the run goes on once its future does.
+pub type RunPause = std::sync::Arc<
+    dyn Fn(RunPausePoint) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// The attachment route's and the image proxy's limits (spec, "Markdown and media"), and where
 /// they may fetch from in dev.
@@ -319,6 +438,15 @@ impl Config {
             },
             web_dir: std::env::var("BEGHU_WEB_DIR").ok().map(PathBuf::from),
             mirrors: MirrorsConfig::from_env()?,
+            analysis_tools: std::env::var("BEGHU_ANALYSIS_DIR").ok().map(PathBuf::from),
+            analysis_chain: &analysis::CHAIN,
+            runs: RunLifetimes::default(),
+            cli_dir: std::env::var("BEGHU_CLI_DIR").ok().map(PathBuf::from),
+            cli: CliConfig {
+                client_ip_header: client_ip_header()?,
+                ..CliConfig::default()
+            },
+            analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
             setup_reread_after: Duration::from_secs(60),
@@ -347,8 +475,8 @@ impl Config {
     }
 
     // `./dev-ctl reset --all` deletes `control.db` (with its `-wal` and `-shm`) and `backups/`
-    // under BEGHU_DATA_DIR, and `reset` replaces `mirrors/`: keep these names in step with
-    // tools/dev-ctl/src/main.ts.
+    // under BEGHU_DATA_DIR, and `reset` replaces `mirrors/` and deletes `analyses/`: keep these
+    // names in step with tools/dev-ctl/src/main.ts.
 
     pub fn control_db(&self) -> PathBuf {
         self.data_dir.join("control.db")
@@ -363,6 +491,27 @@ impl Config {
     pub fn mirrors_dir(&self) -> PathBuf {
         self.data_dir.join("mirrors")
     }
+
+    /// Each account's `analyses.db`, as `analyses/<github user id>.db`: beside the mirrors, not
+    /// among them. An account has no directory of its own (its mirror is `mirrors/<id>.db`), and
+    /// `mirrors/` holds only disposable files, which `./dev-ctl reset` replaces wholesale and
+    /// startup deletes by account status; an analysis can't be had from GitHub again, so it
+    /// keeps out of their way.
+    pub fn analyses_dir(&self) -> PathBuf {
+        self.data_dir.join("analyses")
+    }
+}
+
+/// `BEGHU_CLIENT_IP_HEADER`: a header's name, or none when it's unset or empty.
+fn client_ip_header() -> Result<Option<axum::http::HeaderName>, String> {
+    let raw = std::env::var("BEGHU_CLIENT_IP_HEADER").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    axum::http::HeaderName::from_bytes(raw.as_bytes())
+        .map(Some)
+        .map_err(|_| format!("BEGHU_CLIENT_IP_HEADER must be a header's name, got {raw:?}"))
 }
 
 /// `BEGHU_BUILD_ID` (default `dev`): it names the build's asset record on the volume

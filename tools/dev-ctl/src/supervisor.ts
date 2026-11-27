@@ -8,6 +8,7 @@ import { appendFileSync, existsSync, statSync, watch } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import {
+  ANALYSIS_TOOLS,
   CLIENT,
   DATA,
   DEPLOYED,
@@ -39,7 +40,7 @@ import { GITHUB_DATA, KEY_FILE, SANDBOX, type DevApp, readDevApp } from "./githu
 
 type Proc = "fake" | "server" | "vite" | "smee";
 
-const BINARIES = { fake: join(TARGET, "fake-github"), server: join(TARGET, "beghu") };
+const BINARIES = { fake: join(TARGET, "fake-github"), server: join(TARGET, "beghu-server") };
 
 function log(prefix: string, line: string): void {
   // Strip ANSI escapes so the log reads well in tools.
@@ -82,7 +83,30 @@ function run(cmd: string, args: string[], prefix: string): Promise<{ code: numbe
   });
 }
 
-const build = () => run("cargo", ["build", "-p", "beghu", "-p", "fake-github"], "cargo");
+const build = () => run("cargo", ["build", "-p", "beghu-server", "-p", "fake-github"], "cargo");
+
+/**
+ * Builds the agent's tools (validate.mjs, merge.mjs) from this tree into ANALYSIS_TOOLS, as the
+ * image's own build does from its commit. It needs the wasm32 target and wasm-bindgen-cli
+ * (crates/analysis-wasm/build.sh says how); without them the server still runs, and a run
+ * answers 503 for the two tools.
+ */
+async function buildTools(): Promise<void> {
+  const script = join(ROOT, "crates", "analysis-wasm", "build.sh");
+  if ((await run("bash", [script, ANALYSIS_TOOLS], "tools")).code !== 0) {
+    log("dev-ctl", "the agent's tools didn't build; see the [tools] lines above. Runs answer 503 for validate.mjs and merge.mjs");
+  }
+}
+
+/** BEGHU_ANALYSIS_DIR, when both tools are built: the server refuses to start on a half-built one. */
+function toolsEnv(): NodeJS.ProcessEnv {
+  const built = ["validate.mjs", "merge.mjs"].every((f) => existsSync(join(ANALYSIS_TOOLS, f)));
+  return built ? { BEGHU_ANALYSIS_DIR: ANALYSIS_TOOLS } : {};
+}
+
+/** Whether a change under crates/ is to the agent's tools' sources. */
+const toolsChanged = (changed: Set<string>) =>
+  [...changed].some((f) => /^analysis(-wasm)?[\\/]/.test(f));
 
 export async function supervise(scale: Scale): Promise<void> {
   const state: State = {
@@ -111,6 +135,7 @@ export async function supervise(scale: Scale): Promise<void> {
   if (busy) return fail(busy);
   log("dev-ctl", "building the server and Fake GitHub");
   if ((await build()).code !== 0) return fail("the build failed; see the [cargo] lines above");
+  await buildTools();
   const fixture = await generateFixture(scale);
   if (!fixture) return fail("the fixture generator failed");
   state.fixture = fixture;
@@ -168,8 +193,8 @@ export async function supervise(scale: Scale): Promise<void> {
   log("dev-ctl", `ready: app ${URLS.app}, server ${URLS.server}, fake ${URLS.fake}`);
 
   let startupTokens = (await fakeState(URLS.control))?.tokens;
-  watchSources(async () => {
-    startupTokens = await rebuildAndRestart(stack, startupTokens, async () => {
+  watchSources(async (changed) => {
+    startupTokens = await rebuildAndRestart(stack, startupTokens, changed, async () => {
       const next = await generateFixture(scale);
       if (!next) {
         log("dev-ctl", "the fixture generator failed; the running processes keep the old fixture");
@@ -229,9 +254,10 @@ export async function superviseGitHub(): Promise<void> {
     if (!(await portFree(port))) return fail(`port ${port} is already in use; free it or set ${env}`);
   }
   log("dev-ctl", "building the server");
-  if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+  if ((await run("cargo", ["build", "-p", "beghu-server"], "cargo")).code !== 0) {
     return fail("the build failed; see the [cargo] lines above");
   }
+  await buildTools();
   const names: Proc[] = ["server", "smee", "vite"];
   const stack = processes(() => "", {
     started: (name, pid) => {
@@ -286,14 +312,16 @@ export async function superviseGitHub(): Promise<void> {
   state.phase = "ready";
   save();
   log("dev-ctl", `ready against GitHub as ${app.slug}: app ${URLS.app}, webhooks from ${app.smee_url}; writes only to ${SANDBOX}`);
-  watchSources(async () => {
+  watchSources(async (changed) => {
     log("dev-ctl", "sources changed; rebuilding the server");
     const before = mtimes().server;
-    if ((await run("cargo", ["build", "-p", "beghu"], "cargo")).code !== 0) {
+    if ((await run("cargo", ["build", "-p", "beghu-server"], "cargo")).code !== 0) {
       log("dev-ctl", "the build failed; the running server is unchanged");
       return;
     }
-    if (mtimes().server !== before) await stack.restart("server");
+    const tools = toolsChanged(changed);
+    if (tools) await buildTools();
+    if (mtimes().server !== before || tools) await stack.restart("server");
   });
 }
 
@@ -319,6 +347,7 @@ function githubCommands(app: DevApp): Commands {
         GITHUB_APP_SLUG: app.slug,
         GITHUB_APP_PRIVATE_KEY_FILE: KEY_FILE,
         BEGHU_DEV_WRITABLE_REPOS: SANDBOX,
+        ...toolsEnv(),
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },
     ],
@@ -444,6 +473,7 @@ function commands(fixture: () => string): Commands {
         // and the image proxy may fetch from its stand-in for the web's image hosts (/ext).
         GITHUB_ATTACHMENTS_URL: `${URLS.fake}/private-user-images`,
         BEGHU_DEV_IMAGE_HOSTS: `127.0.0.1:${PORTS.fake}`,
+        ...toolsEnv(),
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },
     ],
@@ -619,13 +649,21 @@ type Tokens = FakeState["tokens"] | undefined;
  * Otherwise restarts whichever binary changed. Resolves to the token lifetimes the fake runs with now:
  * read again after a restart, since its flags may have changed.
  */
-async function rebuildAndRestart(stack: Stack, startupTokens: Tokens, refixture: () => Promise<boolean>): Promise<Tokens> {
+async function rebuildAndRestart(
+  stack: Stack,
+  startupTokens: Tokens,
+  changed: Set<string>,
+  refixture: () => Promise<boolean>,
+): Promise<Tokens> {
   const before = mtimes();
   log("dev-ctl", "sources changed; rebuilding");
   if ((await build()).code !== 0) {
     log("dev-ctl", "the build failed; the running processes are unchanged");
     return startupTokens;
   }
+  // The server reads the tools once, at its start.
+  const tools = toolsChanged(changed);
+  if (tools) await buildTools();
   if (await refixture()) {
     // Both run the new binaries already.
     log("dev-ctl", "Fake GitHub restarted on the new fixture: any fault rules or token lifetimes set at runtime are gone");
@@ -643,7 +681,7 @@ async function rebuildAndRestart(stack: Stack, startupTokens: Tokens, refixture:
       log("dev-ctl", `Fake GitHub restarted and lost its runtime settings: ${lost.join(", ")}. Set them again with ./dev-ctl fake`);
     }
   }
-  if (after.server !== before.server) await stack.restart("server");
+  if (after.server !== before.server || tools) await stack.restart("server");
   return startupTokens;
 }
 
@@ -680,25 +718,29 @@ function mtimes(): Record<"fake" | "server", number> {
   return { fake: m(BINARIES.fake), server: m(BINARIES.server) };
 }
 
-/** Calls `rebuild` after Rust sources settle, never two at once; changes during a build queue one more. */
-function watchSources(rebuild: () => Promise<void>): void {
+/**
+ * Calls `rebuild` after Rust sources settle, never two at once; changes during a build queue one
+ * more. It's told which files changed (relative to crates/, or the root's Cargo files): the
+ * agent's tools rebuild only for theirs, which take in analysis-wasm's JS and build script too.
+ */
+function watchSources(rebuild: (changed: Set<string>) => Promise<void>): void {
   let timer: NodeJS.Timeout | undefined;
   let busy = false;
-  let again = false;
+  let pending = new Set<string>();
   const go = async () => {
-    if (busy) {
-      again = true;
-      return;
-    }
+    if (busy) return;
     busy = true;
-    do {
-      again = false;
-      await rebuild();
-    } while (again);
+    while (pending.size) {
+      const changed = pending;
+      pending = new Set();
+      await rebuild(changed);
+    }
     busy = false;
   };
   const changed = (file: string | null) => {
-    if (file && !/\.(rs|sql|toml)$|Cargo\.lock$/.test(file)) return;
+    const tools = file !== null && /^analysis-wasm[\\/].*\.(js|sh)$/.test(file);
+    if (file && !tools && !/\.(rs|sql|toml|md)$|Cargo\.lock$/.test(file)) return;
+    pending.add(file ?? "");
     clearTimeout(timer);
     timer = setTimeout(go, 300);
   };

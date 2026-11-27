@@ -36,6 +36,7 @@
 /crates/control-db/migrations/ @tomsjansons
 /crates/mirror-db/migrations/ @tomsjansons
 /crates/fake-db/migrations/ @tomsjansons
+/crates/analysis-db/migrations/ @tomsjansons
 
 # The GitHub App's manifest and permissions.
 /github-app/ @tomsjansons

@@ -59,7 +59,7 @@ import { searchOf, type Term } from "./highlight";
 import { refusedKey, touch, type Action } from "./keys";
 import type { Can } from "./bindings/Can";
 import { editorOf, openEditor, type Field } from "./editing";
-import { cantReach, coalesced, onPush, resetAt } from "./live";
+import { cantReach, coalesced, onAnalysis, onPush, resetAt } from "./live";
 import { overlay, type PickProp as Prop, type ShownComment, type ShownDetail } from "./overlay";
 import { focusOf, modeOf, queryOf, withMode } from "./query";
 import { at, atString, idAt, isAt, issuePath, parseAt } from "./at";
@@ -111,6 +111,7 @@ const PullBadge = lazy(() => import("./Pull"), { export: "PullBadge" });
 const PullBranches = lazy(() => import("./Pull"), { export: "PullBranches" });
 const OpenOnGitHub = lazy(() => import("./Pull"), { export: "OpenOnGitHub" });
 const ReviewsElsewhere = lazy(() => import("./Pull"), { export: "ReviewsElsewhere" });
+const AnalyseButton = lazy(() => import("./Pull"), { export: "AnalyseButton" });
 
 /** The title and body editors: loaded when one first opens; a failed load is handled as a picker's. */
 const editorChunk = () =>
@@ -121,7 +122,10 @@ const TitleEditor = lazy(editorChunk, { export: "TitleEditor" });
 const BodyEditor = lazy(editorChunk, { export: "BodyEditor" });
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
-let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
+let openDetail: { id: number; onPush: () => Promise<void>; pr?: string } | undefined;
+
+/** A PR as `analysis` pushes name it, to match the open one: `owner/repo#n`, lower case. */
+const prKey = (repo: string, number: number) => `${repo}#${number}`.toLowerCase();
 
 /** The next refetch of the open issue applies at once (HeldDetail.tsx): Back restored the page. */
 let restored = false;
@@ -153,6 +157,11 @@ const unsubscribe = onPush((p) => {
 });
 // A hot reload of this file in development subscribes its new copy instead.
 import.meta.hot?.dispose(unsubscribe);
+// An `analysis` push naming the open PR refetches it: the PR panel's Analyse button shows its run.
+const unsubscribeAnalysis = onAnalysis((a) => {
+  if (openDetail?.pr === prKey(a.repo, a.number)) void refetchOpenIssue([openDetail.id]);
+});
+import.meta.hot?.dispose(unsubscribeAnalysis);
 
 export function IssuePanel(props: RouteSectionProps) {
   const location = useLocation();
@@ -572,7 +581,7 @@ function Detail(props: { at: string; search: string }) {
       if (back) goBack();
       else seek();
       setLost(undefined);
-      openDetail = { id, onPush: refetchForPush };
+      openDetail = { id, onPush: refetchForPush, pr: detail.kind === "pr" ? prKey(`${detail.owner}/${detail.repo}`, detail.number) : undefined };
       // A remembered detail is on screen (its first page), maybe minutes old: replace it with the
       // read the click's own preload started (the router's cache keys on every argument: pass the
       // id alone). If that fails, the detail shows the failure, with Retry, which opens the issue
@@ -765,7 +774,7 @@ function Body(props: {
         </div>
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
-        <div {...stylex.attrs(s.status)} data-k="status">
+        <div {...stylex.attrs(s.status, d().pr && s.statusPr)} data-k="status">
           <Show
             when={d().pr}
             fallback={
@@ -779,7 +788,7 @@ function Body(props: {
           </Show>
           <button
             type="button"
-            {...stylex.attrs(s.ref)}
+            {...stylex.attrs(s.ref, d().pr && s.keepsWhole)}
             data-perf="detail-ref"
             title={`${d().owner}/${d().repo}#${d().number} · click to copy the number`}
             onClick={(e) => copyRef(e, d())}
@@ -789,7 +798,7 @@ function Body(props: {
           <a
             href={focusHref()}
             noscroll
-            {...stylex.attrs(s.focus, focused() && s.focusOn)}
+            {...stylex.attrs(s.focus, focused() && s.focusOn, d().pr && s.keepsWhole)}
             data-perf="focus-issue"
             aria-current={focused() ? "true" : undefined}
             title={focused() ? "Focus view is on this issue" : "Show this issue's sub-issues or blocking chain as a tree of its own"}
@@ -806,19 +815,22 @@ function Body(props: {
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
           <span {...stylex.attrs(s.spacer)} />
-          <Show
-            when={d().pr}
-            fallback={
-              <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
-                GitHub ↗
-              </a>
-            }
-          >
-            <OpenOnGitHub href={githubUrl(d())} />
-          </Show>
-          <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
-            ×
-          </a>
+          <span {...stylex.attrs(s.actions, d().pr && s.actionsPr)}>
+            <Show
+              when={d().pr}
+              fallback={
+                <a href={githubUrl(d())} target="_blank" rel="noreferrer external" {...stylex.attrs(s.action)} title="Open on GitHub">
+                  GitHub ↗
+                </a>
+              }
+            >
+              <AnalyseButton d={d()} />
+              <OpenOnGitHub href={githubUrl(d())} />
+            </Show>
+            <a href={`/issues${props.search}`} noscroll {...stylex.attrs(s.action)} aria-label={d().kind === "pr" ? "Close the PR panel" : "Close the issue"} title="Close">
+              ×
+            </a>
+          </span>
         </div>
         <HeldUnit unit="parent" cue={held.unitCue("parent")} tint={held.unitTint("parent")}>
           <ParentCrumb d={d()} search={props.search} write={allows(d(), "relationships")} />
@@ -1614,6 +1626,32 @@ const s = stylex.create({
     alignItems: "center",
     display: "flex",
     whiteSpace: "nowrap",
+  },
+  // A PR's row also holds the Analyse button, whose label gives way first (Analyse.tsx), and
+  // wraps in a panel too narrow for it all.
+  statusPr: {
+    flexWrap: "wrap",
+    rowGap: 8,
+  },
+  // The row's actions (a PR's Analyse button and Open on GitHub, an issue's GitHub link, and
+  // Close) wrap as one, kept at the row's end: none is left alone on a line of its own.
+  actions: {
+    gap: 10,
+    alignItems: "center",
+    display: "flex",
+    flexShrink: 0,
+    marginInlineStart: "auto",
+  },
+  // On a PR's row they may narrow, down to the row's width, so the Analyse button's label is
+  // what gives way.
+  actionsPr: {
+    flexShrink: 1,
+    maxWidth: "100%",
+    minWidth: 0,
+  },
+  // A PR's number and Focus issue keep their text whole: the Analyse button gives way instead.
+  keepsWhole: {
+    flexShrink: 0,
   },
   badge: {
     borderRadius: 999,

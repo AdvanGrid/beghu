@@ -1,0 +1,58 @@
+{
+  "nodes": [
+    {
+      "id": "shop"
+    },
+    {
+      "id": "api"
+    },
+    {
+      "id": "api.health"
+    },
+    {
+      "id": "lib"
+    },
+    {
+      "id": "lib.db"
+    },
+    {
+      "id": "postgres"
+    },
+    {
+      "id": "stripe"
+    },
+    {
+      "id": "customer"
+    },
+    {
+      "id": "api.payments"
+    }
+  ],
+  "edges": [
+    {
+      "id": "customer->api.orders",
+      "from": "customer",
+      "to": "api.orders"
+    },
+    {
+      "id": "api.orders->stripe",
+      "from": "api.orders",
+      "to": "stripe"
+    },
+    {
+      "id": "api.orders->lib.db:exec",
+      "from": "api.orders",
+      "to": "lib.db"
+    },
+    {
+      "id": "api.orders->lib.db:query",
+      "from": "api.orders",
+      "to": "lib.db"
+    },
+    {
+      "id": "lib.db->postgres",
+      "from": "lib.db",
+      "to": "postgres"
+    }
+  ]
+}

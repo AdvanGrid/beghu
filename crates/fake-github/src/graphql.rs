@@ -558,6 +558,7 @@ fn pull_details(
         "isDraft": p.draft.unwrap_or(false),
         "mergedAt": time(p.merged_at),
         "headRefName": p.head_ref,
+        "headRefOid": crate::pulls::head(c, item.id)?.sha,
         "baseRefName": p.base_ref,
         "reviewDecision": upper(p.review_decision.as_deref()),
         "closingIssuesReferences": closing(c, token, item.id, after)?,

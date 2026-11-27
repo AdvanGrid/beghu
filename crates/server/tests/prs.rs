@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 const WAIT: f64 = 15.0;
 
 /// The poller at its real pace (the harness keeps it out of other tests' way).
-fn polling(c: &mut beghu::Config) {
+fn polling(c: &mut beghu_server::Config) {
     c.reconcile.feed_every = Duration::from_secs(2);
 }
 
@@ -466,7 +466,7 @@ async fn a_review_refreshes_the_prs_review_decision() {
 }
 
 /// Probes every 300 ms (the sweeps' other rounds off), and the poller at a quick pace.
-fn probing(c: &mut beghu::Config) {
+fn probing(c: &mut beghu_server::Config) {
     c.reconcile.tick = Duration::from_millis(100);
     c.reconcile.probe_every = Duration::from_millis(300);
     c.reconcile.count_every = Duration::from_secs(3600);

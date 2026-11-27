@@ -32,10 +32,11 @@
 // included, so a tab that was reconnecting when an import or a resync ended hears it.
 import { query } from "@solidjs/router";
 import { createSignal } from "solid-js";
-import { forgetRemembered, prefsChanged, rolesChanged } from "./api";
+import { forgetPull, forgetRemembered, prefsChanged, rolesChanged } from "./api";
 import { accountHeaders, cookieAccount, noteActive, noteSignInAgain, noteSwitched, stale, tabAccount } from "./account";
 import { noteBuild } from "./build";
 import type { ImportStatus } from "./bindings/ImportStatus";
+import type { StreamAnalysis } from "./bindings/StreamAnalysis";
 import type { StreamGitHub } from "./bindings/StreamGitHub";
 import type { StreamIds } from "./bindings/StreamIds";
 import type { StreamReset } from "./bindings/StreamReset";
@@ -100,6 +101,19 @@ export function onPush(fn: (p: Push) => void): () => void {
  */
 export function refetchShown(ids: number[]): void {
   emit({ kind: "ids", ids });
+}
+
+const analysisListeners = new Set<(a: StreamAnalysis) => void>();
+
+/**
+ * Calls `fn` on every `analysis` push (a PR's analysis run changed state, or an upload was
+ * accepted) until the returned function is called. Not a `Push`: the list and the pickers have
+ * nothing to refetch for it. The issue detail's code refetches the open PR it names
+ * (IssuePanel.tsx).
+ */
+export function onAnalysis(fn: (a: StreamAnalysis) => void): () => void {
+  analysisListeners.add(fn);
+  return () => analysisListeners.delete(fn);
 }
 
 function emit(p: Push): void {
@@ -169,6 +183,12 @@ export function connectLive(): () => void {
     es.addEventListener("roles", () => {
       void rolesChanged().catch(() => {});
       emit({ kind: "roles" });
+    });
+    es.addEventListener("analysis", (e) => {
+      const a = JSON.parse((e as MessageEvent<string>).data) as StreamAnalysis;
+      // A cached or remembered read of the PR shows its run as it was; nothing else changed.
+      forgetPull(a.repo, a.number);
+      for (const fn of [...analysisListeners]) fn(a);
     });
     es.addEventListener("ids", (e) => {
       const { ids } = JSON.parse((e as MessageEvent<string>).data) as StreamIds;

@@ -101,10 +101,42 @@ pub struct TokenPair {
     pub refresh_expires_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct User {
     pub id: i64,
     pub login: String,
+}
+
+/// A PR, as the pulls API has it: what an analysis run pins.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Pull {
+    pub title: String,
+    pub body: Option<String>,
+    pub html_url: String,
+    pub user: Option<User>,
+    pub head: PullRef,
+    pub base: PullRef,
+    pub additions: i64,
+    pub deletions: i64,
+    pub changed_files: i64,
+}
+
+/// A PR's head or base: the branch and its commit.
+#[derive(Deserialize, Debug, Clone)]
+pub struct PullRef {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub sha: String,
+}
+
+/// One of a PR's changed files.
+#[derive(Deserialize, Debug, Clone)]
+pub struct PullFile {
+    pub filename: String,
+    pub previous_filename: Option<String>,
+    pub status: String,
+    pub additions: i64,
+    pub deletions: i64,
 }
 
 /// A connected account's role on a repo: one of GitHub's five, lowest first. beghu's own rules
@@ -457,6 +489,17 @@ pub enum Shown<T> {
     Moved,
     /// 404, or 410 for a deleted one: not there, or out of the token's sight.
     Gone,
+}
+
+impl<T> Shown<T> {
+    /// The same answer about another thing: what [`Shown::It`] holds, mapped.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Shown<U> {
+        match self {
+            Shown::It(t) => Shown::It(f(t)),
+            Shown::Moved => Shown::Moved,
+            Shown::Gone => Shown::Gone,
+        }
+    }
 }
 
 fn shown<T>(read: Result<T, Error>) -> Result<Shown<T>, Error> {
@@ -912,6 +955,83 @@ impl GitHub {
             self.get(token, &format!("/repos/{owner}/{repo}/issues/{number}"))
                 .await,
         )
+    }
+
+    /// PR `number` of `owner/repo` as GitHub has it now (`GET /repos/{o}/{r}/pulls/{n}`), or why
+    /// GitHub shows none to the token (an issue's number is a 404, as on GitHub).
+    pub async fn pull(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Shown<Pull>, Error> {
+        shown(
+            self.get(token, &format!("/repos/{owner}/{repo}/pulls/{number}"))
+                .await,
+        )
+    }
+
+    /// PR `number`'s changed files (`GET /repos/{o}/{r}/pulls/{n}/files`, paged by 100), in
+    /// GitHub's order, up to the 3,000 GitHub lists at most.
+    pub async fn pull_files(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Shown<Vec<PullFile>>, Error> {
+        const PER_PAGE: usize = 100;
+        let mut all = Vec::new();
+        // GitHub lists 3,000 files at most: 30 pages of 100.
+        for page in 1..=30 {
+            let path = format!(
+                "/repos/{owner}/{repo}/pulls/{number}/files?per_page={PER_PAGE}&page={page}"
+            );
+            let got: Vec<PullFile> = match shown(self.get(token, &path).await)? {
+                Shown::It(got) => got,
+                other => return Ok(other.map(|_: Vec<PullFile>| Vec::new())),
+            };
+            let n = got.len();
+            all.extend(got);
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(Shown::It(all))
+    }
+
+    /// PR `number`'s commits' SHAs, oldest first (`GET /repos/{o}/{r}/pulls/{n}/commits`, paged
+    /// by 100), up to the 250 GitHub lists at most.
+    pub async fn pull_commits(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<Shown<Vec<String>>, Error> {
+        #[derive(Deserialize)]
+        struct Commit {
+            sha: String,
+        }
+        const PER_PAGE: usize = 100;
+        let mut all = Vec::new();
+        // GitHub lists 250 commits at most: 3 pages of 100.
+        for page in 1..=3 {
+            let path = format!(
+                "/repos/{owner}/{repo}/pulls/{number}/commits?per_page={PER_PAGE}&page={page}"
+            );
+            let got: Vec<Commit> = match shown(self.get(token, &path).await)? {
+                Shown::It(got) => got,
+                other => return Ok(other.map(|_: Vec<Commit>| Vec::new())),
+            };
+            let n = got.len();
+            all.extend(got.into_iter().map(|c| c.sha));
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(Shown::It(all))
     }
 
     /// Every comment on issue `number` of `owner/repo`, oldest first

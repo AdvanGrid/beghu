@@ -10,6 +10,10 @@ Fake GitHub, the server and Vite in the background in fixture mode (50k issues b
 no GitHub account. Read the logs with `./dev-ctl logs` and `./dev-ctl grep`; avoid `logs -f`,
 which never exits. `./dev-ctl` is TypeScript run directly by Node (23.6 or newer).
 
+The server's crate and binary are `beghu-server` (`cargo test -p beghu-server`). `beghu` is the
+CLI (`crates/cli`): `./dev-ctl cli <args…>` runs it against the stack, and `./dev-ctl login
+<user>` signs it in as well as printing the browser's sign-in URL.
+
 ## Checks
 
 CI runs all of these; run them before you commit:
@@ -33,6 +37,12 @@ CI runs all of these; run them before you commit:
   `npx vite build` (which also prerenders the public site, `web/site/`, in its own Node process)
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
+- `cargo run -p analysis-fixtures -- check` after changing the analysis crate or anything in
+  `fixtures/pr-view/` (CI's `pr-view-fixtures` job): the full validator, snippet check included,
+  on every committed recording and case against the real commits, read by SHA from this clone.
+  The recordings (`fixtures/pr-view/beghu-<n>/`) are written by `./dev-ctl analysis record` and
+  never edited by hand; `cargo test -p analysis-fixtures` (the coverage test) says which feature
+  needs a hand-written case in `fixtures/pr-view/cases/`, and which case a recording now covers
 - npm installs run no install scripts: always `npm ci --ignore-scripts` (CI, the `Dockerfile`
   and `./dev-ctl` do). After changing a lockfile, `npm audit signatures` in that directory checks
   the packages' registry signatures, as CI does. A new package that needs its install script is
@@ -54,7 +64,8 @@ CI runs all of these; run them before you commit:
 ## Rules
 
 - **SQL lives only in the database crates**: `crates/sqlcheck`, `crates/dbrt`, `crates/mirror-db`,
-  `crates/control-db` and `crates/fake-db` (Fake GitHub's truth). Add a named query to a schema
+  `crates/control-db`, `crates/fake-db` (Fake GitHub's truth) and `crates/analysis-db` (each
+  account's analysis runs and analyses, migrated in place only). Add a named query to a schema
   crate's `queries/` (or a migration to its `migrations/`) and call the function the build
   generates for it. Clippy fails on rusqlite `prepare`/`execute`/`query_*`/`pragma*` anywhere
   else.
@@ -101,7 +112,13 @@ CI runs all of these; run them before you commit:
   Fake GitHub behind it (`crates/server/tests/`, whose `common` harness starts both on a fresh
   data dir with the 1k fixture), Fake GitHub's own HTTP and control surfaces, and the browser
   (`web/e2e/`, Playwright against the `./dev-ctl` stack). Set state up through Fake GitHub or the
-  fixture, never by writing to a mirror directly.
+  fixture, never by writing to a mirror directly. An analysis reaches a stack only through an
+  analysis run (`Stack::upload_recorded` in the harness, `./dev-ctl analyse`), never by seeding an
+  `analyses.db`; every account's starts empty. The beghu CLI is a seam too: `crates/cli/tests/`
+  runs the built `beghu` binary as a subprocess against the same `common` harness, checking its
+  stdout, stderr, exit codes and the files it writes (in a temporary folder, with its own
+  `BEGHU_CREDENTIALS`), and its self-update replaces a temporary copy of the binary, never
+  `target/`'s.
 - **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
   (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
   (`crates/md-ast/src/scaling.rs`), the server's render cache tests (the `tests`

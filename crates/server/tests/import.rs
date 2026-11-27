@@ -137,11 +137,15 @@ async fn import_everything(s: &Stack) -> Browser {
         .into_iter()
         .map(|(_, id)| id)
         .collect();
-    assert_eq!(repos.len(), 10);
+    assert_eq!(repos.len(), REPOS);
     let (status, body) = s.pick(&b, &repos).await;
     assert_eq!(status, 200, "{body}");
     b
 }
+
+/// The repos tomsj sees: the org's ten, and `AdvanGrid/beghu` (the PR view's recorded PR's repo),
+/// under an installation of its own.
+const REPOS: usize = 11;
 
 /// tomsj's mirror against the generator's, row for row.
 async fn assert_same_as_generated(s: &Stack, fixture: &Path) {
@@ -190,21 +194,24 @@ async fn importing_the_fixture_through_the_fake_rebuilds_the_generators_mirror_e
         .into_iter()
         .map(|(_, id)| id)
         .collect();
-    assert_eq!(repos.len(), 10);
+    assert_eq!(repos.len(), REPOS);
     let (code, body) = s.pick(&b, &repos).await;
     assert_eq!(code, 200, "{body}");
     s.until_imported(&mut b, 120).await;
     assert_same_as_generated(&s, &fixture()).await;
 
-    // Through the App's own token, narrowed to what the import reads, and only one: every call
-    // reused it.
+    // Through the App's own tokens, narrowed to what the import reads, and only one for each
+    // installation (the org's, and `AdvanGrid`'s): every call reused it.
     let state = s.fake("GET", "/state", Value::Null).await;
+    let mut tokens = state["installation_tokens"].as_array().unwrap().clone();
+    tokens.sort_by_key(|t| t["installation"].as_i64());
+    let read = json!({ "issues": "read", "metadata": "read", "pull_requests": "read" });
     assert_eq!(
-        state["installation_tokens"],
-        json!([{
-            "installation": 41_000_001,
-            "permissions": { "issues": "read", "metadata": "read", "pull_requests": "read" },
-        }]),
+        tokens,
+        [
+            json!({ "installation": 41_000_001, "permissions": read }),
+            json!({ "installation": 41_000_003, "permissions": read }),
+        ],
         "{state}"
     );
 
@@ -217,7 +224,7 @@ async fn importing_the_fixture_through_the_fake_rebuilds_the_generators_mirror_e
         assert_eq!(of.first().map(|(_, done, _)| *done), Some(0), "{seen:?}");
         assert_eq!(
             of.last().map(|(_, done, of)| (*done, *of)),
-            Some((10, 10)),
+            Some((REPOS as i64, REPOS as i64)),
             "{seen:?}"
         );
     }
@@ -419,7 +426,7 @@ async fn the_app_is_usable_after_phase_one_and_an_issue_opened_early_fetches_its
     hold_at_phase_two(&s).await;
     let mut b = import_everything(&s).await;
     let import = until_phase(&s, &mut b, "open_prs").await;
-    assert_eq!(import["of"], 10);
+    assert_eq!(import["of"], REPOS);
 
     // Every open issue of every repo is there; no PR and nothing closed yet.
     let open = whole_list(&s, &mut b, "is:open").await;

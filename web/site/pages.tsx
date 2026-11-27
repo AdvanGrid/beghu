@@ -3,6 +3,7 @@
 // (crates/server/src/site.rs) serves them at their paths. A path can't be one the server answers
 // itself (`/issues`, `/api`, `/auth`, …).
 import type { JSX } from "@solidjs/web";
+import { Cli } from "./Cli";
 import { Landing } from "./Landing";
 import { Pricing } from "./Pricing";
 import { Privacy } from "./Privacy";
@@ -32,6 +33,14 @@ export const PAGES: Page[] = [
     title: "Pricing · beghu",
     description: "beghu is free while it's in beta.",
     Body: Pricing,
+  },
+  {
+    path: "/cli",
+    file: "cli.html",
+    title: "The beghu CLI · beghu",
+    description:
+      "Install the beghu CLI, sign it in, and analyse pull requests from your agent's shell: beghu analyse owner/repo#N. Linux and macOS, served by each beghu deployment.",
+    Body: Cli,
   },
   {
     path: "/privacy",

@@ -13,6 +13,8 @@ futures-util = { version = "0.3", default-features = false }
 # The selection set of a GraphQL query, to answer only the fields it asks for (`select.rs`).
 graphql-parser = "0.4"
 fake-db = { workspace = true }
+# The PR view's recorded PR (`fixture::recorded`): its v1 head, files and base, seeded.
+fixture = { workspace = true }
 hmac = "0.12"
 mirror-db = { workspace = true }
 # The images the fake serves: attachments and its stand-in for the web's image hosts.
@@ -29,7 +31,6 @@ sha2 = "0.10"
 tokio = { workspace = true, features = ["net", "signal"] }
 
 [dev-dependencies]
-fixture = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

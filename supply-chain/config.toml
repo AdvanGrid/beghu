@@ -30,7 +30,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.alloc-no-stdlib]]
 version = "2.0.4"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.alloc-no-stdlib]]
 version = "3.0.0"
@@ -38,7 +38,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.alloc-stdlib]]
 version = "0.2.4"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.alloc-stdlib]]
 version = "0.3.0"
@@ -74,7 +74,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.brotli]]
 version = "8.0.4"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.brotli]]
 version = "9.1.0"
@@ -82,7 +82,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.brotli-decompressor]]
 version = "5.0.3"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.brotli-decompressor]]
 version = "6.2.0"
@@ -186,6 +186,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.flate2]]
 version = "1.1.10"
+criteria = "safe-to-deploy"
+
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.futures-task]]
@@ -721,7 +725,7 @@ version = "0.9.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]
-version = "2.5.8"
+version = "2.5.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasi]]

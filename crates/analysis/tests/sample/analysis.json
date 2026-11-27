@@ -1,0 +1,1093 @@
+{
+  "version": 1,
+  "pr": {
+    "repo": "acme/shop",
+    "number": 7,
+    "title": "Add refunds",
+    "url": "https://github.com/acme/shop/pull/7",
+    "author": "ilze-k",
+    "description": "Adds a refund endpoint for orders.\n\nRefunds are retried when Stripe fails. Every refund is recorded in the orders table.",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "headSha": "2222222222222222222222222222222222222222",
+    "stats": {
+      "files": 2,
+      "additions": 22,
+      "deletions": 0
+    }
+  },
+  "coverage": {
+    "summary": "Covers both changed files and the parts they reach.",
+    "skipped": [],
+    "notes": [
+      "lib: 1 of 3 folders drawn, the one this PR's lines reach."
+    ],
+    "references": []
+  },
+  "walk": {
+    "intro": "This PR adds a refund route to the shop's API.",
+    "journey": "A customer's refund request reaches the orders module, which asks Stripe to refund the payment and then marks the order refunded through the database library.",
+    "destination": "Refunded orders carry a refunded flag in Postgres.",
+    "claims": [
+      "c1",
+      "c4",
+      "c7"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "shop",
+      "kind": "system",
+      "name": "shop",
+      "paths": [],
+      "summary": "An online shop's API, its shared libraries and its database schema.",
+      "change": "modified",
+      "responsibilities": [],
+      "facets": [],
+      "questions": [],
+      "files": [],
+      "changeSummary": "Adds refunds to the API."
+    },
+    {
+      "id": "api",
+      "kind": "service",
+      "parent": "shop",
+      "name": "api",
+      "paths": [
+        "api"
+      ],
+      "summary": "The HTTP API customers call.",
+      "change": "modified",
+      "responsibilities": [
+        {
+          "id": "serve-http",
+          "text": "routes HTTP requests to handlers",
+          "change": "modified",
+          "claims": [
+            "c1"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "inside-product",
+          "values": [
+            {
+              "value": "checkout",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "lang",
+          "values": [
+            {
+              "value": "go",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [
+        {
+          "question": "What changed?",
+          "answer": "It routes /orders/refund to the orders module's new handler.",
+          "claims": [
+            "c1"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "api/main.go",
+          "status": "modified",
+          "added": 1,
+          "removed": 0,
+          "generated": false,
+          "summary": "Routes /orders/refund to HandleRefund."
+        }
+      ],
+      "changeSummary": "Routes /orders/refund to the new refund handler.",
+      "walk": {
+        "intro": "The API is the shop's HTTP entry point.",
+        "journey": "It now routes /orders/refund to the orders module's new handler.",
+        "destination": "Customers can ask for a refund over HTTP.",
+        "claims": [
+          "c1"
+        ]
+      }
+    },
+    {
+      "id": "api.orders",
+      "kind": "module",
+      "parent": "api",
+      "name": "orders",
+      "paths": [
+        "api/orders"
+      ],
+      "summary": "Handles order requests.",
+      "change": "modified",
+      "responsibilities": [
+        {
+          "id": "refund",
+          "text": "refunds an order through Stripe",
+          "change": "added",
+          "claims": [
+            "c4"
+          ]
+        },
+        {
+          "id": "list",
+          "text": "lists orders as JSON",
+          "change": "unchanged",
+          "claims": [
+            "c8"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": [
+        {
+          "path": "api/orders/refund.go",
+          "status": "added",
+          "added": 21,
+          "removed": 0,
+          "generated": false,
+          "summary": "Adds HandleRefund."
+        }
+      ],
+      "changeSummary": "Adds HandleRefund, which refunds through Stripe and marks the order refunded.",
+      "walk": {
+        "intro": "The orders module handles order requests.",
+        "journey": "Its new HandleRefund calls Stripe's refunds endpoint, then writes the refunded flag.",
+        "destination": "An order refunded at Stripe is marked refunded.",
+        "claims": [
+          "c4",
+          "c7"
+        ]
+      },
+      "built": [
+        {
+          "kind": "decision",
+          "text": "reads the Stripe key from STRIPE_KEY",
+          "claims": [
+            "c5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "api.health",
+      "kind": "module",
+      "parent": "api",
+      "name": "health",
+      "paths": [
+        "api/health"
+      ],
+      "summary": "Answers the health probe.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "health",
+          "text": "answers the health probe",
+          "change": "unchanged",
+          "claims": [
+            "c9"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "lib",
+      "kind": "library",
+      "parent": "shop",
+      "name": "lib",
+      "paths": [
+        "lib"
+      ],
+      "summary": "Shared Go packages.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "db-access",
+          "text": "opens the Postgres connection",
+          "change": "unchanged",
+          "claims": [
+            "c10"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "inside-product",
+          "values": [
+            {
+              "value": "platform",
+              "claims": [
+                "c10"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "lang",
+          "values": [
+            {
+              "value": "go",
+              "claims": [
+                "c10"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": [],
+      "drawn": {
+        "partial": true,
+        "folders": 3
+      }
+    },
+    {
+      "id": "lib.db",
+      "kind": "module",
+      "parent": "lib",
+      "name": "db",
+      "paths": [
+        "lib/db"
+      ],
+      "summary": "Runs SQL against Postgres.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "query",
+          "text": "runs reads against Postgres",
+          "change": "unchanged",
+          "claims": [
+            "c11"
+          ]
+        },
+        {
+          "id": "exec",
+          "text": "runs writes against Postgres",
+          "change": "unchanged",
+          "claims": [
+            "c12"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "postgres",
+      "kind": "store",
+      "parent": "shop",
+      "name": "Postgres",
+      "paths": [
+        "migrations"
+      ],
+      "summary": "The orders database.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "orders-table",
+          "text": "holds the orders table",
+          "change": "unchanged",
+          "claims": [
+            "c13"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "outside-role",
+          "values": [
+            {
+              "value": "relational-data",
+              "claims": [
+                "c13"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "outside-runner",
+          "values": [
+            {
+              "value": "unknown",
+              "claims": [
+                "c14"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "stripe",
+      "kind": "external",
+      "parent": "shop",
+      "name": "Stripe",
+      "paths": [],
+      "summary": "The payment provider.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "refunds",
+          "text": "refunds payments",
+          "change": "unchanged",
+          "claims": [
+            "c4"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "outside-role",
+          "values": [
+            {
+              "value": "payments",
+              "claims": [
+                "c4"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "outside-runner",
+          "values": [
+            {
+              "value": "hosted",
+              "claims": [
+                "c4"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "customer",
+      "kind": "actor",
+      "parent": "shop",
+      "name": "customer",
+      "paths": [],
+      "summary": "A person who bought something.",
+      "change": "unchanged",
+      "responsibilities": [],
+      "facets": [],
+      "questions": [],
+      "files": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "customer->api.orders",
+      "from": "customer",
+      "to": "api.orders",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "refund",
+      "label": "asks for a refund",
+      "mode": "sync",
+      "change": "added",
+      "boundaries": [
+        "internet"
+      ],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c3"
+      ]
+    },
+    {
+      "id": "api.orders->stripe",
+      "from": "api.orders",
+      "to": "stripe",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "refunds",
+      "label": "refunds the payment",
+      "data": {
+        "what": "refund requests for a payment intent",
+        "direction": "both"
+      },
+      "mode": "sync",
+      "change": "added",
+      "boundaries": [
+        "stripe-network"
+      ],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c4"
+      ],
+      "occurs": "on every refund request",
+      "walk": {
+        "intro": "This line is the refund call to Stripe.",
+        "journey": "HandleRefund posts the order's payment intent to Stripe's refunds endpoint with the shop's key.",
+        "destination": "Stripe refunds the payment.",
+        "claims": [
+          "c4",
+          "c5"
+        ]
+      },
+      "neededBy": [
+        {
+          "text": "refunding an order needs Stripe to move the money",
+          "purpose": "purpose:refunds"
+        }
+      ]
+    },
+    {
+      "id": "api.orders->lib.db:exec",
+      "from": "api.orders",
+      "to": "lib.db",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "exec",
+      "label": "marks the order refunded",
+      "data": {
+        "what": "order refund flags",
+        "direction": "forward"
+      },
+      "mode": "sync",
+      "change": "added",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c7"
+      ]
+    },
+    {
+      "id": "api.orders->lib.db:query",
+      "from": "api.orders",
+      "to": "lib.db",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "query",
+      "label": "reads orders",
+      "data": {
+        "what": "order rows",
+        "direction": "back"
+      },
+      "mode": "sync",
+      "change": "unchanged",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c8"
+      ]
+    },
+    {
+      "id": "lib.db->postgres",
+      "from": "lib.db",
+      "to": "postgres",
+      "kind": "data",
+      "when": "runtime",
+      "label": "reads and writes orders",
+      "data": {
+        "what": "order rows",
+        "direction": "both"
+      },
+      "mode": "sync",
+      "change": "unchanged",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c10"
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "internet",
+      "kind": "trust",
+      "name": "customers ↔ API",
+      "claims": [
+        "c2"
+      ]
+    },
+    {
+      "id": "stripe-network",
+      "kind": "network",
+      "name": "API ↔ Stripe",
+      "claims": [
+        "c4"
+      ]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "refund",
+      "title": "A customer refunds an order",
+      "trigger": "a customer posts to /orders/refund",
+      "steps": [
+        {
+          "from": "customer",
+          "to": "api.orders",
+          "action": "asks for a refund",
+          "edge": "customer->api.orders",
+          "change": "added",
+          "claims": [
+            "c3"
+          ]
+        },
+        {
+          "from": "api.orders",
+          "to": "stripe",
+          "action": "refunds the payment",
+          "data": "the payment intent",
+          "edge": "api.orders->stripe",
+          "change": "added",
+          "claims": [
+            "c4"
+          ]
+        },
+        {
+          "from": "api.orders",
+          "to": "lib.db",
+          "action": "marks the order refunded",
+          "edge": "api.orders->lib.db:exec",
+          "change": "added",
+          "claims": [
+            "c7"
+          ]
+        },
+        {
+          "from": "lib.db",
+          "to": "postgres",
+          "action": "updates the order row",
+          "edge": "lib.db->postgres",
+          "change": "unchanged",
+          "claims": [
+            "c12"
+          ]
+        }
+      ],
+      "chapters": [
+        {
+          "title": "The customer asks for a refund",
+          "from": 0
+        },
+        {
+          "title": "The API refunds through Stripe and records it",
+          "from": 1
+        }
+      ]
+    }
+  ],
+  "facets": [
+    {
+      "id": "inside-product",
+      "name": "Product area",
+      "question": "What part of the product is it for?",
+      "appliesTo": "node",
+      "multi": true,
+      "values": [
+        {
+          "id": "checkout",
+          "label": "Checkout",
+          "prefix": "CO",
+          "description": "Taking and refunding payments for orders."
+        },
+        {
+          "id": "platform",
+          "label": "Platform",
+          "prefix": "PL",
+          "description": "Code every product area uses."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-role",
+      "name": "What it does for the shop",
+      "question": "What does it do for this system?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "payments",
+          "label": "Payments",
+          "prefix": "PAY",
+          "description": "Moves money."
+        },
+        {
+          "id": "relational-data",
+          "label": "Relational data",
+          "prefix": "SQL",
+          "description": "Holds tables."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-runner",
+      "name": "Who runs it",
+      "question": "Who runs it, as the code shows it?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "hosted",
+          "label": "Hosted service",
+          "prefix": "HOST",
+          "description": "Reached by URL and key."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "lang",
+      "name": "Language",
+      "question": "What language is it written in?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "go",
+          "label": "Go",
+          "prefix": "Go",
+          "description": "Go packages."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    }
+  ],
+  "purposes": [
+    {
+      "id": "purpose:refunds",
+      "name": "Refund an order",
+      "kind": "feature",
+      "walk": {
+        "intro": "Customers can now refund an order.",
+        "journey": "The API's refund handler asks Stripe to refund the payment, then records the refund.",
+        "destination": "A refunded order is marked in the orders table.",
+        "claims": [
+          "c15",
+          "c4"
+        ]
+      },
+      "stops": [
+        {
+          "ref": "api.orders",
+          "line": "takes the refund request"
+        },
+        {
+          "ref": "api.orders->stripe",
+          "line": "Stripe refunds the payment"
+        },
+        {
+          "ref": "purpose:refunds/record",
+          "line": "the refund is recorded"
+        }
+      ],
+      "serves": [
+        {
+          "node": "api.orders",
+          "role": "handles the refund request",
+          "claims": [
+            "c3"
+          ]
+        }
+      ],
+      "carries": [
+        {
+          "edge": "api.orders->stripe",
+          "why": "the refund itself happens at Stripe",
+          "claims": [
+            "c4"
+          ]
+        }
+      ],
+      "rules": [
+        {
+          "id": "rule:refund-recorded",
+          "text": "every refund is recorded in the orders table",
+          "scope": "handlers under api/orders that call Stripe",
+          "sources": [
+            "c17"
+          ],
+          "checked": {
+            "searched": "grep for api.stripe.com under api/",
+            "found": 1,
+            "holds": 1,
+            "breaks": 0,
+            "undetermined": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "purpose:refunds/record",
+      "name": "Record the refund",
+      "parent": "purpose:refunds",
+      "kind": "feature",
+      "walk": {
+        "intro": "The refund is recorded.",
+        "journey": "HandleRefund writes the refunded flag through the database library.",
+        "destination": "The orders table says which orders were refunded.",
+        "claims": [
+          "c7"
+        ]
+      },
+      "stops": [],
+      "serves": [
+        {
+          "node": "lib.db",
+          "role": "writes the refunded flag",
+          "claims": [
+            "c12"
+          ]
+        }
+      ],
+      "carries": [
+        {
+          "edge": "api.orders->lib.db:exec",
+          "why": "the write goes through lib/db",
+          "claims": [
+            "c7"
+          ]
+        }
+      ]
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "conflict:retries",
+      "kind": "stated-code",
+      "question": "Are failed refunds retried?",
+      "a": {
+        "who": "description",
+        "says": "retried",
+        "text": "The description says refunds are retried when Stripe fails.",
+        "claims": [
+          "c16"
+        ]
+      },
+      "b": {
+        "who": "code",
+        "says": "not retried",
+        "text": "HandleRefund answers 502 on the first Stripe error and doesn't call Stripe again.",
+        "claims": [
+          "c6"
+        ]
+      },
+      "touches": {
+        "purposes": [],
+        "nodes": [
+          "api.orders"
+        ],
+        "edges": [
+          "api.orders->stripe"
+        ]
+      }
+    }
+  ],
+  "causes": [],
+  "unclaimed": [],
+  "carried": [
+    {
+      "kind": "renamed",
+      "was": "api.payments",
+      "now": [
+        "api.orders"
+      ],
+      "cause": "correction",
+      "reason": "the refund code lives in api/orders; there is no api/payments folder",
+      "claims": [
+        "c3"
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "routes /orders/refund to HandleRefund",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/main.go",
+          "start": 13,
+          "end": 13,
+          "note": "the new route",
+          "snippet": "\thttp.HandleFunc(\"/orders/refund\", orders.HandleRefund)"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "the API listens for HTTP on port 8080",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/main.go",
+          "start": 14,
+          "end": 14,
+          "note": "the listener",
+          "snippet": "\thttp.ListenAndServe(\":8080\", nil)"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "HandleRefund is the HTTP handler for refund requests",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 11,
+          "end": 11,
+          "note": "the handler",
+          "snippet": "func HandleRefund(w http.ResponseWriter, r *http.Request) {"
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "HandleRefund posts the order's payment intent to Stripe's refunds endpoint",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 13,
+          "end": 15,
+          "note": "the request to api.stripe.com and its send",
+          "snippet": "\treq, _ := http.NewRequest(\"POST\", \"https://api.stripe.com/v1/refunds?payment_intent=\"+id, nil)\n\treq.SetBasicAuth(os.Getenv(\"STRIPE_KEY\"), \"\")\n\tif _, err := http.DefaultClient.Do(req); err != nil {"
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "text": "the Stripe key comes from the STRIPE_KEY environment variable",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 14,
+          "end": 14,
+          "note": "basic auth from the environment",
+          "snippet": "\treq.SetBasicAuth(os.Getenv(\"STRIPE_KEY\"), \"\")"
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "text": "on the first Stripe error HandleRefund answers 502 and returns without calling Stripe again",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 15,
+          "end": 18,
+          "note": "one call, then 502",
+          "snippet": "\tif _, err := http.DefaultClient.Do(req); err != nil {\n\t\thttp.Error(w, err.Error(), http.StatusBadGateway)\n\t\treturn\n\t}"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "text": "HandleRefund marks the order refunded through db.Exec",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 19,
+          "end": 19,
+          "note": "the write",
+          "snippet": "\tdb.Exec(\"UPDATE orders SET refunded = true WHERE id = $1\", id)"
+        }
+      ]
+    },
+    {
+      "id": "c8",
+      "text": "HandleList reads orders through db.Query",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/orders.go",
+          "start": 12,
+          "end": 12,
+          "note": "the read",
+          "snippet": "\trows, err := db.Query(\"SELECT id, total FROM orders\")"
+        }
+      ]
+    },
+    {
+      "id": "c9",
+      "text": "Handle answers the health probe with 200",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/health/health.go",
+          "start": 6,
+          "end": 8,
+          "note": "the handler",
+          "snippet": "func Handle(w http.ResponseWriter, r *http.Request) {\n\tw.WriteHeader(http.StatusOK)\n}"
+        }
+      ]
+    },
+    {
+      "id": "c10",
+      "text": "lib/db opens one Postgres connection from DATABASE_URL",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 10,
+          "end": 10,
+          "note": "sql.Open",
+          "snippet": "var conn, _ = sql.Open(\"postgres\", os.Getenv(\"DATABASE_URL\"))"
+        }
+      ]
+    },
+    {
+      "id": "c11",
+      "text": "Query runs a read on the connection",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 13,
+          "end": 15,
+          "note": "Query",
+          "snippet": "func Query(q string, args ...any) (*sql.Rows, error) {\n\treturn conn.Query(q, args...)\n}"
+        }
+      ]
+    },
+    {
+      "id": "c12",
+      "text": "Exec runs a write on the connection",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 18,
+          "end": 21,
+          "note": "Exec",
+          "snippet": "func Exec(q string, args ...any) error {\n\t_, err := conn.Exec(q, args...)\n\treturn err\n}"
+        }
+      ]
+    },
+    {
+      "id": "c13",
+      "text": "the orders table holds id, total and a refunded flag",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "migrations/001_orders.sql",
+          "start": 1,
+          "end": 5,
+          "note": "the table",
+          "snippet": "CREATE TABLE orders (\n  id TEXT PRIMARY KEY,\n  total INTEGER NOT NULL,\n  refunded BOOLEAN NOT NULL DEFAULT false\n);"
+        }
+      ]
+    },
+    {
+      "id": "c14",
+      "text": "who runs Postgres isn't shown in the code",
+      "status": "undetermined",
+      "evidence": [],
+      "lookedAt": "lib/db/db.go and the repo's top level: DATABASE_URL comes from the environment and no infra code names the host"
+    },
+    {
+      "id": "c15",
+      "text": "the PR adds a refund endpoint for orders",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "description",
+          "quote": "Adds a refund endpoint for orders.",
+          "note": "the description's first line"
+        }
+      ]
+    },
+    {
+      "id": "c16",
+      "text": "the description says refunds are retried when Stripe fails",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "description",
+          "quote": "Refunds are retried when Stripe fails.",
+          "note": "the promise"
+        }
+      ]
+    },
+    {
+      "id": "c17",
+      "text": "the description says every refund is recorded in the orders table",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "description",
+          "quote": "Every refund is recorded in the orders table.",
+          "note": "the rule"
+        }
+      ]
+    }
+  ]
+}

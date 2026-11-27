@@ -146,15 +146,22 @@ export function overLimit(metrics: Record<string, Metric>, budgets: Budgets): st
 export const RESPONSE_KB = 14;
 
 /**
+ * The bytes gates the first flight doesn't hold: the first load's total (a sum, not a response),
+ * and the PR view's analysis answers (#152), which exceed it on purpose: the view is its own
+ * route, never a first page, and the graph is the smallest answer that can draw.
+ */
+export const PAST_FIRST_FLIGHT = new Set(["browser.first-load.kb", "server.analysis.kb", "server.analysis-claims.kb"]);
+
+/**
  * The limit a measured value calibrates to: +15% for a timing, +5% for bytes (a response's never
- * past 14 KB; the first load's total is a sum, not a response), a count exactly.
+ * past 14 KB, but for `PAST_FIRST_FLIGHT`), a count exactly.
  */
 export function calibrated(gate: string, value: number): number {
   const unit = unitOf(gate);
   if (unit === "ms") return Math.ceil(value * 1.15 * 10) / 10;
   if (unit === "kb") {
     const kb = Math.ceil(value * 1.05 * 10) / 10;
-    return gate === "browser.first-load.kb" ? kb : Math.min(RESPONSE_KB, kb);
+    return PAST_FIRST_FLIGHT.has(gate) ? kb : Math.min(RESPONSE_KB, kb);
   }
   return value;
 }

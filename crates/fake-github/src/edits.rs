@@ -6,8 +6,16 @@
 //! { "repo": "acme/web" | "web", "number": 12, "as": "tomsj",
 //!   "title": "…", "body": "…", "state": "open" | "closed", "state_reason": "not_planned",
 //!   "add_labels": ["bug"], "remove_labels": ["triage"], "comment": "…",
-//!   "type": "Bug" | null, "locked": true }
+//!   "delete_comment": "…" | { "body": "…", "author": "ilze-k" }, "type": "Bug" | null,
+//!   "locked": true }
 //! ```
+//!
+//! `delete_comment` deletes the issue's latest comment with that body (and that author's, when
+//! it names one), as its author (or anyone with Write) does from the comment's menu on GitHub,
+//! and sends `issue_comment` `deleted`, as the REST delete does (`writes.rs`). It names the
+//! comment by its body, as `comment` makes one, so a script can undo its own comment without
+//! knowing its id. An edit can't both make and delete a comment with the same body: which one it
+//! deletes would be a guess, so it's refused.
 //!
 //! Relationship changes name the other issue (`repo#n`, `owner/repo#n` or `#n`), which may be in
 //! a repo the App isn't installed on: `add_sub_issue`/`remove_sub_issue` (the edited issue is the
@@ -28,7 +36,12 @@
 //! `locked` locks the conversation (`issues` `locked`) or unlocks it (`unlocked`), as someone
 //! with Write or up does in the issue's sidebar.
 //!
-//! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account.
+//! `at` (Unix seconds) is when the edit happened, for a fixture that dates its changes; left out,
+//! it's the fake's clock. An item's `updated_at` never goes back (see [`Change::apply`]).
+//!
+//! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account,
+//! and may name any user the fake has (someone with no beghu account, as a recorded thread's
+//! authors are).
 //! `type` sets the issue type by name (an `issues` `typed` delivery), and `null` removes it
 //! (`untyped`), as GitHub's `PATCH /repos/{owner}/{repo}/issues/{number}` takes it. A PR has no
 //! type.
@@ -74,6 +87,8 @@ pub(crate) struct Edit {
     #[serde(default)]
     remove_labels: Vec<String>,
     comment: Option<String>,
+    /// The issue's comment to delete: its latest with that body (and author).
+    delete_comment: Option<Uncomment>,
     /// Absent: unchanged. `null`: untyped. A name: that type.
     #[serde(rename = "type", default, deserialize_with = "present")]
     issue_type: Option<Option<String>>,
@@ -91,6 +106,34 @@ pub(crate) struct Edit {
     /// The issue is deleted, and nothing else in the edit is made.
     #[serde(default)]
     delete: bool,
+    /// When the edit happened (Unix seconds); left out, now.
+    at: Option<i64>,
+}
+
+/// A comment an edit deletes: by its body, or by its body and its author's login.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Uncomment {
+    Body(String),
+    By {
+        body: String,
+        author: Option<String>,
+    },
+}
+
+impl Uncomment {
+    fn body(&self) -> &str {
+        match self {
+            Uncomment::Body(b) | Uncomment::By { body: b, .. } => b,
+        }
+    }
+
+    fn author(&self) -> Option<&str> {
+        match self {
+            Uncomment::Body(_) => None,
+            Uncomment::By { author, .. } => author.as_deref(),
+        }
+    }
 }
 
 /// A field that's present, `null` included: `Some(None)` for `null`, so absent stays `None`.
@@ -108,7 +151,7 @@ pub(crate) async fn edit(State(fake): State<Fake>, axum::Json(e): axum::Json<Edi
     {
         return bad_request("state is open or closed");
     }
-    let now = fake.now();
+    let now = e.at.unwrap_or_else(|| fake.now());
     let done = fake.state().truth.write(move |tx| apply(tx, &e, now)).await;
     match done {
         Ok(Ok((issue, deliveries))) => {
@@ -162,7 +205,10 @@ fn apply(
     let sender = match e.login.as_deref() {
         Some(login) => match q::account_by_login(tx, login)? {
             Some(a) => a.id,
-            None => return refuse(format!("{login} isn't a fixture account")),
+            None => match q::user_by_login(tx, login)? {
+                Some(u) => u.id,
+                None => return refuse(format!("{login} isn't a fixture account or user")),
+            },
         },
         None => match q::accounts(tx)?.first() {
             Some(a) => a.id,
@@ -244,6 +290,39 @@ fn apply(
     {
         return refuse("type is a name or null".into());
     }
+    let uncomment = match &e.delete_comment {
+        Some(d) if e.comment.as_deref() == Some(d.body()) => Err(format!(
+            "the edit both makes and deletes a comment {:?}: send them as two edits",
+            d.body()
+        )),
+        Some(d) => {
+            let body = d.body();
+            let author = match d.author() {
+                Some(login) => match q::user_by_login(tx, login)? {
+                    Some(u) => Some(u.id),
+                    None => return refuse(format!("no user {login}")),
+                },
+                None => None,
+            };
+            let latest = q::issue_comments_page(tx, id, i64::MAX, 0)?
+                .into_iter()
+                .rfind(|c| c.body == body && author.is_none_or(|a| c.author_id == Some(a)));
+            match latest {
+                Some(c) => q::repo_comment(tx, repo.id, c.id)?,
+                None => None,
+            }
+            .map(Some)
+            .ok_or_else(|| {
+                let by = d.author().map(|a| format!(" by {a}")).unwrap_or_default();
+                format!("{}#{} has no comment {body:?}{by}", e.repo, e.number)
+            })
+        }
+        None => Ok(None),
+    };
+    let uncomment = match uncomment {
+        Ok(c) => c,
+        Err(why) => return refuse(why),
+    };
     let mut change = Change {
         title: e.title.clone(),
         body: e.body.clone(),
@@ -278,6 +357,16 @@ fn apply(
         crate::pulls::sidebar(tx, id, issue, add, sender, now)?;
     }
     let mut issue = done.issue;
+    if let Some(c) = &uncomment {
+        deliveries.push(crate::writes::comment_deleted(
+            tx,
+            &repo,
+            id,
+            c,
+            &sender_json,
+        )?);
+        issue = crate::webhooks::issue_json(tx, id)?;
+    }
     if let Some(r) = e.review.as_deref()
         && let Some(d) = crate::pulls::review(tx, &repo, id, r, sender, now)?
     {
@@ -300,6 +389,8 @@ fn delete(
     let issue = issue_json(tx, id)?;
     q::delete_issue_labels(tx, id)?;
     q::delete_issue_assignees(tx, id)?;
+    // Its comments' ids are never reused either.
+    q::retire_issue_comment_ids(tx, id)?;
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
     q::delete_issue(tx, id)?;

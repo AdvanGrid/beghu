@@ -721,13 +721,22 @@ async fn finish(
         })
         .await?;
     let created = was.is_none();
-    app.tokens().sign_in(id, pair).await?;
+    crate::analyses::pause(app, crate::RunPausePoint::SignIn).await;
+    // Disconnected, and the delete of its analyses may not be done (still under way, cut off by
+    // a crash, or marked just now): finished as the tokens are stored, before the account is
+    // active and its file comes back.
+    app.tokens()
+        .sign_in(id, pair, |at| {
+            crate::accounts::finish_disconnect(app, id, at)
+        })
+        .await?;
     if was.as_deref().map(AccountStatus::from_db) == Some(AccountStatus::Dormant) {
         crate::accounts::back_from_dormancy(app, id);
     }
     // A mirror deleted when the account lost access (or went dormant) comes back empty, and
     // imports.
     app.mirrors().revive(id);
+    app.analyses().dbs.revive(id);
     if created {
         crate::repos::adopt_mirror_pick(app, id).await?;
     }

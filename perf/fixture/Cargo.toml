@@ -3,11 +3,15 @@ name = "fixture"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
+default-run = "fixture"
 description = "Seeded, deterministic fixture mirrors at 1k, 20k and 50k issues, in the real mirror schema."
 
 [dependencies]
+# The tiler migrates, renames and checks the recorded analysis through it.
+analysis = { path = "../../crates/analysis" }
 mirror-db = { workspace = true }
 rusqlite = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 dbrt = { workspace = true }

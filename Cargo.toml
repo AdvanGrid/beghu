@@ -10,6 +10,11 @@ members = [
   "crates/server",
   "crates/contract",
   "crates/md-ast",
+  "crates/analysis",
+  "crates/analysis-wasm",
+  "crates/analysis-db",
+  "crates/analysis-fixtures",
+  "crates/cli",
   "perf/fixture",
 ]
 # The benchmark candidates are throwaway projects with their own manifests.
@@ -35,6 +40,7 @@ dbrt = { path = "crates/dbrt" }
 mirror-db = { path = "crates/mirror-db" }
 control-db = { path = "crates/control-db" }
 fake-db = { path = "crates/fake-db" }
+analysis-db = { path = "crates/analysis-db" }
 fixture = { path = "perf/fixture" }
 
 # SQLite's C at -O0 makes debug tests and fixture generation several times slower.
@@ -61,7 +67,8 @@ opt-level = 3
 opt-level = 3
 
 [workspace.lints.clippy]
-# SQL lives only in the database crates (sqlcheck, dbrt, mirror-db, control-db, fake-db).
+# SQL lives only in the database crates (sqlcheck, dbrt, mirror-db, control-db, fake-db,
+# analysis-db).
 # Everywhere else calls the functions they generate. Those crates opt out with
 # `#![allow(clippy::disallowed_methods)]`.
 disallowed_methods = "deny"

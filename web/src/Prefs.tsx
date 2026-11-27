@@ -1,6 +1,7 @@
 // The account's preferences: the `/prefs` route, in the panel's place beside the list, its own
-// chunk (router.tsx). Comment order, and the keymap's setup: every action, rebound from the GitHub
-// preset. Both are account preferences, stored on the server (`PATCH /api/prefs`, one field per
+// chunk (router.tsx). Comment order, the keymap's setup (every action, rebound from the GitHub
+// preset), and the account's CLI sign-ins (each machine `beghu login` signed in, with Revoke,
+// the install line and a link to `/cli`). Both are account preferences, stored on the server (`PATCH /api/prefs`, one field per
 // call) and pushed to the account's other tabs; theme and widths are this browser's (theme.js,
 // the header's switch).
 //
@@ -17,6 +18,8 @@ import { stale } from "./account";
 import { ACTIONS, clash, keymap, keyOf, overlap, overrides, refusal, refusalFor, setKeymap, type Action, type Overrides } from "./keys";
 import { LABEL, showBinding } from "./Hints";
 import { cantReach } from "./live";
+import { getCliSignIns, installLine, loginLine, revokeSignIn, type CliSignIn } from "./cli";
+import { ago, fullDate } from "./time";
 import { Failure } from "./Root";
 import { StillImporting } from "./WhileImporting";
 import { colors, fonts } from "./tokens.stylex";
@@ -54,6 +57,7 @@ function Prefs() {
       </p>
       <Order fallback={me().comment_order} />
       <Keys />
+      <CliSignIns />
       <StillImporting />
     </div>
   );
@@ -385,6 +389,127 @@ function RowNote(props: { action: Action; note: Note; apply: (action: Action, ch
   );
 }
 
+/**
+ * "CLI sign-ins": each machine the beghu CLI signed in as this account, with Revoke, which takes
+ * effect on that CLI's next call. A Revoke that fails puts the row back and says so.
+ */
+function CliSignIns() {
+  return (
+    <section {...stylex.attrs(s.group)} aria-labelledby="cli-sign-ins" data-perf="prefs-cli">
+      <h3 id="cli-sign-ins" {...stylex.attrs(s.legend, s.heading)}>
+        CLI sign-ins
+      </h3>
+      <p {...stylex.attrs(s.help)}>
+        The beghu CLI analyses pull requests from an agent's shell (
+        <a href="/cli" {...stylex.attrs(s.inline)}>
+          how it works
+        </a>
+        ). Install it:
+      </p>
+      <pre {...stylex.attrs(s.install)} data-perf="cli-install">
+        {installLine()}
+      </pre>
+      <p {...stylex.attrs(s.help)}>
+        then sign it in with <code {...stylex.attrs(s.key)}>{loginLine()}</code>. Each machine signed in shows here until it's revoked, or unused for 90
+        days.
+      </p>
+      <Errored fallback={(err, reset) => <SignInsFailure error={err()} reset={reset} />}>
+        <Loading fallback={<p {...stylex.attrs(s.help)} aria-busy="true" />}>
+          <SignInList />
+        </Loading>
+      </Errored>
+    </section>
+  );
+}
+
+function SignInList() {
+  const all = createMemo(() => getCliSignIns());
+  /** Revoked here, while (and once) the server takes it. */
+  const [gone, setGone] = createSignal<ReadonlySet<string>>(new Set());
+  const [failed, setFailed] = createSignal<string>();
+  const shown = () => all().filter((x) => !gone().has(x.id));
+  const revoke = async (x: CliSignIn) => {
+    setFailed(undefined);
+    setGone((g) => new Set([...g, x.id]));
+    try {
+      await revokeSignIn(x.id);
+    } catch (e) {
+      if (e instanceof SessionEnded) signIn();
+      setGone((g) => new Set([...g].filter((id) => id !== x.id)));
+      setFailed(`Couldn't revoke ${x.name}. It's still signed in.`);
+    }
+  };
+  return (
+    <>
+      <Show when={shown().length > 0} fallback={<p {...stylex.attrs(s.help)}>No machine is signed in.</p>}>
+        <table {...stylex.attrs(s.table)}>
+          <thead>
+            <tr>
+              <th {...stylex.attrs(s.label, s.muted)}>Machine</th>
+              <th {...stylex.attrs(s.label, s.muted)}>Signed in</th>
+              <th {...stylex.attrs(s.label, s.muted)}>Last used</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <For each={shown()} keyed={(x) => x.id}>
+              {(x) => (
+                <tr {...stylex.attrs(s.row)} data-perf="cli-sign-in">
+                  <td {...stylex.attrs(s.keys)}>{x().name}</td>
+                  <td {...stylex.attrs(s.keys, s.muted)} title={fullDate(x().createdAt)}>
+                    {ago(x().createdAt)}
+                  </td>
+                  <td {...stylex.attrs(s.keys, s.muted)} title={`${fullDate(x().lastUsedAt)}; expires ${fullDate(x().expiresAt)} unless used`}>
+                    {ago(x().lastUsedAt)}
+                  </td>
+                  <td {...stylex.attrs(s.actions)}>
+                    <button
+                      type="button"
+                      aria-label={`Revoke ${x().name}`}
+                      disabled={paused()}
+                      onClick={() => void revoke(x())}
+                      {...stylex.attrs(s.button)}
+                    >
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              )}
+            </For>
+          </tbody>
+        </table>
+      </Show>
+      <Show when={failed()}>
+        {(f) => (
+          <p role="alert" {...stylex.attrs(s.error)}>
+            {f()}
+          </p>
+        )}
+      </Show>
+    </>
+  );
+}
+
+function SignInsFailure(props: { error: unknown; reset: () => void }) {
+  return (
+    <Failure error={props.error}>
+      <p {...stylex.attrs(s.help)} role="alert">
+        Couldn't load the CLI sign-ins ·{" "}
+        <button
+          type="button"
+          {...stylex.attrs(s.link)}
+          onClick={() => {
+            forgetFailure(getCliSignIns);
+            props.reset();
+          }}
+        >
+          Retry
+        </button>
+      </p>
+    </Failure>
+  );
+}
+
 function PrefsFailure(props: { error: unknown; reset: () => void }) {
   return (
     <Failure error={props.error}>
@@ -567,5 +692,27 @@ const s = stylex.create({
     backgroundColor: "transparent",
     color: colors.accent,
     cursor: "pointer",
+  },
+  heading: {
+    margin: 0,
+  },
+  inline: {
+    color: colors.accent,
+  },
+  install: {
+    margin: 0,
+    borderColor: colors.line,
+    borderRadius: 6,
+    borderStyle: "solid",
+    borderWidth: 1,
+    paddingBlock: 6,
+    paddingInline: 8,
+    backgroundColor: colors.bgRaised,
+    color: colors.fg,
+    fontFamily: fonts.mono,
+    fontSize: 12,
+    userSelect: "all",
+    marginBottom: 8,
+    overflowX: "auto",
   },
 });

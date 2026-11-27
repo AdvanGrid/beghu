@@ -1,0 +1,512 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "shop",
+      "kind": "system",
+      "name": "shop",
+      "paths": [],
+      "summary": "An online shop's API, its shared libraries and its database schema.",
+      "change": "modified",
+      "responsibilities": [],
+      "facets": [],
+      "questions": [],
+      "files": [],
+      "changeSummary": "Adds refunds to the API."
+    },
+    {
+      "id": "api",
+      "kind": "service",
+      "parent": "shop",
+      "name": "api",
+      "paths": [
+        "api"
+      ],
+      "summary": "The HTTP API customers call.",
+      "change": "modified",
+      "responsibilities": [
+        {
+          "id": "serve-http",
+          "text": "routes HTTP requests to handlers",
+          "change": "modified",
+          "claims": [
+            "c1"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "inside-product",
+          "values": [
+            {
+              "value": "checkout",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "lang",
+          "values": [
+            {
+              "value": "go",
+              "claims": [
+                "c1"
+              ]
+            }
+          ]
+        }
+      ],
+      "changeSummary": "Routes /orders/refund to the new refund handler.",
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "lib",
+      "kind": "library",
+      "parent": "shop",
+      "name": "lib",
+      "paths": [
+        "lib"
+      ],
+      "summary": "Shared Go packages.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "db-access",
+          "text": "opens the Postgres connection",
+          "change": "unchanged",
+          "claims": [
+            "c2"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "inside-product",
+          "values": [
+            {
+              "value": "platform",
+              "claims": [
+                "c2"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "lang",
+          "values": [
+            {
+              "value": "go",
+              "claims": [
+                "c2"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": [],
+      "drawn": {
+        "partial": true,
+        "folders": 3
+      }
+    },
+    {
+      "id": "postgres",
+      "kind": "store",
+      "parent": "shop",
+      "name": "Postgres",
+      "paths": [
+        "migrations"
+      ],
+      "summary": "The orders database.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "orders-table",
+          "text": "holds the orders table",
+          "change": "unchanged",
+          "claims": [
+            "c3"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "outside-role",
+          "values": [
+            {
+              "value": "relational-data",
+              "claims": [
+                "c3"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "outside-runner",
+          "values": [
+            {
+              "value": "unknown",
+              "claims": [
+                "c4"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "stripe",
+      "kind": "external",
+      "parent": "shop",
+      "name": "Stripe",
+      "paths": [],
+      "summary": "The payment provider.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "refunds",
+          "text": "refunds payments",
+          "change": "unchanged",
+          "claims": [
+            "c5"
+          ]
+        }
+      ],
+      "facets": [
+        {
+          "facet": "outside-role",
+          "values": [
+            {
+              "value": "payments",
+              "claims": [
+                "c5"
+              ]
+            }
+          ]
+        },
+        {
+          "facet": "outside-runner",
+          "values": [
+            {
+              "value": "hosted",
+              "claims": [
+                "c5"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [],
+      "files": []
+    },
+    {
+      "id": "customer",
+      "kind": "actor",
+      "parent": "shop",
+      "name": "customer",
+      "paths": [],
+      "summary": "A person who bought something.",
+      "change": "unchanged",
+      "responsibilities": [],
+      "facets": [],
+      "questions": [],
+      "files": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "api->lib",
+      "from": "api",
+      "to": "lib",
+      "kind": "call",
+      "when": "runtime",
+      "uses": "query",
+      "label": "reads orders",
+      "mode": "sync",
+      "change": "unchanged",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c6"
+      ]
+    },
+    {
+      "id": "lib->postgres",
+      "from": "lib",
+      "to": "postgres",
+      "kind": "data",
+      "when": "runtime",
+      "label": "reads and writes orders",
+      "data": {
+        "what": "order rows",
+        "direction": "both"
+      },
+      "mode": "sync",
+      "change": "unchanged",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c2"
+      ]
+    }
+  ],
+  "pr": {
+    "repo": "acme/shop",
+    "number": 7,
+    "title": "Add refunds",
+    "url": "https://github.com/acme/shop/pull/7",
+    "author": "ilze-k",
+    "description": "Adds a refund endpoint for orders.\n\nRefunds are retried when Stripe fails. Every refund is recorded in the orders table.",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "headSha": "2222222222222222222222222222222222222222",
+    "stats": {
+      "files": 2,
+      "additions": 22,
+      "deletions": 0
+    }
+  },
+  "coverage": {
+    "summary": "Covers both changed files and the parts they reach.",
+    "skipped": [],
+    "notes": [
+      "lib: 1 of 3 folders drawn, the one this PR's lines reach."
+    ],
+    "references": []
+  },
+  "facets": [
+    {
+      "id": "inside-product",
+      "name": "Product area",
+      "question": "What part of the product is it for?",
+      "appliesTo": "node",
+      "multi": true,
+      "values": [
+        {
+          "id": "checkout",
+          "label": "Checkout",
+          "prefix": "CO",
+          "description": "Taking and refunding payments for orders."
+        },
+        {
+          "id": "platform",
+          "label": "Platform",
+          "prefix": "PL",
+          "description": "Code every product area uses."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-role",
+      "name": "What it does for the shop",
+      "question": "What does it do for this system?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "payments",
+          "label": "Payments",
+          "prefix": "PAY",
+          "description": "Moves money."
+        },
+        {
+          "id": "relational-data",
+          "label": "Relational data",
+          "prefix": "SQL",
+          "description": "Holds tables."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "outside-runner",
+      "name": "Who runs it",
+      "question": "Who runs it, as the code shows it?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "hosted",
+          "label": "Hosted service",
+          "prefix": "HOST",
+          "description": "Reached by URL and key."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    },
+    {
+      "id": "lang",
+      "name": "Language",
+      "question": "What language is it written in?",
+      "appliesTo": "node",
+      "multi": false,
+      "values": [
+        {
+          "id": "go",
+          "label": "Go",
+          "prefix": "Go",
+          "description": "Go packages."
+        },
+        {
+          "id": "unknown",
+          "label": "Unknown",
+          "prefix": "?",
+          "description": "The code doesn't settle it."
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "internet",
+      "kind": "trust",
+      "name": "customers ↔ API",
+      "claims": [
+        "c7"
+      ]
+    },
+    {
+      "id": "stripe-network",
+      "kind": "network",
+      "name": "API ↔ Stripe",
+      "claims": [
+        "c5"
+      ]
+    }
+  ],
+  "purposes": [
+    {
+      "id": "purpose:refunds",
+      "name": "Refund an order",
+      "kind": "feature"
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "routes /orders/refund to HandleRefund",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/main.go",
+          "start": 13,
+          "end": 13,
+          "note": "the new route",
+          "snippet": "\thttp.HandleFunc(\"/orders/refund\", orders.HandleRefund)"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "lib/db opens one Postgres connection from DATABASE_URL",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 10,
+          "end": 10,
+          "note": "sql.Open",
+          "snippet": "var conn, _ = sql.Open(\"postgres\", os.Getenv(\"DATABASE_URL\"))"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "the orders table holds id, total and a refunded flag",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "migrations/001_orders.sql",
+          "start": 1,
+          "end": 5,
+          "note": "the table",
+          "snippet": "CREATE TABLE orders (\n  id TEXT PRIMARY KEY,\n  total INTEGER NOT NULL,\n  refunded BOOLEAN NOT NULL DEFAULT false\n);"
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "who runs Postgres isn't shown in the code",
+      "status": "undetermined",
+      "evidence": [],
+      "lookedAt": "lib/db/db.go and the repo's top level: DATABASE_URL comes from the environment and no infra code names the host"
+    },
+    {
+      "id": "c5",
+      "text": "HandleRefund posts the order's payment intent to Stripe's refunds endpoint",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/refund.go",
+          "start": 13,
+          "end": 15,
+          "note": "the request to api.stripe.com and its send",
+          "snippet": "\treq, _ := http.NewRequest(\"POST\", \"https://api.stripe.com/v1/refunds?payment_intent=\"+id, nil)\n\treq.SetBasicAuth(os.Getenv(\"STRIPE_KEY\"), \"\")\n\tif _, err := http.DefaultClient.Do(req); err != nil {"
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "text": "HandleList reads orders through db.Query",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/orders/orders.go",
+          "start": 12,
+          "end": 12,
+          "note": "the read",
+          "snippet": "\trows, err := db.Query(\"SELECT id, total FROM orders\")"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "text": "the API listens for HTTP on port 8080",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "api/main.go",
+          "start": 14,
+          "end": 14,
+          "note": "the listener",
+          "snippet": "\thttp.ListenAndServe(\":8080\", nil)"
+        }
+      ]
+    }
+  ]
+}

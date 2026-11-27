@@ -8,6 +8,7 @@ import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { noteBuild, whileWriting } from "./build";
 import { accountHeaders, cookieAccount, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
+import { keepPromptsOf } from "./prompts";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -30,7 +31,7 @@ import type { DropCheck } from "./bindings/DropCheck";
 import type { TreePage } from "./bindings/TreePage";
 import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
-import { issuePath, learn, parseAt, pathOf } from "./at";
+import { at, atString, idAt, issuePath, learn, parseAt, pathOf } from "./at";
 
 export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
@@ -106,6 +107,15 @@ export class Unavailable extends Error {
  */
 export class ServerError extends Error {}
 
+// The PR view's analysis (`analyses/` on the server).
+
+/** The PR has no analysis for this account, or not the one asked for. */
+export class NoAnalysis extends Error {}
+/** An analysis run refused at its start: the PR changes more files than an analysis takes. */
+export class PrTooLarge extends Error {}
+/** beghu couldn't bring the PR's stored analysis up to its schema: a bug on its side. */
+export class AnalysisMigrationFailed extends Error {}
+
 // Writes only: how a write GitHub didn't take failed. The message is the server's, for the user.
 
 /**
@@ -150,6 +160,16 @@ export class TooSoon extends Error {
   constructor(
     message: string,
     /** Seconds until it can be asked for again. */
+    readonly retryAfter: number,
+  ) {
+    super(message);
+  }
+}
+/** Too many `beghu login` codes from this browser that weren't a waiting sign-in's. */
+export class TooManyCodes extends Error {
+  constructor(
+    message: string,
+    /** Seconds until a code can be tried again. */
     readonly retryAfter: number,
   ) {
     super(message);
@@ -233,12 +253,20 @@ function failure(res: Response, body: Partial<ErrorBody>, why: string): Error {
       return new Changed(said, body.current ?? "", body.digest ?? "");
     case "too_soon":
       return new TooSoon(said, retryAfter);
+    case "too_many_codes":
+      return new TooManyCodes(said, retryAfter);
     case "github_down":
       return new GitHubDown(said);
     case "lost":
       return new Lost(said, body.digest);
     case "maybe_posted":
       return new MaybePosted(said, body.after, body.digest);
+    case "no_analysis":
+      return new NoAnalysis(said);
+    case "pr_too_large":
+      return new PrTooLarge(said);
+    case "migration_failed":
+      return new AnalysisMigrationFailed(why);
     case undefined:
       break;
     default:
@@ -463,6 +491,8 @@ export function prefsSetHere(): void {
 export const getMe = query(async () => {
   const at = performance.now();
   const me = await request<Me>("/api/me");
+  // The prompts kept for accounts the browser no longer has (signed out, disconnected) go.
+  keepPromptsOf([me.account.id, ...me.accounts.map((a) => a.id)]);
   if (tabAccount() !== undefined && me.account.id !== tabAccount()) noteActive(me.account.id);
   else if (at >= prefsAt) {
     prefsAt = at;
@@ -745,6 +775,18 @@ export function forgetPushed(ids: readonly number[]): void {
   }
   remembered = remembered.filter((r) => !ids.includes(r.id));
   revalidate(ids.map((id) => getIssue.keyFor(id)));
+}
+
+/**
+ * For an `analysis` push naming PR `number` of `repo` (`owner/name`): its run or analysis
+ * changed, and nothing else did. Only its reads go, by id once the tab knows it, and by where.
+ */
+export function forgetPull(repo: string, number: number): void {
+  const [owner = "", name = ""] = repo.split("/");
+  const where = at(owner, name, String(number));
+  const id = idAt(where);
+  if (id !== undefined) forgetPushed([id]);
+  void revalidate(getIssueAt.keyFor(atString(where)));
 }
 
 /**

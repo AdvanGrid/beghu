@@ -4661,6 +4661,214 @@
     },
     "status": 200
   },
+  "webhook.pull_request.synchronize": {
+    "request": "webhook pull_request.synchronize",
+    "shape": {
+      "action": "string",
+      "after": "string",
+      "before": "string",
+      "installation": {
+        "id": "number",
+        "node_id": "string"
+      },
+      "number": "number",
+      "pull_request": {
+        "active_lock_reason": "never",
+        "additions": "number",
+        "assignee": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ],
+        "assignees": {
+          "[]": {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          }
+        },
+        "author_association": "string",
+        "auto_merge": "never",
+        "base": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "body": [
+          "string",
+          "null"
+        ],
+        "changed_files": "number",
+        "closed_at": "never",
+        "comments": "number",
+        "commits": "number",
+        "created_at": "string",
+        "deletions": "number",
+        "diff_url": "string",
+        "draft": "boolean",
+        "head": {
+          "label": "string",
+          "ref": "string",
+          "repo": {
+            "archived": "boolean",
+            "disabled": "boolean",
+            "full_name": "string",
+            "has_issues": "boolean",
+            "html_url": "string",
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "owner": {
+              "login": "string",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "private": "boolean",
+            "url": "string",
+            "visibility": "string"
+          },
+          "sha": "string"
+        },
+        "html_url": "string",
+        "id": "number",
+        "issue_url": "string",
+        "labels": {
+          "[]": {
+            "color": "string",
+            "default": "boolean",
+            "description": [
+              "string",
+              "null"
+            ],
+            "id": "number",
+            "name": "string",
+            "node_id": "string",
+            "url": "string"
+          }
+        },
+        "locked": "boolean",
+        "maintainer_can_modify": "boolean",
+        "merge_commit_sha": "never",
+        "mergeable": "never",
+        "merged": "boolean",
+        "merged_at": "never",
+        "milestone": "never",
+        "node_id": "string",
+        "number": "number",
+        "patch_url": "string",
+        "requested_reviewers": {
+          "[]": "never"
+        },
+        "requested_teams": {
+          "[]": "never"
+        },
+        "review_comments": "number",
+        "state": "string",
+        "title": "string",
+        "updated_at": "string",
+        "url": "string",
+        "user": [
+          {
+            "avatar_url": "string",
+            "gravatar_id": "string",
+            "html_url": "string",
+            "id": "number",
+            "login": "string",
+            "node_id": "string",
+            "site_admin": "boolean",
+            "type": [
+              "string",
+              "null"
+            ],
+            "url": "string",
+            "user_view_type": "string"
+          },
+          "null"
+        ]
+      },
+      "repository": {
+        "archived": "boolean",
+        "disabled": "boolean",
+        "full_name": "string",
+        "has_issues": "boolean",
+        "html_url": "string",
+        "id": "number",
+        "name": "string",
+        "node_id": "string",
+        "owner": {
+          "login": "string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": "boolean",
+        "url": "string",
+        "visibility": "string"
+      },
+      "sender": {
+        "avatar_url": "string",
+        "gravatar_id": "string",
+        "html_url": "string",
+        "id": "number",
+        "login": "string",
+        "node_id": "string",
+        "site_admin": "boolean",
+        "type": [
+          "string",
+          "null"
+        ],
+        "url": "string",
+        "user_view_type": "string"
+      }
+    },
+    "status": 200
+  },
   "webhook.pull_request_review.dismissed": {
     "request": "webhook pull_request_review.dismissed",
     "shape": {

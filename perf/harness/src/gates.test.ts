@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { check, loadBudgets, recalibrate, type Budgets, type Results } from "./gates.ts";
+import { calibrated, check, loadBudgets, recalibrate, type Budgets, type Results } from "./gates.ts";
 
 const results = (suite: string, metrics: Record<string, number>): Results => ({
   suite,
@@ -111,4 +111,12 @@ test("recalibrating sets the measured value and its margin, keeps reasons and re
       .replace("measured = 60", "measured = 66"),
   );
   assert.deepEqual(out.unknown, ["server.new.ms"]);
+});
+
+test("a response's bytes calibrate to at most the first flight, but the analysis answers past it", () => {
+  assert.equal(calibrated("server.list.kb", 20), 14);
+  assert.equal(calibrated("server.list.kb", 4), 4.2);
+  // The PR view's graph and claims exceed 14 KB on purpose (#152): +5% as measured.
+  assert.equal(calibrated("server.analysis.kb", 90), 94.5);
+  assert.equal(calibrated("server.analysis-claims.kb", 140), 147);
 });

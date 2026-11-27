@@ -1,11 +1,12 @@
 // ./dev-ctl: runs the beghu dev stack (Fake GitHub, the server, Vite) in the background.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, utimesSync, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  CLI_CREDENTIALS,
   DATA,
   DEFAULT_SCALE,
   DEPLOYED,
@@ -15,6 +16,7 @@ import {
   FAKE_DB,
   LOG,
   MIRRORS,
+  ANALYSES,
   PID,
   PROCS,
   ROOT,
@@ -25,6 +27,7 @@ import {
   type Seeded,
   STATE,
   SUPERVISOR,
+  TARGET,
   type State,
   URLS,
   WEB_BUILDS,
@@ -39,6 +42,7 @@ import {
 import { SMEE, supervise, superviseGitHub, up } from "./supervisor.ts";
 import { GITHUB_DATA } from "./github.ts";
 import { BadArgs, contract, github, readDevApp } from "./realgithub.ts";
+import { imported, Session, upload, versions, type Uploaded } from "./analyses.ts";
 
 const HELP = `./dev-ctl - run the beghu dev stack against Fake GitHub
 
@@ -88,7 +92,12 @@ Commands:
   grep PATTERN [PROC]         Search the whole log (regex, case-insensitive) with line
                               numbers; exit 1 if nothing matches.
   login USER                  Print the URL that signs the browser in as a fixture user
-                              (skipping the fake's account picker).
+                              (skipping the fake's account picker), and sign the beghu CLI
+                              in as USER too (./dev-ctl cli), approving its device code.
+  cli ARGS…                   Run the workspace's beghu CLI (rebuilt if its sources changed)
+                              against the stack: BEGHU_HOST is the app, and its credentials
+                              file is under the stack's data (.dev/data/cli/), never your
+                              own. Its exit code is the CLI's. ./dev-ctl cli analyse AdvanGrid/beghu#191.
   fake [state]                The fake's accounts, sign-ins, token lifetimes and faults.
   fake latency ENDPOINT MS [--count N]
                               Delay calls to ENDPOINT by MS (0 removes the rule); with
@@ -181,8 +190,9 @@ Commands:
                               the other builds' records, as their day being up would.
   deploy dev                  Back to build dev, the app served by Vite.
   reset [--all] [--fresh]     Restore pristine mirrors and the fake's state (sign-ins,
-                              faults, its data), keeping the control DB (less its Resync
-                              marks and hourly limits). Restarts the stack if it's running.
+                              faults, its data) and delete the accounts' analyses, keeping
+                              the control DB (less its Resync marks and hourly limits).
+                              Restarts the stack if it's running.
                               --all also wipes the control DB.
                               --fresh deletes the mirrors instead, so every account imports
                               its synced repos through the fake on its next use (with --all,
@@ -205,6 +215,24 @@ Commands:
                               To reclaim its disk (several GB): rm -rf .dev/perf
                               "$(git rev-parse --git-common-dir)/beghu-perf" &&
                               git worktree prune
+  analyse OWNER/REPO#N [--as USER] [--version V]
+                              Upload a committed analysis of the PR through an analysis
+                              run, as an agent does: V is 1 or 2 (the recorded
+                              AdvanGrid/beghu#191's versions; default the latest), tiled-1x
+                              or tiled-3x (the perf sizes, #9001 and #9003), or a case
+                              (a file in fixtures/pr-view/cases/, at v1; a case named
+                              <feature>.after-v1.json is at v2's head and goes up after
+                              v1, as a later analysis). Moves the PR on the fake to the
+                              head the version was analysed at first.
+                              USER defaults to tomsj. start and reset upload v1, then v2
+                              (when recorded) as tomsj only; every other account has none.
+  analysis record RUN [--version 1|2] [--data DIR]
+                              Save run RUN's pinned pr.json and its accepted upload (or
+                              those of the analysis named RUN), byte for byte, as
+                              fixtures/pr-view/beghu-<n>/pr-v<N>.json and analysis-v<N>.json:
+                              v1 when there is none yet, else v2 (recording v1 again
+                              deletes v2). Reads every analyses.db in DIR (default the
+                              --github stack's data, then the fixture stack's).
   help                        This help.
 
 ENDPOINT is * (everything) or a path with an optional method: "/user", "GET /user",
@@ -322,6 +350,21 @@ async function startStack(
       process.exit(1);
     }
     if (Date.now() > deadline) die(`still starting after ${timeout / 1000}s; check ./dev-ctl logs`);
+  }
+  // The recorded analyses, as tomsj, through runs. After reset --fresh the mirrors import on
+  // first use: a run needs tomsj's, so the first start after tomsj has imported uploads them.
+  if (scale !== "github" && !existsSync(ANALYSES_SEEDED)) {
+    try {
+      if (readJson<Seeded>(SEEDED)?.fresh === true && !(await freshImported())) {
+        if (!json) console.log("not uploading the recorded analyses yet: tomsj hasn't imported AdvanGrid/beghu since reset --fresh (a start after that does, or ./dev-ctl analyse AdvanGrid/beghu#191)");
+      } else {
+        const done = await seedAnalyses(json);
+        if (done.length) extra = { ...extra, analyses: done };
+      }
+    } catch (e) {
+      console.error(`uploading the recorded analyses failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error("the stack is up; ./dev-ctl analyse AdvanGrid/beghu#191 tries again");
+    }
   }
   await status(json ? ["--json"] : [], extra);
 }
@@ -511,7 +554,106 @@ async function login(args: string[]): Promise<void> {
     die(`${user} isn't a fixture account; one of ${s.accounts.map((a) => a.login).join(", ")}`);
   }
   const url = `${urls().app}/auth/login?login=${encodeURIComponent(user)}`;
-  print(json, { user, url }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)`);
+  // The browser's URL is printed whatever happens to the CLI's sign-in (its build included).
+  const cli = await cliLogin(user).catch((e: unknown) => `warning: the beghu CLI didn't sign in: ${e instanceof Error ? e.message : String(e)}`);
+  print(json, { user, url, cli }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)\n${cli}`);
+}
+
+/** The newest modification time among `path`'s files (it, if it's a file), in ms; 0 if missing. */
+function newest(path: string): number {
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return 0;
+  }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let most = st.mtimeMs;
+  for (const name of readdirSync(path, { recursive: true, encoding: "utf8" })) {
+    try {
+      most = Math.max(most, statSync(join(path, name)).mtimeMs);
+    } catch {
+      // Gone since the listing.
+    }
+  }
+  return most;
+}
+
+/**
+ * The workspace's `beghu`: its path. Built only when it's missing or older than what it's built
+ * from (its crate's and the analysis crate's sources, the manifests and the lockfile), so a
+ * login or a `./dev-ctl cli` doesn't wait on cargo each time. A failed build throws.
+ */
+function cliBinary(): string {
+  const bin = join(TARGET, "beghu");
+  // Not their tests, which a build of the binary doesn't relink for.
+  const sources = [
+    "crates/cli/src",
+    "crates/cli/Cargo.toml",
+    "crates/analysis/src",
+    "crates/analysis/generated",
+    "crates/analysis/instructions",
+    "crates/analysis/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock",
+  ].map((p) => newest(join(ROOT, p)));
+  if (existsSync(bin) && statSync(bin).mtimeMs > Math.max(...sources)) return bin;
+  const r = spawnSync("cargo", ["build", "--quiet", "-p", "beghu"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
+  if (r.status !== 0) throw new Error("building the beghu CLI failed");
+  // Cargo leaves the binary as it was when nothing it links changed (a touched file, a comment in
+  // a test): newer than its sources now, so the next call doesn't build again.
+  const now = new Date();
+  utimesSync(bin, now, now);
+  return bin;
+}
+
+/** The CLI's environment on the stack: its host is the app, its credentials the stack's. */
+function cliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, BEGHU_HOST: urls().app, BEGHU_CREDENTIALS: CLI_CREDENTIALS };
+  delete env.BEGHU_TOKEN;
+  return env;
+}
+
+/**
+ * Signs the CLI in as `user`: `beghu login --no-browser`, its code approved by a session of
+ * `user`'s, as a person would at /cli/login. What to say about it.
+ */
+async function cliLogin(user: string): Promise<string> {
+  const bin = cliBinary();
+  const s = new Session(urls().app);
+  await s.signIn(user);
+  const child = spawn(bin, ["login", "--no-browser", "--name", "dev-ctl"], { cwd: ROOT, env: cliEnv(), stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+  const exited = new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 1)));
+  const code = await new Promise<string>((resolve, reject) => {
+    child.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+      const m = /the code ([A-Z]{4}-[A-Z]{4})/.exec(out);
+      if (m) resolve(m[1]!);
+    });
+    void exited.then(() => reject(new Error(err.trim() || out.trim() || "beghu login exited")));
+  });
+  const res = await s.post(`/api/cli/codes/${code}/approve`);
+  if (res.status !== 204) {
+    child.kill();
+    throw new Error(`approving its code answered ${res.status}`);
+  }
+  if ((await exited) !== 0) throw new Error(err.trim() || out.trim());
+  return `the beghu CLI is signed in as ${user} too (./dev-ctl cli status)`;
+}
+
+/** `./dev-ctl cli ARGS…`: the CLI against the stack; exits with its code. */
+function cli(args: string[]): void {
+  let bin: string;
+  try {
+    bin = cliBinary();
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  const r = spawnSync(bin, args, { cwd: process.cwd(), env: cliEnv(), stdio: "inherit" });
+  process.exit(r.status ?? 1);
 }
 
 async function control(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -922,6 +1064,9 @@ async function reset(args: string[]): Promise<void> {
   remove(join(FAKE_DB, ".."));
   done.push("fake state restored");
   remove(MIRRORS);
+  // An account's analyses go with its pristine mirror.
+  remove(ANALYSES);
+  done.push("analyses deleted");
   if (set.has("--fresh")) {
     // Recorded as seeded, so start doesn't put pristine mirrors back: accounts re-import.
     writeJson(SEEDED, { scale, fresh: true } satisfies Seeded);
@@ -933,6 +1078,8 @@ async function reset(args: string[]): Promise<void> {
   if (set.has("--all")) {
     // The server's names under BEGHU_DATA_DIR (crates/server/src/config.rs).
     for (const f of ["control.db", "control.db-wal", "control.db-shm", "backups"]) remove(join(DATA, f));
+    // Its tokens were in the control DB.
+    remove(join(DATA, "cli"));
     done.push("control DB wiped");
   } else {
     forgetResyncs();
@@ -952,6 +1099,86 @@ async function reset(args: string[]): Promise<void> {
     : {};
   if (r) await startStack(scale, json, env, { done });
   else if (json) print(true, { done }, "");
+}
+
+// ---------------------------------------------------------------------------------------------
+// analyses
+
+/** Marks the fixture stack's analyses as uploaded by start; reset deletes it with them. */
+const ANALYSES_SEEDED = join(ANALYSES, "seeded.json");
+
+/** tomsj's GitHub user id in the fixture (`TOMSJ` in perf/fixture/src/lib.rs): its mirror's file name. */
+const TOMSJ_ID = 1000;
+
+/**
+ * After reset --fresh: whether tomsj has imported the recorded PR's repo since. Signs tomsj in to
+ * ask only once tomsj's own mirror exists: signing in without one starts an import nobody asked
+ * for, so a fresh stack stays untouched until tomsj (not just anyone) has used it.
+ */
+async function freshImported(): Promise<boolean> {
+  return existsSync(join(MIRRORS, `${TOMSJ_ID}.db`)) && (await imported(urls().app, "tomsj", "AdvanGrid/beghu"));
+}
+
+/**
+ * The recorded analyses as start and reset leave them: v1 uploaded as tomsj, the PR moved to v2's
+ * head, then v2 uploaded (when it's recorded), each through a run. Once per fresh data dir.
+ */
+async function seedAnalyses(json: boolean): Promise<Uploaded[]> {
+  if (existsSync(ANALYSES_SEEDED)) return [];
+  const all = versions();
+  const recorded = all.filter((v) => v.version !== undefined).sort((a, b) => a.version! - b.version!);
+  const done: Uploaded[] = [];
+  for (const v of recorded) {
+    if (!json) console.log(`uploading the recorded analysis v${v.version} of ${v.repo}#${v.number} as tomsj`);
+    done.push(await upload(urls().app, urls().control, "tomsj", v, all));
+  }
+  mkdirSync(ANALYSES, { recursive: true });
+  writeJson(ANALYSES_SEEDED, { done });
+  return done;
+}
+
+async function analyse(args: string[]): Promise<void> {
+  const { opts, pos, json } = parse(args, ["--as", "--version"]);
+  const m = pos.length === 1 ? /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(pos[0]!) : null;
+  if (!m) throw new Usage("usage: ./dev-ctl analyse OWNER/REPO#N [--as USER] [--version 1|2|tiled-1x|tiled-3x|CASE]");
+  const r = running();
+  if (!r || r.state?.mode === "github") die("analyse needs the fixture stack running: ./dev-ctl start");
+  await needFake();
+  const all = versions();
+  const [repo, number] = [m[1]!, Number(m[2])];
+  const forPr = all.filter((v) => v.repo.toLowerCase() === repo.toLowerCase() && v.number === number);
+  const cases = all.filter((v) => v.version === undefined && !v.name.startsWith("tiled-") && v.number === number);
+  const name = opts["--version"];
+  const want = name === undefined
+    ? forPr.filter((v) => v.version !== undefined).at(-1)
+    : [...forPr, ...cases].find((v) => v.name === name);
+  if (!want) {
+    const names = [...new Set([...all.map((v) => `${v.repo}#${v.number} ${v.name}`)])];
+    die(`no committed analysis ${name ?? ""} of ${repo}#${number}; there are:\n  ${names.join("\n  ")}`);
+  }
+  const got = await upload(urls().app, urls().control, opts["--as"] ?? "tomsj", want, all).catch((e: unknown) =>
+    die(e instanceof Error ? e.message : String(e)),
+  );
+  print(json, got, `accepted ${want.name} of ${want.repo}#${want.number} as ${got.analysis} at ${got.headSha.slice(0, 12)} (${got.warnings} warnings)`);
+}
+
+async function analysisCmd(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub !== "record") throw new Usage("usage: ./dev-ctl analysis record RUN [--version 1|2] [--data DIR]");
+  const { opts, pos, json } = parse(rest, ["--version", "--data"]);
+  if (pos.length !== 1) throw new Usage("usage: ./dev-ctl analysis record RUN [--version 1|2] [--data DIR]");
+  const dirs = opts["--data"] ? [join(opts["--data"], "analyses")] : [join(GITHUB_DATA, "analyses"), ANALYSES];
+  const dbs = dirs.filter(existsSync).flatMap((d) => readdirSync(d).filter((f) => f.endsWith(".db")).map((f) => join(d, f)));
+  if (!dbs.length) die(`no analyses.db under ${dirs.map(rel).join(" or ")}`);
+  const extra = opts["--version"] ? ["--version", opts["--version"]] : [];
+  const r = spawnSync("cargo", ["run", "--quiet", "-p", "analysis-fixtures", "--", "record", "--run", pos[0]!, ...extra, ...dbs.flatMap((d) => ["--db", d])], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (r.status !== 0) process.exit(r.status ?? 1);
+  const written = r.stdout.trim().split("\n").filter(Boolean);
+  print(json, { written }, written.map((w) => `wrote ${rel(w)}`).join("\n"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1006,6 +1233,8 @@ async function main(): Promise<void> {
       return grep(args);
     case "login":
       return login(args);
+    case "cli":
+      return cli(args);
     case "fake":
       return fake(args);
     case "deploy":
@@ -1018,6 +1247,10 @@ async function main(): Promise<void> {
       return contract(args);
     case "perf":
       return perf(args);
+    case "analyse":
+      return analyse(args);
+    case "analysis":
+      return analysisCmd(args);
     case "help":
     case "-h":
     case "--help":

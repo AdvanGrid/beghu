@@ -7,7 +7,8 @@
 #
 # The stages: the web app (vite build, with its .br/.gz siblings and the Vite manifest the server
 # reads at startup); a glibc release build of the server, its dependencies first in a layer of
-# their own (cargo-chef); then distroless, running as nonroot. The base images are pinned by
+# their own (cargo-chef); the agent's tools (validate.mjs, merge.mjs); the beghu CLI for each
+# platform, cross-built with cargo-zigbuild; then distroless, running as nonroot. The base images are pinned by
 # digest (their multi-arch index); bump a tag and its digest together
 # (`skopeo inspect --raw docker://<image:tag> | sha256sum`).
 #
@@ -47,17 +48,74 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS server
 COPY --from=planner /src/recipe.json recipe.json
 COPY .cargo .cargo
-RUN cargo chef cook --release --locked -p beghu --recipe-path recipe.json
+RUN cargo chef cook --release --locked -p beghu-server --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked -p beghu \
-    && install -D target/release/beghu /out/beghu \
+RUN cargo build --release --locked -p beghu-server \
+    && install -D target/release/beghu-server /out/beghu-server \
     && install -d /out/data
 
-# 3. What runs: the binary, the web build, and /data owned by nonroot (uid 65532), so a fresh
-# named volume starts out writable. Debian 13 while the build stages are 12: the binary, linked
-# against bookworm's glibc 2.36, runs on trixie's 2.41. cc-debian12 was still shipping libssl3
-# 3.0.20 after Debian's 3.0.22 fixed CVE-2026-84782; beghu never loads libssl (it uses rustls),
-# but deployers' image scans fail on it.
+# 3. The agent's tools, validate.mjs and merge.mjs: the analysis crate built to WASM and inlined
+# into two single Node files (crates/analysis-wasm/build.sh), served by the server from its own
+# commit. wasm-bindgen-cli must match the wasm-bindgen crate's version in Cargo.lock; bump them
+# together. Its install is a layer of its own, cached until that version changes.
+FROM chef AS analysis-tools
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install wasm-bindgen-cli --version 0.2.129 --locked
+COPY . .
+RUN crates/analysis-wasm/build.sh /out/analysis
+
+# 4. The beghu CLI (crates/cli), built from the same commit as the server, which serves it at
+# /cli/{os}-{arch}/beghu with /cli/manifest.json and /cli/install.sh (BEGHU_CLI_DIR): Linux x86_64
+# and aarch64 as static musl binaries, and macOS aarch64 and x86_64. One stage cross-builds all
+# four with cargo-zigbuild, zig as the C compiler and linker: rustls with its bundled roots means
+# no system SDK or OpenSSL, and zig's linker ad-hoc signs the macOS binaries, which (downloaded
+# with curl, so with no quarantine flag) then run without notarisation; CI's cli-macos job runs
+# them on a real Mac. Zig is pinned by version and SHA-256 per build host; cargo-zigbuild by
+# version, built --locked. The CLI's semver goes beside the binaries as `version`.
+FROM chef AS cli
+ARG BEGHU_BUILD_ID
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=x86_64; sum=c61c5da6edeea14ca51ecd5e4520c6f4189ef5250383db33d01848293bfafe05 ;; \
+      arm64) arch=aarch64; sum=bb4a8d2ad735e7fba764c497ddf4243cb129fece4148da3222a7046d3f1f19fe ;; \
+      *) echo "no pinned zig for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/0.15.1/zig-$arch-linux-0.15.1.tar.xz"; \
+    echo "$sum  /tmp/zig.tar.xz" | sha256sum -c -; \
+    mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 && rm /tmp/zig.tar.xz
+ENV PATH=/opt/zig:$PATH
+RUN cargo install cargo-zigbuild --locked --version 0.24.1 \
+    && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+       aarch64-apple-darwin x86_64-apple-darwin
+# The CLI's dependencies first, for all four, from the same recipe as the server's.
+COPY --from=planner /src/recipe.json recipe.json
+COPY .cargo .cargo
+RUN cargo chef cook --release --locked --zigbuild -p beghu --recipe-path recipe.json \
+      --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \
+      --target aarch64-apple-darwin --target x86_64-apple-darwin
+COPY . .
+RUN set -eu; \
+    export BEGHU_BUILD_ID; \
+    cargo zigbuild --release --locked -p beghu \
+      --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \
+      --target aarch64-apple-darwin --target x86_64-apple-darwin; \
+    for p in linux-x86_64:x86_64-unknown-linux-musl linux-aarch64:aarch64-unknown-linux-musl \
+             macos-aarch64:aarch64-apple-darwin macos-x86_64:x86_64-apple-darwin; do \
+      install -D "target/${p#*:}/release/beghu" "/out/cli/${p%%:*}/beghu"; \
+    done; \
+    sed -n 's/^version = "\(.*\)"$/\1/p' crates/cli/Cargo.toml | head -n 1 > /out/cli/version; \
+    test -s /out/cli/version
+
+# 5. What runs: the binary, the web build, the agent's tools (served to analysis runs from
+# BEGHU_ANALYSIS_DIR, built from the same commit as the binary, so a run's tools always match the
+# server that checks its uploads), and /data owned by nonroot (uid 65532), so a fresh named volume
+# starts out writable. Debian 13 while the build stages are 12: the binary, linked against
+# bookworm's glibc 2.36, runs on trixie's 2.41. cc-debian12 was still shipping libssl3 3.0.20
+# after Debian's 3.0.22 fixed CVE-2026-84782; beghu never loads libssl (it uses rustls), but
+# deployers' image scans fail on it.
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2
 ARG BEGHU_BUILD_ID
 # The source label links the ghcr.io package to this repo; the revision names the commit.
@@ -66,9 +124,13 @@ LABEL org.opencontainers.image.source=https://github.com/AdvanGrid/beghu \
 ENV BEGHU_BUILD_ID=${BEGHU_BUILD_ID} \
     PORT=8080 \
     BEGHU_DATA_DIR=/data \
-    BEGHU_WEB_DIR=/app/web
-COPY --from=server /out/beghu /app/beghu
+    BEGHU_WEB_DIR=/app/web \
+    BEGHU_ANALYSIS_DIR=/app/analysis \
+    BEGHU_CLI_DIR=/app/cli
+COPY --from=server /out/beghu-server /app/beghu-server
 COPY --from=web /src/web/dist /app/web
+COPY --from=analysis-tools /out/analysis /app/analysis
+COPY --from=cli /out/cli /app/cli
 COPY --from=server --chown=65532:65532 /out/data /data
 VOLUME /data
 EXPOSE 8080
@@ -76,4 +138,4 @@ USER nonroot
 # The drain and its WAL checkpoint take up to 25 s: give the stop 30 s (docs/deploy.md,
 # "Stopping"). Docker's default of 10 s cuts the drain short.
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/app/beghu"]
+ENTRYPOINT ["/app/beghu-server"]

@@ -26,6 +26,11 @@
 //!   or 409 the tab couldn't read.
 //! - `prefs` (`{}`): the account's preferences changed (prefs.rs), in this tab or another,
 //!   maybe in another browser: the tab reads `/api/me` again.
+//! - `analysis` (`{"repo":…,"number":…,"analysis"?:…}`): a PR's analysis run changed state
+//!   (started, attached, refused, ended, expired), its agent was heard from (at most once a
+//!   minute), its "N behind" was counted, or an upload was accepted, when `analysis` names the
+//!   PR's new analysis (`analyses/`). The PR panel reads the PR's detail again; an open
+//!   PR view compares the ID with its own.
 //! - A heartbeat comment every 15 s keeps the connection alive through the edge.
 //! - An open stream is its account's use: it moves `last_active_at` hourly, so an account with a
 //!   tab open never goes dormant (accounts.rs).
@@ -78,6 +83,21 @@ pub enum Push {
     /// What the account may do changed (a role or a repo's archived flag, roles.rs): its tabs
     /// read `/api/me` and the open detail again.
     Roles,
+    /// A PR's analysis run or analysis changed (`analyses/`).
+    Analysis(StreamAnalysis),
+}
+
+/// The `analysis` event's data.
+#[derive(Serialize, TS, Debug, Clone, PartialEq)]
+#[ts(export)]
+pub struct StreamAnalysis {
+    /// `owner/name`.
+    pub repo: String,
+    pub number: i64,
+    /// The PR's new analysis, when an upload was just accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub analysis: Option<String>,
 }
 
 impl Push {
@@ -309,6 +329,9 @@ fn event(push: &Push) -> Event {
         Push::Defs => Event::default().event("defs").data("{}"),
         Push::Prefs => Event::default().event("prefs").data("{}"),
         Push::Roles => Event::default().event("roles").data("{}"),
+        Push::Analysis(a) => Event::default()
+            .event("analysis")
+            .data(serde_json::to_string(a).expect("plain struct")),
         // Sent through `status_event`, which reads the sync state.
         Push::Status(_) | Push::Sync => Event::default().event("status").data("{}"),
         Push::Switched(sw) => Event::default()

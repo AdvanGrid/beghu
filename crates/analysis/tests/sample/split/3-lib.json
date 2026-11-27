@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "lib.db",
+      "kind": "module",
+      "parent": "lib",
+      "name": "db",
+      "paths": [
+        "lib/db"
+      ],
+      "summary": "Runs SQL against Postgres.",
+      "change": "unchanged",
+      "responsibilities": [
+        {
+          "id": "query",
+          "text": "runs reads against Postgres",
+          "change": "unchanged",
+          "claims": [
+            "c1"
+          ]
+        },
+        {
+          "id": "exec",
+          "text": "runs writes against Postgres",
+          "change": "unchanged",
+          "claims": [
+            "c2"
+          ]
+        }
+      ],
+      "facets": [],
+      "questions": [],
+      "files": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "lib.db->postgres",
+      "from": "lib.db",
+      "to": "postgres",
+      "kind": "data",
+      "when": "runtime",
+      "label": "reads and writes orders",
+      "data": {
+        "what": "order rows",
+        "direction": "both"
+      },
+      "mode": "sync",
+      "change": "unchanged",
+      "boundaries": [],
+      "facets": [],
+      "questions": [],
+      "claims": [
+        "c3"
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Query runs a read on the connection",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 13,
+          "end": 15,
+          "note": "Query",
+          "snippet": "func Query(q string, args ...any) (*sql.Rows, error) {\n\treturn conn.Query(q, args...)\n}"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "Exec runs a write on the connection",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 18,
+          "end": 21,
+          "note": "Exec",
+          "snippet": "func Exec(q string, args ...any) error {\n\t_, err := conn.Exec(q, args...)\n\treturn err\n}"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "lib/db opens one Postgres connection from DATABASE_URL",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "code",
+          "side": "head",
+          "path": "lib/db/db.go",
+          "start": 10,
+          "end": 10,
+          "note": "sql.Open",
+          "snippet": "var conn, _ = sql.Open(\"postgres\", os.Getenv(\"DATABASE_URL\"))"
+        }
+      ]
+    }
+  ]
+}

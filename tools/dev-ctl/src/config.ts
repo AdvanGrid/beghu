@@ -10,7 +10,14 @@ export const PID = join(DEV, "dev-ctl.pid");
 export const STATE = join(DEV, "dev-ctl.json");
 export const DATA = join(DEV, "data");
 export const MIRRORS = join(DATA, "mirrors");
+/** Each account's `analyses.db` (crates/server/src/config.rs, `analyses_dir`). */
+export const ANALYSES = join(DATA, "analyses");
 export const FAKE_DB = join(DATA, "fake", "truth.db");
+/**
+ * The beghu CLI's credentials for `./dev-ctl cli`: under the stack's data, never the machine's
+ * own file (`BEGHU_CREDENTIALS`). `reset --all` deletes it with the control DB its tokens are in.
+ */
+export const CLI_CREDENTIALS = join(DATA, "cli", "credentials.toml");
 /** What `start` seeded the data with (`Seeded`). Gone after a plain `reset`, so `start` seeds again. */
 export const SEEDED = join(DATA, "seeded.json");
 export const FIXTURES = join(ROOT, "perf", "data");
@@ -24,7 +31,16 @@ export const DEPLOYED = join(DEV, "deployed.json");
 /** The volume's asset store, and each build's record of its assets (crates/server/src/assets.rs). */
 export const ASSETS = join(DATA, "assets");
 export const BUILDS = join(DATA, "builds");
-export const TARGET = join(ROOT, "target", "debug");
+/**
+ * Where cargo builds the debug binaries: under CARGO_TARGET_DIR when it's set (relative to the
+ * repo, where ./dev-ctl runs cargo), as cargo itself honours it, else target/.
+ */
+export const TARGET = join(process.env.CARGO_TARGET_DIR ? resolve(ROOT, process.env.CARGO_TARGET_DIR) : join(ROOT, "target"), "debug");
+/**
+ * The agent's tools, validate.mjs and merge.mjs, as crates/analysis-wasm/build.sh builds them
+ * from this tree: the server serves them to analysis runs (BEGHU_ANALYSIS_DIR).
+ */
+export const ANALYSIS_TOOLS = join(ROOT, "target", "analysis-tools");
 
 const port = (name: string, fallback: number): number => {
   const v = process.env[name];

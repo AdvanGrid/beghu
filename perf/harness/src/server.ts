@@ -3,6 +3,7 @@
 // (`x-beghu-scan-steps`, with the statements named in beghu's log). Then a write: its round
 // trip, which ends once GitHub and the mirror have it, and the push it sends.
 import { readFileSync } from "node:fs";
+import { uploadTiles } from "./analyses.ts";
 import { Session, settle } from "./http.ts";
 import { scanEvidence, type Stack } from "./stack.ts";
 import type { Probe, Sample } from "./suite.ts";
@@ -69,6 +70,37 @@ export async function serverProbes(stack: Stack, opts: { quick?: boolean } = {})
       return out;
     },
   }));
+
+  // The PR view's analysis (#178): the graph answer and the claims answer of the tile shaped as
+  // #2627, as the view asks for them (brotli: the bytes as sent). Both tiles are uploaded first,
+  // untimed. Not in quick mode, which also runs against a main from before the PR view.
+  if (!opts.quick) {
+    const tiles = await uploadTiles(stack, s);
+    const one = tiles.find((t) => t.name === "tiled-1x");
+    if (!one) throw new Error("no tiled-1x analysis");
+    const graph = `/api/${one.repo}/pulls/${one.number}/analysis`;
+    const first = await s.get(graph, { encoding: "br" });
+    if (first.status !== 200) throw new Error(`${graph}: ${first.status} ${first.body.toString().slice(0, 200)}`);
+    const claims = (JSON.parse(first.body.toString()) as { claimsUrl: string }).claimsUrl;
+    for (const [name, path] of [
+      ["analysis", graph],
+      ["analysis-claims", claims],
+    ] as const) {
+      probes.push({
+        name: `server.${name}`,
+        gates: [`server.${name}.ms`, `server.${name}.kb`, `server.${name}.scan`],
+        async sample(): Promise<Sample> {
+          const a = await s.get(path, { encoding: "br" });
+          if (a.status !== 200) throw new Error(`${path}: ${a.status} ${a.body.toString().slice(0, 200)}`);
+          if (a.headers["content-encoding"] !== "br") throw new Error(`${path}: sent as ${a.headers["content-encoding"] ?? "identity"}, not br`);
+          const scan = Number(a.headers["x-beghu-scan-steps"] ?? NaN);
+          const out: Sample = { values: { [`server.${name}.ms`]: a.ms, [`server.${name}.kb`]: a.wire.length / 1024, [`server.${name}.scan`]: scan } };
+          if (scan > 0) out.evidence = { [`server.${name}.scan`]: scanEvidence(stack, path) };
+          return out;
+        },
+      });
+    }
+  }
 
   // Tree mode (#108): the default view's first roots, and a filtered tree (matches inside their
   // dimmed ancestors). The server builds a view's tree once per mirror `seq` and caches it; the

@@ -133,7 +133,7 @@ struct App<'a> {
 
 impl App<'_> {
     fn jwt(&self) -> Result<String, String> {
-        beghu::app_jwt(&self.setup.app_id, &self.setup.app_key)
+        beghu_server::app_jwt(&self.setup.app_id, &self.setup.app_key)
     }
 
     /// The installation that covers `full`, checked as `app.repo_installation`.
@@ -419,6 +419,27 @@ async fn rest_reads(http: &Http, c: &mut Checker, full: &str, t: &str) -> Result
             "GET /repos/{owner}/{repo}/issues/{number} (a PR)",
             &a,
         );
+        // What an analysis run pins (#176): the PR, its changed files and its commits.
+        for (name, path, request) in [
+            (
+                "rest.pull",
+                format!("{base}/pulls/{pr}"),
+                "GET /repos/{owner}/{repo}/pulls/{number}",
+            ),
+            (
+                "rest.pull_files",
+                format!("{base}/pulls/{pr}/files?per_page=100"),
+                "GET /repos/{owner}/{repo}/pulls/{number}/files",
+            ),
+            (
+                "rest.pull_commits",
+                format!("{base}/pulls/{pr}/commits?per_page=100"),
+                "GET /repos/{owner}/{repo}/pulls/{number}/commits",
+            ),
+        ] {
+            let a = http.get(&path, t).await?;
+            c.answer(name, request, &a);
+        }
     }
     let a = http
         .get(
@@ -495,11 +516,11 @@ async fn graphql_reads(
     p: &Picked,
 ) -> Result<(), String> {
     let (o, n) = split(full)?;
-    let docs: BTreeMap<&str, &str> = beghu::GRAPHQL_DOCUMENTS.into_iter().collect();
+    let docs: BTreeMap<&str, &str> = beghu_server::GRAPHQL_DOCUMENTS.into_iter().collect();
     let issue = p.issue_nodes.first();
     let pr = p.pr_nodes.first();
     let mut more_comments: Option<(String, String)> = None;
-    for (op, query) in beghu::GRAPHQL_DOCUMENTS {
+    for (op, query) in beghu_server::GRAPHQL_DOCUMENTS {
         let vars = match op {
             "ImportIssues" => json!({ "owner": o, "name": n, "states": ["OPEN"], "after": null }),
             "SweepIssueIds" | "SweepPullIds" => json!({ "owner": o, "name": n, "after": null }),
@@ -755,7 +776,7 @@ pub async fn snapshot(http: &Http, t: &str, full: &str, fixture: i64) -> Result<
         .await?
         .body;
     // Its relationships, as beghu reads them.
-    let edges_doc = beghu::GRAPHQL_DOCUMENTS
+    let edges_doc = beghu_server::GRAPHQL_DOCUMENTS
         .iter()
         .find(|(op, _)| *op == "IssueEdges")
         .map(|(_, q)| *q)

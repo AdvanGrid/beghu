@@ -29,6 +29,17 @@ SELECT r.id, r.owner, r.name, r.private AS "private: bool", r.archived AS "archi
        r.installation_id AS "installation_id!"
 FROM repos r WHERE r.installation_id IS NOT NULL ORDER BY r.owner, r.name;
 
+-- The re-read of the visible repos has written them, at :now (Unix seconds).
+-- name: set_roles_read :exec
+-- param: now i64
+INSERT INTO roles_read (id, at) VALUES (1, :now)
+ON CONFLICT (id) DO UPDATE SET at = excluded.at;
+
+-- Whether the visible repos were ever read into this mirror: an empty list then means the
+-- account sees no repo.
+-- name: roles_read :one
+SELECT EXISTS (SELECT 1 FROM roles_read) AS "read!: bool";
+
 -- The account can no longer see the repo: no installation, no role. Its row stays while stubs
 -- point into it.
 -- name: forget_visible_repo :exec
@@ -77,11 +88,12 @@ WHERE id = :id AND synced = 1 AND importing = 1 AND import_started = :started;
 -- param: head_ref Option<&str>
 -- param: base_ref Option<&str>
 -- param: review_decision Option<&str>
+-- param: head_sha Option<&str>
 UPDATE items SET pr_id = :pr_id, draft = :draft, merged_at = :merged_at, head_ref = :head_ref,
-  base_ref = :base_ref, review_decision = :review_decision
+  base_ref = :base_ref, review_decision = :review_decision, head_sha = :head_sha
 WHERE id = :id AND (pr_id IS NOT :pr_id OR draft IS NOT :draft OR merged_at IS NOT :merged_at
   OR head_ref IS NOT :head_ref OR base_ref IS NOT :base_ref
-  OR review_decision IS NOT :review_decision);
+  OR review_decision IS NOT :review_decision OR head_sha IS NOT :head_sha);
 
 -- The import names an issue's milestone by number and its labels by name (GitHub's GraphQL has
 -- no database id for either); the repo's labels and milestones land first.
@@ -167,7 +179,7 @@ WHERE (src_id IN (SELECT i.id FROM items i WHERE i.repo_id = :repo_id)
 UPDATE items SET is_stub = 1, body = NULL, state_reason = NULL, locked = 0, author_id = NULL,
   milestone_id = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL,
   last_commented_at = NULL, comments_count = 0, pr_id = NULL, draft = NULL, merged_at = NULL,
-  head_ref = NULL, base_ref = NULL, review_decision = NULL, issue_type = NULL, seq = :seq
+  head_ref = NULL, base_ref = NULL, review_decision = NULL, head_sha = NULL, issue_type = NULL, seq = :seq
 WHERE repo_id = :repo_id AND is_stub = 0
   AND (id IN (SELECT r.src_id FROM relationships r) OR id IN (SELECT r.dst_id FROM relationships r));
 
@@ -201,7 +213,7 @@ WHERE (src_id IN (SELECT j.value FROM json_each(:ids) j)
 UPDATE items SET is_stub = 1, body = NULL, state_reason = NULL, locked = 0, author_id = NULL,
   milestone_id = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL,
   last_commented_at = NULL, comments_count = 0, pr_id = NULL, draft = NULL, merged_at = NULL,
-  head_ref = NULL, base_ref = NULL, review_decision = NULL, issue_type = NULL, seq = :seq
+  head_ref = NULL, base_ref = NULL, review_decision = NULL, head_sha = NULL, issue_type = NULL, seq = :seq
 WHERE id IN (SELECT j.value FROM json_each(:ids) j) AND is_stub = 0
   AND (id IN (SELECT r.src_id FROM relationships r) OR id IN (SELECT r.dst_id FROM relationships r));
 

@@ -13,9 +13,12 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
+      # The whole history: the CLI's tests check the recorded analysis out at its own commits
+      # (crates/cli/tests/cli.rs).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
@@ -29,6 +32,13 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
+      # The repo is public: an anonymous fetch by SHA, for any analysed commit the clone lacks.
+      - name: Fetch the analysed commits
+        run: |
+          for sha in $(target/debug/analysis-fixtures shas); do
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "$sha"
+          done
+
       # -D on the command line also covers a crate that forgets `[lints] workspace = true`.
       - name: Lint (SQL only in the database crates)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::disallowed_methods
@@ -36,15 +46,87 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude fixture --locked
 
-      # ts-rs writes the server's wire types to web/src/bindings during `cargo test`.
+      # ts-rs writes the server's wire types to web/src/bindings during `cargo test`, and the
+      # analysis crate's schema to crates/analysis/generated/schema.ts (copied into the bindings).
       - name: TypeScript bindings are committed
         run: |
-          git add -N web/src/bindings
-          git diff --exit-code -- web/src/bindings || {
-            echo "web/src/bindings is stale: run cargo test and commit it"; exit 1; }
+          git add -N web/src/bindings crates/analysis/generated
+          git diff --exit-code -- web/src/bindings crates/analysis/generated || {
+            echo "web/src/bindings or crates/analysis/generated is stale: run cargo test and commit it"; exit 1; }
 
       - name: Fixture still loads after the migrations
         run: cargo test -p fixture --locked
+
+  analysis-tools:
+    # validate.mjs and merge.mjs: the analysis crate built to WASM and inlined as base64 into two
+    # single Node files (crates/analysis-wasm/build.sh), then run under plain Node, with no npm
+    # install, on the crate's hand-written sample. wasm-bindgen-cli matches the wasm-bindgen
+    # crate's version in Cargo.lock (build.sh refuses any other).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: wasm-bindgen@0.2.129
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Build validate.mjs and merge.mjs
+        run: crates/analysis-wasm/build.sh "$RUNNER_TEMP/tools"
+
+      - name: Run them on the sample
+        working-directory: crates/analysis/tests/sample
+        run: |
+          tools="$RUNNER_TEMP/tools"
+          # drawn.folders counts only folders holding git-tracked files: an untracked node_modules
+          # in head leaves lib's count as the analysis gives it.
+          mkdir -p head/lib/node_modules/left-pad
+          echo 'module.exports = 0;' > head/lib/node_modules/left-pad/index.js
+          node "$tools/validate.mjs" analysis.json base head --pr pr.json --previous previous
+          node "$tools/validate.mjs" split/1-skeleton.json base head --split split/split.json --pr pr.json
+          node "$tools/merge.mjs" --split split/split.json split/1-skeleton.json split/2-api.json split/3-lib.json > "$RUNNER_TEMP/merged.json"
+          # The merge leaves the seam pass its hints; --finish refuses them while unresolved.
+          if node "$tools/merge.mjs" --finish "$RUNNER_TEMP/merged.json" > /dev/null; then
+            echo "merge.mjs --finish passed unresolved hints"; exit 1
+          fi
+
+  pr-view-fixtures:
+    # The PR view's committed analyses (fixtures/pr-view/, #178): the full validator, snippet
+    # check included, on every recording and case in its migrated form, against the real commits
+    # each names (fetched by SHA, read with git, no checkout); and each of those commits reachable
+    # from HEAD: main on a push, and on a PR the merge of the PR into its base, which is what the
+    # base becomes once it merges (merge commits only, so the analysed SHAs stay reachable).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --locked -p analysis-fixtures
+
+      # The repo is public: an anonymous fetch by SHA, for any commit the clone lacks.
+      - name: Fetch the analysed commits
+        run: |
+          for sha in $(target/debug/analysis-fixtures shas); do
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "$sha"
+          done
+
+      - name: Validate against the real commits
+        run: target/debug/analysis-fixtures check --reachable-from HEAD
 
   secrets:
     # gitleaks over the whole history: its default rules, with .gitleaks.toml allowing the dev and
@@ -261,6 +343,92 @@ jobs:
 
       - name: Smoke test
         run: deploy/smoke.sh beghu:ci
+
+      # The CLI's builds exactly as the image carries them (/app/cli), for the cli-macos job.
+      - name: Take the CLI's builds out of the image
+        run: |
+          docker create --name cli-builds beghu:ci >/dev/null
+          docker cp cli-builds:/app/cli "$RUNNER_TEMP/cli"
+          docker rm cli-builds >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-builds
+          path: ${{ runner.temp }}/cli
+          if-no-files-found: error
+          retention-days: 3
+
+  cli-macos:
+    # The macOS CLI builds the image cross-built on Linux (the Dockerfile's cli stage, with
+    # cargo-zigbuild), run on a real Apple-silicon Mac after a curl download, as install.sh gets
+    # them: no quarantine flag, so no notarisation is needed, and zig's ad-hoc signature has to
+    # satisfy the arm64 kernel. Each prints its version, then makes one HTTPS call (rustls with
+    # its bundled roots) to a host that isn't a beghu, and one to a name that doesn't resolve,
+    # each ending in a clean error. The x86_64 build runs too, under Rosetta when the runner has
+    # it; without Rosetta the job says so, having only downloaded it.
+    needs: image
+    # Apple silicon (arm64), pinned rather than macos-latest so an image change is a choice:
+    # macos-14 was retired.
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cli-builds
+          path: served
+
+      # Served over HTTP on loopback and fetched with curl, as `curl … | sh` installs them.
+      - name: Download them with curl
+        run: |
+          (cd served && exec python3 -m http.server 8901 --bind 127.0.0.1) >/dev/null 2>&1 &
+          for i in $(seq 1 50); do curl -fsS -o /dev/null http://127.0.0.1:8901/version && break; sleep 0.2; done
+          mkdir -p bin
+          for p in macos-aarch64 macos-x86_64; do
+            curl -fsSL -o "bin/beghu-$p" "http://127.0.0.1:8901/$p/beghu"
+            chmod 0755 "bin/beghu-$p"
+            if xattr -p com.apple.quarantine "bin/beghu-$p" 2>/dev/null; then
+              echo "bin/beghu-$p has a quarantine flag; a curl download shouldn't"; exit 1
+            fi
+            file "bin/beghu-$p"
+            codesign --display --verbose=2 "bin/beghu-$p" 2>&1 | tee "codesign-$p.txt" || true
+          done
+          # The arm64 kernel runs only signed code: zig's linker signs it ad hoc. (x86_64 code
+          # needs no signature, natively or under Rosetta, and zig leaves it unsigned.)
+          grep -q 'Signature=adhoc' codesign-macos-aarch64.txt || { echo "the arm64 build isn't ad-hoc signed"; exit 1; }
+
+      # github.com: the TLS handshake (rustls, the bundled roots) works and the answer isn't a
+      # beghu's; a name that doesn't resolve: can't reach it. Either is exit 1 with one line.
+      - name: Run the Apple-silicon build
+        run: |
+          version=$(cat served/version)
+          bin/beghu-macos-aarch64 --version | tee out.txt
+          grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-aarch64)$" out.txt
+          check() {
+            set +e
+            HOME="$RUNNER_TEMP" bin/beghu-macos-aarch64 status --host "$1" >out.txt 2>err.txt
+            code=$?
+            set -e
+            cat out.txt err.txt
+            [ "$code" = 1 ] || { echo "status --host $1 exited $code, not 1"; exit 1; }
+            grep -q "^beghu: $2" err.txt || { echo "status --host $1 didn't fail cleanly"; exit 1; }
+          }
+          check https://github.com "https://github.com isn't answering as a beghu does"
+          check https://beghu-cli-check.invalid "can't reach https://beghu-cli-check.invalid"
+
+      - name: Run the Intel build under Rosetta
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "::notice::Rosetta isn't installed on this runner: the macOS x86_64 build was downloaded, not run"
+            exit 0
+          fi
+          version=$(cat served/version)
+          /usr/bin/arch -x86_64 bin/beghu-macos-x86_64 --version | tee out.txt
+          grep -q "^beghu $version (build [0-9a-f]\{40\}, macos-x86_64)$" out.txt
+          set +e
+          HOME="$RUNNER_TEMP" /usr/bin/arch -x86_64 bin/beghu-macos-x86_64 status --host https://github.com >out.txt 2>err.txt
+          code=$?
+          set -e
+          cat out.txt err.txt
+          [ "$code" = 1 ] && grep -q '^beghu: ' err.txt
 
   e2e:
     # Playwright on full Chromium (new headless mode) against the ./dev-ctl stack in fixture mode.

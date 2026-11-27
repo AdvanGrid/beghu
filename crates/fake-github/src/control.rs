@@ -27,10 +27,11 @@
 //! - `DELETE /faults`: clear every fault rule, webhook ones included. With `{endpoint}`, only
 //!   that endpoint's latency, fail and rewrite rules, so callers sharing the fake (tests running
 //!   side by side) can each remove their own.
-//! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere).
+//! - `PUT /webhooks {url}`: where webhooks go (`null`: nowhere, as when the App's webhook is
+//!   inactive: a change made meanwhile has no delivery, even once a URL is set again).
 //! - `POST /edit {repo, number, as?, title?, body?, state?, state_reason?, add_labels?,
 //!   remove_labels?, comment?, add_sub_issue?, remove_sub_issue?, add_blocked_by?,
-//!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?}`: an outside edit (see
+//!   remove_blocked_by?, add_relates_to?, remove_relates_to?, delete?, at?}`: an outside edit (see
 //!   `edits.rs` and `relationships.rs`), with its webhooks; on a PR also `add_linked_issue?`,
 //!   `remove_linked_issue?` (the Development sidebar) and `review?` (`pulls.rs`). `delete: true`
 //!   deletes the issue instead (`issues` `deleted`); its number answers 410 from then on.
@@ -60,6 +61,19 @@
 //! - `POST /suspend {login}`, `POST /unsuspend {login}`: the App's installation on the user's
 //!   own account is suspended, or no longer; GitHub sends `installation` `suspend` or
 //!   `unsuspend`.
+//! - `POST /push {repo, number, sha?, force?, files?, file_count?, commits?, login?, at?}`: a push to a
+//!   PR's head branch by `login` (a fixture account; the PR's author by default): a commit on top
+//!   (`sha`, or a derived one), the last of `commits` (1 by default), becomes its head, and with
+//!   `files` (`[{filename, status, additions, deletions, previous_filename?}]`) or `file_count`
+//!   (that many generated files) the PR changes those files from then on (`pulls.rs`). With
+//!   `force`, a force push: the PR's old commits leave its commit list. GitHub sends
+//!   `pull_request` `synchronize`, with the pusher as its `sender`.
+//! - `at` on `/edit` and `/push` (Unix seconds) is when the outside change happened, for a
+//!   fixture that dates its changes (the recorded PR's moves between versions, dated as the
+//!   fixture dates the PR, far below the top of every list): the changed item's `updated_at`, a
+//!   comment's `created_at` and `updated_at`, and the webhooks' payloads carry it. Left out, it's
+//!   the fake's clock. GitHub's clock only moves forward, so an item's `updated_at` never goes
+//!   back: an `at` before it changes the item at its `updated_at`.
 //! - `POST /reset`: back to the pristine fixture: no sign-ins, no faults, default lifetimes, the
 //!   real clock, no deliveries logged.
 
@@ -99,6 +113,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/uninstall", post(uninstall))
         .route("/suspend", post(suspend))
         .route("/unsuspend", post(unsuspend))
+        .route("/push", post(push))
         .route("/reset", post(reset))
         .route("/attachments", post(crate::attachments::upload))
 }
@@ -110,6 +125,24 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> Response {
         axum::Json(json!({ "error": msg.into() })),
     )
         .into_response()
+}
+
+/// `POST /push`.
+async fn push(State(fake): State<Fake>, axum::Json(p): axum::Json<crate::pulls::Push>) -> Response {
+    let at = p.at.unwrap_or_else(|| fake.now());
+    match fake
+        .state()
+        .truth
+        .write(move |tx| crate::pulls::push(tx, &p, at))
+        .await
+    {
+        Ok(Ok((answer, delivery))) => {
+            fake.state().webhooks.send(vec![delivery]);
+            axum::Json(answer).into_response()
+        }
+        Ok(Err(why)) => bad_request(why),
+        Err(e) => api::internal(e),
+    }
 }
 
 fn ok() -> Response {

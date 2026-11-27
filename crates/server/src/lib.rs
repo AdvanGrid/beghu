@@ -6,10 +6,12 @@
 //! outside it.
 
 mod accounts;
+mod analyses;
 mod api;
 mod assets;
 mod auth;
 mod backups;
+mod cli;
 mod config;
 mod crypto;
 mod detail;
@@ -41,10 +43,12 @@ mod volume;
 mod walker;
 mod webhook;
 
+pub use cli::{CliVersion, MIN_CLI};
 pub use config::{
-    Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig,
-    default_accounts_check_every, default_activity_every, default_assets_kept_for,
-    default_backup_every, default_dormant_after, default_drain_for, default_read_back_retries,
+    CliConfig, Config, GitHubConfig, MediaConfig, MirrorsConfig, ReconcileConfig, RunLifetimes,
+    RunPause, RunPausePoint, default_accounts_check_every, default_activity_every,
+    default_assets_kept_for, default_backup_every, default_dormant_after, default_drain_for,
+    default_read_back_retries,
 };
 
 pub use installations::app_jwt;
@@ -76,7 +80,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use control_db::Control;
 use mirror_db::Mirrors;
 use std::future::IntoFuture as _;
@@ -139,9 +143,17 @@ struct Inner {
     started: std::sync::atomic::AtomicBool,
     /// The background jobs, which the drain stops.
     jobs: jobs::Jobs,
+    /// The PR view's analysis runs and analyses, each account's in its `analyses.db`.
+    analyses: analyses::Store,
     /// Where `/assets/*` is served from: the volume's copy of this build's assets and the
     /// previous builds' (`None` without a web build).
     assets_dir: Option<std::path::PathBuf>,
+    /// The beghu CLI's builds this server serves (`BEGHU_CLI_DIR`).
+    cli: Option<cli::dist::Builds>,
+    /// The CLI version this server answers for: its builds', else its own source's.
+    cli_version: CliVersion,
+    /// The device flow's limits: logins waiting, and wrong codes per session.
+    cli_limits: cli::limits::Limits,
 }
 
 /// An app opened up to listening, nothing running in the background yet. Startup's steps (#86,
@@ -150,7 +162,7 @@ struct Inner {
 /// 1. migrate the control DB (after a `VACUUM INTO` backup);
 /// 2. copy this build's assets to the volume and prune the old ones;
 /// 3. delete the mirror files of accounts that aren't active (they lost access, or went
-///    dormant);
+///    dormant), and the analyses of dormant ones;
 /// 4. listen;
 /// 5. resume the webhook deliveries acked but not processed, then redeliver for the downtime
 ///    (#92);
@@ -208,7 +220,26 @@ impl App {
                     .map_err(|e| format!("can't copy the build's assets to the volume: {e}"))?
             }
         };
+        let cli = match cfg.cli_dir.clone() {
+            None => None,
+            Some(dir) => {
+                let (build, host) = (cfg.build_id.clone(), cfg.public_url.clone());
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        cli::dist::Builds::load(&dir, &build, &host)
+                    })
+                    .await
+                    .map_err(|_| "reading the CLI's builds panicked".to_owned())??,
+                )
+            }
+        };
+        let cli_version = cli.as_ref().map_or_else(cli::source_version, |b| b.version);
         let mirrors = Mirrors::new(cfg.mirrors_dir(), cfg.mirrors.clone());
+        let analyses = analyses::Store::new(
+            &cfg.analyses_dir(),
+            cfg.analysis_tools.as_deref(),
+            cfg.analysis_chain,
+        )?;
         let jobs = jobs::Jobs::default();
         let github = github::GitHub::new(
             &cfg.github,
@@ -276,7 +307,11 @@ impl App {
             draining: tokio::sync::watch::channel(false).0,
             started: Default::default(),
             jobs,
+            analyses,
             assets_dir,
+            cli,
+            cli_version,
+            cli_limits: Default::default(),
         }));
         // A read-back measures the images in the comments it writes, which needs the whole app.
         app.edges().set_app(WeakApp(Arc::downgrade(&app.0)));
@@ -288,6 +323,7 @@ impl App {
         // Step 3: delete the mirror files of accounts that aren't active (they lost access, or
         // went dormant), before anything can open one.
         accounts::delete_unused_mirrors(&app).await?;
+        accounts::delete_gone_analyses(&app).await?;
         Ok(Opened {
             app,
             sinks,
@@ -308,6 +344,15 @@ impl App {
 
     fn mirrors(&self) -> &Mirrors {
         &self.0.mirrors
+    }
+
+    fn analyses(&self) -> &analyses::Store {
+        &self.0.analyses
+    }
+
+    /// The CLI version this server serves, and answers for: a newer one's calls are `409`.
+    fn cli_version(&self) -> CliVersion {
+        self.0.cli_version
     }
 
     fn renders(&self) -> &markdown::Cache {
@@ -435,6 +480,8 @@ impl Opened {
         app.spawn(|app| follow_installations(app, installs));
         app.spawn(|app| accounts::follow_lost(app, lost));
         app.spawn(accounts::daily);
+        // Every live analysis run's timer: a restart lost them.
+        app.spawn(analyses::runs::rearm);
         app.spawn(repos::keep_live_roles_fresh);
         app.0
             .started
@@ -535,6 +582,27 @@ pub fn router(app: App) -> Router {
         .route("/ops", post(ops::post))
         .route("/resync", post(reconcile::resync))
         .route("/prefs", patch(prefs::patch))
+        .route(
+            "/{owner}/{repo}/pulls/{number}/runs",
+            post(analyses::runs::start_button),
+        )
+        .route(
+            "/{owner}/{repo}/pulls/{number}/run",
+            delete(analyses::runs::end_button),
+        )
+        .route(
+            "/{owner}/{repo}/pulls/{number}/analysis",
+            get(analyses::serve::graph),
+        )
+        .route(
+            "/{owner}/{repo}/pulls/{number}/analysis/{id}/{version}/claims",
+            get(analyses::serve::claims),
+        )
+        .route("/cli/codes/{code}", get(cli::login::by_code))
+        .route("/cli/codes/{code}/approve", post(cli::login::approve))
+        .route("/cli/codes/{code}/deny", post(cli::login::deny))
+        .route("/cli/sign-ins", get(cli::sign_ins::list))
+        .route("/cli/sign-ins/{id}", delete(cli::sign_ins::revoke))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_session,
@@ -560,6 +628,7 @@ pub fn router(app: App) -> Router {
         .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))
+        .route("/cli/login", get(shell::shell))
         .layer(compression());
     let mut site = Router::new();
     for (path, file) in app.0.site.iter().flat_map(|s| s.files()) {
@@ -583,6 +652,48 @@ pub fn router(app: App) -> Router {
             app.clone(),
             auth::require_same_origin,
         ));
+    // The run API and the CLI's own calls: an agent's (`curl`, the CLI), let in by the run's
+    // token or the CLI's credential (a device-flow login by its device secret), not the browser
+    // session, so outside its gate and its `Origin` check. A call from a CLI below the floor, or
+    // newer than this server's, is refused first (`cli::gate`). Every answer is the API's:
+    // `no-store`, naming the build, compressed on the fly. An upload reads its own body, within
+    // its own limits.
+    let runs = Router::new()
+        .route("/api/runs/{token}/{file}", get(analyses::run_api::file))
+        .route(
+            "/api/runs/{token}/analysis",
+            post(analyses::upload::upload).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/api/runs/{token}/end", post(analyses::run_api::end_run))
+        .route("/api/cli/runs", post(analyses::runs::start_cli))
+        .route("/api/cli/login", post(cli::login::start))
+        .route("/api/cli/login/poll", post(cli::login::poll))
+        .route("/api/cli/logout", post(cli::sign_ins::logout))
+        .route("/api/cli/status", get(cli::sign_ins::status))
+        // Route layers: a path none of these match stays the router's plain 404.
+        .route_layer(middleware::from_fn_with_state(app.clone(), cli::gate))
+        .route_layer(middleware::from_fn_with_state(app.clone(), api_headers))
+        .route_layer(middleware::from_fn_with_state(app.clone(), scan_steps))
+        .route_layer(compression());
+    // The CLI's builds: what `install.sh` and `beghu update` download, the same for everyone.
+    let mut downloads = Router::new()
+        .route(
+            "/cli/manifest.json",
+            get(|State(app): State<App>| async move { cli::dist::manifest(app.0.cli.as_ref()) }),
+        )
+        .route(
+            "/cli/install.sh",
+            get(|State(app): State<App>| async move { cli::dist::install(app.0.cli.as_ref()) }),
+        );
+    let mut binaries = Router::new();
+    for (platform, file) in app.0.cli.iter().flat_map(|b| b.binaries.iter()) {
+        binaries = binaries.route_service(
+            &format!("/cli/{platform}/beghu"),
+            tower_http::services::ServeFile::new(file),
+        );
+    }
+    downloads =
+        downloads.merge(binaries.layer(middleware::map_response(cli::dist::binary_headers)));
     // Signing out, switching and Disconnect: form posts from beghu's own pages only.
     let session_forms = Router::new()
         .route("/auth/switch", post(accounts::switch))
@@ -607,6 +718,8 @@ pub fn router(app: App) -> Router {
         .merge(shell)
         .merge(site)
         .merge(media)
+        .merge(runs)
+        .merge(downloads)
         .nest("/api", api);
     if let Some(dir) = &app.0.assets_dir {
         // Hashed build assets, this build's and the previous builds' still kept on the volume:
@@ -638,11 +751,18 @@ async fn asset_headers(mut res: Response) -> Response {
     res
 }
 
-/// Every API response, errors included, is `no-store` and names the build.
+/// Every API response, errors included, is `no-store` and names the build. Only an answer that
+/// is `private` keeps its own (still out of shared caches): the PR view's graph, which
+/// revalidates, and its claims, which never change under their URL.
 async fn api_headers(State(app): State<App>, req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let private = h
+        .get(header::CACHE_CONTROL)
+        .is_some_and(|v| v.as_bytes().starts_with(b"private"));
+    if !private {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     if let Ok(v) = HeaderValue::from_str(&app.cfg().build_id) {
         h.insert("x-beghu-build", v);
     }
@@ -781,19 +901,26 @@ pub async fn serve_until(
     }
 }
 
-/// The drain's last step: seals the control DB and the mirrors, so nothing still running (a job
+/// The drain's last step: seals the control DB, the mirrors and the analyses, so nothing still running (a job
 /// that didn't stop in time, a transaction a stopped job left on its blocking thread) can write
 /// once it's done, lets each one's write in flight finish, and folds their WALs into their
 /// files, so the volume holds whole databases. All at once, so one database kept waiting holds
 /// up none of the others within the budget. One a reader kept from completing says so
 /// (`CheckpointBusy`); its WAL stays beside it, whole, for the next start to replay.
 async fn checkpoint(app: &App) {
-    let (control, mirrors) = tokio::join!(app.control().checkpoint(), app.mirrors().checkpoint());
+    let (control, mirrors, analyses) = tokio::join!(
+        app.control().checkpoint(),
+        app.mirrors().checkpoint(),
+        app.analyses().dbs.checkpoint()
+    );
     if let Err(e) = control {
         eprintln!("draining: checkpointing the control DB: {e}");
     }
     for (account, e) in mirrors {
         eprintln!("draining: checkpointing account {account}'s mirror: {e}");
+    }
+    for (account, e) in analyses {
+        eprintln!("draining: checkpointing account {account}'s analyses: {e}");
     }
 }
 

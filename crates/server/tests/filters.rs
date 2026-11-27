@@ -415,8 +415,10 @@ async fn facets_list_each_value_once_and_count_only_on_request() {
     assert!(labels.contains(&("bug", "d73a4a")));
     assert!(labels.contains(&("good first issue", "7057ff")));
     let repos = list("repos");
-    assert_eq!(repos.len(), 10);
+    // The org's ten and the PR view's recorded PR's repo (`AdvanGrid/beghu`, no labels).
+    assert_eq!(repos.len(), 11);
     assert!(repos.contains(&"web".to_owned()));
+    assert!(repos.contains(&"beghu".to_owned()));
     assert!(!repos.contains(&"partner-sdk".to_owned()), "not synced");
     // The team is who gets assigned; anyone may author.
     let assignees = list("assignees");
