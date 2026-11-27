@@ -5420,6 +5420,104 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     assert_eq!(got[0].payload()["before"], second);
 }
 
+/// An outside edit or a push dated with `at` (a fixture's clock, as the recorded PR's moves
+/// between versions are) happens then: the item's `updated_at`, a comment's times and the
+/// webhooks' payloads carry it, and an `at` older than the item's `updated_at` never moves it
+/// back.
+#[tokio::test]
+async fn an_edit_or_a_push_dated_with_at_happens_then_and_never_moves_updated_at_back() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let mut rx = receiver(&fake).await;
+    let items: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pr = items
+        .iter()
+        .find(|i| i.get("pull_request").is_some())
+        .unwrap();
+    let number = pr["number"].as_i64().unwrap();
+    // Its `updated_at` in Unix seconds: `rfc3339` is in order, so search for it.
+    let was = pr["updated_at"].as_str().unwrap();
+    let (mut lo, mut hi) = (0i64, 1i64 << 34);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if fake_github::rfc3339(mid).as_str() < was {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    assert_eq!(fake_github::rfc3339(lo), was);
+    let updated = || async {
+        let issue: Value = fake
+            .get(&format!("/repos/acme/web/issues/{number}"), &token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        issue["updated_at"].clone()
+    };
+
+    let at = lo + 600;
+    fake.edit(json!({ "repo": "acme/web", "number": number, "comment": "Dated", "at": at }))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    let p = got[0].payload();
+    assert_eq!(p["comment"]["created_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(p["comment"]["updated_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(p["issue"]["updated_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(updated().await, fake_github::rfc3339(at));
+
+    // Older than that: the edit and the push are made, at the item's `updated_at`.
+    fake.edit(
+        json!({ "repo": "acme/web", "number": number, "title": "Dated earlier", "at": lo + 60 }),
+    )
+    .await;
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "at": lo + 300 }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 2);
+    for r in &got {
+        let p = r.payload();
+        assert_eq!(
+            p["pull_request"]["updated_at"],
+            fake_github::rfc3339(at),
+            "{p}"
+        );
+    }
+    assert_eq!(updated().await, fake_github::rfc3339(at));
+
+    // A later push moves it on, to its `at`.
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "at": at + 300 }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    let p = got[0].payload();
+    assert_eq!(p["action"], "synchronize");
+    assert_eq!(
+        p["pull_request"]["updated_at"],
+        fake_github::rfc3339(at + 300),
+        "{p}"
+    );
+    assert_eq!(updated().await, fake_github::rfc3339(at + 300));
+}
+
 /// The PR view's recorded PR (`fixture::recorded`): `AdvanGrid/beghu#191` as its v1 run pinned it,
 /// with its real title, description, head, base and changed files; a push may name the base's new
 /// tip, as v2's does.
