@@ -191,6 +191,10 @@ _Avoid_: Report, review
 One attempt to produce an analysis: started by the button, the beghu CLI or beghu itself, pinned to the PR's head, and open to uploads until it's idle.
 _Avoid_: Job, session
 
+**CLI sign-in**:
+The beghu CLI's credential on one machine for one connected account, made by `beghu login` once a person signed in to beghu approves its code, and listed on the setup page by the machine's name. It can only start analysis runs and act within them; it expires after 90 days unused, and goes when it's revoked or its account goes dormant or disconnects. Signing out of a browser leaves it.
+_Avoid_: API key, CLI token, personal access token
+
 **Claim**:
 A statement of fact about the code in an analysis, backed by evidence: exact lines at base or head. It is supported or undetermined, never a judgement.
 _Avoid_: Finding, note

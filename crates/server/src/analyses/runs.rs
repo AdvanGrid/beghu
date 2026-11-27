@@ -127,11 +127,38 @@ impl Ended {
     }
 }
 
-/// How a run call failed: a status and a JSON body naming the kind.
+/// How a run call, or one of the CLI's own, failed: a status and a JSON body naming the kind.
 #[derive(Debug)]
 pub(crate) enum RunError {
-    /// 401: no such token (or, for a CLI run, no CLI credential that goes with it).
+    /// 401: no such token (or, for a CLI run, a CLI credential of another account).
     BadToken,
+    /// 401: the CLI's credential is missing, malformed, revoked or expired: `beghu login`.
+    BadCredential,
+    /// 426: the CLI is older than the floor ([`crate::MIN_CLI`]).
+    CliTooOld {
+        minimum: crate::CliVersion,
+        host: String,
+        /// The CLI this server serves, which `beghu update` installs.
+        server: crate::CliVersion,
+    },
+    /// 409: the CLI is newer than the one this server serves.
+    CliTooNew {
+        server: crate::CliVersion,
+    },
+    /// 403: the CLI's account must sign in to beghu again, in a browser.
+    SignInAgain,
+    /// 410: a `beghu login` that was denied, or expired (or never was).
+    LoginEnded {
+        denied: bool,
+    },
+    /// 410: a `beghu login` approved for an account that has since disconnected, gone dormant
+    /// or must sign in again: no credential was minted.
+    LoginAccountGone,
+    /// 429: too many `beghu login`s waiting, from this client or from everyone
+    /// (`cli::limits`): try again after `retry_after`.
+    TooManyLogins {
+        retry_after: Duration,
+    },
     /// 410: the run ended.
     Ended(Ended),
     /// 410: the run's account lost its analyses (it went dormant or disconnected, and came
@@ -170,7 +197,10 @@ pub(crate) enum RunError {
 #[serde(rename_all = "camelCase")]
 pub struct RunErrorBody {
     /// `bad_token`, `run_ended`, `too_large`, `head_moved`, `refused`, `not_found`,
-    /// `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`.
+    /// `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`;
+    /// and for the CLI, `bad_credential`, `cli_too_old`, `cli_too_new`, `sign_in_again`,
+    /// `login_denied`, `login_expired`, `login_account_gone` or `too_many_logins` (with
+    /// `retry-after`).
     pub error: &'static str,
     pub message: String,
     /// With `run_ended`: why.
@@ -193,6 +223,15 @@ pub struct RunErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ wire: number, inflated: number }")]
     pub limits: Option<serde_json::Value>,
+    /// With `cli_too_old`: the oldest CLI this server answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub minimum: Option<String>,
+    /// With `cli_too_new` and `cli_too_old`: the CLI this server serves (`beghu update` installs
+    /// it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub server: Option<String>,
 }
 
 impl From<dbrt::Error> for RunError {
@@ -244,6 +283,8 @@ impl IntoResponse for RunError {
             report: None,
             version: None,
             limits: None,
+            minimum: None,
+            server: None,
         };
         let mut retry = None;
         let status = match self {
@@ -251,6 +292,67 @@ impl IntoResponse for RunError {
                 body.error = "bad_token";
                 body.message = "No run has this token.".into();
                 StatusCode::UNAUTHORIZED
+            }
+            RunError::BadCredential => {
+                body.error = "bad_credential";
+                body.message =
+                    "This CLI sign-in was revoked, has expired, or is missing: run `beghu login`."
+                        .into();
+                StatusCode::UNAUTHORIZED
+            }
+            RunError::CliTooOld {
+                minimum,
+                host,
+                server,
+            } => {
+                body.error = "cli_too_old";
+                body.message = format!(
+                    "This beghu needs beghu CLI {minimum} or newer: run `beghu update`, or `curl -fsSL {host}/cli/install.sh | sh`."
+                );
+                body.minimum = Some(minimum.to_string());
+                body.server = Some(server.to_string());
+                StatusCode::UPGRADE_REQUIRED
+            }
+            RunError::CliTooNew { server } => {
+                body.error = "cli_too_new";
+                body.message = format!(
+                    "This beghu serves beghu CLI {server}, older than this one: run `beghu update` to install its build."
+                );
+                body.server = Some(server.to_string());
+                StatusCode::CONFLICT
+            }
+            RunError::SignInAgain => {
+                body.error = "sign_in_again";
+                body.message =
+                    "The account this CLI is signed in as must sign in to beghu again, in a browser."
+                        .into();
+                StatusCode::FORBIDDEN
+            }
+            RunError::LoginEnded { denied } => {
+                if denied {
+                    body.error = "login_denied";
+                    body.message = "The sign-in was denied in the browser.".into();
+                } else {
+                    body.error = "login_expired";
+                    body.message =
+                        "The sign-in expired before it was approved: run `beghu login` again."
+                            .into();
+                }
+                StatusCode::GONE
+            }
+            RunError::LoginAccountGone => {
+                body.error = "login_account_gone";
+                body.message = "The account that approved this sign-in has since disconnected, gone dormant or must sign in to beghu again: sign in in a browser, then run `beghu login` again.".into();
+                StatusCode::GONE
+            }
+            RunError::TooManyLogins { retry_after } => {
+                body.error = "too_many_logins";
+                body.message = format!(
+                    "Too many beghu logins are waiting for approval: try again in {} s.",
+                    retry_after.as_secs().max(1)
+                );
+                retry = Some(retry_after);
+                StatusCode::TOO_MANY_REQUESTS
             }
             RunError::Ended(why) => {
                 body.error = "run_ended";
@@ -455,8 +557,8 @@ pub(crate) async fn gone(app: &App, run: &str) -> RunError {
 }
 
 /// What every call on a run checks first, in order: the token names a run; for a CLI run, the
-/// call carries the CLI credential of the run's account (before anything else, so the token
-/// alone learns nothing, not even that the run ended); its account isn't dormant or signed out
+/// call carries a live CLI credential (`401 bad_credential` without one) of the run's account
+/// (before anything else, so the token alone learns nothing, not even that the run ended); its account isn't dormant or signed out
 /// by GitHub; the run exists and hasn't ended or expired; for a button run, the account is still
 /// signed in on some browser; the account can still read the repo. A run found ended on the way
 /// is marked so. The call counts as the run's use (`last_heard_at`).
@@ -478,7 +580,7 @@ pub(crate) async fn admit(
     };
     let account = t.github_user_id;
     let producer = Producer::from_db(&t.producer);
-    if producer == Producer::Cli && cli_account(app, headers).await != Some(account) {
+    if producer == Producer::Cli && crate::cli::credential(app, headers).await?.account != account {
         return Err(RunError::BadToken);
     }
     let status = AccountStatus::from_db(&t.status);
@@ -561,14 +663,6 @@ pub(crate) async fn admit(
             ..run
         },
     })
-}
-
-/// The account a CLI call's credential (`Authorization: Bearer beghu_cli_…`) belongs to.
-// OPEN QUESTION (#176, #179): slice 5 adds the credential (its format, its table in the control
-// DB, and how `beghu login` mints it). Until then no call carries one: CLI runs can't start, and
-// every call on one is refused as unknown.
-async fn cli_account(_app: &App, _headers: &HeaderMap) -> Option<i64> {
-    None
 }
 
 /// The first wait of a timer whose read of its run failed: doubled with each failure in a row,
@@ -1126,15 +1220,18 @@ pub struct CliStart {
     number: i64,
 }
 
-/// `POST /api/cli/runs`: starts a CLI run for the account the CLI's credential belongs to.
+/// `POST /api/cli/runs`: starts a CLI run for the account the CLI's credential belongs to,
+/// superseding the PR's live run, as the browser's start does. `404` for a repo the account can't
+/// read or a number that isn't a PR, `400` for a PR past 3,000 changed files.
 pub async fn start_cli(
     State(app): State<App>,
     headers: HeaderMap,
     Json(body): Json<CliStart>,
 ) -> Result<Response, RunError> {
-    let Some(account) = cli_account(&app, &headers).await else {
-        return Err(RunError::BadToken);
-    };
+    let account = crate::cli::usable_credential(&app, &headers).await?.account;
+    if body.number <= 0 {
+        return Err(RunError::NotFound("No such PR."));
+    }
     let repo = readable_repo(&app, account, &body.owner, &body.repo)
         .await?
         .ok_or(RunError::NotFound("No such repo, or you can't read it."))?;
@@ -1142,6 +1239,16 @@ pub async fn start_cli(
         Ok(s) => s,
         Err(ApiError::Gone) => return Err(RunError::NotFound("No such PR.")),
         Err(ApiError::PrTooLarge(m)) => return Err(RunError::BadRequest(m)),
+        Err(ApiError::GitHubDown(why)) => {
+            return Err(RunError::Unavailable {
+                retry_after: Duration::from_secs(10),
+                why,
+            });
+        }
+        Err(ApiError::Unavailable { retry_after, why }) => {
+            return Err(RunError::Unavailable { retry_after, why });
+        }
+        Err(ApiError::SignedOut) => return Err(RunError::SignInAgain),
         Err(e) => return Err(RunError::Internal(format!("{e:?}"))),
     };
     Ok((

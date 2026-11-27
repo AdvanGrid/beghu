@@ -444,7 +444,7 @@ fn each_graphql_template_names_only_fields_beghus_query_selects() {
     // GitHub answers only what a query selects: a field the fake adds beyond the query is one
     // it invents.
     let t = templates::Templates::load(&templates::default_dir()).unwrap();
-    for (op, query) in beghu::GRAPHQL_DOCUMENTS {
+    for (op, query) in beghu_server::GRAPHQL_DOCUMENTS {
         assert!(
             query.trim_start().starts_with(&format!("query {op}(")),
             "{op}'s document is another operation"

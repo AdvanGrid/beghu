@@ -1,5 +1,5 @@
 [package]
-name = "beghu"
+name = "beghu-server"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true

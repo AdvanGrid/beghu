@@ -7,6 +7,8 @@ import { colors, fonts } from "../src/tokens.stylex";
 
 /** Where the server writes beghu's origin (crates/server/src/site.rs). */
 export const ORIGIN = "%BEGHU_ORIGIN%";
+/** ` --host <origin>` for `beghu login`, or nothing on the hosted beghu: filled in as ORIGIN is. */
+export const HOST_FLAG = "%BEGHU_HOST_FLAG%";
 
 /** The files a page links, with the names the build gave them. */
 export interface Links {
@@ -64,6 +66,9 @@ export function Document(props: { meta: Meta; links: Links; children: JSX.Elemen
           <div {...stylex.attrs(s.bar)}>
             <span>beghu</span>
             <span {...stylex.attrs(s.spacer)} />
+            <a href="/cli" {...stylex.attrs(s.footLink)}>
+              CLI
+            </a>
             <a href="/pricing" {...stylex.attrs(s.footLink)}>
               Pricing
             </a>

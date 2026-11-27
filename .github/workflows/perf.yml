@@ -96,7 +96,7 @@ jobs:
       # for the server suite's analysis gates (cached in perf/data beside the fixture).
       - name: Build (release server and Fake GitHub, production web build)
         run: |
-          cargo build --release --locked -p beghu -p fake-github -p fixture &
+          cargo build --release --locked -p beghu-server -p fake-github -p fixture &
           (cd web && npx vite build --logLevel warn --outDir "$RUNNER_TEMP/web") &
           wait -n && wait -n
 

@@ -1,4 +1,4 @@
-//! `beghu`: configured from the environment only (see `Config::from_env`).
+//! `beghu-server`: configured from the environment only (see `Config::from_env`).
 //!
 //! - `PORT` (default 3000): plain HTTP on every interface.
 //! - `BEGHU_BUILD_ID` (default `dev`): the git SHA in production; the image requires it.
@@ -27,19 +27,21 @@ async fn main() {
             .parse::<u16>()
             .unwrap_or_else(|_| fail(&format!("PORT must be a port number, got {v:?}"), 2)),
     };
-    let cfg = beghu::Config::from_env().unwrap_or_else(|e| fail(&e, 2));
+    let cfg = beghu_server::Config::from_env().unwrap_or_else(|e| fail(&e, 2));
     let build_id = cfg.build_id.clone();
     // First, so a SIGTERM during the startup is kept for the drain (as PID 1 in a container, an
     // unhandled one would be ignored), which begins as soon as the server serves.
     let signals = signals();
-    // Startup in its order (see `beghu::Opened`): up to listening, serve, then the rest.
-    let opened = beghu::App::open(cfg).await.unwrap_or_else(|e| fail(&e, 1));
+    // Startup in its order (see `beghu_server::Opened`): up to listening, serve, then the rest.
+    let opened = beghu_server::App::open(cfg)
+        .await
+        .unwrap_or_else(|e| fail(&e, 1));
     let addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| fail(&format!("can't listen on {addr}: {e}"), 1));
     eprintln!("beghu {build_id} listening on http://localhost:{port}");
-    let serving = tokio::spawn(beghu::serve_until(listener, opened.app(), signals));
+    let serving = tokio::spawn(beghu_server::serve_until(listener, opened.app(), signals));
     opened.start().await.unwrap_or_else(|e| fail(&e, 1));
     match serving.await {
         Ok(Ok(())) => {}

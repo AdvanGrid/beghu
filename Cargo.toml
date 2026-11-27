@@ -14,6 +14,7 @@ members = [
   "crates/analysis-wasm",
   "crates/analysis-db",
   "crates/analysis-fixtures",
+  "crates/cli",
   "perf/fixture",
 ]
 # The benchmark candidates are throwaway projects with their own manifests.

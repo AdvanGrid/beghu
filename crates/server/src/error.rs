@@ -70,6 +70,11 @@ pub enum ApiError {
     },
     /// A write that couldn't reach GitHub: it's down, or kept failing.
     GitHubDown(String),
+    /// `/cli/login`'s session asked for too many codes that aren't a live login's
+    /// (`cli::limits`): try again after `retry_after`.
+    TooManyCodes {
+        retry_after: Duration,
+    },
     /// A resent write the server has no record of: it restarted, or forgot it. The first send
     /// may or may not have reached GitHub. `kind`: what the write was. `digest`: a comment's, as
     /// in [`ErrorBody::digest`].
@@ -181,6 +186,9 @@ pub enum ErrorKind {
     /// 503 (beghu's own answer, with this body; never a proxy's 502): a write that couldn't reach
     /// GitHub.
     GithubDown,
+    /// 429: too many wrong `beghu login` codes from this browser; try again after `retry-after`
+    /// seconds.
+    TooManyCodes,
     /// 410: a resent write the server has no record of; it may or may not have reached GitHub.
     Lost,
     /// 424: a comment GitHub failed on, answered unreadably or didn't answer; it may have been
@@ -329,6 +337,17 @@ impl IntoResponse for ApiError {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorKind::TooSoon, why)
             }
             ApiError::GitHubDown(m) => (StatusCode::SERVICE_UNAVAILABLE, ErrorKind::GithubDown, m),
+            ApiError::TooManyCodes { retry_after: r } => {
+                retry_after = Some(r);
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorKind::TooManyCodes,
+                    format!(
+                        "Too many codes that weren't a waiting sign-in's: try again in {} min",
+                        r.as_secs().div_ceil(60).max(1)
+                    ),
+                )
+            }
             // These two are the words the tab shows: it says what the write was.
             ApiError::Lost { kind, digest: d } => {
                 digest = d;

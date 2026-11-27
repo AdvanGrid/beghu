@@ -51,7 +51,7 @@ const QUICK = {
   browserIterations: 4,
 };
 
-const BINARIES = ["beghu", "fake-github", "fixture"];
+const BINARIES = ["beghu-server", "fake-github", "fixture"];
 /** Built where the tree has them: a main from before the PR view's fixtures has no `pr-fixtures`. */
 const OPTIONAL = ["pr-fixtures"];
 
@@ -85,14 +85,18 @@ function buildTree(src: string, dest: string, commit: string, target: string): B
   const bin = join(dest, "bin");
   const web = join(dest, "web");
   console.log(`building ${src === ROOT ? "this tree" : `main (${commit.slice(0, 10)})`}`);
-  sh("cargo", ["build", "--release", "--locked", "--quiet", "-p", "beghu", "-p", "fake-github", "-p", "fixture"], src, {
+  // The server's package and binary: `beghu-server`, or `beghu` in a main from before the CLI
+  // took that name. Either is copied out as `beghu-server`.
+  const server = /^name = "beghu"$/m.test(readFileSync(join(src, "crates", "server", "Cargo.toml"), "utf8")) ? "beghu" : "beghu-server";
+  sh("cargo", ["build", "--release", "--locked", "--quiet", "-p", server, "-p", "fake-github", "-p", "fixture"], src, {
     CARGO_TARGET_DIR: target,
   });
   mkdirSync(bin, { recursive: true });
   // Through a rename: a binary a running stack has open can't be written over.
   for (const b of [...BINARIES, ...OPTIONAL]) {
-    if (OPTIONAL.includes(b) && !existsSync(join(target, "release", b))) continue;
-    copyFileSync(join(target, "release", b), join(bin, `${b}.new`));
+    const built = b === "beghu-server" ? server : b;
+    if (OPTIONAL.includes(b) && !existsSync(join(target, "release", built))) continue;
+    copyFileSync(join(target, "release", built), join(bin, `${b}.new`));
     renameSync(join(bin, `${b}.new`), join(bin, b));
   }
   const webSrc = join(src, "web");
