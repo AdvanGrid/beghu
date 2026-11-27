@@ -27,7 +27,9 @@ const SIDE: Record<Column, Side> = { people: 0, changed: 1, unchanged: 2, outsid
 const PORT_ROOM = 12;
 const ROUTE_ROOM = 10;
 
-const portId = (scope: string, line: string) => `port:${scope}:${line}`;
+// Made IDs are JSON arrays, so no ID's own characters can make two of them one.
+const portId = (scope: string, line: string) => JSON.stringify(["port", scope, line]);
+const pieceId = (line: string, box: string, into: boolean) => JSON.stringify([line, into ? ">" : "<", box]);
 const end = (scope: string, e: Line["from"]) => (typeof e === "string" ? e : portId(scope, e.port));
 
 interface Frame {
@@ -184,7 +186,7 @@ function unbox(s: Scope, pieces: Map<string, string[]>, boxIds: Set<string>): Sc
     const chain: string[] = [];
     let { from, to } = l;
     if (fb !== undefined) {
-      const id = `${l.id}<${fb}`;
+      const id = pieceId(l.id, fb, false);
       inner.get(fb)!.lines.push({ ...l, id, to: { port: l.id } });
       rename(l.from as string, l.id, id);
       chain.push(id);
@@ -192,7 +194,7 @@ function unbox(s: Scope, pieces: Map<string, string[]>, boxIds: Set<string>): Sc
     }
     chain.push(l.id);
     if (tb !== undefined) {
-      const id = `${l.id}>${tb}`;
+      const id = pieceId(l.id, tb, true);
       inner.get(tb)!.lines.push({ ...l, id, from: { port: l.id } });
       rename(l.to as string, l.id, id);
       chain.push(id);
