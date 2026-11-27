@@ -1,0 +1,9 @@
+✔ our layout at 1x (709.367807ms)
+✔ our layout at 3x (3056.439948ms)
+✔ our layout on a dense scope (64.165987ms)
+✔ our layout on random graphs (9768.682985ms)
+✔ our layout from its own answer (2605.125838ms)
+ℹ tests 136
+ℹ pass 136
+ℹ fail 0
+ℹ duration_ms 32751.787996

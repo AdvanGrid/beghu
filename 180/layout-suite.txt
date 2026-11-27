@@ -1,0 +1,22 @@
+confirming layout.top.ms, layout.open.ms, layout.top-3x.ms, layout.open-3x.ms
+### layout suite
+
+perf: 12 gates, 12 pass, 0 failed
+
+
+| Gate | Measured | Limit | Result |
+|---|---:|---:|---|
+| `layout.open-3x.area` | 104935362 | 104935362 | ✅ pass |
+| `layout.open-3x.crossings` | 223 | 223 | ✅ pass |
+| `layout.open-3x.ms` | 257.8 ms (first 350.9 ms) | 306.6 ms | ✅ pass |
+| `layout.open.area` | 28998814 | 28998814 | ✅ pass |
+| `layout.open.crossings` | 65 | 65 | ✅ pass |
+| `layout.open.ms` | 60.7 ms (first 76.2 ms) | 66.9 ms | ✅ pass |
+| `layout.top-3x.area` | 19874113 | 19874113 | ✅ pass |
+| `layout.top-3x.crossings` | 180 | 180 | ✅ pass |
+| `layout.top-3x.ms` | 151.4 ms (first 161.9 ms) | 153.2 ms | ✅ pass |
+| `layout.top.area` | 7222677 | 7222677 | ✅ pass |
+| `layout.top.crossings` | 44 | 44 | ✅ pass |
+| `layout.top.ms` | 24.4 ms (first 29.2 ms) | 28.2 ms | ✅ pass |
+
+perf: 12 gates, 12 pass, 0 failed, 14 s
