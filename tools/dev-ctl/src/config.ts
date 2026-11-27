@@ -13,6 +13,11 @@ export const MIRRORS = join(DATA, "mirrors");
 /** Each account's `analyses.db` (crates/server/src/config.rs, `analyses_dir`). */
 export const ANALYSES = join(DATA, "analyses");
 export const FAKE_DB = join(DATA, "fake", "truth.db");
+/**
+ * The beghu CLI's credentials for `./dev-ctl cli`: under the stack's data, never the machine's
+ * own file (`BEGHU_CREDENTIALS`). `reset --all` deletes it with the control DB its tokens are in.
+ */
+export const CLI_CREDENTIALS = join(DATA, "cli", "credentials.toml");
 /** What `start` seeded the data with (`Seeded`). Gone after a plain `reset`, so `start` seeds again. */
 export const SEEDED = join(DATA, "seeded.json");
 export const FIXTURES = join(ROOT, "perf", "data");
