@@ -1,8 +1,8 @@
 //! The PR view's recorded PR (#178): `AdvanGrid/beghu#191`, which every fixture holds and Fake
 //! GitHub serves at v1's head. A run on it pins the recorded `pr.json` byte for byte, the
 //! recorded analysis uploads through the run as the agent sent it and is accepted, and the server
-//! keeps the upload's body, which `./dev-ctl analysis record` reads back untouched. v2, once the
-//! owner records it, follows on the same run after the PR moves to its head.
+//! keeps the upload's body, which `./dev-ctl analysis record` reads back untouched. v2 follows on
+//! the same account after the PR moves to its head.
 
 mod common;
 
@@ -83,14 +83,12 @@ async fn a_gzipped_upload_is_kept_and_recorded_exactly() {
     assert!(got.analysis == committed, "kept as the agent wrote it");
 }
 
-/// v2 on top of v1, once recorded: the PR moves to v2's head, a new run pins v2's `pr.json`, and
-/// v2 (whose `carried` is checked against v1) is accepted. Nothing to check before then.
+/// v2 on top of v1: the PR moves to v2's head, a new run pins v2's `pr.json` byte for byte, and
+/// v2 (whose `carried` is checked against v1) is accepted. Moving the PR back restores v1's pin.
 #[tokio::test(flavor = "multi_thread")]
 async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
-    let Some(v2) = fixture::recorded::version(RECORDED, 2) else {
-        eprintln!("v2 isn't recorded yet");
-        return;
-    };
+    let v1 = fixture::recorded::version(RECORDED, 1).unwrap();
+    let v2 = fixture::recorded::version(RECORDED, 2).expect("v2 is recorded");
     let s = start().await;
     let b = s.sign_in("tomsj").await;
     let up = s.upload_recorded(&b, 1, 1).await;
@@ -98,13 +96,19 @@ async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
     let up = s.upload_recorded(&b, 1, 2).await;
     assert_eq!(up.status, 201, "{}", up.answer);
     assert_eq!(up.answer["headSha"], v2.pr["headSha"]);
+    let pinned: Value = serde_json::from_str(&up.pinned).unwrap();
+    assert_eq!(pinned, v2.pr, "the pin is v2's pr.json");
+
+    let (back, _) = s.pin_recorded(&b, 2, 1).await;
+    let back: Value = serde_json::from_str(&back).unwrap();
+    assert_eq!(back, v1.pr, "v1's pin, as it was");
 }
 
 /// Moving the recorded PR to a later version and back restores v1's pin exactly: the PR's title,
 /// description, head, base and files, and its linked issues' descriptions and comment threads,
 /// authors and repeated bodies included (a comment the later version's thread added is made by
-/// its author, and deleted by its author and body). v2 isn't recorded yet, so the later
-/// version is made up here from v1.
+/// its author, and deleted by its author and body). The later version is made up here from v1,
+/// as real v2 neither moves the base nor edits an issue's description, nor repeats a comment.
 #[tokio::test(flavor = "multi_thread")]
 async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
     let s = start().await;
