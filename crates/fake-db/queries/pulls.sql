@@ -48,11 +48,12 @@ ON CONFLICT (issue_id, k) DO UPDATE SET sha = excluded.sha;
 -- param: issue_id i64
 DELETE FROM fake_pull_commits WHERE issue_id = :issue_id;
 
--- A push bumps the PR's `updated_at`, as GitHub's does.
+-- A push bumps the PR's `updated_at`, as GitHub's does, never back (a push dated by the fixture
+-- may be older).
 -- name: touch_pull :exec
 -- param: issue_id i64
 -- param: at i64
-UPDATE items SET updated_at = :at WHERE id = :issue_id;
+UPDATE items SET updated_at = max(coalesce(updated_at, :at), :at) WHERE id = :issue_id;
 
 -- name: clear_pull_files :exec
 -- param: issue_id i64

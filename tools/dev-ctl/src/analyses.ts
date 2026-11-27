@@ -18,11 +18,11 @@ export interface Version {
   headSha: string;
   analysis: string | null;
   pr: string;
-  /** A case uploaded as a later analysis after this recorded version (`<feature>.after-v1.json`). */
+  /** A case uploaded as a later analysis after this recorded version (`<feature>.after-v1.json`, at v2's head). */
   after?: number;
 }
 
-/** The cases: hand-written analyses of the recorded PR at v1 (fixtures/pr-view/cases/). */
+/** The cases: hand-written analyses of the recorded PR at v1, or at v2 for one after v1 (fixtures/pr-view/cases/). */
 const CASES = join(ROOT, "fixtures", "pr-view", "cases");
 
 /** A case that is a later analysis after v1, as analysis-fixtures names it. */
@@ -38,11 +38,15 @@ function cargo(args: string[]): string {
 export function versions(): Version[] {
   const all = JSON.parse(cargo(["-p", "fixture", "--bin", "pr-fixtures", "--", "versions"])) as Version[];
   const v1 = all.find((v) => v.version === 1);
+  const v2 = all.find((v) => v.version === 2);
   if (v1 && existsSync(CASES)) {
     for (const f of readdirSync(CASES).filter((f) => f.endsWith(".json")).sort()) {
       const stem = f.replace(/\.json$/, "");
       const after = stem.endsWith(AFTER_V1) ? 1 : undefined;
-      all.push({ ...v1, name: after ? stem.slice(0, -AFTER_V1.length) : stem, version: undefined, analysis: join(CASES, f), after });
+      // A later analysis is of a later push: a case after v1 is at v2's head, with v2's pr.json.
+      const at = after ? v2 : v1;
+      if (!at) continue;
+      all.push({ ...at, name: after ? stem.slice(0, -AFTER_V1.length) : stem, version: undefined, analysis: join(CASES, f), after });
     }
   }
   return all;
@@ -150,6 +154,23 @@ export interface Uploaded {
  */
 export async function upload(server: string, controlUrl: string, login: string, want: Version, all: Version[]): Promise<Uploaded> {
   if (!want.analysis) throw new Error(`${want.name} has no analysis committed`);
+  const tile = want.version === undefined && want.name.startsWith("tiled-");
+  // A first analysis (v1, or a case not after v1; v1 also goes first for a case after it) can't
+  // follow another of the PR's on the same account. Refused before anything moves the PR, so a
+  // refusal leaves the stack as it was.
+  const first = !tile && want.after === undefined && (want.version === undefined || want.version === 1);
+  if (first) {
+    const s = new Session(server);
+    await s.signIn(login);
+    const [owner, repo] = want.repo.split("/");
+    const has = await s.fetch(`/api/${owner}/${repo}/pulls/${want.number}/analysis`);
+    if (has.status === 200) {
+      const other = login === "ilze-k" ? "after ./dev-ctl reset" : "as an account with none (--as ilze-k), or after ./dev-ctl reset";
+      throw new Error(
+        `${want.version === undefined ? want.name : `v${want.version}`} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it ${other}`,
+      );
+    }
+  }
   if (want.after !== undefined) {
     // A later analysis: the one it follows goes first, so its `carried` has the IDs it names.
     const first = all.find((v) => v.number === want.number && v.version === want.after);
@@ -159,7 +180,6 @@ export async function upload(server: string, controlUrl: string, login: string, 
   const s = new Session(server);
   await s.signIn(login);
   const expected = JSON.parse(readFileSync(want.pr, "utf8")) as Record<string, unknown>;
-  const tile = want.version === undefined && want.name.startsWith("tiled-");
   let token = await startRun(s, want.repo, want.number);
   let pinned = await pin(s, token);
   if (pinned.headSha !== want.headSha) {
@@ -176,7 +196,8 @@ export async function upload(server: string, controlUrl: string, login: string, 
     } else {
       const now = all.find((v) => v.version !== undefined && v.number === want.number && v.headSha === pinned.headSha);
       if (!now) throw new Error(`${want.repo}#${want.number} is at ${pinned.headSha}, which no recorded version is at: ./dev-ctl reset puts it back`);
-      const to = want.version ?? 1;
+      // A case is at a recorded version's head: v1's, or v2's for one after v1.
+      const to = want.version ?? all.find((v) => v.version !== undefined && v.number === want.number && v.headSha === want.headSha)!.version!;
       for (const m of moves(want.number, now.version!, to)) await control(controlUrl, m.path, m.body);
     }
   }
@@ -197,12 +218,6 @@ export async function upload(server: string, controlUrl: string, login: string, 
     body: readFileSync(want.analysis),
   });
   const body = (await res.json().catch(() => null)) as { analysis?: string; headSha?: string; warnings?: unknown[]; message?: string; report?: unknown } | null;
-  const carried = JSON.stringify(body?.report ?? "").includes('"rule":"carry.');
-  if (res.status === 422 && carried && !tile && want.version === undefined && want.after === undefined) {
-    throw new Error(
-      `${want.name} is a first analysis of ${want.repo}#${want.number}, and ${login} has one already, whose IDs it doesn't carry: upload it as an account with none (--as ilze-k), or after ./dev-ctl reset as another account`,
-    );
-  }
   if (res.status !== 201 || !body?.analysis) {
     throw new Error(`uploading ${want.name}: ${res.status} ${body?.message ?? ""}${body?.report ? `\n${JSON.stringify(body.report, null, 2).slice(0, 4000)}` : ""}`);
   }

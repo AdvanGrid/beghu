@@ -554,6 +554,8 @@ pub(crate) struct Push {
     /// Who pushed: a fixture account's login. Left out, the PR's author, or the fixture's first
     /// account for a PR whose author is gone.
     login: Option<String>,
+    /// When the push happened (Unix seconds), for a fixture that dates it; left out, now.
+    pub(crate) at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -566,7 +568,7 @@ pub(crate) struct PushedFile {
 }
 
 /// Adds a commit on top of the PR, as a push to its head branch does: its head moves to the new
-/// commit, its `updated_at` to now, and its files are those the push names. A force push
+/// commit, its `updated_at` to `at` (never back), and its files are those the push names. A force push
 /// replaces its history first. GitHub sends `pull_request` `synchronize`, with the head before
 /// and after (`/webhooks/webhook-events-and-payloads#pull_request`), from the pusher: `login`,
 /// else the PR's author, else the fixture's first account.

@@ -304,7 +304,8 @@ pub(crate) async fn delete_comment(
 }
 
 /// Deletes comment `x` of issue `item`, as `sender` (a user's JSON): the comments count drops,
-/// and `issue_comment` `deleted` carries the comment as it was. The REST delete and an outside
+/// its id is never given to another comment, and `issue_comment` `deleted` carries the comment as
+/// it was. The REST delete and an outside
 /// edit's `delete_comment` both.
 pub(crate) fn comment_deleted(
     tx: &rusqlite::Transaction,
@@ -329,6 +330,7 @@ pub(crate) fn comment_deleted(
     // As `issue_comment` `created` carries it (`edits.rs`).
     comment["performed_via_github_app"] = Value::Null;
     q::delete_comment(tx, x.id)?;
+    q::retire_comment_id(tx, x.id)?;
     q::uncount_comment(tx, item)?;
     let mut p = crate::webhooks::envelope(repo, sender);
     p["action"] = json!("deleted");
