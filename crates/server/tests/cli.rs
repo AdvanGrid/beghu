@@ -504,15 +504,18 @@ async fn a_cli_dir_without_its_version_refuses_startup() {
     assert!(err.contains("BEGHU_CLI_DIR"), "{err}");
 }
 
-/// `POST /api/cli/login` as the CLI sends it: the whole answer.
-async fn login_answer(s: &Stack, name: &str) -> reqwest::Response {
-    s.http
+/// `POST /api/cli/login` as the CLI sends it, through an edge that says it came from `from`
+/// (`header: value`): the whole answer.
+async fn login_from(s: &Stack, name: &str, from: Option<(&str, &str)>) -> reqwest::Response {
+    let mut req = s
+        .http
         .post(format!("{}/api/cli/login", s.server))
         .header("user-agent", format!("beghu-cli/{}", beghu_server::MIN_CLI))
-        .json(&json!({ "name": name }))
-        .send()
-        .await
-        .unwrap()
+        .json(&json!({ "name": name }));
+    if let Some((h, v)) = from {
+        req = req.header(h, v);
+    }
+    req.send().await.unwrap()
 }
 
 /// A `429`'s `Retry-After`, in seconds.
@@ -524,22 +527,32 @@ fn retry_after(res: &reqwest::Response) -> u64 {
         .unwrap()
 }
 
+/// With `BEGHU_CLIENT_IP_HEADER` set.
+async fn start_counting_by(header: &'static str) -> Stack {
+    start_with(|c| c.cli.client_ip_header = Some(header.parse().unwrap())).await
+}
+
 #[tokio::test]
 async fn too_many_logins_waiting_from_one_client_are_refused_until_one_ends() {
-    let s = start().await;
+    let s = start_counting_by("cf-connecting-ip").await;
     let b = s.sign_in("tomsj").await;
+    let me = Some(("CF-Connecting-IP", "203.0.113.7"));
     let mut first = None;
     for i in 0..20 {
-        let started = login(&s, &format!("machine {i}")).await;
-        first.get_or_insert(started);
+        let res = login_from(&s, &format!("machine {i}"), me).await;
+        assert_eq!(res.status(), 201);
+        first.get_or_insert(res.json::<Value>().await.unwrap());
     }
-    let res = login_answer(&s, "one too many").await;
+    let res = login_from(&s, "one too many", me).await;
     assert_eq!(res.status(), 429);
     // Until the oldest of them expires: at most a login's life (10 minutes).
     let wait = retry_after(&res);
     assert!((1..=600).contains(&wait), "{wait}");
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["error"], "too_many_logins", "{body}");
+    // Another client isn't held back by this one, though both reach beghu from one peer.
+    let other = Some(("CF-Connecting-IP", "198.51.100.1"));
+    assert_eq!(login_from(&s, "another client", other).await.status(), 201);
 
     // One ended by its poll (denied here) makes room for one more.
     let first = first.unwrap();
@@ -549,16 +562,102 @@ async fn too_many_logins_waiting_from_one_client_are_refused_until_one_ends() {
         204
     );
     assert_eq!(poll(&s, first["device"].as_str().unwrap()).await.0, 410);
-    assert_eq!(login_answer(&s, "now there's room").await.status(), 201);
-    assert_eq!(login_answer(&s, "and full again").await.status(), 429);
+    assert_eq!(login_from(&s, "now there's room", me).await.status(), 201);
+    assert_eq!(login_from(&s, "and full again", me).await.status(), 429);
 }
 
 #[tokio::test]
-async fn the_logins_waiting_at_once_are_capped_for_everyone() {
-    let s = start_with(|c| c.cli.logins_at_once = 2).await;
-    login(&s, "a").await;
-    login(&s, "b").await;
-    let res = login_answer(&s, "c").await;
+async fn a_client_is_its_ipv6_64_or_the_last_forwarded_address() {
+    // IPv6 by its /64: one host or home.
+    let s = start_with(|c| {
+        c.cli.client_ip_header = Some("fly-client-ip".parse().unwrap());
+        c.cli.logins_per_client = 2;
+    })
+    .await;
+    let v6 = |a| Some(("Fly-Client-IP", a));
+    assert_eq!(
+        login_from(&s, "a", v6("2001:db8:1:2::1")).await.status(),
+        201
+    );
+    assert_eq!(
+        login_from(&s, "b", v6("2001:db8:1:2:ffff::9"))
+            .await
+            .status(),
+        201
+    );
+    assert_eq!(
+        login_from(&s, "c", v6("2001:db8:1:2::3")).await.status(),
+        429
+    );
+    assert_eq!(
+        login_from(&s, "d", v6("2001:db8:1:3::1")).await.status(),
+        201
+    );
+
+    // X-Forwarded-For's last address is the edge's: the ones before it are the caller's to
+    // forge, so changing them makes no new client.
+    let s = start_with(|c| {
+        c.cli.client_ip_header = Some("x-forwarded-for".parse().unwrap());
+        c.cli.logins_per_client = 2;
+    })
+    .await;
+    let xff = |a| Some(("X-Forwarded-For", a));
+    assert_eq!(
+        login_from(&s, "a", xff("10.0.0.1, 203.0.113.7"))
+            .await
+            .status(),
+        201
+    );
+    assert_eq!(
+        login_from(&s, "b", xff("10.0.0.2, 203.0.113.7"))
+            .await
+            .status(),
+        201
+    );
+    assert_eq!(login_from(&s, "c", xff("203.0.113.7")).await.status(), 429);
+    assert_eq!(
+        login_from(&s, "d", xff("203.0.113.7, 203.0.113.8"))
+            .await
+            .status(),
+        201
+    );
+    // Without a readable address, every such login is one client.
+    assert_eq!(login_from(&s, "e", None).await.status(), 201);
+    assert_eq!(
+        login_from(&s, "f", xff("not an address")).await.status(),
+        201
+    );
+    assert_eq!(login_from(&s, "g", None).await.status(), 429);
+}
+
+#[tokio::test]
+async fn without_a_client_header_only_the_global_cap_holds_and_no_header_is_read() {
+    // Unset, many logins from one client are let in: behind a proxy, beghu can't tell clients
+    // apart, and a header naming a client is the caller's to forge.
+    let s = start().await;
+    let me = Some(("X-Forwarded-For", "203.0.113.7"));
+    for i in 0..25 {
+        let res = login_from(&s, &format!("machine {i}"), me).await;
+        assert_eq!(res.status(), 201, "login {i}");
+    }
+
+    // The global cap holds for everyone, whatever address each one claims.
+    let s = start_with(|c| {
+        c.cli.logins_at_once = 2;
+        c.cli.logins_per_client = 1;
+    })
+    .await;
+    let claim = |a| Some(("CF-Connecting-IP", a));
+    assert_eq!(
+        login_from(&s, "a", claim("203.0.113.7")).await.status(),
+        201
+    );
+    // A per-client cap of 1 isn't applied: there are no clients.
+    assert_eq!(
+        login_from(&s, "b", claim("203.0.113.7")).await.status(),
+        201
+    );
+    let res = login_from(&s, "c", claim("198.51.100.1")).await;
     assert_eq!(res.status(), 429);
     assert!(retry_after(&res) >= 1);
     let body: Value = res.json().await.unwrap();
@@ -571,6 +670,11 @@ async fn a_browser_that_tries_too_many_wrong_codes_is_refused_for_a_while() {
     let mut b = s.sign_in("tomsj").await;
     let real = login(&s, "a machine").await;
     let code = real["code"].as_str().unwrap();
+    // A live login's code doesn't count.
+    for _ in 0..12 {
+        let (status, _) = s.api(&mut b, &format!("/api/cli/codes/{code}")).await;
+        assert_eq!(status, 200);
+    }
     // Ten wrong ones: codes no login holds, and things that can't be codes.
     for i in 0..10 {
         let wrong = if i % 2 == 0 { "BBBB-BBBB" } else { "nope" };
@@ -586,10 +690,44 @@ async fn a_browser_that_tries_too_many_wrong_codes_is_refused_for_a_while() {
     assert_eq!(body["error"], "too_many_codes", "{body}");
     assert_eq!(s.decide_cli_login(&b, code, true).await, 429);
     assert_eq!(s.decide_cli_login(&b, code, false).await, 429);
-    // Another browser isn't held back by this one's guesses.
-    let mut other = s.sign_in("tomsj").await;
+    // The account is held back in its other browsers too: a new session gets no new tries.
+    let mut again = s.sign_in("tomsj").await;
+    let (status, _) = s.api(&mut again, &format!("/api/cli/codes/{code}")).await;
+    assert_eq!(status, 429);
+    // Another account isn't held back by this one's guesses.
+    let mut other = s.sign_in("ilze-k").await;
     let (status, shown) = s.api(&mut other, &format!("/api/cli/codes/{code}")).await;
     assert_eq!((status, shown["state"].as_str()), (200, Some("pending")));
+}
+
+#[tokio::test]
+async fn wrong_codes_asked_at_once_are_held_to_the_limit() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    // Forty at once: each holds its place in the count while it's answered, so exactly the ten
+    // the limit allows get an answer.
+    let asks = (0..40).map(|_| {
+        s.http
+            .get(format!("{}/api/cli/codes/BBBB-BBBB", s.server))
+            .header("cookie", b.header())
+            .send()
+    });
+    let mut statuses: Vec<u16> = futures_util::future::join_all(asks)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap().status().as_u16())
+        .collect();
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses.iter().filter(|s| **s == 404).count(),
+        10,
+        "{statuses:?}"
+    );
+    assert_eq!(
+        statuses.iter().filter(|s| **s == 429).count(),
+        30,
+        "{statuses:?}"
+    );
 }
 
 #[tokio::test]

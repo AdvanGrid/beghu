@@ -157,9 +157,15 @@ pub struct CliConfig {
     /// A CLI credential unused this long expires (90 days).
     pub unused_for: Duration,
     /// At most this many `beghu login`s wait for their approval at once (10,000), and
-    /// ([`CliConfig::logins_per_client`]) from one client (20): `cli::limits`.
+    /// ([`CliConfig::logins_per_client`]) from one client (20) when
+    /// [`CliConfig::client_ip_header`] says who clients are: `cli::limits`.
     pub logins_at_once: usize,
     pub logins_per_client: usize,
+    /// `BEGHU_CLIENT_IP_HEADER` (optional): the request header the edge overwrites with the
+    /// address it was called from (`CF-Connecting-IP`, `Fly-Client-IP`, or `X-Forwarded-For`,
+    /// whose last address counts), by which `beghu login`s are counted per client. Unset, they
+    /// aren't, and no such header is read: docs/deploy.md, "The edge".
+    pub client_ip_header: Option<axum::http::HeaderName>,
     /// A browser session that asks for this many codes that aren't a live login's (10) within
     /// [`CliConfig::wrong_codes_for`] (10 minutes) is refused more until the oldest is that old.
     pub wrong_codes: usize,
@@ -175,6 +181,7 @@ impl Default for CliConfig {
             unused_for: Duration::from_secs(90 * 24 * 3600),
             logins_at_once: 10_000,
             logins_per_client: 20,
+            client_ip_header: None,
             wrong_codes: 10,
             wrong_codes_for: Duration::from_secs(10 * 60),
         }
@@ -435,7 +442,10 @@ impl Config {
             analysis_chain: &analysis::CHAIN,
             runs: RunLifetimes::default(),
             cli_dir: std::env::var("BEGHU_CLI_DIR").ok().map(PathBuf::from),
-            cli: CliConfig::default(),
+            cli: CliConfig {
+                client_ip_header: client_ip_header()?,
+                ..CliConfig::default()
+            },
             analysis_pause: None,
             repo_refresh_every: Duration::from_secs(15 * 60),
             roles_retry_after_failure: Duration::from_secs(60),
@@ -490,6 +500,18 @@ impl Config {
     pub fn analyses_dir(&self) -> PathBuf {
         self.data_dir.join("analyses")
     }
+}
+
+/// `BEGHU_CLIENT_IP_HEADER`: a header's name, or none when it's unset or empty.
+fn client_ip_header() -> Result<Option<axum::http::HeaderName>, String> {
+    let raw = std::env::var("BEGHU_CLIENT_IP_HEADER").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    axum::http::HeaderName::from_bytes(raw.as_bytes())
+        .map(Some)
+        .map_err(|_| format!("BEGHU_CLIENT_IP_HEADER must be a header's name, got {raw:?}"))
 }
 
 /// `BEGHU_BUILD_ID` (default `dev`): it names the build's asset record on the volume

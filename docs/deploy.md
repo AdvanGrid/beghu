@@ -158,6 +158,7 @@ refused either way.
 | `BEGHU_BUILD_ID` | no (image: the git SHA, a required build arg) | Letters, digits, `.`, `_` and `-`, up to 64. `dev` if unset. |
 | `BEGHU_WEB_DIR` | no (image: `/app/web`) | The `vite build` output: the app and the prerendered public site (`site/`: the landing page at `/`, `/cli`, `/pricing`, `/privacy`, `/terms`, `robots.txt` and `sitemap.xml`, whose canonical URLs take their origin from `BEGHU_PUBLIC_URL`). Without it the server answers only `/api`, `/auth`, `/webhook` and the probes, as in dev, where Vite serves the app and the site. |
 | `BEGHU_CLI_DIR` | no (image: `/app/cli`) | The beghu CLI's builds this server serves (see [The CLI's builds](#the-clis-builds)): `version` and `<os>-<arch>/beghu` for each platform built. Set but without `version` or any build refuses startup; unset, `/cli/install.sh`, `/cli/manifest.json` and the binaries answer 404. |
+| `BEGHU_CLIENT_IP_HEADER` | no | The request header your edge overwrites with the address it was called from: `CF-Connecting-IP` (Cloudflare), `Fly-Client-IP` (Fly.io), or `X-Forwarded-For` (the last address in it counts, the one your edge appended). Set, beghu caps the `beghu login`s waiting per client by it. Unset, there's no per-client cap and beghu reads no such header. Name only a header your edge always overwrites: any other is the caller's to forge. See [The edge](#the-edge). |
 | `BEGHU_ANALYSIS_DIR` | no (image: `/app/analysis`) | The agent's tools, `validate.mjs` and `merge.mjs`, built from the same commit (`crates/analysis-wasm/build.sh`). An analysis run serves them as they are. Set but missing either file refuses startup; unset, a run answers 503 for them. |
 | `GITHUB_API_URL` | no | Default `https://api.github.com`. Dev and CI point it at Fake GitHub. |
 | `GITHUB_WEB_URL` | no | Default `https://github.com`. It serves the OAuth pages. |
@@ -307,11 +308,18 @@ it (Cloudflare proxied DNS, a Kubernetes ingress, Caddy, nginx) must:
   `private, max-age=300` on the shell (kept by browsers only, so no shared cache serves an old
   build's shell after a deploy), `no-store` on the API, and
   `public, max-age=31536000, immutable` on `/assets/*`.
-- **Limit `beghu login`s per client at the edge, if you need it per person.** beghu caps the
-  `beghu login`s waiting for approval at 10,000 at once and 20 per client, answering `429` with
-  `Retry-After` past either. It counts a client by the TCP peer's address (an IPv6 one by its
-  /64) and reads no `X-Forwarded-For`, so behind a proxy every login comes from the proxy and
-  the 20 are shared by everyone. The counts are in memory, and a restart forgets them.
+- **Rate-limit `POST /api/cli/login` at the edge.** Anyone may start a `beghu login`, signed in
+  or not. beghu caps the logins waiting for approval at 10,000 at once, answering `429` with
+  `Retry-After` past it. That cap keeps the control DB's logins bounded, but one anonymous
+  script can hold it and refuse every `beghu login` for up to 10 minutes at a time. A login
+  starts with one request, so a few a minute per address is plenty.
+- **Set `BEGHU_CLIENT_IP_HEADER` for per-client caps.** beghu never counts by the TCP peer: behind
+  your edge that's the edge, the same for everyone. Name the header your edge overwrites with the
+  caller's address (see [Environment](#environment)), and beghu also caps the logins waiting at
+  20 per client, an IPv6 address counting by its /64.
+- **Without either, one client can block `beghu login`s for everyone** until the logins it holds
+  expire. Browsers are unaffected, and so is every CLI already signed in. The counts are in
+  memory, and a restart forgets them.
 - **Leave `POST /webhook` unchallenged** by WAF, bot and rate rules. GitHub can't answer a
   challenge. beghu checks each delivery's signature itself.
 

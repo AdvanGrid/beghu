@@ -795,14 +795,7 @@ async fn scan_steps(State(app): State<App>, req: Request, next: Next) -> Respons
 
 /// Serves until the listener fails or the task is dropped.
 pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Result<()> {
-    axum::serve(listener, with_peer(router(app))).await
-}
-
-/// The router, each request knowing its TCP peer's address (`cli::limits` counts by it).
-fn with_peer(
-    r: Router,
-) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router, std::net::SocketAddr> {
-    r.into_make_service_with_connect_info::<std::net::SocketAddr>()
+    axum::serve(listener, router(app)).await
 }
 
 /// The part of the drain kept for the final WAL checkpoint, after [`Config::drain_for`] (22 s)
@@ -877,8 +870,7 @@ pub async fn serve_until(
             let _ = drained.send(until);
         }
     };
-    let server =
-        axum::serve(listener, with_peer(router(app.clone()))).with_graceful_shutdown(drain);
+    let server = axum::serve(listener, router(app.clone())).with_graceful_shutdown(drain);
     let give_up = async {
         match deadline.await {
             Ok(until) => tokio::time::sleep_until(until).await,

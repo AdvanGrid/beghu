@@ -18,7 +18,7 @@
 //! The logins waiting at once, and the wrong codes a browser session may try, are limited
 //! (`cli::limits`): over either, `429` with `Retry-After`.
 
-use super::limits::Client;
+use super::limits::{ClientOf, Guesser};
 use super::new_token;
 use crate::analyses::runs::RunError;
 use crate::auth::Session;
@@ -112,7 +112,7 @@ pub(crate) fn clean_name(raw: &str) -> String {
 /// too_many_logins`.
 pub async fn start(
     State(app): State<App>,
-    client: Client,
+    ClientOf(client): ClientOf,
     Json(body): Json<Start>,
 ) -> Result<Response, RunError> {
     let name = clean_name(&body.name);
@@ -132,7 +132,10 @@ pub async fn start(
             limits.logins_per_client,
         )
         .map_err(|f| {
-            eprintln!("cli login: refused one from {client}: too many waiting");
+            match client {
+                Some(c) => eprintln!("cli login: refused one from {c}: too many waiting"),
+                None => eprintln!("cli login: refused one: too many waiting"),
+            }
             RunError::TooManyLogins {
                 retry_after: f.retry_after,
             }
@@ -328,31 +331,30 @@ fn code_hash(raw: &str) -> Result<(String, Vec<u8>), ApiError> {
     Ok((c, h))
 }
 
-/// Runs `f` for `session`'s code, held to the wrong-code limit (`cli::limits`): refused `429
-/// too_many_codes` once the session has asked for too many lately, and an answer of `404 gone`
-/// counts as one more.
+/// Runs `f` for `session`'s code, held to the wrong-code limit (`cli::limits`), per session and
+/// per account: refused `429 too_many_codes` once either has asked for too many lately. The ask
+/// counts as a wrong one from before `f` runs, so asks at once can't all get past the check; an
+/// answer other than `404 gone` gives its place back.
 async fn limited<T>(
     app: &App,
     session: &Session,
     f: impl Future<Output = Result<T, ApiError>>,
 ) -> Result<T, ApiError> {
     let cfg = &app.cfg().cli;
+    let guessers = [
+        Guesser::Session(session.id_hash.clone()),
+        Guesser::Account(session.account),
+    ];
+    let at = now();
     app.0
         .cli_limits
-        .may_try_code(
-            &session.id_hash,
-            now(),
-            cfg.wrong_codes,
-            cfg.wrong_codes_for,
-        )
+        .try_code(&guessers, at, cfg.wrong_codes, cfg.wrong_codes_for)
         .map_err(|f| ApiError::TooManyCodes {
             retry_after: f.retry_after,
         })?;
     let out = f.await;
-    if let Err(ApiError::Gone) = &out {
-        app.0
-            .cli_limits
-            .wrong_code(&session.id_hash, now(), cfg.wrong_codes_for);
+    if !matches!(&out, Err(ApiError::Gone)) {
+        app.0.cli_limits.not_wrong(&guessers, at);
     }
     out
 }
