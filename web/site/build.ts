@@ -22,6 +22,8 @@ const WEB = fileURLToPath(new URL("..", import.meta.url));
 const SITE = join(WEB, "site");
 /** Where the server writes beghu's origin (crates/server/src/site.rs, site/Layout.tsx). */
 const ORIGIN = "%BEGHU_ORIGIN%";
+/** Where the server writes `beghu login`'s ` --host <origin>` (empty for the hosted beghu). */
+const HOST_FLAG = "%BEGHU_HOST_FLAG%";
 /** The first path segments the server answers itself (crates/server/src/site.rs). */
 const RESERVED = new Set(["issues", "new", "repos", "prefs", "api", "auth", "assets", "webhook", "healthz", "readyz"]);
 
@@ -171,7 +173,8 @@ export function sitePlugin(): Plugin {
             res.setHeader("content-type", TYPES[ext] ?? "application/octet-stream");
             res.setHeader("cache-control", "no-cache");
             const origin = `http://${req.headers.host ?? "localhost"}`;
-            res.end(typeof body === "string" ? body.replaceAll(ORIGIN, origin) : body);
+            const flag = origin === "https://beghu.dev" ? "" : ` --host ${origin}`;
+            res.end(typeof body === "string" ? body.replaceAll(HOST_FLAG, flag).replaceAll(ORIGIN, origin) : body);
           },
           (e: unknown) => {
             built = undefined;

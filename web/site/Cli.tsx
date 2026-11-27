@@ -1,10 +1,11 @@
 // `/cli`: the beghu CLI, for an engineer about to install it. Each deployment serves its own build
 // of it, from the same commit as the server, so the install line names this deployment's origin
-// (filled in from BEGHU_PUBLIC_URL as every page's canonical URL is: crates/server/src/site.rs).
+// (filled in from BEGHU_PUBLIC_URL as every page's canonical URL is: crates/server/src/site.rs),
+// and so does `beghu login`, unless this is the hosted beghu, the CLI's default.
 // Each statement here describes what the CLI and the server do: change it with the code.
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../src/tokens.stylex";
-import { ORIGIN, page } from "./Layout";
+import { HOST_FLAG, ORIGIN, page } from "./Layout";
 
 /** A command, on a line of its own. */
 function Cmd(props: { children: string }) {
@@ -37,7 +38,7 @@ export function Cli() {
       </p>
 
       <h2 {...stylex.attrs(page.h2)}>Sign in</h2>
-      <Cmd>{"beghu login"}</Cmd>
+      <Cmd>{`beghu login${HOST_FLAG}`}</Cmd>
       <p>
         It opens beghu in your browser, which shows the machine's name and a short code: check the code matches the one in your terminal, then
         Approve. Over SSH, or with <C>--no-browser</C>, it prints the link and the code to open on any device where you're signed in to beghu. With
@@ -93,7 +94,8 @@ export function Cli() {
       <h2 {...stylex.attrs(page.h2)}>In CI and containers</h2>
       <p>
         Set <C>BEGHU_TOKEN</C> to a token <C>beghu login</C> stored, and <C>BEGHU_HOST</C> to the beghu it's for: they go before the credentials file.
-        It's the same kind of credential, listed and revoked on the setup page like any other.
+        The CLI sends <C>BEGHU_TOKEN</C> only to that host, and refuses it without <C>BEGHU_HOST</C>. It's the same kind of credential, listed and
+        revoked on the setup page like any other.
       </p>
 
       <h2 {...stylex.attrs(page.h2)}>Where the sign-ins live</h2>

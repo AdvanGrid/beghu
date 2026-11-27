@@ -42,6 +42,9 @@ async fn a_page_names_beghus_own_origin() {
     let canonical = format!(r#"<link rel="canonical" href="{}/pricing">"#, s.server);
     assert!(html.contains(&canonical), "{html}");
     assert!(!html.contains("%BEGHU_ORIGIN%"), "{html}");
+    // `/cli`'s `beghu login` names any deployment but the hosted one, the CLI's default.
+    let login = format!("<pre>beghu login --host {}</pre>", s.server);
+    assert!(html.contains(&login), "{html}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

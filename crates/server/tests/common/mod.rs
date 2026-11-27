@@ -105,7 +105,7 @@ pub const SITE: &[(&str, &str)] = &[
     ),
     (
         "pricing.html",
-        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/pricing"></head><body>Free in beta</body></html>"#,
+        r#"<!doctype html><html><head><link rel="canonical" href="%BEGHU_ORIGIN%/pricing"></head><body>Free in beta<pre>beghu login%BEGHU_HOST_FLAG%</pre></body></html>"#,
     ),
     (
         "robots.txt",
