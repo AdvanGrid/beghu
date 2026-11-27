@@ -70,7 +70,7 @@ while :; do
     "$image" >/dev/null && break
   $docker rm -f "$name" >/dev/null 2>&1 || true
   tries=$((tries + 1))
-  [ "$tries" -lt 5 ] || fail "no free port to publish on in 5 tries"
+  [ "$tries" -lt 5 ] || fail "docker run failed 5 times (a taken port is retried; its own error is above)"
 done
 
 i=0

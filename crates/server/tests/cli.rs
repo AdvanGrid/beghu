@@ -628,6 +628,18 @@ async fn a_client_is_its_ipv6_64_or_the_last_forwarded_address() {
         201
     );
     assert_eq!(login_from(&s, "g", None).await.status(), 429);
+    // An edge that appends `ip:port` names the same client as its address alone: 203.0.113.8
+    // has one login ("d") and this is its second; a third is refused.
+    assert_eq!(
+        login_from(&s, "h", xff("203.0.113.8:51234")).await.status(),
+        201
+    );
+    assert_eq!(
+        login_from(&s, "i", xff("[::ffff:203.0.113.8]:443"))
+            .await
+            .status(),
+        429
+    );
 }
 
 #[tokio::test]

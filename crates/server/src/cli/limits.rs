@@ -72,7 +72,13 @@ impl Client {
         value
             .and_then(|v| std::str::from_utf8(v).ok())
             .and_then(|v| v.rsplit(',').next())
-            .and_then(|a| a.trim().parse::<IpAddr>().ok())
+            .and_then(|a| {
+                let a = a.trim();
+                // Some edges append `ip:port` or `[v6]:port`.
+                a.parse::<IpAddr>()
+                    .ok()
+                    .or_else(|| a.parse::<std::net::SocketAddr>().ok().map(|s| s.ip()))
+            })
             .map_or(Client::Unknown, Client::of)
     }
 }

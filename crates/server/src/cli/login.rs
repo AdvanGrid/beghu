@@ -386,10 +386,30 @@ async fn limited<T>(
         .map_err(|f| ApiError::TooManyCodes {
             retry_after: f.retry_after,
         })?;
-    let out = f.await;
-    if !matches!(&out, Err(ApiError::Gone)) {
-        app.0.cli_limits.not_wrong(&guessers, at);
+    // Given back unless the answer is `404 gone`, also when the request is dropped mid-read (a
+    // client gone, a panic): a slow read the user reloads over costs no try.
+    struct Held<'a> {
+        app: &'a App,
+        guessers: &'a [Guesser],
+        at: i64,
+        wrong: bool,
     }
+    impl Drop for Held<'_> {
+        fn drop(&mut self) {
+            if !self.wrong {
+                self.app.0.cli_limits.not_wrong(self.guessers, self.at);
+            }
+        }
+    }
+    let mut held = Held {
+        app,
+        guessers: &guessers,
+        at,
+        wrong: false,
+    };
+    let out = f.await;
+    held.wrong = matches!(&out, Err(ApiError::Gone));
+    drop(held);
     out
 }
 
