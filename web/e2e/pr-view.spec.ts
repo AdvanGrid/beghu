@@ -356,6 +356,22 @@ test("v1's IDs forward on v2: merged to the new part, dropped and unknown to the
   // The note goes with the next pick.
   await page.locator('[data-perf="block"]').first().click();
   await expect(note(page)).toHaveCount(0);
+
+  // An old link followed in the tab (a link from elsewhere, as the router hears it): its note
+  // stays on the entry it forwarded to, and goes when Back leaves it.
+  const first = selOf(page);
+  await page.evaluate((was) => {
+    history.pushState(history.state, "", `?sel=part:${was}`);
+    dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+  }, merged.was);
+  await expect.poll(() => selOf(page)).toBe(`part:${merged.now[0]}`);
+  await expect(note(page)).toContainText(`${merged.was} was merged into`);
+  await page.goBack();
+  await expect.poll(() => selOf(page)).toBe(first);
+  await expect(note(page)).toHaveCount(0);
+  await page.goForward();
+  await expect.poll(() => selOf(page)).toBe(`part:${merged.now[0]}`);
+  await expect(note(page)).toHaveCount(0);
 });
 
 test("Typed IDs are written once: a conflict, a purpose and a step without their own prefixes", async ({ context }) => {
@@ -486,6 +502,25 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
     devCtl(["analyse", "AdvanGrid/beghu#191", "--as", "ilze-k", "--version", "1"]);
   }
   const split = SPLIT.carried.find((c: Json) => c.kind === "split");
+  // Two more tabs open on v1: a part whose ID survives with new words, and a sub-purpose the
+  // case drops, whose place is the level above.
+  const V1 = read("beghu-191/analysis-v1.json");
+  const kept = V1.nodes.find((n: Json) => n.id === "crates-fake-github");
+  const keptNow = SPLIT.nodes.find((n: Json) => n.id === kept.id);
+  expect(keptNow.summary).not.toBe(kept.summary);
+  const sub = SPLIT.carried.find((c: Json) => c.kind === "dropped" && c.was.startsWith("purpose:") && c.was.includes("/"));
+  const parent = SPLIT.purposes.find((p: Json) => p.id === sub.was.slice(0, sub.was.lastIndexOf("/")));
+  const survives = await context.newPage();
+  await open(survives, `?sel=part:${kept.id}`);
+  const p1 = panel(survives).locator('[data-perf="part-panel"]');
+  await expect(p1).toContainText(kept.summary);
+  // A claims place opened, so Show it must put the newer analysis's claims there.
+  await p1.locator('[data-perf="responsibility"] summary').first().click();
+  await expect(p1.locator('[data-perf="responsibility"] [data-perf="claim"]').first()).toBeVisible();
+  const above = await context.newPage();
+  await open(above, `?sel=purpose:${sub.was.slice("purpose:".length)}`);
+  await expect(panel(above).locator('[data-perf="purpose-panel"] h2')).toHaveText(V1.purposes.find((p: Json) => p.id === sub.was).name);
+
   await open(page, `?sel=line:${encodeURIComponent(split.was)}`);
   const body = page.locator('[data-perf="view-body"]');
   const v1 = await body.getAttribute("data-analysis");
@@ -518,6 +553,24 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await expect(panel(page).locator('[data-perf="line"]')).toHaveCount(2);
   await expect(note(page)).toContainText("was split into");
   await expect(note(page)).toContainText(split.reason);
+
+  // The part whose ID survived: still selected, in the newer analysis's words.
+  await survives.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
+  await expect(survives.locator('[data-perf="newer"]')).toHaveCount(0);
+  await expect(p1).toContainText(keptNow.summary);
+  await expect(p1).not.toContainText(kept.summary);
+  expect(selOf(survives)).toBe(`part:${kept.id}`);
+  await expect(note(survives)).toHaveCount(0);
+  await expect(p1.locator('[data-perf="responsibility"]')).toHaveCount(keptNow.responsibilities.length);
+  await p1.locator('[data-perf="responsibility"] summary').first().click();
+  const claimNow = SPLIT.claims.find((c: Json) => c.id === keptNow.responsibilities[0].claims[0]);
+  await expect(p1.locator('[data-perf="responsibility"] [data-perf="claim"]').first()).toContainText(claimNow.text);
+
+  // The dropped sub-purpose: the level above, its parent, with the reason.
+  await above.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
+  await expect.poll(() => selOf(above)).toBe(parent.id);
+  await expect(panel(above).locator('[data-perf="purpose-panel"] h2')).toHaveText(parent.name);
+  await expect(note(above)).toContainText(`was dropped: ${sub.reason}; showing ${parent.name}`);
 
   // An old link to the v1 line forwards the same way.
   await open(page, `?sel=line:${encodeURIComponent(split.was)}`);

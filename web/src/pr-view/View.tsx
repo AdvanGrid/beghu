@@ -22,7 +22,7 @@ import { AnalysisMigrationFailed, getIssue, getIssueAt, NoAnalysis, type IssueDe
 import { AnalyseButton, AnalyseStart } from "../Analyse";
 import { getGraph, takePreloaded, type Graph } from "../analysis";
 import { at, atString, idAt, parseAt } from "../at";
-import { onAnalysis } from "../live";
+import { onAnalysis, onPush } from "../live";
 import { Failure } from "../Root";
 import { ago, fullDate } from "../time";
 import { colors, fonts, media } from "../tokens.stylex";
@@ -32,7 +32,7 @@ import { forward } from "./forward";
 import { buildModel, type Model } from "./model";
 import { NavContext, type Nav } from "./nav";
 import { Panel } from "./Panel";
-import { parseState, sameSel, writeState, type Replacing, type Sel, type Tab } from "./state";
+import { parseState, sameSel, selString, writeState, type Replacing, type Sel, type Tab } from "./state";
 import { ui } from "./ui";
 
 /** The PR's detail, as the panel reads it: by id once the tab knows it, else by where it is. */
@@ -62,16 +62,31 @@ export function PrView(props: RouteSectionProps) {
     revalidate(getGraph.keyFor(where()));
     void refresh(graph);
   };
-  // An `analysis` push naming the PR: its detail again (the run's state, how far behind).
-  onSettled(() =>
-    onAnalysis((a) => {
+  /** Reads the PR's detail afresh: a Retry of it (the live stream's pushes clear the cache). */
+  const reloadDetail = () => {
+    revalidate([getIssue.key, getIssueAt.key]);
+    void refresh(detail);
+  };
+  // An `analysis` push naming the PR, or the stream's `reset` (anything read before may be stale,
+  // and a push may have been missed): its detail again (the run's state, how far behind, and the
+  // PR's analysis, which says when a newer one than the one shown is ready). Never the graph:
+  // a newer analysis waits for Show it.
+  onSettled(() => {
+    const offAnalysis = onAnalysis((a) => {
       if (names(where(), a.repo, a.number)) void refresh(detail);
-    }),
-  );
+    });
+    const offPush = onPush((p) => {
+      if (p.kind === "reset" || p.kind === "roles") void refresh(detail);
+    });
+    return () => {
+      offAnalysis();
+      offPush();
+    };
+  });
   return (
     <div {...stylex.attrs(s.view)} data-perf="pr-view">
       <TopBar where={where()} graph={graph} detail={detail} />
-      <Errored fallback={(err, reset) => <GraphFailure error={err()} where={where()} detail={detail} reload={reload} reset={reset} />}>
+      <Errored fallback={(err, reset) => <GraphFailure error={err()} where={where()} detail={detail} reload={reload} reloadDetail={reloadDetail} reset={reset} />}>
         <Loading fallback={<div {...stylex.attrs(s.loading)} aria-busy="true" data-perf="view-loading" />}>
           <Body graph={graph} detail={detail} where={where()} reload={reload} />
         </Loading>
@@ -152,7 +167,7 @@ const since = (t: number) => {
  * The graph didn't load: no analysis yet (the empty state, with the start), a migration that
  * failed (its own message), or another failure (Retry). Signed out, to sign in.
  */
-function GraphFailure(props: { error: unknown; where: string; detail: Accessor<IssueDetail>; reload: () => void; reset: () => void }) {
+function GraphFailure(props: { error: unknown; where: string; detail: Accessor<IssueDetail>; reload: () => void; reloadDetail: () => void; reset: () => void }) {
   const retry = () => {
     props.reload();
     props.reset();
@@ -175,14 +190,14 @@ function GraphFailure(props: { error: unknown; where: string; detail: Accessor<I
           </div>
         }
       >
-        <NoAnalysisYet where={props.where} detail={props.detail} load={retry} />
+        <NoAnalysisYet where={props.where} detail={props.detail} load={retry} reloadDetail={props.reloadDetail} />
       </Show>
     </Failure>
   );
 }
 
 /** `NoAnalysis`: the empty state, with the start; an accepted upload's push loads it. */
-function NoAnalysisYet(props: { where: string; detail: Accessor<IssueDetail>; load: () => void }) {
+function NoAnalysisYet(props: { where: string; detail: Accessor<IssueDetail>; load: () => void; reloadDetail: () => void }) {
   onSettled(() =>
     onAnalysis((a) => {
       if (a.analysis !== undefined && names(props.where, a.repo, a.number)) props.load();
@@ -195,8 +210,27 @@ function NoAnalysisYet(props: { where: string; detail: Accessor<IssueDetail>; lo
         beghu never reads your code. Your own agent does: it checks out the PR, maps its parts, what it's for and where it contradicts itself,
         and uploads the map here. Only you can see it.
       </p>
-      <Errored fallback={null}>
-        <Loading fallback={null}>
+      {/* The start needs the PR's detail (its run, what to pin): without it, say so, with Retry. */}
+      <Errored
+        fallback={(err, reset) => (
+          <Failure error={err()}>
+            <p {...stylex.attrs(ui.p, ui.muted)} role="alert" data-perf="no-analysis-failed">
+              Couldn't load the PR's details, so the run can't start from here ·{" "}
+              <button
+                type="button"
+                {...stylex.attrs(ui.pick, ui.pickAccent)}
+                onClick={() => {
+                  props.reloadDetail();
+                  reset();
+                }}
+              >
+                Retry
+              </button>
+            </p>
+          </Failure>
+        )}
+      >
+        <Loading fallback={<div {...stylex.attrs(s.startLoading)} aria-busy="true" />}>
           <AnalyseStart d={props.detail()} />
         </Loading>
       </Errored>
@@ -240,10 +274,25 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
 
   /** The analysis being left by Show it: the selection's place is kept against it. */
   const [leaving, setLeaving] = createSignal<Model>();
-  /** The forwarding note on screen, until the next pick. */
-  const [note, setNote] = createSignal<string>();
-  /** A newer analysis than the one shown: its ID, from the `analysis` push or the detail. */
+  /**
+   * The forwarding note on screen, with the URL's `sel` it was made from and the one it forwarded
+   * to: it stays while the URL says either, and goes with the next pick, or when Back or Forward
+   * moves the URL's selection anywhere else.
+   */
+  const [note, setNote] = createSignal<{ text: string; from: string; to: string }>();
+  /**
+   * A newer analysis than the one shown: its ID, from the `analysis` push, or from the PR's
+   * detail, read again on the stream's `reset` (a push missed while the stream was down).
+   */
   const [newer, setNewer] = createSignal<string>();
+  const urlSel = createMemo(() => {
+    const v = st().sel;
+    return v ? selString(v) : "";
+  });
+  createEffect(urlSel, (now) => {
+    const n = untrack(note);
+    if (n && now !== n.from && now !== n.to) setNote(undefined);
+  });
 
   const forwarded = createMemo(() => forward(st().sel, model(), leaving()));
   const sel = createMemo(() => forwarded().sel, { equals: sameSel });
@@ -255,7 +304,7 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
       const was = st().sel;
       if (leaving()) setLeaving(undefined);
       if (sameSel(was, f.sel)) return;
-      if (f.note) setNote(f.note);
+      if (f.note) setNote({ text: f.note, from: was ? selString(was) : "", to: f.sel ? selString(f.sel) : "" });
       go({ ...st(), sel: f.sel }, true);
     });
   });
@@ -347,6 +396,11 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
     <NavContext value={nav}>
       <ClaimsProvider read={claims}>
         <div ref={row} {...stylex.attrs(s.body)} data-perf="view-body" data-analysis={model().g.id}>
+          <Errored fallback={null}>
+            <Loading fallback={null}>
+              <DetailSaysNewer detail={props.detail} model={model} newer={setNewer} />
+            </Loading>
+          </Errored>
           <Show when={newer()}>
             <div {...stylex.attrs(s.newer)} role="status" data-perf="newer">
               A newer analysis is ready
@@ -376,12 +430,30 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
             />
           </Show>
           <aside aria-label="Details" {...stylex.attrs(s.panel, narrow() ? s.panelNarrow : s.panelWidth(width()))}>
-            <Panel note={note()} dismiss={() => setNote(undefined)} />
+            <Panel note={note()?.text} dismiss={() => setNote(undefined)} />
           </aside>
         </div>
       </ClaimsProvider>
     </NavContext>
   );
+}
+
+/**
+ * The PR's detail says its analysis is newer than the one shown (an upload whose push this tab
+ * missed): the pill. Only a newer one, so a detail read before Show it never offers the older.
+ */
+function DetailSaysNewer(props: { detail: Accessor<IssueDetail>; model: Accessor<Model>; newer: (id: string) => void }) {
+  createEffect(
+    () => {
+      const a = props.detail().pr?.analysis;
+      const g = props.model().g;
+      return a && a.id !== g.id && a.createdAt >= g.createdAt ? a.id : undefined;
+    },
+    (id) => {
+      if (id !== undefined) props.newer(id);
+    },
+  );
+  return null;
 }
 
 const s = stylex.create({
@@ -437,6 +509,7 @@ const s = stylex.create({
     maxWidth: 520,
   },
   emptyTitle: { margin: 0, fontSize: 20 },
+  startLoading: { height: 28 },
   body: {
     display: "flex",
     flexDirection: { default: "row", [media.stacked]: "column" },

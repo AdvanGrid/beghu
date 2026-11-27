@@ -74,19 +74,23 @@ export function graphUrl(where: string): string {
  */
 export const getGraph = query((where: string) => request<Graph>(graphUrl(where)), "analysisGraph");
 
-/** How long a route preload's reads wait for the view to take them: the router's preload window. */
-const HANDOFF_MS = 5_000;
-
-/** The reads the last route preload started, until the view takes each (`takePreloaded`). */
-let handoff: { where: string; at: number; graph?: Promise<Graph>; detail?: Promise<IssueDetail> } | undefined;
+/**
+ * The reads the last route preload of a visit started (a cold load's or a navigation's, not a
+ * hover's), until the view takes each (`takePreloaded`). Every visit's preload replaces it, so
+ * what the view takes is always its own visit's: no age to check, which on a loaded machine
+ * (the view's chunk slow to arrive) would only fetch everything twice.
+ */
+let handoff: { where: string; graph?: Promise<Graph>; detail?: Promise<IssueDetail> } | undefined;
 
 /**
  * The PR view's route preload (router.tsx): the graph's fetch and the PR's detail's, started
- * alongside the view's chunk. The view takes both promises as they are (`takePreloaded`), rather
- * than asking the query cache again: the live stream's opening `reset` clears that cache, which
- * on a cold load lands between the preload and the view's first read, and would fetch them twice.
+ * alongside the view's chunk. On a visit, the view takes both promises as they are
+ * (`takePreloaded`), rather than asking the query cache again: the live stream's opening `reset`
+ * clears that cache, which on a cold load lands between the preload and the view's first read,
+ * and would fetch them twice. A hover's preload (`intent` `preload`) only warms the query cache,
+ * which the view reads if it's still there: a hover may be minutes before the visit.
  */
-export function preloadView(a: At): void {
+export function preloadView(a: At, intent: "initial" | "native" | "navigate" | "preload"): void {
   const where = atString(a);
   const graph = getGraph(where);
   // A failed preload is the view's to show: it reads the same promise.
@@ -94,14 +98,14 @@ export function preloadView(a: At): void {
   const id = untrack(() => idAt(a));
   const detail = id === undefined ? getIssueAt(where) : getIssue(id);
   detail.catch(() => {});
-  handoff = { where: where.toLowerCase(), at: performance.now(), graph, detail };
+  if (intent !== "preload") handoff = { where: where.toLowerCase(), graph, detail };
 }
 
-/** The read of `part` the route preload started for `where`, once, if it's still fresh. */
+/** The read of `part` the visit's route preload started for `where`, once. */
 export function takePreloaded<K extends "graph" | "detail">(where: string, part: K): NonNullable<NonNullable<typeof handoff>[K]> | undefined {
   const h = handoff;
   if (!h || h.where !== where.toLowerCase()) return undefined;
   const got = h[part];
   h[part] = undefined;
-  return performance.now() - h.at < HANDOFF_MS ? (got as NonNullable<NonNullable<typeof handoff>[K]> | undefined) : undefined;
+  return got as NonNullable<NonNullable<typeof handoff>[K]> | undefined;
 }

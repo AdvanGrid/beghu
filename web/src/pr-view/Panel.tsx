@@ -36,8 +36,14 @@ export function Panel(props: { note?: string; dismiss: () => void }) {
           </p>
         )}
       </Show>
-      <Show when={nav.sel()} keyed fallback={<PrPanel />}>
-        {(sel) => <Place sel={sel} />}
+      {/* Keyed on the analysis as well as the selection: after Show it, a place whose ID
+          survived shows the newer analysis's words, with its claims' boundaries afresh. */}
+      <Show when={nav.model()} keyed>
+        {(_model) => (
+          <Show when={nav.sel()} keyed fallback={<PrPanel />}>
+            {(sel) => <Place sel={sel} />}
+          </Show>
+        )}
       </Show>
     </div>
   );

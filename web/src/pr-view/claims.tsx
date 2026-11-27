@@ -20,8 +20,8 @@ export interface ClaimsRead {
   byId: Accessor<Map<string, Claim>>;
   /** Fetches the file again: every place's boundary resets. */
   retry: () => void;
-  /** Bumped by each retry. */
-  attempt: Accessor<number>;
+  /** Which read is current: changes with each retry and each new claims file (Show it). */
+  attempt: Accessor<string>;
 }
 
 const ClaimsContext = createContext<ClaimsRead>();
@@ -39,7 +39,7 @@ export function createClaims(url: Accessor<string>): ClaimsRead {
     }
     return read.claims;
   });
-  return { byId, retry: () => setAttempt((n) => n + 1), attempt };
+  return { byId, retry: () => setAttempt((n) => n + 1), attempt: () => `${url()}#${attempt()}` };
 }
 
 export function ClaimsProvider(props: { read: ClaimsRead; children: import("solid-js").Element }) {
@@ -217,7 +217,10 @@ function Skeleton(props: { n: number }) {
   );
 }
 
-/** The claims didn't load: Retry refetches the one file, which resets every place. */
+/**
+ * The claims didn't load: Retry refetches the one file, which resets every place; so does a new
+ * file (Show it's newer analysis).
+ */
 function EvidenceFailure(props: { error: unknown; reset: () => void }) {
   const read = useClaims();
   createEffect(read.attempt, (now, prev) => {

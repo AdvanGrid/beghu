@@ -87,7 +87,7 @@ const issue = {
 // alongside the chunk's import (shell → (chunk ∥ graph) → draw), and the PR's detail, which the
 // view's live facts come from (its head, how far behind, the run's state), as the panel reads it.
 const view = {
-  preload: (({ params }) => preloadView(at(params.owner ?? "", params.repo ?? "", params.number ?? ""))) satisfies RoutePreloadFunc,
+  preload: (({ params, intent }) => preloadView(at(params.owner ?? "", params.repo ?? "", params.number ?? ""), intent)) satisfies RoutePreloadFunc,
   component: PrView,
 };
 
