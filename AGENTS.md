@@ -32,11 +32,14 @@ CI runs all of these; run them before you commit:
   (CI's three suites at their absolute limits) before a PR. CI's `perf` check runs the suites on
   every PR that touches them and comments the table
 - In `web/`: `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run lint` (StyleX's rules and the colour,
-  `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules'
-  and the highlight.js output reader's Node tests) and
+  `class`/`style` and CSS-import rules in `eslint-rules.js`), `npm run test:lint` (those rules',
+  the highlight.js output reader's and our layout's rules' Node tests) and
   `npx vite build` (which also prerenders the public site, `web/site/`, in its own Node process)
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
+- `cargo run -p fixture --bin pr-fixtures -- layout` after changing the tiler or the recorded
+  analysis: it rewrites the layout suite's committed graphs (`fixtures/pr-view/layout/`), which
+  `cargo test -p fixture` holds to the tiler's output
 - `cargo run -p analysis-fixtures -- check` after changing the analysis crate or anything in
   `fixtures/pr-view/` (CI's `pr-view-fixtures` job): the full validator, snippet check included,
   on every committed recording and case against the real commits, read by SHA from this clone.
@@ -129,8 +132,13 @@ CI runs all of these; run them before you commit:
   AltGr, non-Latin layouts and input-method composition (the suite runs one platform and layout),
   what the setup page records for a Mac's Cmd and Option keys (dead keys included) and a non-Latin
   layout's letters, and the areas of touchpoints no view offers yet. Rebinding itself (swaps,
-  refusals, sequences, other tabs) goes through the setup page (`web/e2e/prefs.spec.ts`). Both
-  web tests run under `npm run test:lint`.
+  refusals, sequences, other tabs) goes through the setup page (`web/e2e/prefs.spec.ts`). And
+  our layout's rules test (`web/src/pr-view/layout/layout.test.ts`), which checks the engine's
+  rules (no overlaps, groups packed from the top, every line routed once and laid one way, no
+  line through a part, trunks exactly where lines share a stretch, an open or fold moving only
+  what it pushes, anchors that hold through a fold) on the committed synthetic graph, a dense
+  scope and random graphs: they're geometry no HTTP answer or page shows. The three web
+  tests run under `npm run test:lint`.
 - **Perf budgets are owner-reviewed.** `perf-budgets.toml` holds every gate's limit with a reason
   (CODEOWNERS). A new gate gets its budget in the same change, calibrated from a measured run
   (+15% for timings, +5% for bytes, exact for counts); a limit never moves just to pass a PR.

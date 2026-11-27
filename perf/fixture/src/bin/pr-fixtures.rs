@@ -10,6 +10,9 @@
 //!     TO's, as JSON: [{path, body}].
 //! pr-fixtures tile [--out DIR]
 //!     Writes the tiles (if this generator hasn't) and prints their paths.
+//! pr-fixtures layout
+//!     Writes the layout suite's graphs (each tile's drawable graph) into
+//!     fixtures/pr-view/layout/, to commit: the tiler's test fails while they differ.
 //! ```
 
 use fixture::{recorded, tile};
@@ -73,7 +76,20 @@ fn main() {
                 println!("{name} #{number}: {} {}", analysis.display(), pr.display());
             }
         }
-        _ => fail("usage: pr-fixtures versions|moves NUMBER FROM TO|tile [--out DIR]"),
+        Some("layout") => {
+            let dir = tile::layout_dir();
+            std::fs::create_dir_all(&dir)
+                .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display())));
+            for (name, text) in
+                tile::layout_graphs().unwrap_or_else(|e| fail(&format!("tiling: {e}")))
+            {
+                let path = dir.join(name);
+                std::fs::write(&path, text)
+                    .unwrap_or_else(|e| fail(&format!("{}: {e}", path.display())));
+                println!("{}", path.display());
+            }
+        }
+        _ => fail("usage: pr-fixtures versions|moves NUMBER FROM TO|tile [--out DIR]|layout"),
     }
 }
 

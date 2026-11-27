@@ -3,7 +3,9 @@
 //   run SUITE --bin DIR --web DIR [--scale 50k] [--data DIR] [--out FILE] [--iterations N] [--commit SHA] [--keep-data]
 //       One suite (server, load or browser) against a stack started from a release build (`--bin`
 //       holds beghu, fake-github and fixture) and a web build (`--web`), on fresh data. Writes the
-//       results as JSON and prints the suite's verdicts; exits 1 if a gate fails.
+//       results as JSON and prints the suite's verdicts; exits 1 if a gate fails. The layout suite
+//       (`run layout [--out FILE] [--iterations N] [--commit SHA]`) needs no build or stack: it
+//       runs this tree's layout engine in-process.
 //   report FILE... [--md FILE] [--title T] [--expect SUITE,…]
 //       The verdicts on every gate of the suites in the results files, and of each --expect'ed
 //       suite (one with no results shows its gates as missing), as a Markdown table (the PR
@@ -20,9 +22,9 @@ import { execFileSync } from "node:child_process";
 import { check, loadBudgets, recalibrate, type Results } from "./gates.ts";
 import { local } from "./local.ts";
 import { markdown, summaryLine, failed } from "./report.ts";
-import { BUDGETS, fixtureFor, ROOT, seed, start } from "./stack.ts";
+import { BUDGETS, fixtureFor, ROOT, seed, start, type Stack } from "./stack.ts";
 import { runSuite, results } from "./suite.ts";
-import { suiteProbes, SUITES, WARMUP, type SuiteName } from "./suites.ts";
+import { needsStack, suiteProbes, SUITES, WARMUP, type SuiteName } from "./suites.ts";
 
 function parse(args: string[], flags: string[], bools: string[] = []) {
   const opts: Record<string, string> = {};
@@ -44,22 +46,25 @@ function parse(args: string[], flags: string[], bools: string[] = []) {
 async function run(args: string[]): Promise<number> {
   const { opts, set, pos } = parse(args, ["--bin", "--web", "--scale", "--data", "--out", "--iterations", "--commit"], ["--keep-data"]);
   const suite = pos[0] as SuiteName;
-  if (!SUITES.includes(suite) || !opts["--bin"] || !opts["--web"]) {
+  if (!SUITES.includes(suite) || (needsStack(suite) && (!opts["--bin"] || !opts["--web"]))) {
     throw new Error(`usage: run ${SUITES.join("|")} --bin DIR --web DIR [--scale 50k] [--data DIR] [--out FILE] [--iterations N]`);
   }
   const budgets = loadBudgets(BUDGETS);
   const scale = opts["--scale"] ?? budgets.scale;
   const commit = opts["--commit"] ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
-  const build = { bin: resolve(opts["--bin"]), web: resolve(opts["--web"]), commit };
-  const data = resolve(opts["--data"] ?? join(ROOT, ".dev", "perf", `ci-${suite}`));
   const out = resolve(opts["--out"] ?? join(ROOT, ".dev", "perf", `${suite}.json`));
   mkdirSync(dirname(out), { recursive: true });
   const started = new Date();
-  const fixture = fixtureFor(build, scale);
-  // Fresh data, unless --keep-data reuses what an earlier run seeded from the same fixture
-  // (a quicker rerun locally; the write probes change it a little).
-  seed(build, fixture, data, !set.has("--keep-data"));
-  const stack = await start(suite, build, fixture, data, `${out}.log`);
+  let stack: Stack | null = null;
+  if (needsStack(suite)) {
+    const build = { bin: resolve(opts["--bin"]!), web: resolve(opts["--web"]!), commit };
+    const data = resolve(opts["--data"] ?? join(ROOT, ".dev", "perf", `ci-${suite}`));
+    const fixture = fixtureFor(build, scale);
+    // Fresh data, unless --keep-data reuses what an earlier run seeded from the same fixture
+    // (a quicker rerun locally; the write probes change it a little).
+    seed(build, fixture, data, !set.has("--keep-data"));
+    stack = await start(suite, build, fixture, data, `${out}.log`);
+  }
   try {
     const { probes, iterations, close } = await suiteProbes(suite, stack);
     try {
@@ -75,7 +80,7 @@ async function run(args: string[]): Promise<number> {
       await close();
     }
   } finally {
-    await stack.stop();
+    await stack?.stop();
   }
 }
 

@@ -375,3 +375,85 @@ measured = 6
 report_only = true
 spec = 0
 reason = "Long tasks over 100 ms while wheeling 18 000 px down the list, the median over the samples. Report-only until a CI run calibrates it: the only measurement so far (6, of 104 to 289 ms) is from a dev host at load 50 to 110 on 32 cores, where Chromium's main thread is starved, not from the app. The spec asks for none: set max from CI's first run (perf/harness/src/main.ts calibrate) and drop report_only."
+
+# ---- layout: our layout (web/src/pr-view/layout/) in Node on the committed synthetic graph, from the drawable graph to coordinates (perf/harness/src/layout.ts) ----
+# Calibrated on the dev host (32 cores) at a load of 35 to 40 from other work: three runs of the
+# suite, each timing the median of 10, and each limit the median of the three +15% (the runs'
+# medians are in each reason). Laid out from its anchors, a scope now routes no line (each keeps
+# its folded drawing's levels): the open drawings' medians fell 37-38% from 215c22f's, the top
+# level's 16-27% (the lighter load alone). CI measured the branch at d5ac9bc, before the scopes
+# were laid out from their folded drawings alone: top 6.5 ms, open 21.3, top-3x 51.5, open-3x
+# 100.8, 4 to 5x under what this host measured for that code at a load of 30 to 36 (25.9, 81.9,
+# 199.3, 497.0), so the 0.5 s for 3x fully open that would move the layout to a worker (#166,
+# #180) holds on the main thread.
+# Crossings and area are exact: the engine is deterministic on the fixed graph, so any change to
+# the drawing moves them, and a worse one fails like a slower one. Crossings count as the
+# prototypes did (#163): a line's horizontal over another's vertical, once per point, never
+# between two lines on one trunk. Area is width x height in px². The 3x drawings are larger than
+# the suite's first calibration (154bfa4: top-3x 18,840,926 px², open-3x 95,847,516) because their
+# gutters are wider: tracks for every line's vertical, room for counts, the gap where one group
+# crosses to the next. That bought 31% fewer crossings at d5ac9bc (252 to 174, 289 to 200); laying
+# out every column of a group from the top gives back part of it fully open (225). Keeping every
+# line on its folded route from the anchors takes back more of it fully open (77 to 65, 225 to 223),
+# for a little more area: a line that passed under a column in the folded drawing still does,
+# below that column's open frames.
+
+[gates."layout.top.ms"]
+max = 28.2
+measured = 24.51
+reason = "The top level at #2627's shape (tiled-1x: 76 top-level parts, 159 drawn lines): the time to lay it out, median of 10. Runs at load 35-40: 24.51, 22.48, 28.71 ms. CI at d5ac9bc: 6.5 ms."
+
+[gates."layout.top.crossings"]
+max = 44
+measured = 44
+reason = "The top level at #2627's shape: its crossings (the prototype's street routing drew 77 on #2627 itself, with ELK's at 2,114). 46 at d5ac9bc: every column of a group now starts at the top, and a part with many lines is drawn taller."
+
+[gates."layout.top.area"]
+max = 7222677
+measured = 7222677
+reason = "The top level at #2627's shape: its area (4,399 x 1,641.9 px; a part with more lines than fit 4 px apart is drawn taller)."
+
+[gates."layout.open.ms"]
+max = 66.9
+measured = 58.21
+reason = "Every block open at #2627's shape (tiled-1x fully open: 181 parts and frames, 23 open blocks): the time to lay it out, median of 10, each scope with open blocks laid out folded first for its anchors, then from them with no line routed again. Runs at load 35-40: 55.3, 58.21, 70.27 ms. CI at d5ac9bc: 21.3 ms."
+
+[gates."layout.open.crossings"]
+max = 65
+measured = 65
+reason = "Every block open at #2627's shape: its crossings. 77 at 215c22f, 74 at d5ac9bc: from its anchors every line now keeps its folded drawing's route, its levels moved with its columns' parts, where it used to be routed again round the open frames."
+
+[gates."layout.open.area"]
+max = 28998814
+measured = 28998814
+reason = "Every block open at #2627's shape: its area (8,879 x 3,266 px; 8,896 x 3,214.6 at 215c22f, taller now because one line, dot-github to ext-github-actions, passed under a column folded and still does, below that column's open frames)."
+
+[gates."layout.top-3x.ms"]
+max = 153.2
+measured = 133.2
+reason = "The top level at 3x (tiled-3x: 228 top-level parts, 479 drawn lines): the time to lay it out, median of 10. Runs at load 35-40: 128.11, 133.2, 162.9 ms. CI at d5ac9bc: 51.5 ms."
+
+[gates."layout.top-3x.crossings"]
+max = 180
+measured = 180
+reason = "The top level at 3x: its crossings (174 at d5ac9bc, 252 at the suite's first calibration). Up from 174: a part with more lines than fit 4 px apart is drawn taller."
+
+[gates."layout.top-3x.area"]
+max = 19874113
+measured = 19874113
+reason = "The top level at 3x: its area (6,513.5 x 3,051.2 px; wider than at 154bfa4 for the gutters' tracks, see above)."
+
+[gates."layout.open-3x.ms"]
+max = 306.6
+measured = 266.57
+reason = "Every block open at 3x (543 parts and frames, 69 open blocks), the heaviest drawing: the time to lay it out, median of 10. Runs at load 35-40: 266.57, 263.4, 337.71 ms. CI at d5ac9bc: 100.8 ms (this host, at load 30-36: 497.0 ms), so the 0.5 s past which the layout would move to a worker (#166, #180) holds on the main thread."
+
+[gates."layout.open-3x.crossings"]
+max = 223
+measured = 223
+reason = "Every block open at 3x: its crossings (225 at 215c22f, 200 at d5ac9bc, 289 at the suite's first calibration). Down from 225: from its anchors every line keeps its folded drawing's route; up from 200 at d5ac9bc because every column of a group starts at the top, and from anchors no gap widens for the routes."
+
+[gates."layout.open-3x.area"]
+max = 104935362
+measured = 104935362
+reason = "Every block open at 3x: its area (10,993.5 x 9,545.2 px: tall, because the recorded PR's crates column holds most of the open frames; 11,004.5 x 9,284 at 215c22f, taller now because one line, x2-crates-server to x2-web, passed under a column folded and still does, below that column's open frames; wider than at 154bfa4 for the gutters' tracks, see above)."

@@ -9,7 +9,9 @@
 // samples both in turn, swapping which goes first, so a busy machine slows both alike: a timing
 // fails when this tree's median is more than `[local] slower_than` slower than main's (and slower
 // by more than `floor_ms`, below which loopback timings are noise). Bytes and counts are held to
-// their budgets as in CI. `--full` runs CI's three suites against this tree alone, at their
+// their budgets as in CI. The layout suite needs neither stack: it runs this tree's layout engine
+// and main's (from main's worktree) in this process, in turn, when main has one, and else holds
+// this tree's timings to their budgets. `--full` runs CI's suites against this tree alone, at their
 // absolute limits. `--build-only` stops once both trees are built and seeded. GLOBs pick gates
 // by name (`'server.*'`, `'*.scan'`); a probe runs if any of its gates is picked.
 //
@@ -21,8 +23,9 @@ import { join } from "node:path";
 import { check, loadBudgets, selected, unitOf, type Results, type Row } from "./gates.ts";
 import { markdown, summaryLine, failed } from "./report.ts";
 import { BUDGETS, fixtureFor, ROOT, seed, start, type Build, type Stack } from "./stack.ts";
-import { measurePairs, results, runSuite, type Probe } from "./suite.ts";
-import { SUITES, suiteProbes, WARMUP } from "./suites.ts";
+import { measure, measurePairs, results, runSuite, type Probe } from "./suite.ts";
+import { needsStack, SUITES, suiteProbes, WARMUP } from "./suites.ts";
+import { layoutProbes } from "./layout.ts";
 import { browserProbes, launch, prepare } from "./browser.ts";
 import { serverProbes } from "./server.ts";
 
@@ -49,6 +52,8 @@ const QUICK = {
   /** Samples per timing, per tree. */
   serverIterations: 5,
   browserIterations: 4,
+  /** The layout suite in full: it's in-process and takes seconds. */
+  layoutIterations: 10,
 };
 
 const BINARIES = ["beghu-server", "fake-github", "fixture"];
@@ -174,8 +179,11 @@ export async function local(opts: { full: boolean; fresh: boolean; buildOnly: bo
     for (const suite of SUITES) {
       if (!selectedSuite(suite, opts.globs)) continue;
       const data = join(OUT, "head", "data");
-      seed(head, headFixture, data, true);
-      const stack = await start(`head-${suite}`, head, headFixture, data, join(OUT, `${suite}.log`));
+      let stack: Stack | null = null;
+      if (needsStack(suite)) {
+        seed(head, headFixture, data, true);
+        stack = await start(`head-${suite}`, head, headFixture, data, join(OUT, `${suite}.log`));
+      }
       try {
         const { probes, iterations, close } = await suiteProbes(suite, stack);
         const picked = probes.filter((p) => selectedProbe(p, opts.globs));
@@ -187,8 +195,10 @@ export async function local(opts: { full: boolean; fresh: boolean; buildOnly: bo
           await close();
         }
       } finally {
-        await stack.stop();
-        rmSync(join(data, "seeded.json"), { force: true });
+        if (stack) {
+          await stack.stop();
+          rmSync(join(data, "seeded.json"), { force: true });
+        }
       }
     }
     const rows = check(all, budgets, opts.globs).filter((r) => r.verdict !== "missing" || opts.globs.length === 0);
@@ -219,12 +229,18 @@ export async function local(opts: { full: boolean; fresh: boolean; buildOnly: bo
   let rows: Row[];
   try {
     const [ha, hb] = await quick(a, b, opts.globs, 1);
+    const [la, lb] = await quickLayout(main.commit, opts.globs, 1);
+    Object.assign(ha, la);
+    Object.assign(hb, lb);
     rows = compare(ha, hb, budgets, opts.globs);
     // A timing that came out slower is measured once more, twice as long, and that decides it.
     const slow = rows.filter((r) => r.verdict === "fail" && r.slower !== undefined).map((r) => r.gate);
     if (slow.length) {
       console.log(`confirming ${slow.join(", ")}`);
       const [ca, cb] = await quick(a, b, slow, 2);
+      const [cla, clb] = await quickLayout(main.commit, slow, 2);
+      Object.assign(ca, cla);
+      Object.assign(cb, clb);
       for (const g of slow) {
         if (!ca[g] || !cb[g]) continue;
         ha[g] = { ...(ca[g] as object), first: (ha[g] as { value: number }).value };
@@ -289,12 +305,37 @@ async function quick(a: Stack, b: Stack, globs: string[], times: number): Promis
 }
 
 /**
+ * The layout suite on this tree and on main (its worktree, at the commit built), sampled in turn,
+ * `times` as many samples as the quick set's; a drawing main doesn't have (it has no layout engine
+ * yet, or not that drawing) is this tree's alone, so its timing is held to its budget.
+ */
+async function quickLayout(mainCommit: string, globs: string[], times: number): Promise<[Record<string, unknown>, Record<string, unknown>]> {
+  if (globs.length && !globs.some((g) => g.startsWith("layout") || g.startsWith("*"))) return [{}, {}];
+  const pick = (ps: Probe[] | null) => (ps ?? []).filter((p) => selectedProbe(p, globs));
+  const head = pick(await layoutProbes(ROOT));
+  const src = join(SHARED, "main-src");
+  const atMain = existsSync(join(src, ".git")) && git(["rev-parse", "HEAD"], src) === mainCommit;
+  const main = atMain ? pick(await layoutProbes(src)) : [];
+  if (!head.length) return [{}, {}];
+  const t = Date.now();
+  const pairs = head.flatMap((p) => main.filter((m) => m.name === p.name).map((m) => [p, m] as [Probe, Probe]));
+  const alone = head.filter((p) => !pairs.some(([q]) => q === p));
+  console.log(`layout: ${head.map((p) => p.name).join(", ")}${alone.length ? ` (not on main, budgets only: ${alone.map((p) => p.name).join(", ")})` : ""}`);
+  const iterations = QUICK.layoutIterations * times;
+  const [pa, pb] = pairs.length ? await measurePairs(pairs, iterations, WARMUP.layout) : [{}, {}];
+  const solo = alone.length ? await measure(alone, iterations, WARMUP.layout) : {};
+  const out: [Record<string, unknown>, Record<string, unknown>] = [{ ...pa, ...solo }, pb];
+  console.log(`  layout probes: ${Math.round((Date.now() - t) / 1000)} s`);
+  return out;
+}
+
+/**
  * This tree against main: a timing by how much slower it is, anything else against its budget.
  * A main without a metric (it predates the gate) leaves only the budget.
  */
 function compare(head: Record<string, unknown>, main: Record<string, unknown>, budgets: ReturnType<typeof loadBudgets>, globs: string[]): Row[] {
   const r = (m: Record<string, unknown>, suite: string) => ({ suite, scale: budgets.scale, commit: "", started: "", host: { cpus: 0, model: "", load: [] }, metrics: m }) as Results;
-  const rows = check([r(head, "server"), r(head, "browser")], budgets, globs).filter((x) => x.value !== null);
+  const rows = check([r(head, "server"), r(head, "browser"), r(head, "layout")], budgets, globs).filter((x) => x.value !== null);
   for (const row of rows) {
     if (unitOf(row.gate) !== "ms") continue;
     const m = (main[row.gate] as { value: number } | undefined)?.value;
