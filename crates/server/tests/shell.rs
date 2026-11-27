@@ -3,12 +3,14 @@
 //! fetches start alongside the JS. An issue's URL also modulepreloads the issue panel's chunk, so
 //! it loads alongside the entry instead of after it; a Tree mode URL (`mode=tree`) preloads the
 //! tree's first fetch and its chunk instead of the list page, as a Focus view URL on an issue
-//! (`mode=focus&focus=`) does. It names its build, so the tab
-//! running it can tell when the server has moved on to another (a deploy).
+//! (`mode=focus&focus=`) does. A PR view's URL preloads `/api/me`, the PR's detail and its
+//! analysis graph, and modulepreloads the view's chunk and the chunks it imports, with no list or
+//! facets. It names its build, so the tab running it can tell when the server has moved on to
+//! another (a deploy).
 
 mod common;
 
-use common::{Browser, PANEL_CHUNK, TREE_CHUNK, start};
+use common::{Browser, PANEL_CHUNK, SHARED_CHUNK, TREE_CHUNK, VIEW_CHUNK, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_preloads_api_me_the_facets_the_urls_list_page_and_its_issue_and_caches_for_five_minutes()
@@ -177,6 +179,8 @@ async fn every_app_route_gets_the_shell() {
         "/issues",
         "/acme/web/issues/1",
         "/acme/web/pull/1",
+        "/acme/web/pull/1/view",
+        "/acme/web/pull/1/view?sel=part:api",
         "/new",
         "/new?repo=acme%2Fweb",
         "/repos",
@@ -236,5 +240,60 @@ async fn a_tree_mode_url_preloads_the_tree_and_its_chunk_in_place_of_the_list_pa
         let page = html(url).await;
         assert!(!page.contains("/api/tree"), "{url}");
         assert!(!page.contains(&tree), "{url}");
+    }
+}
+
+/// The PR view's path (`/:owner/:repo/pull/:number/view`, web/src/router.tsx) gets the shell,
+/// with its own preloads: `/api/me`, the PR's detail and its analysis graph (as
+/// web/src/analysis.ts fetches them), and the view's chunk with the chunk it imports; no list
+/// page or facets, which the view doesn't show, and not the issue panel's chunk.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pr_view_url_preloads_the_pr_its_graph_and_the_views_chunks_and_no_list() {
+    let s = start().await;
+    let html = |url: &'static str| {
+        let s = &s;
+        async move {
+            let res = s.get(&mut Browser::default(), url).await;
+            assert_eq!(res.status(), 200, "{url}");
+            assert_eq!(res.headers()["cache-control"], "private, max-age=300");
+            res.text().await.unwrap()
+        }
+    };
+    let preload =
+        |href: &str| format!(r#"<link rel="preload" href="{href}" as="fetch" crossorigin>"#);
+    let module = |chunk: &str| format!(r#"<link rel="modulepreload" crossorigin href="/{chunk}">"#);
+    for url in [
+        "/acme/web/pull/12/view",
+        "/acme/web/pull/012/view?sel=part:api&lens=data",
+    ] {
+        let page = html(url).await;
+        for tag in [
+            preload("/api/me"),
+            preload("/api/at/acme/web/12"),
+            preload("/api/acme/web/pulls/12/analysis"),
+            module(VIEW_CHUNK),
+            module(SHARED_CHUNK),
+        ] {
+            assert!(page.contains(&tag), "{url}: {tag} in {page}");
+        }
+        assert!(page.contains(r#"<meta name="beghu-build""#), "{url}");
+        for absent in [
+            "/api/issues",
+            "/api/facets",
+            "/api/tree",
+            PANEL_CHUNK,
+            "assets/index-test.js",
+        ] {
+            assert!(!page.contains(absent), "{url}: {absent} in {page}");
+        }
+    }
+    // A number that isn't one, or a name the app would escape: the view's code and `/api/me`,
+    // and no read the app wouldn't make.
+    for url in ["/acme/web/pull/x/view", "/acme/we%20b/pull/1/view"] {
+        let page = html(url).await;
+        assert!(page.contains(&module(VIEW_CHUNK)), "{url}");
+        assert!(page.contains(&preload("/api/me")), "{url}");
+        assert!(!page.contains("/api/at/"), "{url}: {page}");
+        assert!(!page.contains("/analysis"), "{url}: {page}");
     }
 }

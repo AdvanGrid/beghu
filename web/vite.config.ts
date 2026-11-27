@@ -22,13 +22,25 @@ const THEME = "<!--beghu:theme-->";
 
 /**
  * The same preloads the server's shell writes for a URL (crates/server/src/shell.rs): the data,
- * and on an issue's URL the panel's code (in Tree mode the tree's), which Vite serves from its
- * source path in dev.
+ * and on an issue's URL the panel's code (in Tree mode the tree's; on a PR view's, the view's),
+ * which Vite serves from its source path in dev.
  */
 function preloads(url: string): string {
   const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
   const path = url.includes("?") ? url.slice(0, url.indexOf("?")) : url;
   const attr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const fetches = (hrefs: string[]) => hrefs.map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`).join("");
+  // A PR view (`/acme/web/pull/7/view`): no list or filter bar, so their reads aren't preloaded;
+  // the PR's detail and its analysis graph are, with the view's code.
+  const view = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/pull\/(\d+)\/view$/.exec(path);
+  if (view && BigInt(view[3]!) <= 2n ** 63n - 1n) {
+    const number = BigInt(view[3]!);
+    return (
+      fetches(["/api/me", `/api/at/${view[1]}/${view[2]}/${number}`, `/api/${view[1]}/${view[2]}/pulls/${number}/analysis`]) +
+      '<link rel="modulepreload" crossorigin href="/src/pr-view/View.tsx">'
+    );
+  }
+  if (/^\/[^/]+\/[^/]+\/pull\/[^/]+\/view$/.test(path)) return fetches(["/api/me"]) + '<link rel="modulepreload" crossorigin href="/src/pr-view/View.tsx">';
   // An issue's URL (`/acme/web/issues/12`, `/pull/` for a PR): its detail by where it is, in the
   // canonical form the app fetches (leading zeros dropped), only for a number in range and an
   // owner and repo GitHub would name.
@@ -37,9 +49,7 @@ function preloads(url: string): string {
   const issue = at && number! <= 2n ** 63n - 1n ? [`/api/at/${at[1]}/${at[2]}/${number}`] : [];
   // Tree mode (`mode=tree`) fetches the tree first, not the list.
   const tree = q.slice(1).split("&").includes("mode=tree");
-  const data = ["/api/me", "/api/facets", `/api/${tree ? "tree" : "issues"}${q.length > 1 ? q : ""}`, ...issue]
-    .map((href) => `<link rel="preload" href="${attr(href)}" as="fetch" crossorigin>`)
-    .join("");
+  const data = fetches(["/api/me", "/api/facets", `/api/${tree ? "tree" : "issues"}${q.length > 1 ? q : ""}`, ...issue]);
   const panel = /^\/[^/]+\/[^/]+\/(?:issues|pull)\/[^/]+$/.test(path) ? '<link rel="modulepreload" crossorigin href="/src/IssuePanel.tsx">' : "";
   const treeCode = tree ? '<link rel="modulepreload" crossorigin href="/src/IssueTree.tsx">' : "";
   return data + panel + treeCode;

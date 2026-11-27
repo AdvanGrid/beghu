@@ -625,6 +625,7 @@ pub fn router(app: App) -> Router {
         .route("/issues", get(shell::shell))
         .route("/{owner}/{repo}/issues/{number}", get(shell::shell))
         .route("/{owner}/{repo}/pull/{number}", get(shell::shell))
+        .route("/{owner}/{repo}/pull/{number}/view", get(shell::shell))
         .route("/new", get(shell::shell))
         .route("/repos", get(shell::shell))
         .route("/prefs", get(shell::shell))

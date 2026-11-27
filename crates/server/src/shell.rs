@@ -15,6 +15,11 @@
 //! link fetches it alongside the entry instead of after it; a Tree mode URL, for the tree's. The
 //! chunks' hashed names come from the build's Vite manifest, read once at startup.
 //!
+//! A PR view's URL (`/:owner/:repo/pull/:number/view`) shows no list or filter bar, so it gets
+//! neither's preload: `/api/me`, the PR's detail and its analysis graph
+//! (`/api/:owner/:repo/pulls/:number/analysis`), and the view's chunk with the chunks it imports.
+//! A cold open is then shell → (entry ∥ chunk ∥ graph) → draw.
+//!
 //! The shell names the build it belongs to (`<meta name="beghu-build">`, the server's build id),
 //! since its scripts are that build's. A tab compares it with the `X-Beghu-Build` of beghu's
 //! answers and of its stream's opening `reset`: once the server runs another build (a deploy),
@@ -34,6 +39,8 @@ pub const MARKER: &str = "<!--beghu:preload-->";
 const PANEL_MODULE: &str = "src/IssuePanel.tsx";
 /// Tree mode's source module (`web/src/Root.tsx` imports it lazily).
 const TREE_MODULE: &str = "src/IssueTree.tsx";
+/// The PR view's source module (`web/src/router.tsx` imports it lazily).
+const VIEW_MODULE: &str = "src/pr-view/View.tsx";
 
 /// The built web app's shell: the template and what it preloads besides data.
 pub struct Shell {
@@ -42,6 +49,9 @@ pub struct Shell {
     panel_chunk: String,
     /// Tree mode's chunk, `assets/IssueTree-<hash>.js`.
     tree_chunk: String,
+    /// The PR view's chunk, `assets/View-<hash>.js`, then the chunks it imports statically
+    /// (code it shares with the PR panel's), the entry's aside.
+    view_chunks: Vec<String>,
 }
 
 impl Shell {
@@ -74,10 +84,30 @@ impl Shell {
                 .map(str::to_owned)
                 .ok_or_else(|| bad(format!("names no assets/*.js chunk for {module}")))
         };
+        // The view's chunk and what it imports, at any depth, but the entry (first-load JS).
+        let mut view_chunks = vec![chunk(VIEW_MODULE)?];
+        let mut todo = vec![VIEW_MODULE.to_owned()];
+        let mut seen = std::collections::HashSet::from([VIEW_MODULE.to_owned()]);
+        while let Some(module) = todo.pop() {
+            for import in manifest[&module]["imports"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let Some(key) = import.as_str() else { continue };
+                if manifest[key]["isEntry"].as_bool() == Some(true) || !seen.insert(key.to_owned())
+                {
+                    continue;
+                }
+                view_chunks.push(chunk(key)?);
+                todo.push(key.to_owned());
+            }
+        }
         Ok(Shell {
             template,
             panel_chunk: chunk(PANEL_MODULE)?,
             tree_chunk: chunk(TREE_MODULE)?,
+            view_chunks,
         })
     }
 
@@ -87,6 +117,16 @@ impl Shell {
             r#"<meta name="beghu-build" content="{}">"#,
             escape_attr(build)
         );
+        if view_at(path).is_some() {
+            tags.push_str(&view_preloads(path));
+            for c in &self.view_chunks {
+                tags.push_str(&format!(
+                    r#"<link rel="modulepreload" crossorigin href="/{}">"#,
+                    escape_attr(c)
+                ));
+            }
+            return self.template.replacen(MARKER, &tags, 1);
+        }
         tags.push_str(&preloads(path, query));
         // The route the app matches renders the panel, whether or not the issue is one the
         // server will find.
@@ -133,6 +173,51 @@ fn issue_at(path: &str) -> Option<(&str, &str, &str)> {
     (whole && matches!(kind, "issues" | "pull")).then_some((owner, repo, number))
 }
 
+/// A PR view's URL as the app's route matches it (`web/src/router.tsx`): its owner, repo and
+/// number, each one non-empty segment.
+fn view_at(path: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = path.strip_prefix('/')?.split('/');
+    let (owner, repo, kind, number, view) = (
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+        parts.next()?,
+    );
+    let whole = parts.next().is_none() && [owner, repo, number].iter().all(|p| !p.is_empty());
+    (whole && kind == "pull" && view == "view").then_some((owner, repo, number))
+}
+
+/// Whether a URL segment names an owner or repo as GitHub would, so the app's escaping of it is
+/// the shell's.
+fn plain_name(n: &str) -> bool {
+    n.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+fn preload_tag(href: &str) -> String {
+    format!(
+        r#"<link rel="preload" href="{}" as="fetch" crossorigin>"#,
+        escape_attr(href)
+    )
+}
+
+/// A PR view's data preloads: `/api/me`, and for a plain owner, repo and number in range the PR's
+/// detail and its analysis graph, in the form the app fetches (`web/src/analysis.ts`).
+fn view_preloads(path: &str) -> String {
+    let mut hrefs = vec![String::from("/api/me")];
+    if let Some((owner, repo, number)) = view_at(path)
+        .filter(|(owner, repo, number)| {
+            plain_name(owner) && plain_name(repo) && number.bytes().all(|b| b.is_ascii_digit())
+        })
+        .and_then(|(owner, repo, number)| Some((owner, repo, number.parse::<i64>().ok()?)))
+    {
+        hrefs.push(format!("/api/at/{owner}/{repo}/{number}"));
+        hrefs.push(format!("/api/{owner}/{repo}/pulls/{number}/analysis"));
+    }
+    hrefs.iter().map(|h| preload_tag(h)).collect()
+}
+
 /// The data preload tags for an app URL's path and query string.
 fn preloads(path: &str, query: Option<&str>) -> String {
     let route = if tree_mode(query) {
@@ -148,28 +233,15 @@ fn preloads(path: &str, query: Option<&str>) -> String {
     // In the canonical form the app fetches (`/acme/web/issues/007` opens number 7). Anything
     // that isn't a number in range, or names an owner or repo GitHub wouldn't (whose escaping
     // might differ from the app's), gets no preload.
-    let name = |n: &str| {
-        n.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-    };
     if let Some((owner, repo, number)) = issue_at(path)
         .filter(|(owner, repo, number)| {
-            name(owner) && name(repo) && number.bytes().all(|b| b.is_ascii_digit())
+            plain_name(owner) && plain_name(repo) && number.bytes().all(|b| b.is_ascii_digit())
         })
         .and_then(|(owner, repo, number)| Some((owner, repo, number.parse::<i64>().ok()?)))
     {
         hrefs.push(format!("/api/at/{owner}/{repo}/{number}"));
     }
-    hrefs
-        .iter()
-        .map(|href| {
-            format!(
-                r#"<link rel="preload" href="{}" as="fetch" crossorigin>"#,
-                escape_attr(href)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    hrefs.iter().map(|h| preload_tag(h)).collect()
 }
 
 pub async fn shell(State(app): State<App>, OriginalUri(uri): OriginalUri) -> Response {
