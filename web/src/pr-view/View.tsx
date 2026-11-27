@@ -29,6 +29,7 @@ import { colors, fonts, media } from "../tokens.stylex";
 import { Canvas } from "./Canvas";
 import { ClaimsProvider, createClaims } from "./claims";
 import { forward } from "./forward";
+import { outsideBoxFacet } from "./layout/graph";
 import { buildModel, type Model } from "./model";
 import { NavContext, type Nav } from "./nav";
 import { Panel } from "./Panel";
@@ -273,7 +274,9 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
   const navigate = useNavigate();
   const model = createMemo(() => buildModel(props.graph()));
   const claims = createClaims(() => model().g.claimsUrl);
-  const st = createMemo(() => parseState(location.search));
+  /** Boxes' default for outside systems in this analysis, which the URL leaves out. */
+  const outside = createMemo(() => outsideBoxFacet(model().a.facets));
+  const st = createMemo(() => parseState(location.search, outside()));
 
   /** The analysis being left by Show it: the selection's place is kept against it. */
   const [leaving, setLeaving] = createSignal<Model>();
@@ -313,7 +316,7 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
   });
 
   const go = (next: ReturnType<typeof parseState>, replace: boolean) => {
-    const url = location.pathname + writeState(next);
+    const url = location.pathname + writeState(next, untrack(outside));
     if (url === location.pathname + location.search) return;
     navigate(url, { replace, scroll: false, state: location.state });
   };

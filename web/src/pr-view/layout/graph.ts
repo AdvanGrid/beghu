@@ -196,7 +196,7 @@ export function layoutInput(g: DrawableGraph, view: View, previous?: Layout): Dr
     if (id === ROOT && view.boxes) s.boxes = boxesOf(parts);
     return s;
   };
-  const outsideFacet = g.facets.find((f) => f.id.startsWith("outside-") && f.appliesTo === "node")?.id;
+  const outsideFacet = outsideBoxFacet(g.facets);
   const boxesOf = (parts: Part[]): Box[] => {
     const groups = new Map<string, string[]>();
     for (const p of parts) {
@@ -217,4 +217,12 @@ export function layoutInput(g: DrawableGraph, view: View, previous?: Layout): Dr
 
   const members = new Map([...lines].map(([id, d]) => [id, d.members]));
   return { input: { root: scopeOf(ROOT), previous }, members, drawnAs, both };
+}
+
+/**
+ * The facet that boxes outside systems at the top level by default (Boxes' outside slot, empty):
+ * the first `outside-*` facet for nodes, the required "What it does for this system".
+ */
+export function outsideBoxFacet(facets: readonly { id: string; appliesTo: AppliesTo }[]): string | undefined {
+  return facets.find((f) => f.id.startsWith("outside-") && f.appliesTo === "node")?.id;
 }

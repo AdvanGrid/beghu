@@ -349,7 +349,9 @@ test("A setting replaces its history entry, normalised, and the panel follows it
   expect(await page.evaluate(() => history.length)).toBe(entries);
 
   // A URL that spells out the defaults reads as them, and the next write drops them.
-  await open(page, "?sel=part:crates-fake-github&lines=call,runtime,data,event&boxes=folder&lens=modules");
+  // `boxes=folder,outside-role` is both slots' defaults: own parts by folder, outside systems by
+  // the analysis's first `outside-*` facet.
+  await open(page, "?sel=part:crates-fake-github&lines=call,runtime,data,event&boxes=folder,outside-role&lens=modules");
   await tests.check();
   await expect.poll(() => new URL(page.url()).search).toBe("?sel=part:crates-fake-github&lines=runtime,test,call,data,event");
 });

@@ -16,9 +16,10 @@
 // - `lens`, `show`, `colour`, `boxes`, `outlines`, `lines`, and `scenario` and `chapter` under
 //   the order lens; `path=a,b,c`, Path's trail. `boxes` is its two slots, `<own>,<outside>`
 //   (`folder`, `none` or a facet's ID each), a slot left empty at its default (own parts by
-//   Folder, outside by the required `outside-*` facet): `boxes=none`, `boxes=,none`. `lines` is
-//   the Lines menu's values turned on (`parseLines`). Both are normalised, so a value that spells
-//   out the defaults is dropped like any other default.
+//   Folder, outside by the analysis's required `outside-*` facet, layout/graph.ts
+//   `outsideBoxFacet`, which the view passes to `parseState` and `writeState`): `boxes=none`,
+//   `boxes=,none`. `lines` is the Lines menu's values turned on (`parseLines`). Both are
+//   normalised, so a value that spells out the defaults is dropped like any other default.
 //
 // The canvas's controls (slice 8) and Path (slice 10) give the view-wide values their choices;
 // until then they're kept as the URL has them.
@@ -136,12 +137,15 @@ export function sameSel(a: Sel | undefined, b: Sel | undefined): boolean {
   return (a ? selString(a) : "") === (b ? selString(b) : "");
 }
 
-/** The view's state from its URL's query string. */
-export function parseState(search: string): ViewState {
+/**
+ * The view's state from its URL's query string. `outside` is the analysis's default facet for
+ * Boxes' outside slot (`outsideBoxFacet`), here and in `writeState`.
+ */
+export function parseState(search: string, outside?: string): ViewState {
   const p = new URLSearchParams(search);
   const st: ViewState = { tab: p.get("tab") === "path" ? "path" : "canvas", sel: parseSel(p.get("sel")) };
   for (const k of REPLACING) {
-    const v = normalise(k, p.get(k) ?? undefined);
+    const v = normalise(k, p.get(k) ?? undefined, outside);
     if (v !== undefined) st[k] = v;
   }
   const path = p.get("path");
@@ -150,13 +154,13 @@ export function parseState(search: string): ViewState {
 }
 
 /** The query string for `st` (with its `?`, or empty), each parameter only when not its default. */
-export function writeState(st: ViewState): string {
+export function writeState(st: ViewState, outside?: string): string {
   const p = new URLSearchParams();
   if (st.tab !== "canvas") p.set("tab", st.tab);
   if (st.sel) p.set("sel", selString(st.sel));
   // `scenario` and `chapter` belong to the order lens.
   for (const k of REPLACING) {
-    const v = normalise(k, st[k]);
+    const v = normalise(k, st[k], outside);
     if (v === undefined) continue;
     if ((k === "scenario" || k === "chapter") && st.lens !== "order") continue;
     p.set(k, v);
@@ -167,8 +171,8 @@ export function writeState(st: ViewState): string {
   return s ? `?${s}` : "";
 }
 
-/** `v` as the URL writes `k`: undefined at its default (or empty). */
-function normalise(k: Replacing, v: string | undefined): string | undefined {
+/** `v` as the URL writes `k`: undefined at its default (or empty), `outside` Boxes' outside slot's. */
+function normalise(k: Replacing, v: string | undefined, outside: string | undefined): string | undefined {
   if (v === undefined || v === "") return undefined;
   if (k === "lines") {
     const on = new Set(v.split(","));
@@ -178,8 +182,8 @@ function normalise(k: Replacing, v: string | undefined): string | undefined {
     return out.join(",") === def.join(",") ? undefined : out.length ? out.join(",") : "none";
   }
   if (k === "boxes") {
-    const [own = "", outside = ""] = v.split(",");
-    const slots = [own === "folder" ? "" : own, outside];
+    const [own = "", outer = ""] = v.split(",");
+    const slots = [own === "folder" ? "" : own, outer === outside ? "" : outer];
     while (slots.length && slots.at(-1) === "") slots.pop();
     return slots.length ? slots.join(",") : undefined;
   }
