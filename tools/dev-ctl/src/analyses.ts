@@ -18,11 +18,11 @@ export interface Version {
   headSha: string;
   analysis: string | null;
   pr: string;
-  /** A case uploaded as a later analysis after this recorded version (`<feature>.after-v1.json`). */
+  /** A case uploaded as a later analysis after this recorded version (`<feature>.after-v1.json`, at v2's head). */
   after?: number;
 }
 
-/** The cases: hand-written analyses of the recorded PR at v1 (fixtures/pr-view/cases/). */
+/** The cases: hand-written analyses of the recorded PR at v1, or at v2 for one after v1 (fixtures/pr-view/cases/). */
 const CASES = join(ROOT, "fixtures", "pr-view", "cases");
 
 /** A case that is a later analysis after v1, as analysis-fixtures names it. */
@@ -38,11 +38,15 @@ function cargo(args: string[]): string {
 export function versions(): Version[] {
   const all = JSON.parse(cargo(["-p", "fixture", "--bin", "pr-fixtures", "--", "versions"])) as Version[];
   const v1 = all.find((v) => v.version === 1);
+  const v2 = all.find((v) => v.version === 2);
   if (v1 && existsSync(CASES)) {
     for (const f of readdirSync(CASES).filter((f) => f.endsWith(".json")).sort()) {
       const stem = f.replace(/\.json$/, "");
       const after = stem.endsWith(AFTER_V1) ? 1 : undefined;
-      all.push({ ...v1, name: after ? stem.slice(0, -AFTER_V1.length) : stem, version: undefined, analysis: join(CASES, f), after });
+      // A later analysis is of a later push: a case after v1 is at v2's head, with v2's pr.json.
+      const at = after ? v2 : v1;
+      if (!at) continue;
+      all.push({ ...at, name: after ? stem.slice(0, -AFTER_V1.length) : stem, version: undefined, analysis: join(CASES, f), after });
     }
   }
   return all;
@@ -176,7 +180,8 @@ export async function upload(server: string, controlUrl: string, login: string, 
     } else {
       const now = all.find((v) => v.version !== undefined && v.number === want.number && v.headSha === pinned.headSha);
       if (!now) throw new Error(`${want.repo}#${want.number} is at ${pinned.headSha}, which no recorded version is at: ./dev-ctl reset puts it back`);
-      const to = want.version ?? 1;
+      // A case is at a recorded version's head: v1's, or v2's for one after v1.
+      const to = want.version ?? all.find((v) => v.version !== undefined && v.number === want.number && v.headSha === want.headSha)!.version!;
       for (const m of moves(want.number, now.version!, to)) await control(controlUrl, m.path, m.body);
     }
   }

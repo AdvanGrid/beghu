@@ -8,7 +8,8 @@
 //! - **Cases** (`cases/<feature>.json`): small hand-written analyses of the same PR at v1's head,
 //!   each for a feature the recordings lack (the coverage test, `tests/coverage.rs`). A case for
 //!   a feature only a later analysis has (`carried`, "Since the last analysis") is named
-//!   `cases/<feature>.after-v1.json`: it's checked, and uploaded, as a later analysis after v1,
+//!   `cases/<feature>.after-v1.json`: it's of the PR at v2's head (v2's `pr.json`), as a later
+//!   analysis is of a later push, and it's checked, and uploaded, as a later analysis after v1,
 //!   its `carried` naming v1's IDs.
 //!
 //! [`GitReader`] reads the analysed commits out of a git repo by SHA, for the full validator's
@@ -29,7 +30,8 @@ pub fn dir() -> PathBuf {
 /// The suffix of a case that is a later analysis after v1: `cases/<feature>.after-v1.json`.
 pub const AFTER_V1: &str = ".after-v1";
 
-/// One committed analysis and the `pr.json` its run pinned (a case's is v1's).
+/// One committed analysis and the `pr.json` its run pinned (a case's is v1's, an `.after-v1`
+/// case's v2's).
 #[derive(Debug, Clone)]
 pub struct Committed {
     /// `beghu-191/analysis-v1.json`, `cases/rule-breaks.json`: relative to [`dir`].
@@ -103,13 +105,15 @@ pub fn recordings() -> Vec<(u32, Vec<u32>)> {
 /// Every committed recording and case, recordings first.
 pub fn committed() -> Vec<Committed> {
     let mut out = Vec::new();
-    let mut v1_pr = None;
+    let (mut v1_pr, mut v2_pr) = (None, None);
     for (n, versions) in recordings() {
         for v in versions {
             let folder = dir().join(format!("beghu-{n}"));
             let pr = folder.join(format!("pr-v{v}.json"));
             if v == 1 {
                 v1_pr.get_or_insert(pr.clone());
+            } else {
+                v2_pr.get_or_insert(pr.clone());
             }
             out.push(Committed {
                 name: format!("beghu-{n}/analysis-v{v}.json"),
@@ -128,11 +132,17 @@ pub fn committed() -> Vec<Committed> {
         .collect();
     cases.sort();
     for c in cases {
-        let pr: PathBuf = v1_pr.clone().expect("cases are of the recorded PR at v1");
+        let v1: PathBuf = v1_pr.clone().expect("cases are of the recorded PR at v1");
         let name = format!("cases/{}", c.file_name().unwrap().to_string_lossy());
-        let previous = name
-            .ends_with(&format!("{AFTER_V1}.json"))
-            .then(|| pr.with_file_name("analysis-v1.json"));
+        let after = name.ends_with(&format!("{AFTER_V1}.json"));
+        let pr = if after {
+            v2_pr
+                .clone()
+                .unwrap_or_else(|| panic!("{name} is at v2's head, and v2 isn't recorded"))
+        } else {
+            v1.clone()
+        };
+        let previous = after.then(|| v1.with_file_name("analysis-v1.json"));
         out.push(Committed {
             name,
             analysis: c,

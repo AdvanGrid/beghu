@@ -6,7 +6,8 @@
 //!
 //! Some features only a later analysis can hold (`carried`, "Since the last analysis"): they
 //! wait on v2, and fail here once v2 is committed if it still lacks them. A case for one is named
-//! `cases/<feature>.after-v1.json`, and is checked and uploaded as a later analysis after v1.
+//! `cases/<feature>.after-v1.json`: it's of the PR at v2's head, and is checked and uploaded as a
+//! later analysis after v1.
 //!
 //! Each conflict kind, `carried` kind, evidence kind, line `when` and data direction is a
 //! feature of its own, named by an
@@ -278,7 +279,7 @@ fn the_recordings_and_the_cases_hold_every_feature() {
         .collect();
     assert!(
         missing.is_empty(),
-        "no recording or case holds {missing:?}: add a case in fixtures/pr-view/cases/<feature>.json, quoting the recorded PR's code at v1 (for `carried-*` or `since-last-analysis`, which only an analysis after another holds, name it cases/<feature>{}.json: it's checked against v1's IDs, and ./dev-ctl analyse uploads it after v1)",
+        "no recording or case holds {missing:?}: add a case in fixtures/pr-view/cases/<feature>.json, quoting the recorded PR's code at v1 (for `carried-*` or `since-last-analysis`, which only an analysis after another holds, name it cases/<feature>{}.json and quote the code at v2's head: it's checked against v1's IDs, and ./dev-ctl analyse uploads it after v1)",
         analysis_fixtures::AFTER_V1
     );
     if !v2 {
