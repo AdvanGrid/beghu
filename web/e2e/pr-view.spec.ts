@@ -290,6 +290,33 @@ test("Back and forward walk the picks; a setting replaces its entry and stays th
   await expect(panel(page).locator('[data-perf="line-panel"]')).toBeVisible();
 });
 
+test("A setting replaces its history entry, normalised, and the panel follows it", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  await open(page, "?sel=part:crates-fake-github");
+  const entries = await page.evaluate(() => history.length);
+  const hidden = panel(page).locator('[data-perf="connection"][data-hidden]');
+  await expect(hidden.first()).toContainText("(hidden: test)");
+  const tests = page.locator('[data-perf="lines-when"]').getByRole("checkbox", { name: "tests" });
+
+  // Test lines on: the URL says so in place of its entry, and the panel's test lines aren't faded.
+  await tests.check();
+  await expect.poll(() => new URL(page.url()).searchParams.get("lines")).toBe("runtime,test,call,data,event");
+  await expect(panel(page).locator('[data-perf="connection"]', { hasText: "(hidden: test)" })).toHaveCount(0);
+  expect(await page.evaluate(() => history.length)).toBe(entries);
+  expect(selOf(page)).toBe("part:crates-fake-github");
+
+  // Off again: back at the default, which the URL leaves out.
+  await tests.uncheck();
+  await expect.poll(() => new URL(page.url()).searchParams.has("lines")).toBe(false);
+  await expect(hidden.first()).toContainText("(hidden: test)");
+  expect(await page.evaluate(() => history.length)).toBe(entries);
+
+  // A URL that spells out the defaults reads as them, and the next write drops them.
+  await open(page, "?sel=part:crates-fake-github&lines=call,runtime,data,event&boxes=folder&lens=modules");
+  await tests.check();
+  await expect.poll(() => new URL(page.url()).search).toBe("?sel=part:crates-fake-github&lines=runtime,test,call,data,event");
+});
+
 test("The graph failing replaces the canvas with Retry, the chrome stays; a failed migration says so", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   let failing: "internal" | "migration_failed" | undefined = "internal";

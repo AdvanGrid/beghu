@@ -2,11 +2,13 @@
 // the selection sits in, as plain blocks, so the view can be read and its panel driven. Click
 // selects a block; double-click (or Enter on a selected one) opens it, showing what's inside;
 // "↑ Up" goes back out. Its opens are its own, never in the URL: it opens down to the
-// selection on every pick, as the canvas will.
+// selection on every pick, as the canvas will. The Lines menu's "when" choices stand in for the
+// menu (slice 8's): a view-wide setting, which replaces its history entry.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import type { Node } from "../bindings/analysis";
 import { line, part, useNav } from "./nav";
+import { parseLines, WHENS } from "./state";
 import { ChangeWord, ui } from "./ui";
 import { colors } from "../tokens.stylex";
 
@@ -54,6 +56,7 @@ export function Canvas() {
         </span>
         <span {...stylex.attrs(s.spacer)} />
         <span {...stylex.attrs(ui.muted, ui.small)}>The drawing comes with the canvas; a plain list of the frame stands in for it.</span>
+        <LinesWhen />
       </div>
       <ul {...stylex.attrs(s.blocks)}>
         <For each={blocks()}>
@@ -117,6 +120,34 @@ export function Canvas() {
   );
 }
 
+const WHEN_WORDS = { runtime: "run time", build: "build", test: "tests" } as const;
+
+/** The Lines menu's "when" choices, until the menu itself (slice 8). */
+function LinesWhen() {
+  const nav = useNav();
+  const lines = () => parseLines(nav.state().lines);
+  const toggle = (w: (typeof WHENS)[number]) => {
+    const l = lines();
+    const when = new Set(l.when);
+    if (when.has(w)) when.delete(w);
+    else when.add(w);
+    nav.set("lines", [...when, ...l.kind].join(",") || "none");
+  };
+  return (
+    <span {...stylex.attrs(ui.row, ui.small)} role="group" aria-label="Lines shown" data-perf="lines-when">
+      <span {...stylex.attrs(ui.muted)}>Lines:</span>
+      <For each={WHENS}>
+        {(w) => (
+          <label {...stylex.attrs(s.check)}>
+            <input type="checkbox" checked={lines().when.has(w)} onChange={() => toggle(w)} />
+            {WHEN_WORDS[w]}
+          </label>
+        )}
+      </For>
+    </span>
+  );
+}
+
 const s = stylex.create({
   canvas: {
     padding: 16,
@@ -158,4 +189,5 @@ const s = stylex.create({
   selected: { borderColor: colors.accent, backgroundColor: colors.selected },
   name: { fontWeight: 600, overflowWrap: "anywhere" },
   lineNote: { marginTop: 4 },
+  check: { gap: 4, alignItems: "center", cursor: "pointer", display: "inline-flex" },
 });

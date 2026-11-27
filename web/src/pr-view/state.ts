@@ -14,7 +14,11 @@
 //   `selString` and `parseSel` are the one place that adds and strips those prefixes; a `Sel`
 //   holds the analysis's IDs as they are (nav.ts `selOf` makes one from them);
 // - `lens`, `show`, `colour`, `boxes`, `outlines`, `lines`, and `scenario` and `chapter` under
-//   the order lens; `path=a,b,c`, Path's trail.
+//   the order lens; `path=a,b,c`, Path's trail. `boxes` is its two slots, `<own>,<outside>`
+//   (`folder`, `none` or a facet's ID each), a slot left empty at its default (own parts by
+//   Folder, outside by the required `outside-*` facet): `boxes=none`, `boxes=,none`. `lines` is
+//   the Lines menu's values turned on (`parseLines`). Both are normalised, so a value that spells
+//   out the defaults is dropped like any other default.
 //
 // The canvas's controls (slice 8) and Path (slice 10) give the view-wide values their choices;
 // until then they're kept as the URL has them.
@@ -58,7 +62,7 @@ export interface ViewState {
 export const REPLACING = ["lens", "show", "colour", "boxes", "outlines", "lines", "scenario", "chapter"] as const;
 export type Replacing = (typeof REPLACING)[number];
 
-/** Each view-wide value's default, which the URL leaves out. */
+/** Each view-wide value's default, which the URL leaves out (`boxes` and `lines`: `normalise`). */
 const DEFAULTS: Partial<Record<Replacing, string>> = { lens: "modules", show: "all", colour: "change", outlines: "none" };
 
 /** The prefix an analysis gives the IDs of a kind of selection, which `sel` leaves out. */
@@ -137,8 +141,8 @@ export function parseState(search: string): ViewState {
   const p = new URLSearchParams(search);
   const st: ViewState = { tab: p.get("tab") === "path" ? "path" : "canvas", sel: parseSel(p.get("sel")) };
   for (const k of REPLACING) {
-    const v = p.get(k);
-    if (v !== null && v !== "" && v !== DEFAULTS[k]) st[k] = v;
+    const v = normalise(k, p.get(k) ?? undefined);
+    if (v !== undefined) st[k] = v;
   }
   const path = p.get("path");
   if (path) st.path = path;
@@ -152,8 +156,8 @@ export function writeState(st: ViewState): string {
   if (st.sel) p.set("sel", selString(st.sel));
   // `scenario` and `chapter` belong to the order lens.
   for (const k of REPLACING) {
-    const v = st[k];
-    if (v === undefined || v === DEFAULTS[k]) continue;
+    const v = normalise(k, st[k]);
+    if (v === undefined) continue;
     if ((k === "scenario" || k === "chapter") && st.lens !== "order") continue;
     p.set(k, v);
   }
@@ -163,14 +167,38 @@ export function writeState(st: ViewState): string {
   return s ? `?${s}` : "";
 }
 
+/** `v` as the URL writes `k`: undefined at its default (or empty). */
+function normalise(k: Replacing, v: string | undefined): string | undefined {
+  if (v === undefined || v === "") return undefined;
+  if (k === "lines") {
+    const on = new Set(v.split(","));
+    const out = LINES_ORDER.filter((x) => on.has(x));
+    const def = LINES_ORDER.filter((x) => LINES_DEFAULT.when.has(x) || LINES_DEFAULT.kind.has(x));
+    // Nothing it knows turned on is a choice too (every line hidden), unlike an absent `lines`.
+    return out.join(",") === def.join(",") ? undefined : out.length ? out.join(",") : "none";
+  }
+  if (k === "boxes") {
+    const [own = "", outside = ""] = v.split(",");
+    const slots = [own === "folder" ? "" : own, outside];
+    while (slots.length && slots.at(-1) === "") slots.pop();
+    return slots.length ? slots.join(",") : undefined;
+  }
+  return v === DEFAULTS[k] ? undefined : v;
+}
+
 /** What the Lines menu shows: by when each line happens and by its kind. */
 export interface Lines {
   when: ReadonlySet<string>;
   kind: ReadonlySet<string>;
 }
 
+export const WHENS = ["runtime", "build", "test"] as const;
+const KINDS = ["call", "data", "event"] as const;
+/** The order `lines` writes its values in. */
+const LINES_ORDER: readonly string[] = [...WHENS, ...KINDS];
+
 /** The Lines menu's default: run-time lines of every kind (build and test hidden). */
-const LINES_DEFAULT: Lines = { when: new Set(["runtime"]), kind: new Set(["call", "data", "event"]) };
+const LINES_DEFAULT: Lines = { when: new Set(["runtime"]), kind: new Set(KINDS) };
 
 /**
  * The Lines menu as `lines` writes it: the values turned on, comma-separated (`runtime,test,call,
@@ -180,7 +208,7 @@ export function parseLines(v: string | undefined): Lines {
   if (!v) return LINES_DEFAULT;
   const on = new Set(v.split(","));
   const pick = (all: readonly string[]) => new Set(all.filter((x) => on.has(x)));
-  return { when: pick(["runtime", "build", "test"]), kind: pick(["call", "data", "event"]) };
+  return { when: pick(WHENS), kind: pick(KINDS) };
 }
 
 /** Why the Lines menu hides a line ("hidden: test"), or undefined when it shows it. */
