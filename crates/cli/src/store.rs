@@ -5,8 +5,10 @@
 //! `credentials.toml` is in `$XDG_STATE_HOME/beghu/` (`~/.local/state/beghu/`) on Linux and
 //! `~/Library/Application Support/beghu/` on macOS, or wherever `BEGHU_CREDENTIALS` names. Not
 //! `~/.config`, which is often kept in git, and not an OS keychain, which is missing over SSH, in
-//! containers and in CI. Both files are written `0600`, through a rename, so a crash never leaves
-//! half of one.
+//! containers and in CI. Both files are written `0600`, through a new temporary file and a rename
+//! (the folder synced after), so a crash never leaves half of one, and `credentials.toml` is
+//! changed only under an advisory lock (`credentials.toml.lock`), so two `beghu`s at once don't
+//! lose each other's sign-ins.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -186,34 +188,68 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-/// Writes `text` to `path` as `0600`, through a temporary file beside it and a rename, making
-/// its folder (`0700`) if need be.
-pub fn write_private(path: &Path, text: &str) -> Result<(), String> {
-    let dir = path.parent().unwrap_or(Path::new("."));
+/// Makes `dir` and any folder above it missing, each `0700`.
+pub fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .map_err(|e| format!("can't make {}: {e}", dir.display()))?;
-    let tmp = dir.join(format!(
-        ".{}.{}",
-        path.file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
+        .map_err(|e| format!("can't make {}: {e}", dir.display()))
+}
+
+/// A new file beside `path` to write it through, made with `create_new` (another process's, or a
+/// stale one a crash left, is never reused or truncated) and `mode`: the file and its path. A
+/// name in use is tried again with the next.
+pub fn temp_beside(path: &Path, mode: u32) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let pid = std::process::id();
+    let mut n = 0u32;
+    loop {
+        let tmp = dir.join(format!(".{name}.{pid}.{n}.tmp"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)
+        {
+            Ok(f) => return Ok((f, tmp)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Renames `tmp` over `path`, then syncs their folder, so the rename itself survives a crash.
+pub fn rename_durably(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Writes `text` to `path` as `0600`, through a new temporary file beside it and a rename, making
+/// its folder (`0700`) if need be.
+pub fn write_private(path: &Path, text: &str) -> Result<(), String> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    private_dir(dir)?;
     let failed = |e: std::io::Error| format!("can't write {}: {e}", path.display());
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(failed)?;
-    f.write_all(text.as_bytes()).map_err(failed)?;
-    f.sync_all().map_err(failed)?;
-    drop(f);
-    std::fs::rename(&tmp, path).map_err(|e| {
+    let (mut f, tmp) = temp_beside(path, 0o600).map_err(failed)?;
+    let written = f
+        .write_all(text.as_bytes())
+        .and_then(|()| f.sync_all())
+        .and_then(|()| {
+            drop(f);
+            rename_durably(&tmp, path)
+        });
+    written.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         failed(e)
     })
@@ -300,7 +336,35 @@ impl Credentials {
         Ok(c)
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), String> {
+    /// Reads the file, changes it with `f`, and writes it back, holding an advisory lock (`flock`
+    /// on `credentials.toml.lock` beside it) throughout: two `beghu`s at once never lose each
+    /// other's change. What `f` returns.
+    pub fn update<R>(path: &Path, f: impl FnOnce(&mut Credentials) -> R) -> Result<R, String> {
+        let dir = path.parent().unwrap_or(Path::new("."));
+        private_dir(dir)?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let lock_path = dir.join(format!("{name}.lock"));
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|e| format!("can't open {}: {e}", lock_path.display()))?;
+        lock.lock()
+            .map_err(|e| format!("can't lock {}: {e}", lock_path.display()))?;
+        let mut c = Credentials::load(path)?;
+        let out = f(&mut c);
+        c.save(path)?;
+        // The lock goes with the file's last handle.
+        drop(lock);
+        Ok(out)
+    }
+
+    fn save(&self, path: &Path) -> Result<(), String> {
         let mut doc = Doc::default();
         if let Some(a) = &self.active {
             doc.top.insert("active".into(), Value::Str(a.clone()));

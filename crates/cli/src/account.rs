@@ -1,6 +1,8 @@
 //! `beghu login`, `beghu logout` and `beghu status`, and which host and credential a call uses:
 //! `--host`, else `BEGHU_HOST`, else the active host (the last one signed in to), else the hosted
-//! one; and `BEGHU_TOKEN`, else that host's entry in the credentials file.
+//! one; and `BEGHU_TOKEN` when the call goes to the host `BEGHU_HOST` names, else that host's
+//! entry in the credentials file. `BEGHU_TOKEN` is never sent to another host (`--host`, or a
+//! run started on another), and is refused without `BEGHU_HOST`.
 
 use crate::http::{self, Api};
 use crate::store::{Credentials, SignIn, credentials_path};
@@ -35,23 +37,52 @@ pub enum From {
     File,
 }
 
-/// The credential for `host`: `BEGHU_TOKEN`, else the file's.
-pub fn token_for(host: &str, c: &Credentials) -> Option<(String, From)> {
-    if let Some(t) = std::env::var("BEGHU_TOKEN")
+fn env(name: &str) -> Option<String> {
+    std::env::var(name)
         .ok()
-        .filter(|t| !t.trim().is_empty())
-    {
-        return Some((t.trim().to_owned(), From::Env));
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+}
+
+/// `BEGHU_TOKEN` and the host it's for (`BEGHU_HOST`'s), or none when it isn't set. Set without
+/// `BEGHU_HOST`, it's an error: beghu won't guess which host may have it.
+pub fn env_credential() -> Result<Option<(String, String)>, Fail> {
+    let Some(token) = env("BEGHU_TOKEN") else {
+        return Ok(None);
+    };
+    let Some(host) = env("BEGHU_HOST") else {
+        return Err(Fail::msg(
+            "BEGHU_TOKEN is set without BEGHU_HOST: set BEGHU_HOST to the beghu it's for (beghu sends BEGHU_TOKEN only there)",
+        ));
+    };
+    Ok(Some((http::host(&host)?, token)))
+}
+
+/// Whether the call to `host` uses `BEGHU_TOKEN`.
+pub fn env_is_for(host: &str) -> bool {
+    matches!(env_credential(), Ok(Some((h, _))) if h == host)
+}
+
+/// The credential for `host`: `BEGHU_TOKEN` when `BEGHU_HOST` is `host`, else the file's. For
+/// another host `BEGHU_TOKEN` is left out, and that's said on stderr.
+pub fn token_for(host: &str, c: &Credentials) -> Result<Option<(String, From)>, Fail> {
+    if let Some((env_host, token)) = env_credential()? {
+        if env_host == host {
+            return Ok(Some((token, From::Env)));
+        }
+        eprintln!(
+            "beghu: BEGHU_TOKEN is for {env_host} (BEGHU_HOST), not {host}: using the credentials file's sign-in for {host}"
+        );
     }
-    c.hosts.get(host).map(|s| (s.token.clone(), From::File))
+    Ok(c.hosts.get(host).map(|s| (s.token.clone(), From::File)))
 }
 
 /// An API for `host` with its credential: refused when there's none.
 pub fn signed_in_api(host: &str, c: &Credentials) -> Result<Api, Fail> {
-    match token_for(host, c) {
+    match token_for(host, c)? {
         Some((t, _)) => Api::new(host, Some(t)),
         None => Err(Fail::msg(format!(
-            "not signed in to {host}: run `beghu login{}` first, or set BEGHU_TOKEN",
+            "not signed in to {host}: run `beghu login{}` first, or set BEGHU_HOST and BEGHU_TOKEN",
             host_flag(host)
         ))),
     }
@@ -70,18 +101,19 @@ pub fn host_flag(host: &str) -> String {
 /// it goes (`BEGHU_TOKEN`'s is the environment's to change).
 pub fn signed_out(host: &str) {
     let cmd = format!("beghu login{}", host_flag(host));
-    let from_env = std::env::var("BEGHU_TOKEN").is_ok_and(|t| !t.trim().is_empty());
-    if from_env {
+    if env_is_for(host) {
         eprintln!(
             "beghu: signed out on the server: BEGHU_TOKEN was revoked or has expired; run `{cmd}` for a new one"
         );
         return;
     }
     eprintln!("beghu: signed out on the server; run `{cmd}`");
-    if let Ok((path, mut c)) = credentials()
-        && c.hosts.remove(host).is_some()
-        && let Err(e) = c.save(&path)
-    {
+    let forgot = credentials_path().and_then(|path| {
+        Credentials::update(&path, |c| {
+            c.hosts.remove(host);
+        })
+    });
+    if let Err(e) = forgot {
         eprintln!("beghu: {e}");
     }
 }
@@ -155,7 +187,7 @@ pub async fn login(rest: &[String]) -> Result<(), Fail> {
     if let Some(p) = a.pos.first() {
         return Err(Fail::usage(format!("login takes no {p:?}")));
     }
-    let (path, mut c) = credentials()?;
+    let (path, c) = credentials()?;
     let host = host_for(a.opt("--host"), &c)?;
     let name = a.opt("--name").map(str::to_owned).unwrap_or_else(hostname);
     let api = Api::new(&host, None)?;
@@ -200,40 +232,50 @@ pub async fn login(rest: &[String]) -> Result<(), Fail> {
             ));
         }
     };
+    // Saved under the file's lock, read again then: another beghu may have changed it since.
+    let replaced = Credentials::update(&path, |c| {
+        let old = c.hosts.insert(
+            host.clone(),
+            SignIn {
+                token: approved.token,
+                account: approved.account.clone(),
+                expires: approved.expires_at,
+            },
+        );
+        c.active = Some(host.clone());
+        old
+    })
+    .map_err(Fail::Msg)?;
     // The sign-in this one replaces is revoked, if the host still knows it.
-    if let Some(old) = c.hosts.get(&host)
-        && let Ok(old_api) = Api::new(&host, Some(old.token.clone()))
+    if let Some(old) = replaced
+        && let Ok(old_api) = Api::new(&host, Some(old.token))
     {
         let _ = old_api
             .post_json("/api/cli/logout", &serde_json::json!({}))
             .await;
     }
-    c.hosts.insert(
-        host.clone(),
-        SignIn {
-            token: approved.token,
-            account: approved.account.clone(),
-            expires: approved.expires_at,
-        },
-    );
-    c.active = Some(host.clone());
-    c.save(&path).map_err(Fail::Msg)?;
     println!("Signed in to {host} as {}.", approved.account);
-    if std::env::var("BEGHU_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
-        println!("BEGHU_TOKEN is set, and goes first: unset it to use this sign-in.");
+    if env_is_for(&host) {
+        println!(
+            "BEGHU_TOKEN is set for {host} (BEGHU_HOST), and goes first: unset it to use this sign-in."
+        );
     }
     Ok(())
 }
 
-/// `beghu logout [--host URL | --all]`: revokes each sign-in on its server, then forgets it here.
-/// One whose server can't be reached is kept, and said so.
+/// `beghu logout [--host URL | --all]`: revokes each sign-in on its server, then forgets it here,
+/// saving after each host, so a failure on one keeps what was done before it. One whose server
+/// can't be reached is kept, and said so. `--all` signs out the credentials file's sign-ins, and
+/// leaves `BEGHU_TOKEN` alone; `--host` (or the active host) signs out `BEGHU_TOKEN` when it's
+/// for that host, as every other call would use it, and leaves the file's sign-in there.
 pub async fn logout(rest: &[String]) -> Result<(), Fail> {
     let a = Args::parse(rest, &["--host"], &["--all"])?;
-    if a.flag("--all") && a.opt("--host").is_some() {
+    let all = a.flag("--all");
+    if all && a.opt("--host").is_some() {
         return Err(Fail::usage("give --host or --all, not both"));
     }
-    let (path, mut c) = credentials()?;
-    let hosts: Vec<String> = if a.flag("--all") {
+    let (path, c) = credentials()?;
+    let hosts: Vec<String> = if all {
         c.hosts.keys().cloned().collect()
     } else {
         vec![host_for(a.opt("--host"), &c)?]
@@ -244,23 +286,23 @@ pub async fn logout(rest: &[String]) -> Result<(), Fail> {
     }
     let mut failed = false;
     for host in hosts {
-        let token = if a.flag("--all") {
+        let token = if all {
             c.hosts.get(&host).map(|s| (s.token.clone(), From::File))
         } else {
-            token_for(&host, &c)
+            token_for(&host, &c)?
         };
         let Some((token, from)) = token else {
             println!("Not signed in to {host}.");
             continue;
         };
-        let api = Api::new(&host, Some(token))?;
-        match api
+        let api = Api::new(&host, Some(token.clone()))?;
+        let already = match api
             .post_json("/api/cli/logout", &serde_json::json!({}))
             .await
         {
-            Ok(r) if r.status == 204 => println!("Signed out of {host}."),
+            Ok(r) if r.status == 204 => "",
             // Dead already.
-            Err(Fail::SignedOut { .. }) => println!("Signed out of {host} (it was already)."),
+            Err(Fail::SignedOut { .. }) => " (it was already)",
             Ok(r) => {
                 eprintln!("beghu: {host} didn't sign this out: {}; kept here", r.why());
                 failed = true;
@@ -272,17 +314,37 @@ pub async fn logout(rest: &[String]) -> Result<(), Fail> {
                 continue;
             }
             Err(e) => return Err(e),
-        }
+        };
         if from == From::Env {
-            println!("(That was BEGHU_TOKEN: unset it.)");
+            println!(
+                "Signed out BEGHU_TOKEN on {host}{already}: unset BEGHU_TOKEN, which is dead now."
+            );
+            if c.hosts.contains_key(&host) {
+                println!(
+                    "The credentials file's sign-in for {host} is kept: with BEGHU_TOKEN unset, `beghu logout{}` signs it out.",
+                    host_flag(&host)
+                );
+            }
             continue;
         }
-        c.hosts.remove(&host);
-        if c.active.as_deref() == Some(host.as_str()) {
-            c.active = None;
-        }
+        // The entry goes only if it's still the one revoked: another beghu may have signed in
+        // again meanwhile.
+        Credentials::update(&path, |c| {
+            if c.hosts.get(&host).is_some_and(|s| s.token == token) {
+                c.hosts.remove(&host);
+            }
+            if c.active.as_deref() == Some(host.as_str()) && !c.hosts.contains_key(&host) {
+                c.active = None;
+            }
+        })
+        .map_err(Fail::Msg)?;
+        println!("Signed out of {host}{already}.");
     }
-    c.save(&path).map_err(Fail::Msg)?;
+    if all && let Ok(Some((h, _))) = env_credential() {
+        println!(
+            "BEGHU_TOKEN (for {h}) is left alone: --all signs out the credentials file's sign-ins."
+        );
+    }
     if failed { Err(Fail::Exit(1)) } else { Ok(()) }
 }
 
@@ -321,7 +383,7 @@ pub fn date(t: i64) -> String {
 /// `beghu status [--host URL]`.
 pub async fn status(rest: &[String]) -> Result<(), Fail> {
     let a = Args::parse(rest, &["--host"], &[])?;
-    let (path, mut c) = credentials()?;
+    let (path, c) = credentials()?;
     let host = host_for(a.opt("--host"), &c)?;
     let active = if c.active.as_deref() == Some(host.as_str()) {
         " (active)"
@@ -336,7 +398,7 @@ pub async fn status(rest: &[String]) -> Result<(), Fail> {
         http::platform()
     );
     println!("schema:  {}", analysis::VERSION);
-    let token = token_for(&host, &c);
+    let token = token_for(&host, &c)?;
     let api = Api::new(&host, token.as_ref().map(|(t, _)| t.clone()))?;
     let res = api.get("/api/cli/status").await?;
     if res.status != 200 {
@@ -362,11 +424,14 @@ pub async fn status(rest: &[String]) -> Result<(), Fail> {
                 println!("         it must sign in to beghu again, in a browser");
             }
             if from == From::File
-                && let (Some(e), Some(entry)) = (s.expires_at, c.hosts.get_mut(&host))
+                && let (Some(e), Some(entry)) = (s.expires_at, c.hosts.get(&host))
                 && entry.expires != e
             {
-                entry.expires = e;
-                let _ = c.save(&path);
+                let _ = Credentials::update(&path, |c| {
+                    if let Some(entry) = c.hosts.get_mut(&host) {
+                        entry.expires = e;
+                    }
+                });
             }
         }
         _ => println!("account: not signed in (`beghu login{}`)", host_flag(&host)),

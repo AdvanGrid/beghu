@@ -6,7 +6,8 @@
 //!
 //! - Hosts: any beghu deployment. The hosted one is the default; `beghu login --host URL` adds
 //!   another and makes it active (the last one signed in to), and `--host` on any call overrides
-//!   it. `BEGHU_HOST` and `BEGHU_TOKEN` override the credentials file, for CI and containers.
+//!   it. `BEGHU_HOST` and `BEGHU_TOKEN` override the credentials file, for CI and containers:
+//!   `BEGHU_TOKEN` goes only to `BEGHU_HOST`'s host, and is refused without it.
 //! - Versions: every call names the CLI's semver and schema version. Below the host's floor every
 //!   call is `426`: the CLI updates itself from the host when it can write its own file, says so
 //!   on one line, and runs the same command again, once. A CLI newer than the host is refused with
@@ -137,8 +138,9 @@ Analysis (for an agent; every subcommand finds its run in ./.beghu/):
   beghu analyse end  end the run
   With several runs in ./.beghu/, give --run <id>.
 
-The environment: BEGHU_HOST and BEGHU_TOKEN override the credentials file (for CI and
-containers); BEGHU_CREDENTIALS names the file itself.
+The environment: BEGHU_HOST overrides the active host, and BEGHU_TOKEN the credentials
+file's sign-in for that host, and only that one (for CI and containers; BEGHU_TOKEN needs
+BEGHU_HOST); BEGHU_CREDENTIALS names the file itself.
 ";
 
 fn main() {
