@@ -343,6 +343,16 @@ measured = 86.05
 report_only = true
 reason = "Everything a cold load fetches (shell, JS, CSS, data, the reset refetch), gzip. Report-only during v1: the spec's 48 KB is the owner's to hold once v1 is complete (Solid Router and virtual-core are in on purpose), so over it warns and fails nothing."
 
+[gates."browser.cold.pr-view-modules"]
+max = 0
+measured = 0
+reason = "Chunks of the PR view (its own and the one it shares with the PR panel, from the build's Vite manifest) the list's cold load fetches: none, exact (#152, #181). The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
+
+[gates."browser.pr-view.kb"]
+max = 24.1
+measured = 22.96
+reason = "The PR view's chunks, gzip as served: the view's own (16.8 KB: route, top bar, panel, the placeholder canvas) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 7's measured run (#181); slice 8's canvas and layout will add to it, with their own calibration."
+
 [gates."browser.load.list-fetches"]
 max = 2
 measured = 2
