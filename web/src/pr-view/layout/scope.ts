@@ -53,7 +53,7 @@ const TRACK = 10;
 const GUT_PAD = 14;
 const GUT_MIN = 44;
 /** How close a gutter's tracks and edges may come when it keeps its anchored width. */
-const TRACK_MIN = 4;
+const TRACK_MIN = 6;
 const GUT_PAD_MIN = 6;
 /** Extra room where a gutter crosses from one group to the next (the top scope's). */
 const CROSS_ROOM = 24;
@@ -63,8 +63,10 @@ const SHORT = 40;
 const STRETCH = 20;
 /** Between two of a part's lines where they meet it. */
 const SLOT = 12;
-/** Horizontals closer than this would read as one. */
+/** Horizontals closer than this would read as one: a part's lines leave it at least this far apart. */
 const NEAR = 4;
+/** A closed part's lines leave it at least this far from its top and bottom. */
+const STUB_EDGE = 8;
 /** A track order that must hold, ahead of any that saves crossings. */
 const MUST = 1e9;
 /** A part's pull back to its packed place, against its neighbours'; a port's is light. */
@@ -134,6 +136,8 @@ export interface SOut {
   trunks: STrunk[];
   /** The changed and unchanged groups' frames (not inside a frame). */
   groups: { side: 1 | 2; x: number; y: number; w: number; h: number }[];
+  /** Closed parts drawn taller than given, to fit their lines' stubs. */
+  grown: Map<string, number>;
   width: number;
   height: number;
   /** Inside a frame: the frame. */
@@ -592,12 +596,28 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   }
   const span = (l: Laid) => l.cb - l.ca;
 
+  // A closed part tall enough for its lines to leave each side of it NEAR apart.
+  const stubs = new Map<string, [number, number]>();
+  for (const l of laid)
+    for (const [id, side] of [[l.a, 1], [l.b, 0]] as const) {
+      const n = stubs.get(id) ?? [0, 0];
+      n[side]++;
+      stubs.set(id, n);
+    }
+  const tall = (p: SPart) => {
+    if (p.port || p.ports) return p.h;
+    const n = Math.max(...(stubs.get(p.id) ?? [0]));
+    return n > 1 ? Math.max(p.h, 2 * STUB_EDGE + (n - 1) * NEAR) : p.h;
+  };
+  const grown = new Map<string, number>();
+
   // 2. Rows: the parts, plus a dummy per line per column it passes through, ordered by
   // barycentre sweeps. The order depends only on the scope, so from anchors it's theirs.
   const cols: Item[][] = Array.from({ length: nCols }, () => []);
   const mk = (id: string, col: number, part?: SPart): Item => {
-    const h = part?.h ?? 0;
-    const it: Item = { id, col, part, ord: 0, y: 0, h, ch: part?.closedH ?? h, left: new Map(), right: new Map() };
+    const h = part ? tall(part) : 0;
+    const it: Item = { id, col, part, ord: 0, y: 0, h, ch: part && part.closedH !== undefined ? tall(foldedPart(part)) : h, left: new Map(), right: new Map() };
+    if (part && h > part.h) grown.set(id, h);
     cols[col]!.push(it);
     return it;
   };
@@ -847,18 +867,29 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
       }
       if (isPort(it)) return free.forEach((k) => into.set(k.key, mid(it)));
       const n = free.length;
-      if (!fixed.length) {
-        const step = n > 1 ? Math.min(12, (it.h - 16) / (n - 1)) : 0;
-        return free.forEach((k, i) => into.set(k.key, mid(it) + (i - (n - 1) / 2) * step));
+      // A closed part's lines spread round its middle, SLOT apart or as close as its height
+      // needs (never under NEAR: it was drawn tall enough for them).
+      const step = (m: number) => (m > 1 ? Math.min(SLOT, (it.h - 2 * STUB_EDGE) / (m - 1)) : 0);
+      const fan = () => free.forEach((k, i) => into.set(k.key, mid(it) + (i - (n - 1) / 2) * step(n)));
+      if (!fixed.length) return fan();
+      // A frame's other lines take slots round its middle, clear of its fixed ports: SLOT apart,
+      // or where too few fit, at the closed-part step for all its lines on that side (never under
+      // NEAR); and failing that, fanned as a closed part's are.
+      const [lo, hi] = [it.y + STUB_EDGE, it.y + it.h - STUB_EDGE];
+      const slotsAt = (d0: number, clear: number) => {
+        const slots: number[] = [];
+        for (let d = 0; slots.length < n && (mid(it) - d * d0 >= lo || mid(it) + d * d0 <= hi); d++)
+          for (const y of d ? [mid(it) - d * d0, mid(it) + d * d0] : [mid(it)])
+            if (slots.length < n && y >= lo && y <= hi && fixed.every((f) => Math.abs(f - y) >= clear)) slots.push(y);
+        return slots.sort((a, b) => a - b);
+      };
+      let slots = slotsAt(SLOT, SLOT / 2);
+      if (slots.length < n) {
+        const d0 = Math.max(NEAR, step(n + fixed.length));
+        slots = slotsAt(d0, Math.max(NEAR, d0 / 2));
       }
-      // A frame's other lines take slots round its middle, clear of its fixed ports.
-      const slots: number[] = [];
-      const [lo, hi] = [it.y + 8, it.y + it.h - 8];
-      for (let d = 0; slots.length < n && (mid(it) - d * SLOT >= lo || mid(it) + d * SLOT <= hi); d++)
-        for (const y of d ? [mid(it) - d * SLOT, mid(it) + d * SLOT] : [mid(it)])
-          if (slots.length < n && y >= lo && y <= hi && fixed.every((f) => Math.abs(f - y) >= SLOT / 2)) slots.push(y);
-      slots.sort((a, b) => a - b);
-      free.forEach((k, i) => into.set(k.key, slots[i] ?? mid(it)));
+      if (slots.length < n) return fan();
+      free.forEach((k, i) => into.set(k.key, slots[i]!));
     };
     for (const [it, ks] of outs) spread(it, ks, portR);
     for (const [it, ks] of ins) spread(it, ks, portL);
@@ -1192,5 +1223,5 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     for (const [c, col] of partCols.entries())
       for (const [i, it] of col.entries()) anchors.ys.set(it.id, it.y), anchors.room.set(it.id, extra[c]![i] ?? 0);
   }
-  return { at, routes, flipped, trunks, groups, width: x + PAD, height: height + PAD, frame, anchors };
+  return { at, routes, flipped, trunks, groups, grown, width: x + PAD, height: height + PAD, frame, anchors };
 }

@@ -120,7 +120,7 @@ export function layout(input: LayoutInput): Layout {
     for (const p of w.scope.parts) {
       const q = mv(out.at.get(p.id)!);
       const fc = frames.get(p.id);
-      placed.set(p.id, { ...q, w: fc?.w ?? p.w, h: fc?.h ?? p.h, scope: w.id, frame: !!fc && !boxes.has(p.id), box: boxes.has(p.id) });
+      placed.set(p.id, { ...q, w: fc?.w ?? p.w, h: fc?.h ?? out.grown.get(p.id) ?? p.h, scope: w.id, frame: !!fc && !boxes.has(p.id), box: boxes.has(p.id) });
       if (fc) origin.set(p.id, q);
     }
     for (const [k, pts] of out.routes) routes.set(k, (out.flipped.has(k) ? [...pts].reverse() : pts).map(mv));

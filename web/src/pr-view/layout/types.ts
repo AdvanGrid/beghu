@@ -83,7 +83,10 @@ export interface LayoutInput {
   countRoom?: number;
 }
 
-/** Where a part, frame or box was drawn. */
+/**
+ * Where a part, frame or box was drawn. A closed part may be drawn taller than its input's `h`:
+ * tall enough that its lines leave it at least 4 px apart.
+ */
 export interface Placed extends Rect {
   /** The scope it was laid out in. */
   scope: string;

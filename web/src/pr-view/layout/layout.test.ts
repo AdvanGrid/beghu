@@ -21,6 +21,8 @@ const TOP_INSET = 44;
 const LEVEL = 12;
 const CLEAR = 10;
 const EPS = 0.5;
+/** Two stretches closer than this read as one (the engine's NEAR). */
+const NEAR = 4;
 
 /** Each input line, with its scope. */
 function linesOf(input: LayoutInput) {
@@ -158,16 +160,16 @@ function checkRules(L: Layout, input: LayoutInput) {
     for (const s of segments(t.points)) for (const id of t.lines) assert.ok(covers(L.routes.get(id)!, s), `${id} isn't on all of ${t.id}`);
     for (const id of t.lines) rides.set(id, [...(rides.get(id) ?? []), k]);
   });
-  // Two stretches under a pixel apart read as one.
+  // Two stretches under NEAR apart read as one.
   const all = [...L.routes].flatMap(([id, r]) => segments(r).map((s) => ({ id, ...stretch(s) })));
   all.sort((a, b) => Number(a.h) - Number(b.h) || a.at - b.at);
   const trunkStretches = L.trunks.map((t) => segments(t.points).map(stretch));
   for (let i = 0; i < all.length; i++)
-    for (let j = i + 1; j < all.length && all[j]!.h === all[i]!.h && all[j]!.at - all[i]!.at < 1; j++) {
+    for (let j = i + 1; j < all.length && all[j]!.h === all[i]!.h && all[j]!.at - all[i]!.at < NEAR; j++) {
       const [a, b] = [all[i]!, all[j]!];
       const lo = Math.max(a.lo, b.lo), hi = Math.min(a.hi, b.hi);
       if (a.id === b.id || hi - lo < 1) continue;
-      const shared = (rides.get(a.id) ?? []).some((t) => rides.get(b.id)?.includes(t) && trunkStretches[t]!.some((s) => s.h === a.h && Math.abs(s.at - a.at) < 1 && Math.min(s.hi, hi) - Math.max(s.lo, lo) > 0));
+      const shared = (rides.get(a.id) ?? []).some((t) => rides.get(b.id)?.includes(t) && trunkStretches[t]!.some((s) => s.h === a.h && Math.abs(s.at - a.at) < NEAR && Math.min(s.hi, hi) - Math.max(s.lo, lo) > 0));
       assert.ok(shared, `${a.id} and ${b.id} run together at ${a.h ? "y" : "x"} ${a.at} from ${lo} to ${hi} on no trunk`);
     }
 }
