@@ -586,9 +586,16 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         P[j + 1] = P[j]! + (use[j]! > 0 ? seg * (long ? DISCOUNT : BUSY) : seg);
       }
     };
-    // From a part's port at y (off the level grid, whose next level up is `at`) to level j: the
-    // stretch along the grid, the bit off it at full length, and the two bends.
-    const toLevel = (y: number, at: number, j: number) => (Math.abs(y - Y[j]!) < 0.5 ? 0 : Math.abs(P[j]! - P[at]!) + Math.abs(Y[at]! - y) + 2 * BEND);
+    // From a part's port at y (off the level grid; `at` is the first level at or below it) to
+    // level j: to the grid's nearest level on j's side at full length, along the grid from there
+    // (P only between levels), and the two bends.
+    const toLevel = (y: number, at: number, j: number) => {
+      const yj = Y[j]!;
+      if (Math.abs(y - yj) < 0.5) return 0;
+      if (yj > y) return Y[at]! - y + P[j]! - P[at]! + 2 * BEND;
+      const above = Y[at]! > y ? at - 1 : at;
+      return y - Y[above]! + P[above]! - P[j]! + 2 * BEND;
+    };
     let dp = new Float64Array(L);
     let next = new Float64Array(L);
     const loV = new Float64Array(L), hiV = new Float64Array(L);
