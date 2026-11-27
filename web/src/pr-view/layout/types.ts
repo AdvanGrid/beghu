@@ -115,25 +115,25 @@ export interface ScopeLayout {
 }
 
 /**
- * What the next layout keeps of one scope. The anchors come from the answer that first laid the
- * scope out (with its blocks folded): an open or a fold then moves only what the changed block
- * pushes, and folding back restores the drawing exactly. `last` is the answer's own, for what the
- * next change doesn't push.
+ * What the next layout keeps of one scope: its drawing with every block in it folded, laid out
+ * afresh. A scope's every layout is a function of its anchors and what is open in it, so an open
+ * or a fold moves only what the changed block pushes, and coming back to an earlier open set gives
+ * that drawing back exactly. Anchors are kept only for the same scope: a scope whose parts or lines
+ * changed (boxes drawn, lonely parts shown, another analysis) is laid out afresh.
  */
 export interface Anchors {
+  /** The folded scope they were laid out for: its parts, their folded sizes, and its lines. */
+  sig: string;
+  /** Each column's parts, top to bottom (the rows' order depends only on the scope). */
+  rows: string[][];
   /** Each part's place: its y with every block in the scope folded. */
   ys: Map<string, number>;
   /** The room for routes above each part (in its column). */
   room: Map<string, number>;
   /** Each gutter's width, by the columns either side. */
   gutters: Map<string, number>;
-  last: {
-    sizes: Map<string, { w: number; h: number }>;
-    /** How far the open blocks above each part pushed it down. */
-    growth: Map<string, number>;
-    room: Map<string, number>;
-    gutters: Map<string, number>;
-  };
+  /** Inside a frame: the frame folded, its size and its ports' y, by the port's part. */
+  frame?: { w: number; h: number; ports: Map<string, number> };
 }
 
 export interface Layout {

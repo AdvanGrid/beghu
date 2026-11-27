@@ -8,13 +8,14 @@
 //    so every line runs left to right.
 // 2. Rows: barycentre sweeps order each column, keeping the order with the fewest crossings.
 // 3. Parts placed on their own: each column packed from the top and pulled toward what it
-//    connects to by isotonic regression, so nothing overlaps; or, given the last answer, kept
-//    where they were and pushed down only by what grew above them.
+//    connects to by isotonic regression, so nothing overlaps; or, given the scope's anchors (its
+//    drawing with every block folded), kept there and pushed down only by what grew above them.
 // 4. Every line routed as one cheapest path through the levels it can pass each column at:
 //    length, 40 px a bend, ×0.85 on any stretch another line already uses. Long lines first,
 //    then each again against the rest. Lines spanning fewer than 3 gutters are local: no
 //    discount, and they avoid busy stretches.
-// 5. Gaps widen only where routes pass, then everything is routed again.
+// 5. Gaps widen only where routes pass, then everything is routed again (laid out from anchors,
+//    each gap keeps its anchored room).
 // 6. Trunks: long lines on one level through a column ride one trunk there; verticals sharing a
 //    gutter's stretch share a track, and each shared piece is a trunk.
 // 7. Tracks: each gutter's verticals sit on tracks ordered to cross least; every gap between
@@ -51,7 +52,7 @@ const LOCAL_GUTTERS = 3;
 const TRACK = 10;
 const GUT_PAD = 14;
 const GUT_MIN = 44;
-/** How close a gutter's tracks and edges may come when it keeps its width. */
+/** How close a gutter's tracks and edges may come when it keeps its anchored width. */
 const TRACK_MIN = 4;
 const GUT_PAD_MIN = 6;
 /** Extra room where a gutter crosses from one group to the next (the top scope's). */
@@ -66,8 +67,6 @@ const SLOT = 12;
 const NEAR = 4;
 /** A track order that must hold, ahead of any that saves crossings. */
 const MUST = 1e9;
-/** An anchor's weight against a neighbour's pull: kept parts stay put. */
-const KEEP = 1000;
 /** A part's pull back to its packed place, against its neighbours'; a port's is light. */
 const PULL = 1.5;
 const PORT_PULL = 0.05;
@@ -87,9 +86,11 @@ export interface SPart {
   port: boolean;
   /** A frame's fixed ports: where each line of this scope meets its edge, as y from its top. */
   ports?: Map<string, number>;
-  /** An open block's size closed (a part's, or a box's, is its size). */
+  /** A frame's size folded: an open block's closed size, a box's with its blocks folded. */
   closedW?: number;
   closedH?: number;
+  /** A box's fixed ports with its blocks folded. */
+  closedPorts?: Map<string, number>;
 }
 
 export interface SLine {
@@ -101,10 +102,23 @@ export interface SLine {
 export interface SOpts {
   /** A frame's inside: one group, its ports in a column on each edge, no group frames. */
   inside: boolean;
-  /** The last answer's anchors for this scope. */
+  /** The last answer's anchors for this scope: kept if they're for the same folded scope. */
   keep?: Anchors;
   countRoom: number;
 }
+
+/** A frame round a scope's inside: its rectangle in the scope's coordinates, and each port's y from its top. */
+export interface SFrame {
+  fx: number;
+  fy: number;
+  w: number;
+  h: number;
+  ports: Map<string, number>;
+}
+
+/** How far below a port, or a route, a frame's edge sits. */
+const PORT_ROOM = 12;
+const ROUTE_ROOM = 10;
 
 export interface STrunk {
   lines: string[];
@@ -122,7 +136,9 @@ export interface SOut {
   groups: { side: 1 | 2; x: number; y: number; w: number; h: number }[];
   width: number;
   height: number;
-  /** What the next answer keeps: the anchors it was given, and its own for what had none. */
+  /** Inside a frame: the frame. */
+  frame?: SFrame;
+  /** What the next answer keeps: the anchors it was given if they were kept, else its own. */
   anchors: Anchors;
 }
 
@@ -205,7 +221,9 @@ interface Item {
   part?: SPart;
   ord: number;
   y: number;
+  /** Its height drawn, and with its scope's blocks folded (a box never folds). */
   h: number;
+  ch: number;
   left: Map<Item, number>;
   right: Map<Item, number>;
 }
@@ -484,50 +502,36 @@ class Streets {
   }
 }
 
-export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o: SOpts): SOut {
-  // Laid out afresh with blocks open, a scope is first laid out with them folded, and kept from
-  // that drawing: it's the folded drawing with only what the open blocks push moved, and folding
-  // them all gives that drawing back.
-  if (!o.keep && parts.some((p) => p.closedH !== undefined && (p.closedH !== p.h || p.closedW !== p.w))) {
-    const folded = parts.map((p) => (p.closedH === undefined ? p : { id: p.id, side: p.side, port: p.port, w: p.closedW!, h: p.closedH }));
-    return layoutScope(parts, lines, { ...o, keep: layoutScope(folded, lines, o).anchors });
-  }
-  const byId = new Map(parts.map((p) => [p.id, p]));
-  const { colOf, nCols, offset, sideCols, sideOfCol } = columnsOf(parts, lines, o.inside);
+/** A part as the scope's folded drawing has it. */
+const foldedPart = (p: SPart): SPart => (p.closedH === undefined ? p : { id: p.id, side: p.side, port: p.port, w: p.closedW!, h: p.closedH, ports: p.closedPorts });
+const samePorts = (a?: Map<string, number>, b?: Map<string, number>) => a === b || (!!a && !!b && a.size === b.size && [...a].every(([k, y]) => b.get(k) === y));
+const isOpen = (p: SPart) => p.closedH !== undefined && (p.closedH !== p.h || p.closedW !== p.w || !samePorts(p.ports, p.closedPorts));
 
-  // Every line laid from the lower column to the higher.
-  const flipped = new Set<string>();
-  const laid: Laid[] = [];
-  for (const l of lines) {
-    if (l.from === l.to || !byId.has(l.from) || !byId.has(l.to)) continue;
-    const flip = colOf.get(l.from)! > colOf.get(l.to)!;
-    if (flip) flipped.add(l.id);
-    const [a, b] = flip ? [l.to, l.from] : [l.from, l.to];
-    laid.push({ id: l.id, a, b, ca: colOf.get(a)!, cb: colOf.get(b)! });
-  }
-  const span = (l: Laid) => l.cb - l.ca;
+/** The folded scope that anchors are laid out for: its parts in order, folded, and its lines. */
+function signature(parts: readonly SPart[], lines: readonly SLine[], o: SOpts): string {
+  const ps = parts.map((p) => {
+    const f = foldedPart(p);
+    return [f.id, f.side, f.port, f.w, f.h, f.ports ? [...f.ports] : 0];
+  });
+  return JSON.stringify([o.inside, o.countRoom, ps, lines.map((l) => [l.id, l.from, l.to])]);
+}
 
-  // 2. Rows: the parts, plus a dummy per line per column it passes through, ordered by
-  // barycentre sweeps.
-  const cols: Item[][] = Array.from({ length: nCols }, () => []);
-  const mk = (id: string, col: number, part?: SPart): Item => {
-    const it: Item = { id, col, part, ord: 0, y: 0, h: part?.h ?? 0, left: new Map(), right: new Map() };
-    cols[col]!.push(it);
-    return it;
-  };
-  const partItem = new Map<string, Item>();
-  for (const p of parts) partItem.set(p.id, mk(p.id, colOf.get(p.id)!, p));
-  const chains = new Map<string, Item[]>();
+/** Step 2: each column's items ordered by barycentre sweeps, keeping the order with the fewest crossings. */
+function rows(cols: Item[][], laid: readonly Laid[], partItem: ReadonlyMap<string, Item>) {
+  const nCols = cols.length;
   for (const l of laid) {
     const chain = [partItem.get(l.a)!];
-    for (let c = l.ca + 1; c < l.cb; c++) chain.push(mk(`d:${l.id}:${c}`, c));
+    for (let c = l.ca + 1; c < l.cb; c++) {
+      const d: Item = { id: `d:${l.id}:${c}`, col: c, ord: 0, y: 0, h: 0, ch: 0, left: new Map(), right: new Map() };
+      cols[c]!.push(d);
+      chain.push(d);
+    }
     chain.push(partItem.get(l.b)!);
     for (let i = 0; i + 1 < chain.length; i++) {
       const [p, q] = [chain[i]!, chain[i + 1]!];
       p.right.set(q, (p.right.get(q) ?? 0) + 1);
       q.left.set(p, (q.left.get(p) ?? 0) + 1);
     }
-    chains.set(l.id, chain);
   }
   const renumber = () => cols.forEach((col) => col.forEach((it, i) => (it.ord = i)));
   const crossings = () => {
@@ -563,6 +567,44 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     cols.splice(0, cols.length, ...snap);
     renumber();
   }
+}
+
+export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o: SOpts): SOut {
+  // Anchors are kept only for the scope they were laid out for; any other is laid out afresh.
+  const sig = signature(parts, lines, o);
+  const keep = o.keep?.sig === sig ? o.keep : undefined;
+  // Laid out afresh with blocks open, a scope is first laid out with them folded, and kept from
+  // that drawing: it's the folded drawing with only what the open blocks push moved, and folding
+  // them all gives that drawing back.
+  if (!keep && parts.some(isOpen)) return layoutScope(parts, lines, { ...o, keep: layoutScope(parts.map(foldedPart), lines, { ...o, keep: undefined }).anchors });
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const { colOf, nCols, offset, sideCols, sideOfCol } = columnsOf(parts, lines, o.inside);
+
+  // Every line laid from the lower column to the higher.
+  const flipped = new Set<string>();
+  const laid: Laid[] = [];
+  for (const l of lines) {
+    if (l.from === l.to || !byId.has(l.from) || !byId.has(l.to)) continue;
+    const flip = colOf.get(l.from)! > colOf.get(l.to)!;
+    if (flip) flipped.add(l.id);
+    const [a, b] = flip ? [l.to, l.from] : [l.from, l.to];
+    laid.push({ id: l.id, a, b, ca: colOf.get(a)!, cb: colOf.get(b)! });
+  }
+  const span = (l: Laid) => l.cb - l.ca;
+
+  // 2. Rows: the parts, plus a dummy per line per column it passes through, ordered by
+  // barycentre sweeps. The order depends only on the scope, so from anchors it's theirs.
+  const cols: Item[][] = Array.from({ length: nCols }, () => []);
+  const mk = (id: string, col: number, part?: SPart): Item => {
+    const h = part?.h ?? 0;
+    const it: Item = { id, col, part, ord: 0, y: 0, h, ch: part?.closedH ?? h, left: new Map(), right: new Map() };
+    cols[col]!.push(it);
+    return it;
+  };
+  const partItem = new Map<string, Item>();
+  for (const p of parts) partItem.set(p.id, mk(p.id, colOf.get(p.id)!, p));
+  if (keep) keep.rows.forEach((ids, c) => (cols[c] = ids.map((id) => partItem.get(id)!)));
+  else rows(cols, laid, partItem);
 
   // 3. Parts placed on their own; `extra[c][i]` widens the gap above column c's i-th part.
   const partCols = cols.map((col) => col.filter((it) => it.part));
@@ -580,74 +622,58 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   const isPort = (it: Item) => it.part!.port;
   const gapOf = (a: Item, b: Item) => (isPort(a) && isPort(b) ? PORT_GAP : GAP);
   const mid = (it: Item) => it.y + it.h / 2;
-  // A group with no part anchored has its top flush with the scope's (no empty band): the
-  // groups, and inside a frame everything but the ports.
+  // Laid out afresh, each group has its top flush with the scope's (no empty band): the groups,
+  // and inside a frame everything but the ports.
   const groupOf = (c: number) => (o.inside ? (sideOfCol(c) === 1 ? 1 : -1) : sideOfCol(c) === 1 || sideOfCol(c) === 2 ? sideOfCol(c) : -1);
-  /** A part's height with its scope's blocks folded (a box never folds). */
-  const closedH = (it: Item) => it.part!.closedH ?? it.h;
   /** How far the open blocks above a part in its column push it down. */
   const growth = new Map<Item, number>();
   for (const col of partCols) {
     let g = 0;
-    for (const it of col) growth.set(it, g), (g += it.h - closedH(it));
+    for (const it of col) growth.set(it, g), (g += it.h - it.ch);
   }
   /**
-   * Every part placed, heights from `hOf`. A column of anchored parts keeps them where they
-   * were (their anchors, pushed down by `growth` when `grown`), each pushed further down only by
-   * what's above it. Any other column is packed from the top and pulled toward what its parts
-   * connect to by isotonic regression, its anchored parts held by a heavy weight; and a group
-   * with no anchored part is lifted flush with the top. Every y is a multiple of half a pixel,
-   * so the same anchors always give the same places.
+   * Every part placed. From anchors, each where the scope's folded drawing had it, pushed down by
+   * what grew above it in its column, and no further than the parts above it push it. Afresh, each
+   * column is packed from the top and pulled toward what its parts connect to by isotonic
+   * regression, and each group lifted flush with the top. Every y is a multiple of 1/64 px, so the
+   * same anchors always give the same places.
    */
-  const place = (extra: number[][], hOf: (it: Item) => number, anchor: (it: Item) => number | undefined, grown: boolean) => {
-    const midOf = (it: Item) => it.y + hOf(it) / 2;
-    const target = (it: Item) => {
-      const a = anchor(it);
-      return a === undefined ? undefined : a + (grown ? growth.get(it)! : 0);
-    };
+  const place = (extra: number[][]) => {
+    if (keep) {
+      partCols.forEach((col, c) =>
+        col.forEach((it, i) => {
+          const prev = col[i - 1];
+          const below = prev ? prev.y + prev.h + gapOf(prev, it) + (extra[c]![i] ?? 0) : TOP + (extra[c]![0] ?? 0);
+          it.y = half(Math.max(keep.ys.get(it.id)! + growth.get(it)!, below));
+        }),
+      );
+      return;
+    }
     const packed = new Map<Item, number>();
-    partCols.forEach((col, c) => {
-      let y = TOP;
-      col.forEach((it, i) => {
-        y += (i ? gapOf(col[i - 1]!, it) : 0) + (extra[c]![i] ?? 0);
-        it.y = y;
-        packed.set(it, y);
-        y += hOf(it);
-      });
-    });
     const offs = partCols.map((col, c) => {
       const off: number[] = [];
       let acc = extra[c]![0] ?? 0;
-      col.forEach((_, i) => {
-        if (i) acc += hOf(col[i - 1]!) + gapOf(col[i - 1]!, col[i]!) + (extra[c]![i] ?? 0);
+      col.forEach((it, i) => {
+        if (i) acc += col[i - 1]!.h + gapOf(col[i - 1]!, it) + (extra[c]![i] ?? 0);
         off.push(acc);
+        it.y = TOP + acc;
+        packed.set(it, it.y);
       });
       return off;
     });
-    const anchored = partCols.map((col) => col.length > 0 && col.every((it) => anchor(it) !== undefined));
-    partCols.forEach((col, c) => {
-      if (!anchored[c]) return;
-      col.forEach((it, i) => {
-        const prev = col[i - 1];
-        it.y = half(Math.max(target(it)!, prev ? prev.y + hOf(prev) + gapOf(prev, it) + (extra[c]![i] ?? 0) : TOP + offs[c]![0]!));
-      });
-    });
-    if (anchored.every((a, c) => a || !partCols[c]!.length)) return;
     for (let pass = 0; pass < 10; pass++)
       partCols.forEach((col, c) => {
-        if (!col.length || anchored[c]) return;
+        if (!col.length) return;
         const off = offs[c]!;
         const t: number[] = [], w: number[] = [];
         col.forEach((it, i) => {
-          const k = target(it);
-          if (k !== undefined) return void (t.push(k - off[i]!), w.push(KEEP));
           const ns = nbrs.get(it) ?? [];
           const home = packed.get(it)!;
           let want = home;
           if (ns.length) {
             let s = 0;
-            for (const q of ns) s += midOf(q);
-            want = s / ns.length - hOf(it) / 2;
+            for (const q of ns) s += mid(q);
+            want = s / ns.length - it.h / 2;
           }
           const pull = isPort(it) ? PORT_PULL : PULL;
           t.push((want * ns.length + home * pull) / (ns.length + pull) - off[i]!);
@@ -660,25 +686,13 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     partCols.forEach((col, c) => {
       const g = groupOf(c);
       if (g < 0 || !col.length) return;
-      const free = col[0]!.y - TOP - (extra[c]![0] ?? 0);
-      groups.set(g, Math.min(groups.get(g) ?? Infinity, col.some((it) => anchor(it) !== undefined) ? 0 : free));
+      groups.set(g, Math.min(groups.get(g) ?? Infinity, col[0]!.y - TOP - (extra[c]![0] ?? 0)));
     });
     partCols.forEach((col, c) => {
-      if (anchored[c]) return;
       const lift = groups.get(groupOf(c)) ?? 0;
       for (const it of col) it.y = half(lift > 0.01 ? it.y - lift : it.y);
     });
   };
-  // Against the last answer: a part moves when its size, or what's above it, changed (or it's
-  // new).
-  const keep = o.keep;
-  const anchorOf = (it: Item) => keep?.ys.get(it.id);
-  const changed = (it: Item) => {
-    const s = keep?.last.sizes.get(it.id);
-    return !s || s.w !== it.part!.w || s.h !== it.h;
-  };
-  const moves = new Set([...partItem.values()].filter((it) => !keep || changed(it) || keep.last.growth.get(it.id) !== growth.get(it)));
-  const placeParts = (extra: number[][]) => place(extra, (it) => it.h, anchorOf, true);
 
   // 4–5. Street routing, and the gaps widened where routes pass.
   const endY = (it: Item, key: string) => {
@@ -686,15 +700,15 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     return p === undefined ? mid(it) : it.y + p;
   };
   const colWidth = cols.map((col) => Math.max(0, ...col.map((it) => it.part?.w ?? 0)));
-  // The room for routes above each part: what it had, for a part the change doesn't move, and
-  // it never widens; else the anchors', widened as the routes need.
-  let extra: number[][] = partCols.map((col) => col.map((it) => (keep ? ((moves.has(it) ? keep.room : keep.last.room).get(it.id) ?? 0) : 0)));
+  // The room for routes above each part: from anchors, the anchored room, which never widens (so
+  // an open moves only what it pushes); afresh, none, widened as the routes need.
+  let extra: number[][] = partCols.map((col) => col.map((it) => keep?.room.get(it.id) ?? 0));
   let Y: number[] = [];
   let hUse: Int32Array[] = [];
   let paths = new Map<string, { lv: number[]; long: boolean }>();
   const streets = new Streets(colWidth);
   for (let grow = 0; grow < 8; grow++) {
-    placeParts(extra);
+    place(extra);
     const raw: number[] = [];
     for (const col of partCols) {
       const ns = [...col].sort((a, b) => a.y - b.y);
@@ -732,6 +746,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         streets.mark(l.ca, lv, ya, yb, local, +1);
       }
     // Widen each gap to fit the levels routed through it, LEVEL apart and clear of the parts.
+    if (keep) break;
     let grew = false;
     const widened = partCols.map((col, c) => {
       const used: number[] = [];
@@ -741,7 +756,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         const n = used.filter((y) => y > top && y < it.y).length;
         const need = n ? n * LEVEL + 2 * CLEAR : 0;
         const was = extra[c]![i] ?? 0;
-        const add = moves.has(it) ? Math.max(was, need - (it.y - top) + was) : was;
+        const add = Math.max(was, need - (it.y - top) + was);
         if (add > was + 1) grew = true;
         return add;
       });
@@ -1008,9 +1023,10 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   });
 
   // X: columns left to right; a gutter as wide as its tracks, the count room and the frames'
-  // padding. Against the last answer, a gutter keeps its width, its tracks closer together if they
-  // must: left of every changed part the last answer's, so nothing there moves; right of one the
-  // anchors', so folding back restores it. Only tracks that can't fit widen it.
+  // padding. From anchors, a gutter is as wide as its anchor, its tracks closer together (down to
+  // TRACK_MIN) if they must; tracks that can't fit even so widen it to the least width that fits
+  // them. Its width is then a function of its anchor and its tracks alone, so coming back to an
+  // earlier open set gives it back exactly.
   const colX: number[] = [];
   const framed = (c: number) => !o.inside && (sideOfCol(c) === 1 || sideOfCol(c) === 2);
   // A gutter's name for the anchors: the least part ID in the columns either side.
@@ -1024,9 +1040,6 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     if (flip) leaves[l.cb - 1]![1] = true;
     else leaves[l.ca]![0] = true;
   }
-  let firstChange = Infinity;
-  if (keep) for (const it of partItem.values()) if (changed(it)) firstChange = Math.min(firstChange, it.col);
-  const gutterAnchors = new Map<string, number>();
   const gutterWidths = new Map<string, number>();
   let x = PAD;
   for (let c = 0; c < nCols; c++) {
@@ -1041,16 +1054,14 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     const [roomL, roomR] = leaves[c]!.map((on) => (on ? o.countRoom : 0)) as [number, number];
     const fixed = (crossing ? CROSS_ROOM : 0) + roomL + roomR;
     const name = JSON.stringify([least[c], least[c + 1]]);
-    const last = keep?.last.gutters.get(name);
     let step = TRACK;
     let width = Math.max(GUT_MIN, sum + Math.max(0, tw.length - 1) * TRACK + 2 * GUT_PAD) + fixed;
-    const held = c < firstChange ? last : keep?.gutters.get(name);
-    if (held !== undefined) {
-      const fit = tw.length > 1 ? (held - fixed - 2 * GUT_PAD_MIN - sum) / (tw.length - 1) : TRACK;
-      if (width <= held) width = held;
-      else if (fit >= TRACK_MIN && sum + 2 * GUT_PAD_MIN + fixed <= held) (width = held), (step = Math.min(TRACK, fit));
+    const held = keep?.gutters.get(name);
+    if (held !== undefined && width <= held) width = held;
+    else if (held !== undefined) {
+      width = Math.max(held, sum + Math.max(0, tw.length - 1) * TRACK_MIN + 2 * GUT_PAD_MIN + fixed);
+      if (tw.length > 1) step = Math.min(TRACK, (width - fixed - 2 * GUT_PAD_MIN - sum) / (tw.length - 1));
     }
-    gutterAnchors.set(name, keep?.gutters.get(name) ?? width);
     gutterWidths.set(name, width);
     // The tracks sit in the middle of the gutter, between the frames and the count room.
     const inner = sum + Math.max(0, tw.length - 1) * step;
@@ -1149,16 +1160,37 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   for (const it of partItem.values()) height = Math.max(height, it.y + it.h);
   for (const r of groups) height = Math.max(height, r.y + r.h);
   for (const r of routes.values()) for (const p of r) height = Math.max(height, p.y);
-  const anchors: Anchors = { ys: new Map(), room: new Map(), gutters: gutterAnchors, last: { sizes: new Map(), growth: new Map(), room: new Map(), gutters: gutterWidths } };
-  partCols.forEach((col, c) =>
-    col.forEach((it, i) => {
-      const room = extra[c]![i] ?? 0;
-      anchors.ys.set(it.id, anchorOf(it) ?? half(it.y - growth.get(it)!));
-      anchors.room.set(it.id, keep?.room.get(it.id) ?? room);
-      anchors.last.sizes.set(it.id, { w: it.part!.w, h: it.h });
-      anchors.last.growth.set(it.id, growth.get(it)!);
-      anchors.last.room.set(it.id, room);
-    }),
-  );
-  return { at, routes, flipped, trunks, groups, width: x + PAD, height: height + PAD, anchors };
+  // Inside a frame: the frame round its ports (on its edges), its parts with padding, and its
+  // routes, a title strip on top.
+  let frame: SFrame | undefined;
+  if (o.inside) {
+    let x0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const ports = new Map<string, number>();
+    for (const it of partItem.values()) {
+      const a = at.get(it.id)!;
+      if (isPort(it)) {
+        if (it.part!.side === 0) x0 = Math.min(x0, a.x);
+        else x1 = Math.max(x1, a.x);
+        y1 = Math.max(y1, a.y + PORT_ROOM);
+        ports.set(it.id, a.y - PAD);
+      } else {
+        x0 = Math.min(x0, a.x - FRAME_PAD);
+        x1 = Math.max(x1, a.x + it.part!.w + FRAME_PAD);
+        y1 = Math.max(y1, a.y + it.h + FRAME_PAD);
+      }
+    }
+    for (const r of routes.values()) for (const pt of r) y1 = Math.max(y1, pt.y + ROUTE_ROOM);
+    if (!Number.isFinite(x0)) (x0 = 0), (x1 = 2 * FRAME_PAD), (y1 = Math.max(y1, PAD + 2 * FRAME_PAD));
+    frame = { fx: x0, fy: PAD, w: x1 - x0, h: y1 - PAD, ports };
+  }
+  // Laid out afresh, this drawing is the scope's folded one (a scope with blocks open is laid out
+  // from the anchors of its folded drawing): its places are the anchors.
+  let anchors = keep;
+  if (!anchors) {
+    const rows = partCols.map((col) => col.map((it) => it.id));
+    anchors = { sig, rows, ys: new Map(), room: new Map(), gutters: gutterWidths, frame: frame && { w: frame.w, h: frame.h, ports: frame.ports } };
+    for (const [c, col] of partCols.entries())
+      for (const [i, it] of col.entries()) anchors.ys.set(it.id, it.y), anchors.room.set(it.id, extra[c]![i] ?? 0);
+  }
+  return { at, routes, flipped, trunks, groups, width: x + PAD, height: height + PAD, frame, anchors };
 }

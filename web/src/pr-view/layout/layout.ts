@@ -11,33 +11,28 @@
 // 3. Top down, offsets: every scope's coordinates moved to the drawing's.
 //
 // Opening or folding a block changes no scope's lines, only the block's size, so with the last
-// answer every scope keeps its parts where they were: only what the changed block pushes moves,
-// and folding it back puts them back.
+// answer every scope is laid out from the same anchors (its drawing with every block in it
+// folded): only what the changed block pushes moves, and folding it back puts them back.
 //
 // Boxes (group frames round some of a scope's parts) are frames too: each is laid out as a scope
-// of its own, its lines crossing its edge through ports, and joined back into one route.
-import { columnsOf, layoutScope, PAD, FRAME_PAD, tidy, type SLine, type SOut, type SPart, type Side } from "./scope.ts";
+// of its own, its lines crossing its edge through ports, and joined back into one route. A box
+// never folds, but its folded size (its blocks folded) is what the scope's folded drawing has.
+import { columnsOf, layoutScope, tidy, type SFrame, type SLine, type SOut, type SPart, type Side } from "./scope.ts";
 import type { Anchors, Column, Layout, LayoutInput, Line, P, Part, Placed, Scope, ScopeLayout, Trunk } from "./types.ts";
 
 /** Room in each gap between columns for a line's count (px). */
 export const COUNT_ROOM = 30;
 
 const SIDE: Record<Column, Side> = { people: 0, changed: 1, unchanged: 2, outside: 3 };
-/** How far below a port, or a route, a frame's edge sits. */
-const PORT_ROOM = 12;
-const ROUTE_ROOM = 10;
 
 // Made IDs are JSON arrays, so no ID's own characters can make two of them one.
 const portId = (scope: string, line: string) => JSON.stringify(["port", scope, line]);
 const pieceId = (line: string, box: string, into: boolean) => JSON.stringify([line, into ? ">" : "<", box]);
 const end = (scope: string, e: Line["from"]) => (typeof e === "string" ? e : portId(scope, e.port));
 
-interface Frame {
-  fx: number;
-  fy: number;
-  w: number;
-  h: number;
-  ports: Map<string, number>;
+/** A frame as the scope above has it: its ports by the line of that scope each stands for. */
+interface Frame extends SFrame {
+  closed?: { w: number; h: number; ports: Map<string, number> };
 }
 
 interface Work {
@@ -69,13 +64,19 @@ export function layout(input: LayoutInput): Layout {
   const lineOf = new Map<string, Line>();
   for (const w of work) for (const l of w.scope.lines) lineOf.set(l.id, l);
 
+  /** An open block's size closed, a box's with its blocks folded: where the parts below go back to when it folds. */
+  const closed = (p: Part, f?: Frame) => {
+    if (!p.frame) return {};
+    if (!boxes.has(p.id)) return { closedW: p.w, closedH: p.h };
+    return f?.closed ? { closedW: f.closed.w, closedH: f.closed.h, closedPorts: f.closed.ports } : {};
+  };
   const sParts = (w: Work, sized: (p: Part) => { w: number; h: number; ports?: Map<string, number> }, portSide: Map<string, Side>): SPart[] => [
-    // An open block's closed height: where the parts below it go back to when it folds.
-    ...w.scope.parts.map((p) => ({ id: p.id, side: w.inside ? 1 : SIDE[p.column], port: false, ...sized(p), ...(p.frame && !boxes.has(p.id) ? { closedW: p.w, closedH: p.h } : {}) })),
+    ...w.scope.parts.map((p) => ({ id: p.id, side: w.inside ? 1 : SIDE[p.column], port: false, ...sized(p), ...closed(p, frames.get(p.id)) })),
     ...[...w.ports.values()].map((id) => ({ id, side: portSide.get(id) ?? 3, w: 0, h: 0, port: true })),
   ];
   const sLines = (w: Work): SLine[] => w.scope.lines.map((l) => ({ id: l.id, from: end(w.id, l.from), to: end(w.id, l.to) }));
 
+  const frames = new Map<string, Frame>();
   // 1. Columns, top down: each port's edge.
   const portSide = new Map<string, Side>();
   for (const w of work) {
@@ -89,31 +90,15 @@ export function layout(input: LayoutInput): Layout {
   }
 
   // 2. Layout, bottom up.
-  const frames = new Map<string, Frame>();
   for (const w of [...work].reverse()) {
     const parts = sParts(w, (p) => frames.get(p.id) ?? p, portSide);
     const out = layoutScope(parts, sLines(w), { inside: w.inside, keep: input.previous?.anchors.get(w.id), countRoom });
     w.out = out;
-    if (!w.inside) continue;
-    // The frame: its ports on its edges, its parts inside with padding, a title strip on top.
-    let x0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of parts) {
-      const a = out.at.get(p.id)!;
-      if (p.port) {
-        if (p.side === 0) x0 = Math.min(x0, a.x);
-        else x1 = Math.max(x1, a.x);
-        y1 = Math.max(y1, a.y + PORT_ROOM);
-      } else {
-        x0 = Math.min(x0, a.x - FRAME_PAD);
-        x1 = Math.max(x1, a.x + p.w + FRAME_PAD);
-        y1 = Math.max(y1, a.y + p.h + FRAME_PAD);
-      }
-    }
-    for (const r of out.routes.values()) for (const pt of r) y1 = Math.max(y1, pt.y + ROUTE_ROOM);
-    if (!Number.isFinite(x0)) (x0 = 0), (x1 = 2 * FRAME_PAD), (y1 = Math.max(y1, PAD + 2 * FRAME_PAD));
-    const ports = new Map<string, number>();
-    for (const [above, id] of w.ports) ports.set(above, out.at.get(id)!.y - PAD);
-    frames.set(w.id, { fx: x0, fy: PAD, w: x1 - x0, h: y1 - PAD, ports });
+    if (!out.frame) continue;
+    // The frame's ports, and its folded one's, by the lines of the scope above.
+    const above = (ports: Map<string, number>) => new Map([...w.ports].map(([line, id]) => [line, ports.get(id)!]));
+    const folded = out.anchors.frame;
+    frames.set(w.id, { ...out.frame, ports: above(out.frame.ports), closed: folded && { w: folded.w, h: folded.h, ports: above(folded.ports) } });
   }
 
   // 3. Offsets, top down.
