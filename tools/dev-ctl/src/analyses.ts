@@ -137,6 +137,24 @@ async function control(url: string, path: string, body: unknown): Promise<void> 
   if (!res.ok) throw new Error(`fake ${path}: ${res.status} ${await res.text()}`);
 }
 
+/** The IDs an analysis names, its nodes' and lines', in order. */
+function ids(a: { nodes?: { id: string }[]; edges?: { id: string }[] }): string[] {
+  return [...(a.nodes ?? []).map((n) => n.id), ...(a.edges ?? []).map((e) => e.id)];
+}
+
+/** Whether `login`'s analysis of `v`'s PR is `v`: the same head, nodes and lines. */
+async function holds(server: string, login: string, v: Version): Promise<boolean> {
+  if (!v.analysis) return false;
+  const s = new Session(server);
+  await s.signIn(login);
+  const [owner, repo] = v.repo.split("/");
+  const res = await s.fetch(`/api/${owner}/${repo}/pulls/${v.number}/analysis`);
+  if (res.status !== 200) return false;
+  const graph = (await res.json()) as { headSha?: string; analysis?: { nodes?: { id: string }[]; edges?: { id: string }[] } };
+  const want = JSON.parse(readFileSync(v.analysis, "utf8")) as { nodes?: { id: string }[]; edges?: { id: string }[] };
+  return graph.headSha === v.headSha && isDeepStrictEqual(ids(graph.analysis ?? {}), ids(want));
+}
+
 export interface Uploaded {
   version: string;
   analysis: string;
@@ -172,10 +190,12 @@ export async function upload(server: string, controlUrl: string, login: string, 
     }
   }
   if (want.after !== undefined) {
-    // A later analysis: the one it follows goes first, so its `carried` has the IDs it names.
+    // A later analysis: the one it follows goes first, so its `carried` has the IDs it names;
+    // unless the account's analysis is that one already (uploaded earlier, so a view open on it
+    // sees this one arrive as a newer analysis).
     const first = all.find((v) => v.number === want.number && v.version === want.after);
     if (!first) throw new Error(`${want.name} follows v${want.after}, which isn't recorded`);
-    await upload(server, controlUrl, login, first, all);
+    if (!(await holds(server, login, first))) await upload(server, controlUrl, login, first, all);
   }
   const s = new Session(server);
   await s.signIn(login);
