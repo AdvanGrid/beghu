@@ -308,6 +308,182 @@ export function tidy(pts: P[]): P[] {
   return out;
 }
 
+/**
+ * Step 4's street routing for one scope: each line's cheapest path through the levels it can pass
+ * each column at, against the stretches the others use. Its methods live once for the module, so
+ * they stay optimised across scopes and the routing's rounds (closures made per round didn't).
+ */
+class Streets {
+  L = 0;
+  Y: Float64Array = new Float64Array(0);
+  free: Uint8Array[] = [];
+  /** Per column, per level, how many lines ride it, and how many local ones. */
+  hUse: Int32Array[] = [];
+  hLocal: Int32Array[] = [];
+  /** Per gutter, per level step, how many lines run up it. */
+  vUse: Int32Array[] = [];
+  /** Bumped whenever a stretch of the gutter goes from unused to used or back. */
+  version: Int32Array = new Int32Array(0);
+  /** A gutter's running cost up its levels, for a long line or a local one: kept until a route
+   * starts or stops using one of its stretches. */
+  cached: Float64Array[] = [];
+  cachedAt: Int32Array = new Int32Array(0);
+  P: Float64Array = new Float64Array(0);
+  dp: Float64Array = new Float64Array(0);
+  next: Float64Array = new Float64Array(0);
+  loV: Float64Array = new Float64Array(0);
+  loI: Int32Array = new Int32Array(0);
+  back: Int32Array = new Int32Array(0);
+
+  readonly colWidth: readonly number[];
+
+  constructor(colWidth: readonly number[]) {
+    this.colWidth = colWidth;
+  }
+
+  reset(Y: readonly number[], free: Uint8Array[]) {
+    const L = (this.L = Y.length), n = this.colWidth.length;
+    this.Y = Float64Array.from(Y);
+    this.free = free;
+    this.hUse = Array.from({ length: n }, () => new Int32Array(L));
+    this.hLocal = Array.from({ length: n }, () => new Int32Array(L));
+    this.vUse = Array.from({ length: n }, () => new Int32Array(L));
+    this.version = new Int32Array(n);
+    this.cached = Array.from({ length: 2 * n }, () => new Float64Array(L));
+    this.cachedAt = new Int32Array(2 * n).fill(-1);
+    this.P = this.cached[0]!;
+    if (this.dp.length < L) (this.dp = new Float64Array(L)), (this.next = new Float64Array(L)), (this.loV = new Float64Array(L)), (this.loI = new Int32Array(L));
+  }
+
+  /** The first level at or below `y` (the last level, if none is). */
+  levelOf(y: number) {
+    const Y = this.Y;
+    let lo = 0, hi = this.L - 1;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (Y[m]! < y) lo = m + 1;
+      else hi = m;
+    }
+    return lo;
+  }
+
+  /** Adds (`sign` 1) or takes away (-1) the route `lv` of a line from column `ca`, ends at ya, yb. */
+  mark(ca: number, lv: readonly number[], ya: number, yb: number, local: boolean, sign: number) {
+    for (let i = 0; i < lv.length; i++) this.hUse[ca + 1 + i]![lv[i]!]! += sign;
+    if (local) for (let i = 0; i < lv.length; i++) this.hLocal[ca + 1 + i]![lv[i]!]! += sign;
+    const Y = this.Y, version = this.version;
+    for (let i = 0; i <= lv.length; i++) {
+      const y0 = i === 0 ? ya : Y[lv[i - 1]!]!, y1 = i === lv.length ? yb : Y[lv[i]!]!;
+      const g = ca + i;
+      const a = this.levelOf(Math.min(y0, y1)), b = this.levelOf(Math.max(y0, y1));
+      const use = this.vUse[g]!;
+      for (let j = a; j < b; j++) {
+        const was = use[j]! > 0;
+        use[j]! += sign;
+        if (was !== use[j]! > 0) version[g]!++;
+      }
+    }
+  }
+
+  /** Points `P` at gutter g's running cost up its levels, for a long line or a local one. */
+  pre(g: number, long: boolean) {
+    const k = 2 * g + (long ? 1 : 0);
+    const P = (this.P = this.cached[k]!);
+    if (this.cachedAt[k] === this.version[g]) return;
+    this.cachedAt[k] = this.version[g]!;
+    const use = this.vUse[g]!, Y = this.Y, L = this.L, busy = long ? DISCOUNT : BUSY;
+    P[0] = 0;
+    for (let j = 0; j + 1 < L; j++) {
+      const seg = Y[j + 1]! - Y[j]!;
+      P[j + 1] = P[j]! + (use[j]! > 0 ? seg * busy : seg);
+    }
+  }
+
+  /**
+   * From a part's port at y (off the level grid; `at` is the first level at or below it) to
+   * level j: to the grid's nearest level on j's side at full length, along the grid from there
+   * (P only between levels), and the two bends.
+   */
+  toLevel(y: number, at: number, j: number) {
+    const Y = this.Y, P = this.P;
+    const yj = Y[j]!;
+    if (Math.abs(y - yj) < 0.5) return 0;
+    if (yj > y) return Y[at]! - y + P[j]! - P[at]! + 2 * BEND;
+    const above = Y[at]! > y ? at - 1 : at;
+    return y - Y[above]! + P[above]! - P[j]! + 2 * BEND;
+  }
+
+  /**
+   * The cheapest levels, one per column strictly between `ca` and `cb`, for a line from y `ya` to
+   * `yb`: length, a bend's cost, the discount (or a local line's charge) on used stretches.
+   * Strict, a local line takes no level another rides, and a long line none a local one does.
+   */
+  route(ca: number, cb: number, ya: number, yb: number, long: boolean, strict: boolean): number[] | null {
+    const n = cb - ca - 1;
+    if (n <= 0) return [];
+    const L = this.L, free = this.free, hUse = this.hUse, hLocal = this.hLocal, colWidth = this.colWidth;
+    const busy = long ? DISCOUNT : BUSY;
+    if (this.back.length < n * L) this.back = new Int32Array(n * L);
+    const lo = this.loV, li = this.loI, bk = this.back;
+    let cur = this.dp, nxt = this.next;
+    this.pre(ca, long);
+    {
+      const c = ca + 1, f = free[c]!, use = hUse[c]!, w = colWidth[c]!, at = this.levelOf(ya);
+      const shut = strict ? (long ? hLocal[c]! : use) : null;
+      for (let j = 0; j < L; j++) cur[j] = f[j] && !(shut !== null && shut[j]) ? this.toLevel(ya, at, j) + w * (use[j] ? busy : 1) : Infinity;
+    }
+    const bends = 2 * BEND;
+    for (let k = 1; k < n; k++) {
+      const g = ca + k, c = g + 1, f = free[c]!, use = hUse[c]!, w = colWidth[c]!;
+      const shut = strict ? (long ? hLocal[c]! : use) : null;
+      this.pre(g, long);
+      const P = this.P;
+      // The cheapest level to come from, in O(L): from below j costs dp[i] - P[i] + P[j], from
+      // above dp[i] + P[i] - P[j] (P is a running sum), so a running minimum from each end
+      // gives both: the one from above kept on the way down, the one from below on the way
+      // back up, where each level takes the cheapest. Ties go to the lowest i.
+      for (let j = 0, m = Infinity, mi = -1; j < L; j++) {
+        lo[j] = m;
+        li[j] = mi;
+        const d = cur[j]! - P[j]!;
+        if (d < m) (m = d), (mi = j);
+      }
+      const row = k * L;
+      for (let j = L - 1, m = Infinity, mi = -1; j >= 0; j--) {
+        const d = cur[j]!, hv = m, hi = mi;
+        if (d < Infinity && d + P[j]! <= m) (m = d + P[j]!), (mi = j);
+        if (!f[j] || (shut !== null && shut[j])) {
+          nxt[j] = Infinity;
+          bk[row + j] = -1;
+          continue;
+        }
+        let best = lo[j]! + P[j]! + bends, arg = li[j]!;
+        if (d < best) (best = d), (arg = j);
+        if (hv - P[j]! + bends < best) (best = hv - P[j]! + bends), (arg = hi);
+        nxt[j] = best + w * (use[j] ? busy : 1);
+        bk[row + j] = arg;
+      }
+      const t = cur;
+      cur = nxt;
+      nxt = t;
+    }
+    this.dp = cur;
+    this.next = nxt;
+    this.pre(cb - 1, long);
+    const at = this.levelOf(yb);
+    let best = Infinity, arg = -1;
+    for (let j = 0; j < L; j++) {
+      if (cur[j]! === Infinity) continue;
+      const v = cur[j]! + this.toLevel(yb, at, j);
+      if (v < best) (best = v), (arg = j);
+    }
+    if (arg < 0) return null;
+    const lv = new Array<number>(n);
+    for (let k = n - 1, j = arg; k >= 0; k--) (lv[k] = j), (j = bk[k * L + j]!);
+    return lv;
+  }
+}
+
 export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o: SOpts): SOut {
   // Laid out afresh with blocks open, a scope is first laid out with them folded, and kept from
   // that drawing: it's the folded drawing with only what the open blocks push moved, and folding
@@ -516,6 +692,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   let Y: number[] = [];
   let hUse: Int32Array[] = [];
   let paths = new Map<string, { lv: number[]; long: boolean }>();
+  const streets = new Streets(colWidth);
   for (let grow = 0; grow < 8; grow++) {
     placeParts(extra);
     const raw: number[] = [];
@@ -537,138 +714,22 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
       for (const it of col) for (let j = 0; j < L; j++) if (Y[j]! > it.y - CLEAR && Y[j]! < it.y + it.h + CLEAR) f[j] = 0;
       return f;
     });
-    // Per column, per level, how many lines ride it; per gutter, per level step, how many.
-    hUse = cols.map(() => new Int32Array(L));
-    const hLocal = cols.map(() => new Int32Array(L));
-    const vUse: Int32Array[] = cols.map(() => new Int32Array(L));
-    /** Bumped whenever a stretch of the gutter goes from unused to used or back. */
-    const version = new Int32Array(nCols);
-    const levelOf = (y: number) => {
-      let lo = 0, hi = L - 1;
-      while (lo < hi) {
-        const m = (lo + hi) >> 1;
-        if (Y[m]! < y) lo = m + 1;
-        else hi = m;
-      }
-      return lo;
-    };
-    const ysOf = (l: Laid, lv: number[]) => [endY(partItem.get(l.a)!, l.id), ...lv.map((j) => Y[j]!), endY(partItem.get(l.b)!, l.id)];
+    streets.reset(Y, free);
+    hUse = streets.hUse;
     paths = new Map();
-    const mark = (l: Laid, lv: number[], sign: number) => {
-      for (let i = 0; i < lv.length; i++) hUse[l.ca + 1 + i]![lv[i]!]! += sign;
-      if (span(l) < LOCAL_GUTTERS) for (let i = 0; i < lv.length; i++) hLocal[l.ca + 1 + i]![lv[i]!]! += sign;
-      const ys = ysOf(l, lv);
-      for (let i = 0; i + 1 < ys.length; i++) {
-        const g = l.ca + i;
-        const a = levelOf(Math.min(ys[i]!, ys[i + 1]!)), b = levelOf(Math.max(ys[i]!, ys[i + 1]!));
-        const use = vUse[g]!;
-        for (let j = a; j < b; j++) {
-          const was = use[j]! > 0;
-          use[j]! += sign;
-          if (was !== use[j]! > 0) version[g]!++;
-        }
-      }
-    };
-    // A gutter's running cost up its levels, for a long line or a local one: kept until a route
-    // starts or stops using one of its stretches.
-    const cached = Array.from({ length: 2 * nCols }, () => new Float64Array(L));
-    const cachedAt = new Int32Array(2 * nCols).fill(-1);
-    let P = cached[0]!;
-    const pre = (g: number, long: boolean) => {
-      const k = 2 * g + (long ? 1 : 0);
-      P = cached[k]!;
-      if (cachedAt[k] === version[g]) return;
-      cachedAt[k] = version[g]!;
-      const use = vUse[g]!;
-      P[0] = 0;
-      for (let j = 0; j + 1 < L; j++) {
-        const seg = Y[j + 1]! - Y[j]!;
-        P[j + 1] = P[j]! + (use[j]! > 0 ? seg * (long ? DISCOUNT : BUSY) : seg);
-      }
-    };
-    // From a part's port at y (off the level grid; `at` is the first level at or below it) to
-    // level j: to the grid's nearest level on j's side at full length, along the grid from there
-    // (P only between levels), and the two bends.
-    const toLevel = (y: number, at: number, j: number) => {
-      const yj = Y[j]!;
-      if (Math.abs(y - yj) < 0.5) return 0;
-      if (yj > y) return Y[at]! - y + P[j]! - P[at]! + 2 * BEND;
-      const above = Y[at]! > y ? at - 1 : at;
-      return y - Y[above]! + P[above]! - P[j]! + 2 * BEND;
-    };
-    let dp = new Float64Array(L);
-    let next = new Float64Array(L);
-    const loV = new Float64Array(L), hiV = new Float64Array(L);
-    const loI = new Int32Array(L), hiI = new Int32Array(L);
-    let back = new Int32Array(0);
-    const route = (l: Laid, long: boolean, strict = true): number[] | null => {
-      const n = l.cb - l.ca - 1;
-      if (n <= 0) return [];
-      const ya = endY(partItem.get(l.a)!, l.id), yb = endY(partItem.get(l.b)!, l.id);
-      const busy = long ? DISCOUNT : BUSY;
-      if (back.length < n * L) back = new Int32Array(n * L);
-      pre(l.ca, long);
-      {
-        const c = l.ca + 1, f = free[c]!, use = hUse[c]!, loc = hLocal[c]!, w = colWidth[c]!, at = levelOf(ya);
-        for (let j = 0; j < L; j++) dp[j] = f[j] && !(strict && (long ? loc[j] : use[j])) ? toLevel(ya, at, j) + w * (use[j] ? busy : 1) : Infinity;
-      }
-      for (let k = 1; k < n; k++) {
-        const g = l.ca + k, c = g + 1, f = free[c]!, use = hUse[c]!, loc = hLocal[c]!, w = colWidth[c]!;
-        pre(g, long);
-        // The cheapest level to come from, in O(L): from below j costs dp[i] - P[i] + P[j],
-        // from above dp[i] + P[i] - P[j] (P is a running sum), so a running minimum from each
-        // end gives both. Ties go to the lowest i.
-        for (let j = 0, m = Infinity, mi = -1; j < L; j++) {
-          loV[j] = m;
-          loI[j] = mi;
-          const d = dp[j]!;
-          if (d < Infinity && d - P[j]! < m) (m = d - P[j]!), (mi = j);
-        }
-        for (let j = L - 1, m = Infinity, mi = -1; j >= 0; j--) {
-          hiV[j] = m;
-          hiI[j] = mi;
-          const d = dp[j]!;
-          if (d < Infinity && d + P[j]! <= m) (m = d + P[j]!), (mi = j);
-        }
-        const row = k * L;
-        for (let j = 0; j < L; j++) {
-          if (!f[j] || (strict && (long ? loc[j] : use[j]))) {
-            next[j] = Infinity;
-            back[row + j] = -1;
-            continue;
-          }
-          let best = Infinity, arg = -1;
-          if (loI[j]! >= 0) (best = loV[j]! + P[j]! + 2 * BEND), (arg = loI[j]!);
-          if (dp[j]! < best) (best = dp[j]!), (arg = j);
-          if (hiI[j]! >= 0 && hiV[j]! - P[j]! + 2 * BEND < best) (best = hiV[j]! - P[j]! + 2 * BEND), (arg = hiI[j]!);
-          next[j] = best + w * (use[j] ? busy : 1);
-          back[row + j] = arg;
-        }
-        [dp, next] = [next, dp];
-      }
-      pre(l.cb - 1, long);
-      const at = levelOf(yb);
-      let best = Infinity, arg = -1;
-      for (let j = 0; j < L; j++) {
-        if (dp[j]! === Infinity) continue;
-        const v = dp[j]! + toLevel(yb, at, j);
-        if (v < best) (best = v), (arg = j);
-      }
-      if (arg < 0) return null;
-      const lv = new Array<number>(n);
-      for (let k = n - 1, j = arg; k >= 0; k--) (lv[k] = j), (j = back[k * L + j]!);
-      return lv;
-    };
+    const ends = new Map(laid.map((l) => [l, [endY(partItem.get(l.a)!, l.id), endY(partItem.get(l.b)!, l.id)] as const]));
     const longFirst = [...laid].sort((a, b) => span(b) - span(a));
     for (let pass = 0; pass < 3; pass++)
       for (const l of longFirst) {
         const long = span(l) >= LOCAL_GUTTERS;
+        const local = span(l) < LOCAL_GUTTERS;
+        const [ya, yb] = ends.get(l)!;
         const old = paths.get(l.id);
-        if (old) mark(l, old.lv, -1);
-        const lv = route(l, long) ?? route(l, long, false);
+        if (old) streets.mark(l.ca, old.lv, ya, yb, local, -1);
+        const lv = streets.route(l.ca, l.cb, ya, yb, long, true) ?? streets.route(l.ca, l.cb, ya, yb, long, false);
         if (!lv) continue;
         paths.set(l.id, { lv, long });
-        mark(l, lv, +1);
+        streets.mark(l.ca, lv, ya, yb, local, +1);
       }
     // Widen each gap to fit the levels routed through it, LEVEL apart and clear of the parts.
     let grew = false;
