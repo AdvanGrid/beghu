@@ -188,18 +188,10 @@ export class MaybePosted extends Error {
 }
 
 /**
- * GitHub didn't give a body's history: it's down or didn't answer, its rate limit is reached
- * (`retryAfter`), or it refused. The message is the server's, for the user.
+ * GitHub didn't give a body's history: it's down or didn't answer, its rate limit is reached, or
+ * it refused. The message is the server's, for the user (a rate limit's says when to try again).
  */
-export class HistoryUnavailable extends Error {
-  constructor(
-    message: string,
-    /** Seconds until GitHub takes reads again, when its rate limit is the reason. */
-    readonly retryAfter?: number,
-  ) {
-    super(message);
-  }
-}
+export class HistoryUnavailable extends Error {}
 
 /** The error body the server sent, if it sent one. */
 async function bodyOf(res: Response): Promise<Partial<ErrorBody>> {
@@ -793,20 +785,18 @@ export function getComments(id: number, order: CommentOrder, after?: string): Pr
 
 /**
  * An issue's or PR's body history, for Diff mode: its earlier versions, newest first, rendered.
- * GitHub not giving it (down, rate limited, refused) fails as `HistoryUnavailable`.
+ * Cached by the body's digest as well as the issue (the server reads it for the body it has, so
+ * the digest isn't sent): a changed body is a new entry, read afresh. GitHub not giving it (down,
+ * rate limited, refused) fails as `HistoryUnavailable`.
  */
-export const getHistory = query((id: number) => fetchHistory(id), "history");
-
-/** An issue's or PR's body history, read afresh: the body changed since the cached read's. */
-export async function fetchHistory(id: number): Promise<BodyHistory> {
+export const getHistory = query(async (id: number, _digest: string): Promise<BodyHistory> => {
   try {
     return await request<BodyHistory>(`/api/issues/${id}/history`);
   } catch (e) {
-    if (e instanceof GitHubDown || e instanceof Refused) throw new HistoryUnavailable(e.message);
-    if (e instanceof RateLimited) throw new HistoryUnavailable(e.message, e.retryAfter);
+    if (e instanceof GitHubDown || e instanceof Refused || e instanceof RateLimited) throw new HistoryUnavailable(e.message);
     throw e;
   }
-}
+}, "history");
 
 /** An issue's body as Markdown, for its editor, with its digest (as the detail's `body_digest`). */
 export function getSource(id: number): Promise<IssueSource> {

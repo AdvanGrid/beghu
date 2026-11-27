@@ -4,8 +4,9 @@
 //
 // The versions are the body's history (`getHistory`, every earlier version at once, so stepping
 // the ends reads nothing more) and the current body, which the detail holds. When the detail's
-// body changes (a push refetched it), the history is read again: the newer end stays on
-// "current" if it was there, and otherwise each end keeps its version by when it was made.
+// body changes (a push refetched it), the history is read again (its cache entry is the body's
+// digest's): the newer end stays on "current" if it was there, and otherwise each end keeps its
+// version by when it was made.
 //
 // A sticky header sits at the top of the post, under the detail's sticky title bar: the timeline
 // (a tick per version, oldest on the left, the range between the ends shaded, the older end red
@@ -17,7 +18,7 @@
 // `nextChange`, `previousChange`) are offered while it shows a diff.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, For, Loading, onSettled, Show, untrack } from "solid-js";
-import { fetchHistory, forgetFailure, getHistory, Gone, HistoryUnavailable, NoAccess, SessionEnded, signIn, Unreachable, type BodyHistory } from "../api";
+import { forgetFailure, getHistory, Gone, HistoryUnavailable, NoAccess, SessionEnded, signIn, Unreachable, type BodyHistory } from "../api";
 import { touch } from "../keys";
 import type { Md } from "../md/ast";
 import type { Links } from "../md/links";
@@ -91,7 +92,12 @@ function HistoryFailure(props: { error: unknown; reset: () => void }) {
 /** One version: the current body (age 0) or an earlier one, `age` versions back. */
 type Version = {
   age: number;
-  /** When it was made, and by whom (login; null for a deleted account): not known for the current body. */
+  /**
+   * Which version it is, across reads of the history: "current", or an earlier one's time with
+   * how many older ones were made in the same second (two edits in one second are two versions).
+   */
+  key: string;
+  /** When it was made, and by whom (login; null for a deleted account): unknown for a current body GitHub's history doesn't show. */
   at?: number;
   editor?: string | null;
   /** Deleted from the history on GitHub: no body, and the ends skip it. */
@@ -99,25 +105,32 @@ type Version = {
   body: Md;
 };
 
-/** Where the ends are, by version: `from` by when it was made, `to` the same or null for the current body. */
-type Ends = { from: number; to: number | null };
+/** Where the ends are, by version (its `key`): `to` null for the current body. */
+type Ends = { from: string; to: string | null };
 
 /** A version's short name: `current`, or how many versions back it is. */
 const labelOf = (age: number) => (age === 0 ? "current" : `−${age}`);
 
 function Versions(props: Props) {
-  // Read for the body the detail shows: the history the query cache has, if it's for that body,
-  // else afresh.
-  const history = createMemo(async () => {
-    const digest = props.digest;
-    const id = props.id;
-    const h = await getHistory(id);
-    return h.body_digest === digest ? h : fetchHistory(id);
+  // Read for the body the detail shows: the query cache's entry for that body, else afresh.
+  const history = createMemo(() => getHistory(props.id, props.digest));
+  const versions = createMemo((): Version[] => {
+    const h = history();
+    const revs = h.revisions;
+    // Keys from the oldest, so a newer revision read later leaves the older ones' as they were.
+    const keys: string[] = [];
+    const seen = new Map<number, number>();
+    for (let i = revs.length - 1; i >= 0; i--) {
+      const at = revs[i]!.edited_at;
+      const k = seen.get(at) ?? 0;
+      seen.set(at, k + 1);
+      keys[i] = `${at}.${k}`;
+    }
+    return [
+      { age: 0, key: "current", at: h.current_edited_at ?? undefined, editor: h.current_editor, deleted: false, body: props.body },
+      ...revs.map((r, i) => ({ age: i + 1, key: keys[i]!, at: r.edited_at, editor: r.editor, deleted: r.deleted, body: r.body ?? [] })),
+    ];
   });
-  const versions = createMemo((): Version[] => [
-    { age: 0, deleted: false, body: props.body },
-    ...history().revisions.map((r, i) => ({ age: i + 1, at: r.edited_at, editor: r.editor, deleted: r.deleted, body: r.body ?? [] })),
-  ]);
   const shown = () => versions().some((v) => v.age > 0 && !v.deleted);
   return (
     <Show
@@ -153,8 +166,8 @@ function Diff(props: { versions: Version[]; includesCreated: boolean; links: Lin
 
   // It opens on the newest earlier version → current. Kept by version, so a body changing under
   // it (a newer current, the history read again) leaves each end on its version.
-  const [ends, setEnds] = createSignal<Ends>(untrack(() => ({ from: props.versions[step(0, 1)!]!.at!, to: null })));
-  const ageOf = (at: number | null) => (at === null ? 0 : props.versions.findIndex((v) => v.at === at && !v.deleted));
+  const [ends, setEnds] = createSignal<Ends>(untrack(() => ({ from: props.versions[step(0, 1)!]!.key, to: null })));
+  const ageOf = (key: string | null) => (key === null ? 0 : props.versions.findIndex((v) => v.key === key && !v.deleted));
   /** The ends as ages: from older than to, each on a version that isn't deleted. */
   const at = createMemo(() => {
     const e = ends();
@@ -169,7 +182,7 @@ function Diff(props: { versions: Version[]; includesCreated: boolean; links: Lin
     }
     return { from, to };
   });
-  const set = (from: number, to: number) => setEnds({ from: props.versions[from]!.at!, to: to === 0 ? null : props.versions[to]!.at! });
+  const set = (from: number, to: number) => setEnds({ from: props.versions[from]!.key, to: to === 0 ? null : props.versions[to]!.key });
   const moves = {
     fromOlder: () => step(at().from, 1),
     fromNewer: () => step(at().from, -1, at().to + 1),
@@ -230,7 +243,9 @@ function Diff(props: { versions: Version[]; includesCreated: boolean; links: Lin
   touch("previousChange", () => go(-1));
 
   const byline = (v: Version) => {
-    if (v.age === 0) return "current";
+    // The current version's maker shows when GitHub's history shows it (not for a body never
+    // edited, nor one the mirror has newer than GitHub listed).
+    if (v.age === 0) return v.at === undefined ? "current" : `current by ${v.editor ?? "ghost"}, ${ago(v.at)} ago`;
     const known = v.age === oldest() && !props.includesCreated ? " (oldest known)" : "";
     return `${labelOf(v.age)}${known} by ${v.editor ?? "ghost"}, ${ago(v.at!)} ago`;
   };

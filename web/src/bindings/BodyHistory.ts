@@ -18,6 +18,16 @@ body_digest: string,
  */
 includes_created: boolean, 
 /**
+ * When the current version came about: Unix seconds. `null` when GitHub's history doesn't
+ * show it (a body never edited, or the mirror's body newer than what GitHub listed).
+ */
+current_edited_at: number | null, 
+/**
+ * Who made the current version, by login; `null` when `current_edited_at` is, or for a
+ * deleted GitHub account.
+ */
+current_editor: string | null, 
+/**
  * The earlier versions, newest first. Empty for a body never edited.
  */
 revisions: Array<BodyRevision>, 

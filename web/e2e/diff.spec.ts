@@ -5,9 +5,13 @@
 // body never edited, and the history read failing in the post alone.
 //
 // The fixture's seeded history (crates/fake-github/src/history.rs) is what most tests read: each
-// claims the items it reads (claims.ts), so no test beside it edits them. The failure test edits
+// claims the items it reads (claims.ts), so no test beside it edits them. The items are named by
+// number (acme/web 3, 8, 18, 33, 48) for what that file's `seed` gives them: `1 + item.id % 3`
+// earlier versions, and every third item with three its middle one deleted. A fixture whose ids
+// change moves them. The failure test edits
 // an issue of its own on GitHub, and fails GitHub's GraphQL for everyone while it runs, so it runs
-// alone (`@alone`). Runs with writes.spec.ts (playwright.config.ts).
+// alone (`@alone`). The pending-edit test edits its own issue too. Runs with writes.spec.ts
+// (playwright.config.ts).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
@@ -38,6 +42,7 @@ const stepper = (page: Page, end: "from" | "to", dir: "older" | "newer") => page
 const hints = (page: Page) => page.locator('[data-perf="hints"]');
 /** Diff's chunk and the history read, on a loaded machine. */
 const SHOWS_MS = 15_000;
+const MOD = process.platform === "darwin" ? "Meta" : "Control";
 
 /** An item of the fixture's acme repos, claimed for this test: where it is and its id. */
 async function item(page: Page, repo: string, number: number, kind: "issue" | "pr" = "issue"): Promise<Where & { id: number }> {
@@ -93,7 +98,8 @@ test("Diff opens on −1 → current with the reworded paragraph's changed words
   await expect(label(page, "from")).toHaveText("−1");
   await expect(label(page, "to")).toHaveText("current");
   await expect(page.locator('[data-perf="diff-ends"]')).toContainText("−1 by");
-  await expect(page.locator('[data-perf="diff-ends"]')).toContainText("→ current");
+  // The current version names who made it, as GitHub's history shows.
+  await expect(page.locator('[data-perf="diff-ends"]')).toContainText(/→ current by [\w-]+, .+ ago$/);
   // The reworded paragraph: one removed and one added block, paired, each with its own words
   // marked, and no other change.
   await expect(blocks(page).and(page.locator('[data-kind="del"]'))).toHaveCount(1);
@@ -215,6 +221,8 @@ test("unchanged runs fold, one at a time or all; ↑ ↓ and n Shift+N step thro
   await expect(page.locator('[data-perf="sticky-head"]')).toBeVisible();
   const head = await page.locator('[data-perf="diff-head"]').boundingBox();
   const top = await detail(page).boundingBox();
+  // The sticky title bar's height, `detailBars.titleBar` in web/src/layout.stylex.ts (StyleX's
+  // constants don't run outside its compiler, so the spec can't import it).
   expect(Math.round(head!.y - top!.y)).toBe(34);
 });
 
@@ -301,6 +309,40 @@ test("a body never edited says so", async ({ page }) => {
   await openDiff(page, found!, never);
   await expect(never).toHaveText("This body has never been edited.");
   await expect(page.locator('[data-perf="diff-head"]')).toHaveCount(0);
+});
+
+test("Diff can't be turned on while the description's edit is on its way, and can once GitHub has it", async ({ page }) => {
+  const issue: Issue = await claimBelowTheTop(page);
+  try {
+    await page.goto(issueUrl(issue));
+    await expect(page.locator('[data-perf="composer"]')).toBeVisible();
+    await expect(toggle(page)).toBeEnabled();
+    // Slow enough to see the edit pending.
+    await fake("/faults/latency", { endpoint: `PATCH /repos/${issue.owner}/${issue.repo}/issues/${issue.number}`, ms: 6000, count: 1 });
+    await page.locator('[data-perf="edit-body"]').click();
+    const box = page.locator('[data-perf="edit-box"]');
+    await expect(box).toBeFocused({ timeout: SHOWS_MS });
+    const mine = unique("A description on its way");
+    await box.fill(mine);
+    await page.keyboard.press(`${MOD}+Enter`);
+    await expect(page.locator('[data-perf="body-editor"]')).toHaveCount(0);
+    await expect(page.locator('[data-perf="body"]')).toContainText(mine);
+    await expect(toggle(page)).toBeDisabled();
+    await expect(toggle(page)).toHaveAttribute("title", "The description's edit is still on its way");
+    // Nor by its key.
+    await detail(page).focus();
+    await page.keyboard.press("d");
+    await expect(toggle(page)).toHaveAttribute("aria-pressed", "false");
+    await expect(diff(page)).toHaveCount(0);
+    // GitHub has it: Diff is back.
+    await expect(toggle(page)).toBeEnabled({ timeout: SHOWS_WITHIN_MS });
+    await toggle(page).click();
+    await expect(diff(page)).toBeVisible({ timeout: SHOWS_MS });
+  } finally {
+    await fake("/faults", { endpoint: `PATCH /repos/${issue.owner}/${issue.repo}/issues/${issue.number}` }, "DELETE");
+    devCtl(["fake", "edit", issue.ref, "--close"]);
+    await expect.poll(async () => ((await (await page.request.get(`/api/issues/${issue.id}`)).json()) as { state: string }).state, { timeout: SHOWS_WITHIN_MS }).toBe("closed");
+  }
 });
 
 test("the history read failing shows why in the post, with Retry; the body changing on GitHub reads it again, the ends kept", { tag: "@alone" }, async ({ page }) => {

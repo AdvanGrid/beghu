@@ -116,6 +116,9 @@ async fn outside_edits_read_back_as_the_earlier_versions_newest_first_then_from_
     assert_eq!(h["revisions"], json!([]));
     assert_eq!(h["includes_created"], false);
     assert_eq!(h["body_digest"], d["body_digest"]);
+    // Nor when the current version came about.
+    assert_eq!(h["current_edited_at"], Value::Null);
+    assert_eq!(h["current_editor"], Value::Null);
 
     edit_body(&s, &mut b, at, "ilze-k", "First **rewrite**").await;
     edit_body(&s, &mut b, at, "tomsj", "Second rewrite").await;
@@ -142,6 +145,13 @@ async fn outside_edits_read_back_as_the_earlier_versions_newest_first_then_from_
         "the oldest is the body as created: {h}"
     );
     assert_eq!(h["includes_created"], true);
+    // The current version, which the newest revision is: who made it, and when.
+    assert_eq!(h["current_editor"], "tomsj", "{h}");
+    assert!(
+        h["current_edited_at"].as_i64().unwrap()
+            >= h["revisions"][0]["edited_at"].as_i64().unwrap(),
+        "{h}"
+    );
     let at_times: Vec<i64> = h["revisions"]
         .as_array()
         .unwrap()
@@ -314,4 +324,63 @@ async fn an_id_the_mirror_doesnt_hold_is_gone() {
             "{err}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_reverted_keeps_the_body_as_created_and_names_who_reverted_it() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, repo, number) = unseeded(&s, &mut b, "issue").await;
+    let at = (id, repo.as_str(), number);
+    let original = source(&s, &mut b, id).await;
+    let (_, d) = s.api(&mut b, &format!("/api/issues/{id}")).await;
+    let author = d["author"]["login"].as_str().unwrap().to_owned();
+    edit_body(&s, &mut b, at, "ilze-k", "A rewrite, soon undone").await;
+    // Back to the body as created: the current body again, as the oldest revision is.
+    edit_body(&s, &mut b, at, "tomsj", &original).await;
+    let h = history(&s, &mut b, id).await;
+    let got = versions(&h);
+    assert_eq!(got.len(), 2, "{h}");
+    assert_eq!(
+        got[0],
+        (Some("ilze-k".into()), Some("A rewrite, soon undone".into()))
+    );
+    assert_eq!(got[1].0.as_deref(), Some(author.as_str()), "{h}");
+    assert_eq!(h["includes_created"], true, "{h}");
+    assert_eq!(h["current_editor"], "tomsj", "{h}");
+    assert!(
+        h["current_edited_at"].as_i64().unwrap()
+            >= h["revisions"][0]["edited_at"].as_i64().unwrap(),
+        "{h}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_history_reads_every_page_and_sends_the_newest_200() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let (id, repo, number) = unseeded(&s, &mut b, "issue").await;
+    // 205 edits: with the body as created, 206 revisions, three of GitHub's pages of 100.
+    for n in 1..205 {
+        s.edit(json!({ "repo": repo, "number": number, "as": "ilze-k", "body": format!("Rewrite {n}") }))
+            .await;
+    }
+    edit_body(
+        &s,
+        &mut b,
+        (id, repo.as_str(), number),
+        "tomsj",
+        "Rewrite 205",
+    )
+    .await;
+    let reads = history_reads(&s).await;
+    let h = history(&s, &mut b, id).await;
+    assert_eq!(history_reads(&s).await, reads + 3);
+    let got = versions(&h);
+    // Rewrite 204 back to Rewrite 5: the newest 200 earlier versions, so not the body as created.
+    assert_eq!(got.len(), 200);
+    assert_eq!(got[0].1.as_deref(), Some("Rewrite 204"));
+    assert_eq!(got[199].1.as_deref(), Some("Rewrite 5"));
+    assert_eq!(h["includes_created"], false, "{}", h["revisions"][199]);
+    assert_eq!(h["current_editor"], "tomsj");
 }

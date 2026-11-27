@@ -3,9 +3,10 @@
 //
 // Blocks compare whole, by their AST (a longest common subsequence over them). Each run of
 // changes lists its removed blocks first, then its added ones. In a run, a removed block and an
-// added one pair up when they have the same element structure (the same tags with the same
-// attributes, nested the same way) and differ only in their text: a reworded paragraph, list or
-// heading. A pair still shows as two blocks, each with only its changed words marked: the text
+// added one pair up when they have the same element structure (the same tags, nested the same
+// way; their attributes may differ, as a link's `href` does) and differ only in their text and
+// attributes: a reworded paragraph, list or heading, a link pointed elsewhere. A pair still shows
+// as two blocks, each with its own attributes and only its changed words marked: the text
 // leaves are compared word by word, and the changed words are wrapped in WORD_REMOVED or
 // WORD_ADDED elements, which the Markdown walker draws as marks. A code block never pairs: its
 // highlighting replaces its text.
@@ -74,9 +75,9 @@ function common<T>(a: readonly T[], b: readonly T[]): [number, number][] {
 /** A block's identity for comparing: its whole AST. */
 const keyOf = (b: MdNode) => JSON.stringify(b);
 
-/** A block's structure: its AST with every text left out, tags and attributes kept. */
+/** A block's structure: its AST with every text and attribute left out, its tags kept. */
 function shapeOf(b: MdNode): string {
-  const strip = (n: MdNode): unknown => (typeof n === "string" ? 0 : [n[0], n[1], ...(n.slice(2) as MdNode[]).map(strip)]);
+  const strip = (n: MdNode): unknown => (typeof n === "string" ? 0 : [n[0], ...(n.slice(2) as MdNode[]).map(strip)]);
   return JSON.stringify(strip(b));
 }
 
@@ -123,14 +124,17 @@ function run(dels: MdNode[], adds: MdNode[]): Line[] {
   return [...del, ...add];
 }
 
-/** Two blocks of one structure, each with the words it doesn't share with the other wrapped. */
+/**
+ * Two blocks of one structure, each with its own attributes and the words it doesn't share with
+ * the other wrapped.
+ */
 function markPair(a: MdNode, b: MdNode): [MdNode, MdNode] {
   if (typeof a === "string" || typeof b === "string") {
     const [x, y] = words(String(a), String(b));
     return [["span", 0, ...x], ["span", 0, ...y]];
   }
-  const [tag, attrs, ...ka] = a;
-  const kb = b.slice(2) as MdNode[];
+  const [tag, attrsA, ...ka] = a;
+  const [, attrsB, ...kb] = b;
   const outA: MdNode[] = [];
   const outB: MdNode[] = [];
   ka.forEach((x, k) => {
@@ -146,8 +150,8 @@ function markPair(a: MdNode, b: MdNode): [MdNode, MdNode] {
     }
   });
   return [
-    [tag, attrs, ...outA],
-    [tag, attrs, ...outB],
+    [tag, attrsA, ...outA],
+    [tag, attrsB, ...outB],
   ];
 }
 

@@ -9,7 +9,12 @@ CREATE TABLE body_history (
   -- Unix seconds.
   fetched_at INTEGER NOT NULL,
   -- The oldest revision kept is the body as it was created (GitHub's `includesCreatedEdit`).
-  includes_created INTEGER NOT NULL
+  includes_created INTEGER NOT NULL,
+  -- When the current body came about (Unix seconds) and who made it (login; NULL for a deleted
+  -- GitHub account): the oldest of the newest revisions that are the mirror's body. Both NULL
+  -- when GitHub lists none such (never edited, or the mirror ahead of what GitHub listed).
+  current_edited_at INTEGER,
+  current_editor TEXT
 );
 
 -- The revisions, newest first by `position` (0 the newest). Not keyed on `edited_at`: two edits

@@ -116,17 +116,18 @@ impl Place {
     }
 }
 
-/// An issue's body or a comment.
+/// An issue's body, a comment, or an earlier version of a body (Diff mode's, `history.rs`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PostKind {
     Body,
     Comment,
+    Revision,
 }
 
 /// A post as the mirror holds it, to be rendered.
 pub struct Post {
     pub kind: PostKind,
-    /// The item's id for a body, the comment's for a comment.
+    /// The item's id for a body or a revision, the comment's for a comment.
     pub id: i64,
     pub md: String,
 }
@@ -368,10 +369,14 @@ fn unsigned(_: &str) -> String {
     String::new()
 }
 
+/// The prefix of the element ids `p`'s rendering gives its headings and footnotes: one per post on
+/// the page. A revision's has its body's digest, so Diff mode's two versions side by side never
+/// share one, and the prefix follows from what the cache's key holds.
 fn id_prefix(p: &Post) -> String {
     match p.kind {
         PostKind::Body => format!("md-b{}-", p.id),
         PostKind::Comment => format!("md-c{}-", p.id),
+        PostKind::Revision => format!("md-v{}-{:.12}-", p.id, Digest::of(&p.md).to_string()),
     }
 }
 

@@ -10,14 +10,17 @@
 //! GitHub, and the first open after any change to it (a webhook, a sweep, beghu's own edit) reads
 //! it again. No webhook or sweep code knows of the cache.
 //!
-//! What's kept, and sent: the revisions that differ from the mirror's body (the newest, which is
-//! the current body, goes), with a run of revisions of one body kept as its oldest (when that
-//! body came about), at most [`KEPT`] of the newest. A revision deleted from the history
-//! (`deletedAt` set, `diff` null) is kept, as `deleted` with no body. `includes_created` says the
-//! oldest one sent is the body as the issue was created.
+//! What's kept, and sent: every revision older than the newest run of revisions that are the
+//! mirror's body (that run is the current body, which the detail has; its oldest says when and by
+//! whom the current body came about), with a run of revisions of one body kept as its oldest (when
+//! that body came about), at most [`KEPT`] of the newest. An older revision that is the current
+//! body again (an edit reverted) is kept. A revision deleted from the history (`deletedAt` set,
+//! `diff` null) is kept, as `deleted` with no body. `includes_created` says the oldest one sent is
+//! the body as the issue was created.
 //!
 //! The versions render as bodies do (`markdown::render`, through its cache: the key has the
-//! digest, so each version is its own entry), and their `refs` and `media` are one union. Images
+//! digest, so each version is its own entry), as `PostKind::Revision`, whose element ids differ
+//! from the body's and each other's, and their `refs` and `media` are one union. Images
 //! aren't probed and nothing waits for probes: an image only an old version shows has its usual
 //! placeholder until something else measures it.
 
@@ -82,6 +85,12 @@ pub struct BodyHistory {
     /// The oldest revision is the body as the issue was created. False when GitHub didn't
     /// record it, or more revisions exist than are sent.
     pub includes_created: bool,
+    /// When the current version came about: Unix seconds. `null` when GitHub's history doesn't
+    /// show it (a body never edited, or the mirror's body newer than what GitHub listed).
+    pub current_edited_at: Option<i64>,
+    /// Who made the current version, by login; `null` when `current_edited_at` is, or for a
+    /// deleted GitHub account.
+    pub current_editor: Option<String>,
     /// The earlier versions, newest first. Empty for a body never edited.
     pub revisions: Vec<BodyRevision>,
     /// The items in the mirror that any version refers to.
@@ -106,7 +115,7 @@ pub struct BodyRevision {
 }
 
 /// A revision as kept, its body not rendered.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Raw {
     edited_at: i64,
     editor: Option<String>,
@@ -157,6 +166,15 @@ struct Login {
     login: String,
 }
 
+/// What's kept of a history: see [`keep`].
+#[derive(Clone)]
+struct Kept {
+    includes_created: bool,
+    /// When, and by whom, the current body came about, if GitHub's history shows it.
+    current: Option<(i64, Option<String>)>,
+    revisions: Vec<Raw>,
+}
+
 /// What GitHub listed: every revision read, newest first, whether it reaches back to the body as
 /// created, and whether pages were left unread.
 struct Listed {
@@ -182,9 +200,10 @@ pub async fn history(
             let node = q::item_node_id(c, id)?;
             let digest = Digest::of(item.body.as_deref().unwrap_or_default()).to_string();
             let cached = match q::body_history(c, id)? {
-                Some(h) if h.for_digest == digest => Some((
-                    h.includes_created,
-                    q::body_revisions(c, id)?
+                Some(h) if h.for_digest == digest => Some(Kept {
+                    includes_created: h.includes_created,
+                    current: h.current_edited_at.map(|at| (at, h.current_editor)),
+                    revisions: q::body_revisions(c, id)?
                         .into_iter()
                         .map(|r| Raw {
                             edited_at: r.edited_at,
@@ -192,8 +211,8 @@ pub async fn history(
                             body: r.body,
                             deleted: r.deleted,
                         })
-                        .collect::<Vec<_>>(),
-                )),
+                        .collect(),
+                }),
                 _ => None,
             };
             Ok(Ok((item, node, cached)))
@@ -201,7 +220,11 @@ pub async fn history(
         .await??;
     let body = item.body.clone().unwrap_or_default();
     let body_digest = Digest::of(&body);
-    let (includes_created, revisions) = match cached {
+    let Kept {
+        includes_created,
+        current,
+        revisions,
+    } = match cached {
         Some(c) => c,
         None => {
             let node_id = node_id.ok_or(ApiError::Gone)?;
@@ -224,7 +247,7 @@ pub async fn history(
         .iter()
         .filter_map(|r| r.body.clone())
         .map(|md| Post {
-            kind: PostKind::Body,
+            kind: PostKind::Revision,
             id,
             md,
         })
@@ -255,9 +278,12 @@ pub async fn history(
     } else {
         (Refs::new(), Media::new())
     };
+    let (current_edited_at, current_editor) = current.unzip();
     Ok(Json(BodyHistory {
         body_digest,
         includes_created,
+        current_edited_at,
+        current_editor: current_editor.flatten(),
         revisions,
         refs,
         media,
@@ -331,14 +357,19 @@ fn same(a: &str, b: &str) -> bool {
     a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
 }
 
-/// The revisions worth showing beside `current`, newest first: those that differ from it, a run
-/// of revisions of one body as its oldest, at most [`KEPT`]; and whether the oldest kept is the
-/// body as created.
-fn keep(listed: Listed, current: &str) -> (bool, Vec<Raw>) {
-    let differs = |r: &Raw| r.deleted || !same(r.body.as_deref().unwrap_or_default(), current);
-    let created_kept = listed.edits.last().is_some_and(differs);
+/// The revisions worth showing beside `current`, newest first: those older than the newest run
+/// that is `current` (whose oldest is when, and by whom, `current` came about), a run of
+/// revisions of one body as its oldest, at most [`KEPT`]; and whether the oldest kept is the body
+/// as created.
+fn keep(listed: Listed, current: &str) -> Kept {
+    let is_current = |r: &Raw| !r.deleted && same(r.body.as_deref().unwrap_or_default(), current);
+    let mut edits = listed.edits.into_iter().peekable();
+    let mut came_about = None;
+    while let Some(r) = edits.next_if(is_current) {
+        came_about = Some((r.edited_at, r.editor));
+    }
     let mut kept: Vec<Raw> = Vec::new();
-    for r in listed.edits.into_iter().filter(differs) {
+    for r in edits {
         match kept.last_mut() {
             Some(last)
                 if !last.deleted
@@ -353,21 +384,42 @@ fn keep(listed: Listed, current: &str) -> (bool, Vec<Raw>) {
             _ => kept.push(r),
         }
     }
+    // The oldest listed (the body as created, when GitHub has it) is the oldest kept, unless it
+    // is the current body's run itself.
     let includes_created =
-        listed.includes_created && created_kept && !listed.more && kept.len() <= KEPT;
+        listed.includes_created && !kept.is_empty() && !listed.more && kept.len() <= KEPT;
     kept.truncate(KEPT);
-    (includes_created, kept)
+    Kept {
+        includes_created,
+        current: came_about,
+        revisions: kept,
+    }
 }
 
 /// Keeps `kept` as item `id`'s history for the body of `digest`. A failure is only said: the
 /// read answers all the same, and the next one reads GitHub again.
-async fn store(app: &App, account: i64, id: i64, digest: Digest, kept: &(bool, Vec<Raw>)) {
-    let (includes_created, revisions) = (kept.0, kept.1.clone());
+/// An item deleted from the mirror while GitHub was read keeps none: the named queries insert only
+/// while it's there.
+async fn store(app: &App, account: i64, id: i64, digest: Digest, kept: &Kept) {
+    let Kept {
+        includes_created,
+        current,
+        revisions,
+    } = kept.clone();
     let digest = digest.to_string();
     let done = app
         .mirrors()
         .write(account, Caller::Request, move |tx, _seq| {
-            q::put_body_history(tx, id, &digest, crate::now(), includes_created)?;
+            let (at, editor) = current.unzip();
+            q::put_body_history(
+                tx,
+                id,
+                &digest,
+                crate::now(),
+                includes_created,
+                at,
+                editor.flatten().as_deref(),
+            )?;
             q::clear_body_revisions(tx, id)?;
             for (position, r) in revisions.iter().enumerate() {
                 q::put_body_revision(
