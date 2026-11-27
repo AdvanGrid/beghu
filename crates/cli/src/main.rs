@@ -17,6 +17,7 @@
 
 mod account;
 mod analyse;
+mod default_host;
 mod http;
 mod reader;
 mod store;
@@ -25,8 +26,7 @@ mod update;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 
-/// The hosted beghu.
-pub const DEFAULT_HOST: &str = "https://beghu.dev";
+pub use default_host::DEFAULT_HOST;
 
 /// How a command failed.
 #[derive(Debug)]

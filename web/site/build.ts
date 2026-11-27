@@ -173,6 +173,7 @@ export function sitePlugin(): Plugin {
             res.setHeader("content-type", TYPES[ext] ?? "application/octet-stream");
             res.setHeader("cache-control", "no-cache");
             const origin = `http://${req.headers.host ?? "localhost"}`;
+            // The CLI's default host: a copy of crates/cli/src/default_host.rs, as site.rs reads it.
             const flag = origin === "https://beghu.dev" ? "" : ` --host ${origin}`;
             res.end(typeof body === "string" ? body.replaceAll(HOST_FLAG, flag).replaceAll(ORIGIN, origin) : body);
           },

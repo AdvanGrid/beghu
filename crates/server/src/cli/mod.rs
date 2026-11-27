@@ -40,8 +40,10 @@ pub const MIN_CLI: &str = "0.1.0";
 const CLI_MANIFEST: &str = include_str!("../../../cli/Cargo.toml");
 
 /// The hosted deployment, the CLI's default host: `install.sh` from any other names its host in
-/// the `beghu login` it suggests.
-pub const DEFAULT_HOST: &str = "https://beghu.dev";
+/// the `beghu login` it suggests. The CLI's own source holds it, so the two can't disagree.
+#[path = "../../../cli/src/default_host.rs"]
+mod default_host;
+pub use default_host::DEFAULT_HOST;
 
 /// What every CLI credential starts with.
 pub const TOKEN_PREFIX: &str = "beghu_cli_";

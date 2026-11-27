@@ -46,7 +46,10 @@ export function installLine(): string {
   return `curl -fsSL ${location.origin}/cli/install.sh | sh`;
 }
 
-/** `beghu login`, naming this deployment unless it's the hosted one. */
+/**
+ * `beghu login`, naming this deployment unless it's the hosted one (the CLI's default host: a copy of
+ * `crates/cli/src/default_host.rs`, which the CLI and the server share).
+ */
 export function loginLine(): string {
   return location.origin === "https://beghu.dev" ? "beghu login" : `beghu login --host ${location.origin}`;
 }
