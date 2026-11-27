@@ -58,6 +58,12 @@
 // tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
 // or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
+// `diff` (`d`) is offered by the issue panel, an issue's or a PR's: it turns Diff mode on and off
+// (diff/BodyDiff.tsx), refusing while the tab's own body edit is on its way. While Diff shows a
+// diff it offers `fromOlder` and `fromNewer` (`[` `]`, the older end), `toOlder` and `toNewer`
+// (`{` `}`, the newer end) and `nextChange` and `previousChange` (`n`, Shift+N). `[ ] { }` are
+// AltGr keys on German, French and Nordic layouts: rebindable on the setup page.
+//
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
 import { createEffect, createSignal, getOwner, onCleanup } from "solid-js";
@@ -101,6 +107,13 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   scrollDown: ["Shift+j"],
   scrollUp: ["Shift+k"],
   help: ["?", "Ctrl+?"],
+  diff: ["d"],
+  fromOlder: ["["],
+  fromNewer: ["]"],
+  toOlder: ["{"],
+  toNewer: ["}"],
+  nextChange: ["n"],
+  previousChange: ["Shift+n"],
 };
 
 /** Every action, in the preset's order. */
@@ -150,6 +163,13 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   scrollDown: BROWSE,
   scrollUp: BROWSE,
   help: ANYWHERE,
+  diff: ["panel"],
+  fromOlder: ["panel"],
+  fromNewer: ["panel"],
+  toOlder: ["panel"],
+  toNewer: ["panel"],
+  nextChange: ["panel"],
+  previousChange: ["panel"],
 };
 
 /**

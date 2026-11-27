@@ -8,6 +8,7 @@ import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { noteBuild, whileWriting } from "./build";
 import { accountHeaders, cookieAccount, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
+import type { BodyHistory } from "./bindings/BodyHistory";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -32,7 +33,7 @@ import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
 import { issuePath, learn, parseAt, pathOf } from "./at";
 
-export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
+export type { BodyHistory, Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
 export type { TreeNode } from "./bindings/TreeNode";
 export type { TreePage };
@@ -185,6 +186,12 @@ export class MaybePosted extends Error {
     super(message);
   }
 }
+
+/**
+ * GitHub didn't give a body's history: it's down or didn't answer, its rate limit is reached, or
+ * it refused. The message is the server's, for the user (a rate limit's says when to try again).
+ */
+export class HistoryUnavailable extends Error {}
 
 /** The error body the server sent, if it sent one. */
 async function bodyOf(res: Response): Promise<Partial<ErrorBody>> {
@@ -775,6 +782,21 @@ export function refetchIssue(id: number, order: CommentOrder, through?: Comment)
 export function getComments(id: number, order: CommentOrder, after?: string): Promise<CommentPage> {
   return request<CommentPage>(`/api/issues/${id}/comments?order=${order}${after === undefined ? "" : `&after=${after}`}`);
 }
+
+/**
+ * An issue's or PR's body history, for Diff mode: its earlier versions, newest first, rendered.
+ * Cached by the body's digest as well as the issue (the server reads it for the body it has, so
+ * the digest isn't sent): a changed body is a new entry, read afresh. GitHub not giving it (down,
+ * rate limited, refused) fails as `HistoryUnavailable`.
+ */
+export const getHistory = query(async (id: number, _digest: string): Promise<BodyHistory> => {
+  try {
+    return await request<BodyHistory>(`/api/issues/${id}/history`);
+  } catch (e) {
+    if (e instanceof GitHubDown || e instanceof Refused || e instanceof RateLimited) throw new HistoryUnavailable(e.message);
+    throw e;
+  }
+}, "history");
 
 /** An issue's body as Markdown, for its editor, with its digest (as the detail's `body_digest`). */
 export function getSource(id: number): Promise<IssueSource> {

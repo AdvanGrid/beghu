@@ -24,6 +24,10 @@
 //! - `ImportMoreComments(id, after)`: the next 100 of one item's comments.
 //! - `IssueEdges(id, sub, blocks, relates, relatesAfter)`: the relationship read-backs' query
 //!   (`issue_edges.rs`).
+//! - `BodyHistory(id, after)`: an issue's or PR's `includesCreatedEdit` and a page of 100 of its
+//!   `userContentEdits`, newest first, each the whole body as of that revision (`diff`, null once
+//!   deleted from the history, with `deletedAt`), the Diff mode's query
+//!   (crates/server/src/history.rs; the revisions are `history.rs`'s).
 //! - `MintAttachments(ids)`: each issue's, PR's or comment's `bodyHTML`, where GitHub mints its
 //!   attachments' URLs (`attachments.rs`).
 //! - The sweeps' queries: `SweepCounts(ids)`, each repo's `issues` and `pullRequests`
@@ -651,6 +655,46 @@ fn comments(c: &rusqlite::Connection, item: i64, after: Option<&str>) -> rusqlit
     }))
 }
 
+/// `userContentEdits(first: 100, after)` over an item's body revisions, newest first, and
+/// `includesCreatedEdit`.
+fn body_history(
+    c: &rusqlite::Connection,
+    item: &q::ItemByNodeRow,
+    after: Option<&str>,
+) -> rusqlite::Result<Value> {
+    let before = after
+        .and_then(uncursor)
+        .and_then(|p| p.first().copied())
+        .unwrap_or(i64::MAX);
+    let mut rows = q::body_edits_page(c, item.id, before, MAX_PAGE + 1)?;
+    let more = rows.len() as i64 > MAX_PAGE;
+    rows.truncate(MAX_PAGE as usize);
+    let end = rows.last().map(|r| cursor(&[r.seq]));
+    let mut nodes = Vec::new();
+    for r in &rows {
+        nodes.push(json!({
+            "__typename": "UserContentEdit",
+            "id": format!("UCE_kw{}", r.seq),
+            "createdAt": rfc3339(r.edited_at),
+            "updatedAt": rfc3339(r.deleted_at.unwrap_or(r.edited_at)),
+            "editedAt": rfc3339(r.edited_at),
+            "deletedAt": time(r.deleted_at),
+            "deletedBy": actor(c, r.deleted_by)?,
+            "editor": actor(c, r.editor_id)?,
+            "diff": r.body,
+        }));
+    }
+    Ok(json!({
+        "__typename": if item.kind == "pr" { "PullRequest" } else { "Issue" },
+        "includesCreatedEdit": q::includes_created_edit(c, item.id)?,
+        "userContentEdits": {
+            "totalCount": q::body_edit_count(c, item.id)?,
+            "pageInfo": page_info(more, end),
+            "nodes": nodes,
+        },
+    }))
+}
+
 /// The item a node id names, if the token can see it.
 fn node(
     c: &rusqlite::Connection,
@@ -872,6 +916,20 @@ fn run(
             match node(c, token, &id)? {
                 Some(item) => {
                     json!({ "node": pull_details(c, token, &item, str_var("after").as_deref())? })
+                }
+                None => {
+                    errs.push(not_found(&id, vec![json!("node")]));
+                    json!({ "node": null })
+                }
+            }
+        }
+        "BodyHistory" => {
+            let Some(id) = str_var("id") else {
+                return Ok(Err("Variable $id is required".into()));
+            };
+            match node(c, token, &id)? {
+                Some(item) => {
+                    json!({ "node": body_history(c, &item, str_var("after").as_deref())? })
                 }
                 None => {
                     errs.push(not_found(&id, vec![json!("node")]));

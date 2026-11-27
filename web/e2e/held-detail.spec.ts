@@ -453,10 +453,11 @@ test("opening the next issue while a change animates leaves nothing of it on the
           const until = performance.now() + 2500;
           const frame = () => {
             const d = document.querySelector('[data-perf="detail"]')!;
-            // The sticky title bar's own fade as the new issue opens at its top isn't the change's.
+            // The sticky title bar's own fade (its Diff toggle's too) as the new issue opens at its
+            // top isn't the change's.
             const anims = document.getAnimations().filter((a) => {
               const t = (a.effect as KeyframeEffect | null)?.target;
-              return t instanceof Element && d.contains(t) && !t.closest('[data-perf="sticky-head"]');
+              return t instanceof Element && d.contains(t) && !t.closest('[data-perf="sticky-head"], [data-perf="diff-toggle-sticky"]');
             }).length;
             out.push({ top: d.scrollTop, anims });
             if (performance.now() < until) requestAnimationFrame(frame);

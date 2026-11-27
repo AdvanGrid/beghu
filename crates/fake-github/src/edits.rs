@@ -302,6 +302,7 @@ fn delete(
     q::delete_issue_assignees(tx, id)?;
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
+    q::delete_item_body_edits(tx, id)?;
     q::delete_issue(tx, id)?;
     // GitHub answers 410 for its number from then on, and never reuses the id.
     q::record_deleted_issue(tx, repo.id, issue["number"].as_i64().unwrap_or_default())?;
@@ -405,6 +406,15 @@ impl Change {
                 "reopened"
             };
             crate::events::record(tx, id, event, sender["id"].as_i64(), None, at)?;
+        }
+        if self.body.is_some() && body != before.body {
+            crate::history::record(
+                tx,
+                &before,
+                body.as_deref(),
+                sender["id"].as_i64().unwrap_or_default(),
+                at,
+            )?;
         }
         if props {
             q::update_issue(

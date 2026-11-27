@@ -45,6 +45,13 @@ export const colors = stylex.defineVars({
   notPlannedBg: "light-dark(#6e7781, #6e7681)",
   // A closed (unmerged) PR's badge.
   dangerBg: "light-dark(#cf222e, #da3633)",
+  // Diff mode (diff/BodyDiff.tsx): a block only in the older version on a red tint, one only in
+  // the newer on a green one (danger and open at 8-14%), and a paired block's changed words on
+  // deeper ones (22-35%). Text stays fg over each, at least 7:1 light and dark.
+  diffDelBg: "light-dark(rgb(207 34 46 / 0.08), rgb(248 81 73 / 0.12))",
+  diffAddBg: "light-dark(rgb(26 127 55 / 0.10), rgb(63 185 80 / 0.14))",
+  diffDelWord: "light-dark(rgb(207 34 46 / 0.22), rgb(248 81 73 / 0.35))",
+  diffAddWord: "light-dark(rgb(26 127 55 / 0.25), rgb(63 185 80 / 0.35))",
   avatarFg: "light-dark(#ffffff, #ffffff)",
   avatar0: "light-dark(#b45309, #92400e)",
   avatar1: "light-dark(#047857, #065f46)",

@@ -1066,7 +1066,9 @@ impl GitHub {
     /// A GraphQL query, by operation name; its `data`. `node(id:)` for an id GitHub doesn't show
     /// the token (deleted, transferred, out of sight) answers `node: null` with a `NOT_FOUND`
     /// error on `["node"]` (docs/research/issue-edge-cases.md): that is `data` with a null
-    /// `node`. Any other error from GitHub (a query it can't run) comes back as `Malformed`.
+    /// `node`. GraphQL's primary rate limit, a 200 with a `RATE_LIMITED` error and the quota's
+    /// headers, is `RateLimited` (until the reset the headers name, else a minute). Any other
+    /// error from GitHub (a query it can't run) comes back as `Malformed`.
     pub async fn graphql<T: serde::de::DeserializeOwned>(
         &self,
         token: &str,
@@ -1092,7 +1094,14 @@ impl GitHub {
             .await?;
         match res.status().as_u16() {
             200 => {
+                let wait = header_wait(res.headers());
                 let a: Answer<serde_json::Value> = res.json().await?;
+                if a.errors.iter().any(|e| e["type"] == "RATE_LIMITED") {
+                    return Err(Error::RateLimited(
+                        wait.unwrap_or(Duration::from_secs(60))
+                            .max(Duration::from_secs(1)),
+                    ));
+                }
                 let node_gone = a.data.as_ref().is_some_and(|d| d["node"].is_null());
                 let errors: Vec<_> = a
                     .errors

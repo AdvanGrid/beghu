@@ -17,6 +17,7 @@ mod edges;
 mod error;
 mod facets;
 mod github;
+mod history;
 mod import;
 mod installations;
 mod jobs;
@@ -52,7 +53,7 @@ pub use installations::app_jwt;
 /// The GraphQL documents beghu sends GitHub, by operation name. The contract check
 /// (`crates/contract`) sends each to GitHub and to Fake GitHub and diffs the answers' shapes with
 /// Fake GitHub's recorded templates, so a query changed here is checked as it now is.
-pub const GRAPHQL_DOCUMENTS: [(&str, &str); 16] = [
+pub const GRAPHQL_DOCUMENTS: [(&str, &str); 17] = [
     ("ImportIssues", import::shapes::IMPORT_ISSUES),
     ("ImportRelationships", import::shapes::IMPORT_RELATIONSHIPS),
     ("ImportRelatesTo", import::shapes::IMPORT_RELATES_TO),
@@ -69,6 +70,7 @@ pub const GRAPHQL_DOCUMENTS: [(&str, &str); 16] = [
     ("SweepIssueIds", reconcile::GRAPHQL[2].1),
     ("SweepPullIds", reconcile::GRAPHQL[3].1),
     ("MintAttachments", media::MINT_ATTACHMENTS),
+    ("BodyHistory", history::QUERY),
 ];
 
 use axum::Router;
@@ -524,6 +526,7 @@ pub fn router(app: App) -> Router {
         .route("/at/{owner}/{repo}/{number}", get(detail::issue_at))
         .route("/issues/{id}/comments", get(detail::comments_page))
         .route("/issues/{id}/source", get(detail::source))
+        .route("/issues/{id}/history", get(history::history))
         .route(
             "/issues/{id}/relatable",
             get(relationship_writes::candidates),

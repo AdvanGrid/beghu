@@ -20,7 +20,7 @@ import { issueState, STATE_LABEL } from "../bits";
 import { matchSpans, type Term } from "../highlight";
 import { colors, fonts } from "../tokens.stylex";
 import type { RefTarget } from "../bindings/RefTarget";
-import type { Md, MdAttrs, MdNode } from "./ast";
+import { WORD_ADDED, WORD_REMOVED, type Md, type MdAttrs, type MdNode } from "./ast";
 import { codeBlock, highlight, inBlock } from "./code";
 import { icon, type IconName } from "./icons";
 import { issueLink, linkHref, safeUrl, teamUrl, userUrl, type Links } from "./links";
@@ -205,6 +205,12 @@ function textOf(kids: MdNode[]): string {
 }
 
 function element(tag: string, a: MdAttrs, kids: MdNode[], at: Place, links: Links): Made | undefined {
+  if (tag === WORD_REMOVED || tag === WORD_ADDED) {
+    // Diff mode's changed words in a paired block (../diff/blocks.ts).
+    const m = tag === WORD_ADDED ? el("ins", s.wordAdded) : el("del", s.wordRemoved);
+    m.dataset.perf = "diff-word";
+    return { outer: m, into: m };
+  }
   if (tag === "media") {
     const m = attachment(a, at.parent, links, (e) => copy(e, a, []));
     return { outer: m, into: document.createElement("span") };
@@ -602,6 +608,15 @@ const s = stylex.create({
   // Beyond one class per tag.
   // A search's match in the text.
   match: { borderRadius: 2, backgroundColor: colors.mark, color: "inherit" },
+  // Diff mode's changed words: the removed block's struck through on a deeper red, the added
+  // one's on a deeper green, over the block's own tint.
+  wordRemoved: {
+    borderRadius: 2,
+    backgroundColor: colors.diffDelWord,
+    textDecorationColor: colors.danger,
+    textDecorationLine: "line-through",
+  },
+  wordAdded: { borderRadius: 2, textDecoration: "none", backgroundColor: colors.diffAddWord },
   heading: {
     gap: 8,
     alignItems: "baseline",

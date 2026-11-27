@@ -14,6 +14,10 @@
 // and failure in the row's marker slot, a line the row always keeps. The title and body each have
 // Edit (and the title `e`), on an issue only: the editors (Editor.tsx, another chunk) open in the
 // field's place, their state in editing.ts.
+// Diff mode (diff/BodyDiff.tsx, another chunk, loaded the first time it's turned on) shows what
+// changed in the body between two of its versions, in the body's post, for an issue or a PR: its
+// toggle sits in the status row and on the sticky title bar. It's per visit (off when another
+// issue opens), Edit leaves it, and it waits while the tab's own body edit is on its way.
 // A PR opens in the same layout, read-only: no composer, no pickers and no write affordances
 // (no Edit on its title or body).
 // What the account may do on the issue is the server's to say (roles.rs): the detail's `can` set,
@@ -77,6 +81,7 @@ import { CueLine, cueStyles } from "./cue";
 import { applyAtOnce, createDetailHeld, type Unit, type UnitCue } from "./HeldDetail";
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
+import { detailBars } from "./layout.stylex";
 import { copied, copyRef } from "./copyRef";
 
 /** Below 900 px of viewport the panel sits under the list (Root.tsx lays that out). */
@@ -119,6 +124,15 @@ const editorChunk = () =>
   });
 const TitleEditor = lazy(editorChunk, { export: "TitleEditor" });
 const BodyEditor = lazy(editorChunk, { export: "BodyEditor" });
+
+/** Diff mode (#194): loaded the first time Diff is turned on; a failed load is handled as a picker's. */
+const BodyDiff = lazy(
+  () =>
+    import("./diff/BodyDiff").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load Diff mode: ${String(e)}`);
+    }),
+  { export: "BodyDiff" },
+);
 
 /** The open issue and what a push naming it does: refetch its detail, or retry its failure. */
 let openDetail: { id: number; onPush: () => Promise<void> } | undefined;
@@ -692,8 +706,10 @@ function Body(props: {
   });
   /** The property row whose picker is open. */
   const [picking, setPicking] = createSignal<Prop>();
-  // Another issue opens with every picker closed. (The effect runs for every new read of the
-  // detail, a refetch of the same issue too: only a new id closes them.)
+  /** Diff mode is on (diff/BodyDiff.tsx): for this visit to the issue only. */
+  const [diffing, setDiffing] = createSignal(false);
+  // Another issue opens with every picker closed, and Diff off. (The effect runs for every new
+  // read of the detail, a refetch of the same issue too: only a new id closes them.)
   let pickingOn = untrack(() => props.d.id);
   createEffect(
     () => props.d.id,
@@ -701,6 +717,7 @@ function Body(props: {
       if (id === pickingOn) return;
       pickingOn = id;
       setPicking(undefined);
+      setDiffing(false);
     },
   );
   const setOpen = (prop: Prop) => (open: boolean) => setPicking(open ? prop : undefined);
@@ -719,8 +736,28 @@ function Body(props: {
     openEditor(d().id, field, title);
   };
   const editTitle = () => edit("title", d().title);
-  const editBody = () => edit("body");
+  // Edit leaves Diff mode: the editor opens on the current body.
+  const editBody = () => {
+    setDiffing(false);
+    edit("body");
+  };
   const backToIssue = () => scroller.focus();
+  // Diff compares confirmed versions only: not while the tab's own body edit is on its way.
+  const diffWhy = () => (d().typedBody === undefined ? undefined : "The description's edit is still on its way");
+  // Turning Diff on brings the body's post into view: its top just under the sticky title bar.
+  let bodySlot!: HTMLDivElement;
+  const showBody = () =>
+    requestAnimationFrame(() => {
+      const off = bodySlot.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTo({ top: scroller.scrollTop + off - detailBars.titleBar });
+    });
+  const toggleDiff = () => {
+    if (untrack(diffWhy) !== undefined) return;
+    const on = !untrack(diffing);
+    setDiffing(on);
+    if (on) showBody();
+  };
+  touch("diff", toggleDiff, diffWhy);
   // The title scrolled out of view (the marker under it is above the view): the sticky bar shows.
   let titleEnd!: HTMLDivElement;
   const [past, setPast] = createSignal(false);
@@ -762,6 +799,7 @@ function Body(props: {
             </span>
             <span {...stylex.attrs(s.stickyTitle)}>{d().title}</span>
           </button>
+          <DiffToggle on={diffing()} why={diffWhy()} toggle={toggleDiff} perf="diff-toggle-sticky" sticky shown={past()} />
         </div>
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
@@ -806,6 +844,7 @@ function Body(props: {
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
           <span {...stylex.attrs(s.spacer)} />
+          <DiffToggle on={diffing()} why={diffWhy()} toggle={toggleDiff} perf="diff-toggle" />
           <Show
             when={d().pr}
             fallback={
@@ -917,7 +956,7 @@ function Body(props: {
           <RelatesTo d={d()} search={props.search} write={allows(d(), "relationships")} />
         </HeldUnit>
         {/* The body is a post like each comment: on its tint, its byline inside. */}
-        <div {...stylex.attrs(s.bodySlot)}>
+        <div {...stylex.attrs(s.bodySlot)} ref={bodySlot}>
           <div {...stylex.attrs(s.post)}>
             <div {...stylex.attrs(s.postHead)} data-k="byline">
               <Byline author={d().author}>
@@ -941,6 +980,23 @@ function Body(props: {
             <Show
               when={editing("body")}
               fallback={
+                <Show
+                  when={!diffing()}
+                  fallback={
+                    <div {...stylex.attrs(s.text)}>
+                      <Errored fallback={(err, reset) => <ChunkFailure error={err()} reset={reset} what="diff" />}>
+                        <Loading fallback={<span {...stylex.attrs(s.postMuted)} aria-busy="true">Loading…</span>}>
+                          <BodyDiff
+                            id={d().id}
+                            body={d().body}
+                            digest={d().body_digest}
+                            links={(h) => links(d(), mergeRefs(h.refs, d().refs), { ...h.media, ...d().media }, props.search)}
+                          />
+                        </Loading>
+                      </Errored>
+                    </div>
+                  }
+                >
                 <div {...stylex.attrs(s.text)} data-perf="body">
                   <Show
                     when={d().typedBody === undefined}
@@ -959,6 +1015,7 @@ function Body(props: {
                     </Show>
                   </Show>
                 </div>
+                </Show>
               }
             >
               <div {...stylex.attrs(s.text)}>
@@ -1175,6 +1232,28 @@ function PropRow(props: {
 }
 
 /**
+ * Diff mode's toggle (diff/BodyDiff.tsx), pressed while it's on: in the status row, and a copy on
+ * the sticky title bar (`sticky`), shown with it. Off while `why` says it can't be used.
+ */
+function DiffToggle(props: { on: boolean; why: string | undefined; toggle: () => void; perf: string; sticky?: boolean; shown?: boolean }) {
+  return (
+    <button
+      type="button"
+      {...stylex.attrs(s.diff, props.on && s.diffOn, props.sticky && s.diffSticky, props.sticky && props.shown && s.stickyShown)}
+      data-perf={props.perf}
+      aria-pressed={props.on ? "true" : "false"}
+      aria-hidden={props.sticky && !props.shown ? "true" : undefined}
+      tabindex={props.sticky ? -1 : undefined}
+      disabled={props.why !== undefined}
+      title={props.why ?? (props.on ? "Back to the current description" : "Compare the description with its earlier versions")}
+      onClick={() => props.toggle()}
+    >
+      Diff
+    </button>
+  );
+}
+
+/**
  * Offers `imageOpen` (keys.ts) while a post shows an image: it opens the focused image, or else
  * the first one in view in `scroller`.
  */
@@ -1249,6 +1328,7 @@ const REFUSED: Partial<Record<Action, string>> = {
   send: "Comment",
   editTitle: "Edit",
   closeReopen: "Close / reopen",
+  diff: "Diff",
 };
 
 /** How long a refused key's reason shows in the role line. */
@@ -1567,7 +1647,6 @@ const s = stylex.create({
     borderWidth: 0,
     gap: 6,
     paddingBlock: 0,
-    paddingInline: 16,
     alignItems: "center",
     backgroundColor: colors.bgRaised,
     boxShadow: `0 2px 6px ${colors.popShadow}`,
@@ -1577,6 +1656,8 @@ const s = stylex.create({
     display: "flex",
     fontSize: 12,
     opacity: 0,
+    paddingInlineEnd: 72,
+    paddingInlineStart: 16,
     position: "absolute",
     textAlign: "start",
     transitionDuration: "120ms",
@@ -1586,7 +1667,7 @@ const s = stylex.create({
     borderBottomColor: colors.line,
     borderBottomStyle: "solid",
     borderBottomWidth: 1,
-    height: 34,
+    height: detailBars.titleBar,
     left: 0,
     right: 0,
     top: 0,
@@ -1594,6 +1675,52 @@ const s = stylex.create({
   stickyShown: {
     opacity: 1,
     visibility: "visible",
+  },
+  // Diff mode's toggle: a small pill, filled while it's on.
+  diff: {
+    font: "inherit",
+    borderColor: colors.line,
+    borderRadius: 4,
+    borderStyle: "solid",
+    borderWidth: 1,
+    paddingBlock: 1,
+    paddingInline: 8,
+    backgroundColor: {
+      default: "transparent",
+      ":hover:not(:disabled)": colors.hover,
+    },
+    color: colors.muted,
+    cursor: {
+      default: "pointer",
+      ":disabled": "default",
+    },
+    flexShrink: 0,
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: "0.06em",
+    opacity: {
+      default: null,
+      ":disabled": 0.5,
+    },
+    textTransform: "uppercase",
+  },
+  diffOn: {
+    borderColor: colors.accentBg,
+    backgroundColor: {
+      default: colors.accentBg,
+      ":hover:not(:disabled)": colors.accentBg,
+    },
+    color: colors.accentFg,
+  },
+  // The copy on the sticky title bar, at its right end, shown with it.
+  diffSticky: {
+    opacity: 0,
+    position: "absolute",
+    transitionDuration: "120ms",
+    transitionProperty: "opacity, visibility",
+    visibility: "hidden",
+    right: 16,
+    top: 6,
   },
   stickyRef: {
     color: colors.muted,

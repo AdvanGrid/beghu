@@ -9,3 +9,10 @@ export type MdNode = string | [tag: string, attrs: MdAttrs | 0, ...children: MdN
 
 /** A body or comment: its top-level nodes. */
 export type Md = MdNode[];
+
+/**
+ * Diff mode's word marks (diff/blocks.ts): a changed word in a paired block, removed or added.
+ * The server never sends these tags (no HTML tag has a `:`); the walker draws them as marks.
+ */
+export const WORD_REMOVED = "diff:del";
+export const WORD_ADDED = "diff:add";
