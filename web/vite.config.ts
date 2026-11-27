@@ -208,6 +208,38 @@ function noMarkdownParser(): Plugin {
   };
 }
 
+/**
+ * Writes `.vite/modules.json` beside Vite's manifest: each chunk's file (`assets/…js`) and the
+ * source modules whose code it holds (paths from `web/`, `src/pr-view/View.tsx`; a dependency's
+ * as `node_modules/…`), modules tree-shaken to nothing left out. The perf harness reads it to count
+ * the PR view's modules in whatever the list's cold load fetches, the entry chunk included
+ * (`browser.cold.pr-view-modules`): a chunk list can't see view code inlined into the entry.
+ */
+function moduleList(): Plugin {
+  const root = fileURLToPath(new URL(".", import.meta.url)).replace(/\\/g, "/");
+  const rel = (id: string) => {
+    const p = id.replace(/\\/g, "/").split("?")[0]!;
+    const at = p.lastIndexOf("/node_modules/");
+    if (at >= 0) return p.slice(at + 1);
+    return p.startsWith(root) ? p.slice(root.length) : p;
+  };
+  return {
+    name: "beghu-module-list",
+    apply: "build",
+    generateBundle(_options, bundle) {
+      const out: Record<string, string[]> = {};
+      for (const c of Object.values(bundle)) {
+        if (c.type !== "chunk") continue;
+        out[c.fileName] = Object.entries(c.modules)
+          .filter(([, m]) => m.renderedLength > 0)
+          .map(([id]) => rel(id))
+          .sort();
+      }
+      this.emitFile({ type: "asset", fileName: ".vite/modules.json", source: `${JSON.stringify(out, null, 1)}\n` });
+    },
+  };
+}
+
 const firstLoad = firstLoadInEntry();
 
 /**
@@ -220,7 +252,7 @@ const BUILD = process.env.BEGHU_BUILD_ID;
 const banner = (chunk: { isEntry: boolean }) => (BUILD && chunk.isEntry ? `/*! beghu ${BUILD.replace(/[^\w.-]/g, "")} */` : "");
 
 export default defineConfig({
-  plugins: [unchangedUpdatesNothing(), sitePlugin(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser()],
+  plugins: [unchangedUpdatesNothing(), sitePlugin(), stylex.vite({ devMode: "full" }), solid(), shell(), precompress(), onlyAssets(), firstLoad.plugin, noMarkdownParser(), moduleList()],
   // The router's Solid server functions support, which beghu (a Rust server) never uses: kept
   // out of first-load JS (see src/no-server-functions.ts). Exact match only, so the router's
   // lazy `…/server-functions/server` import is untouched.

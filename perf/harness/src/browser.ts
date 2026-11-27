@@ -1,8 +1,8 @@
 // The browser suite: full Chromium against the production build, each action timed from its
 // input event to the frame that shows the right outcome (probe.ts), with the right rows taken
 // from the API beforehand. Beside the timings it counts what a page load and each action cost:
-// the request depth of the first load (cold and warm), its bytes (gzip), the PR view's chunks it
-// mustn't fetch and their own bytes (gzip), the list fetches a load makes (the stream open's
+// the request depth of the first load (cold and warm), its bytes (gzip), the PR view's modules it
+// mustn't fetch (in any chunk, the entry's included) and the view's chunks' own bytes (gzip), the list fetches a load makes (the stream open's
 // reset refetches it: measured, with no exemption), the round trips of a filter and of opening
 // an issue, the refetch batches of a push, the rows rendered while
 // scrolling and the long tasks meanwhile.
@@ -43,6 +43,30 @@ export function viewChunks(web: string): string[] {
     todo.push(...(m.imports ?? []));
   }
   return out;
+}
+
+/** The PR view's own source (`src/pr-view/`) and the Analyse module it shares with the PR panel. */
+const isViewModule = (m: string) => m.startsWith("src/pr-view/") || m === "src/Analyse.tsx";
+
+/**
+ * The PR view's modules (`isViewModule`) in the chunks `fetched` (`/assets/…` paths), the entry
+ * included: from the build's module list (`.vite/modules.json`, web/vite.config.ts `moduleList`),
+ * each chunk's source modules. Undefined for a build without the list (main, when this tree is
+ * compared with it): the gate goes unmeasured there.
+ */
+export function viewModulesIn(web: string, fetched: string[]): { found: string[]; chunks: number } | undefined {
+  const path = join(web, ".vite", "modules.json");
+  if (!existsSync(path)) return undefined;
+  const list = JSON.parse(readFileSync(path, "utf8")) as Record<string, string[]>;
+  const found: string[] = [];
+  let chunks = 0;
+  for (const url of new Set(fetched)) {
+    const modules = list[url.replace(/^\//, "")];
+    if (!modules) continue;
+    chunks++;
+    for (const m of modules) if (isViewModule(m)) found.push(`${url}: ${m}`);
+  }
+  return { found, chunks };
 }
 
 export function launch(): Promise<Browser> {
@@ -278,12 +302,16 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
           values["browser.first-load.kb"] = total / 1024;
           values["browser.first-load.html.kb"] = html / 1024;
           evidence["browser.first-load.kb"] = sizes;
-          // The PR view's code is its own route's: none of it loads with the list.
+          // The PR view's code is its own route's: none of its modules loads with the list, in its
+          // chunks or inlined into another (the entry's included).
+          const fetchedPaths = all.filter((r) => r.url.startsWith(c.stack.url)).map((r) => new URL(r.url).pathname);
+          const modules = viewModulesIn(c.stack.build.web, fetchedPaths);
+          if (modules) {
+            values["browser.cold.pr-view-modules"] = modules.found.length;
+            evidence["browser.cold.pr-view-modules"] = modules.found.length ? modules.found : [`none in the ${modules.chunks} chunks fetched`];
+          }
           const view = viewChunks(c.stack.build.web);
           if (view.length > 0) {
-            const fetched = all.filter((r) => r.url.startsWith(c.stack.url) && view.includes(new URL(r.url).pathname));
-            values["browser.cold.pr-view-modules"] = fetched.length;
-            evidence["browser.cold.pr-view-modules"] = fetched.length ? fetched.map((r) => new URL(r.url).pathname) : [`none of ${view.join(", ")}`];
             let bytes = 0;
             const each: string[] = [];
             for (const chunk of view) {

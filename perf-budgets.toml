@@ -346,7 +346,7 @@ reason = "Everything a cold load fetches (shell, JS, CSS, data, the reset refetc
 [gates."browser.cold.pr-view-modules"]
 max = 0
 measured = 0
-reason = "Chunks of the PR view (its own and the one it shares with the PR panel, from the build's Vite manifest) the list's cold load fetches: none, exact (#152, #181). The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
+reason = "Modules of the PR view (web/src/pr-view/, and src/Analyse.tsx, which it shares with the lazy PR panel) in any chunk the list's cold load fetches, the entry chunk included, from the build's module list (.vite/modules.json, web/vite.config.ts moduleList): none, exact (#152, #181). Counting modules, not chunks, catches view code a static import inlines into the entry, which has no chunk of its own. The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
 
 [gates."browser.pr-view.kb"]
 max = 24.1
