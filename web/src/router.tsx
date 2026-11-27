@@ -1,6 +1,7 @@
 import { lazy, untrack } from "solid-js";
 import { createRouter, intentPreload, tapPreload, type RoutePreloadFunc } from "@solidjs/router";
 import { getIssue, getIssueAt, preloadIssue } from "./api";
+import { preloadView } from "./analysis";
 import { at, atString, idAt } from "./at";
 
 /** A route's code failed to load: offline, or a deploy replaced the build it belongs to. */
@@ -51,6 +52,18 @@ const CliLoginPanel = lazy(
   { export: "CliLoginPanel" },
 );
 
+/**
+ * The PR view (`/:owner/:repo/pull/:number/view`) is its own chunk too, `pr-view/`, never
+ * imported statically from the list or the panel.
+ */
+const PrView = lazy(
+  () =>
+    import("./pr-view/View").catch((e: unknown) => {
+      throw new ChunkFailed(`can't load the PR view: ${String(e)}`);
+    }),
+  { export: "PrView" },
+);
+
 // The list is the root layout and always mounted, at `/issues` (`/` is the public site's landing
 // page, web/site/); the view lives in the query string. An open issue is its own path, GitHub's
 // (`/acme/web/issues/12`, `/acme/web/pull/7` for a PR, at.ts), with the view kept in the query
@@ -70,11 +83,20 @@ const issue = {
   component: IssuePanel,
 };
 
+// The PR view, full screen in the app's chrome: its preload starts the analysis graph's fetch
+// alongside the chunk's import (shell → (chunk ∥ graph) → draw), and the PR's detail, which the
+// view's live facts come from (its head, how far behind, the run's state), as the panel reads it.
+const view = {
+  preload: (({ params }) => preloadView(at(params.owner ?? "", params.repo ?? "", params.number ?? ""))) satisfies RoutePreloadFunc,
+  component: PrView,
+};
+
 export const Router = createRouter({
   routes: [
     { path: "/issues", component: () => null },
     { path: "/:owner/:repo/issues/:number", ...issue },
     { path: "/:owner/:repo/pull/:number", ...issue },
+    { path: "/:owner/:repo/pull/:number/view", ...view },
     // The create form opens in the panel, the view kept in the query string.
     { path: "/new", component: CreatePanel },
     // Repo picking takes the panel's place beside the list.

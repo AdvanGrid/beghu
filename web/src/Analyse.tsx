@@ -1,5 +1,6 @@
 // The PR panel's Analyse split button (#177), in the status row before "Open on GitHub", and its
-// popover. Part of the PR panel's chunk (Pull.tsx).
+// popover; the same button in the PR view's top bar, and the view's empty state's start (#181).
+// Part of the PR panel's chunk (Pull.tsx), shared with the PR view's (pr-view/).
 //
 // The label is the state: Analyse; Analyse again (the last run expired, no analysis); ● Waiting
 // for agent (amber, pulsing); ● Agent working or ● CLI working (green, pulsing); ● Upload refused
@@ -7,10 +8,11 @@
 // the count is on its way), with a live run's dot and a short word after it (PR view · 2 behind
 // · ● Working: a re-analysis under way), the full state in its accessible name and title, so the
 // status row's chips keep their room. The main part does the obvious thing: with nothing live it
-// copies the prompt and starts a run; otherwise it opens the popover (the two PR view states will
-// open the full-screen view once it has a route). ▾ always opens the popover, which holds the
-// analysis, the live run (its steps, one status line, Copy again, End run, what was copied), or
-// Analyse this PR with the CLI's alternative.
+// copies the prompt and starts a run; PR view links to the full-screen view; otherwise it opens
+// the popover. ▾ always opens the popover, which holds the analysis, the live run (its steps, one
+// status line, Copy again, End run, what was copied), or Analyse this PR with the CLI's
+// alternative. In the view's top bar the main part reads Analyse again, or the live run's state,
+// and its popover has no End run: ending a run is the PR panel's.
 //
 // The popover is a non-modal dialog: opening it moves focus to its first control, Escape closes
 // it (before the panel's keys hear it) and puts focus back on the button that opened it, and Tab
@@ -24,7 +26,9 @@
 // button keeps what it showed, and the kept prompts stay.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack, type Accessor } from "solid-js";
+import { useLocation } from "@solidjs/router";
 import { tabAccount } from "./account";
+import { viewPath } from "./analysis";
 import { PrTooLarge, readAt } from "./api";
 import type { PullDetail } from "./bindings/PullDetail";
 import type { PrAnalysis } from "./bindings/PrAnalysis";
@@ -80,12 +84,16 @@ export interface AnalysedPr {
   pr: PullDetail | null;
 }
 
-export function AnalyseButton(props: { d: AnalysedPr }) {
+/**
+ * The PR's run and analysis as the button, the PR view's top bar and its empty state show them,
+ * with the writes that start and end runs and the copies. Each write absorbs its own failure
+ * (`failed`), and what's shown rolls back to what the detail says.
+ */
+export function createRun(props: { d: AnalysedPr }) {
   const at = (): PrAt => ({ owner: props.d.owner, repo: props.d.repo, number: props.d.number });
   const account = tabAccount() ?? 0;
   const cli = () => `beghu analyse ${props.d.owner}/${props.d.repo}#${props.d.number}`;
 
-  const [open, setOpen] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [failed, setFailed] = createSignal<string>();
   /** Which copy button just copied: `prompt` or `cli`. */
@@ -96,10 +104,6 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   const [ending, setEnding] = createSignal<string>();
   /** Bumped when a prompt is kept, here or in another tab (`storage`), so Copy again reads storage again. */
   const [kept, setKept] = createSignal(0);
-  /** Bumped every TICK_MS while the popover is open: its ages read the clock again. */
-  const [tick, setTick] = createSignal(0);
-  /** The button that opened the popover: focus goes back to it on Escape. */
-  let opener: HTMLButtonElement | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let startedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -152,6 +156,19 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     },
   );
 
+  onSettled(() => {
+    // Another tab of this browser kept or dropped a prompt.
+    const stored = (e: StorageEvent) => {
+      if (e.key === null || e.key.startsWith("beghu.prompt.")) setKept((n) => n + 1);
+    };
+    addEventListener("storage", stored);
+    return () => {
+      removeEventListener("storage", stored);
+      clearTimeout(copiedTimer);
+      clearTimeout(startedTimer);
+    };
+  });
+
   /** The live run's state, if one is. */
   const runState = (): RunState | undefined => {
     const r = run();
@@ -162,20 +179,6 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   const state = (): State => {
     if (analysis()) return "view";
     return runState() ?? (expired() ? "again" : "analyse");
-  };
-
-  /** The live run's word beside PR view: short, as the status row has little room. */
-  const runWord = () => {
-    switch (runState()) {
-      case "refused":
-        return "Refused";
-      case "waiting":
-        return "Waiting";
-      case "working":
-        return "Working";
-      default:
-        return undefined;
-    }
   };
 
   /** The live run's words, beside its dot. */
@@ -192,36 +195,17 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     }
   };
 
-  /** PR view, and how far behind (nothing while it's counted). */
-  const view = () => {
-    const b = analysis()?.behind;
-    return b === undefined || b === "counting" ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
-  };
-
-  /** The state in full: what the button shows, or (PR view with a live run) says it means. */
-  const label = () => {
-    switch (state()) {
-      case "view": {
-        const words = runWords();
-        return words ? `${view()} · ${words}` : view();
-      }
-      case "again":
-        return "Analyse again";
-      case "analyse":
-        return "Analyse";
-      default:
-        return runWords()!;
-    }
-  };
-
   const prompt = () => {
     kept();
     const r = run();
     return r ? keptPrompt(account, at(), r.id) : undefined;
   };
 
-  /** Starts a run (superseding the live one) and copies its prompt. */
-  const analyse = async () => {
+  /**
+   * Starts a run (superseding the live one) and copies its prompt; `show` is told when what
+   * happened needs the popover open to read.
+   */
+  const analyse = async (show: () => void = () => {}) => {
     if (busy() || writesPaused()) return;
     setBusy(true);
     setFailed(undefined);
@@ -243,11 +227,11 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
         await copying;
         flash("prompt");
       } catch {
-        setOpen(true);
+        show();
         setFailed("The run started, but the browser wouldn't copy its prompt: copy it from What was copied.");
       }
     } catch (e) {
-      setOpen(true);
+      show();
       setFailed(e instanceof PrTooLarge ? e.message : `Couldn't start a run: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
@@ -272,6 +256,7 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     }
   };
 
+  /** Ends the live run (the PR panel's popover only). */
   const end = async () => {
     const r = run();
     if (!r || busy() || writesPaused()) return;
@@ -287,9 +272,64 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
       setFailed(`Couldn't end the run: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
-      // The run's section went with End run (and came back new, if the end failed): focus moves
-      // to what's first now, enabled again.
-      refocus();
+    }
+  };
+
+  return { cli, busy, failed, copied, run, analysis, runState, state, runWords, prompt, analyse, copyAgain, copyCli, end };
+}
+
+/** What `createRun` gives the parts that show it. */
+type Run = ReturnType<typeof createRun>;
+
+/**
+ * The PR panel's split button, or (`inView`) the PR view's top bar's: there the analysis is on
+ * screen, so the main part reads Analyse again (starting a run) or the live run's state, which
+ * opens the popover, and the popover has no End run.
+ */
+export function AnalyseButton(props: { d: AnalysedPr; inView?: boolean }) {
+  const m = createRun(props);
+  const location = useLocation();
+
+  const [open, setOpen] = createSignal(false);
+  /** Bumped every TICK_MS while the popover is open: its ages read the clock again. */
+  const [tick, setTick] = createSignal(0);
+  /** The button that opened the popover: focus goes back to it on Escape. */
+  let opener: HTMLButtonElement | undefined;
+
+  /** The live run's word beside PR view: short, as the status row has little room. */
+  const runWord = () => {
+    switch (m.runState()) {
+      case "refused":
+        return "Refused";
+      case "waiting":
+        return "Waiting";
+      case "working":
+        return "Working";
+      default:
+        return undefined;
+    }
+  };
+
+  /** PR view, and how far behind (nothing while it's counted). */
+  const view = () => {
+    const b = m.analysis()?.behind;
+    return b === undefined || b === "counting" ? "PR view" : b === "outdated" ? "PR view · outdated" : `PR view · ${b} behind`;
+  };
+
+  /** The state in full: what the button shows, or (PR view with a live run) says it means. */
+  const label = () => {
+    switch (m.state()) {
+      case "view": {
+        const words = m.runWords();
+        if (props.inView) return words ?? "Analyse again";
+        return words ? `${view()} · ${words}` : view();
+      }
+      case "again":
+        return "Analyse again";
+      case "analyse":
+        return "Analyse";
+      default:
+        return m.runWords()!;
     }
   };
 
@@ -302,8 +342,10 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
     });
   };
 
+  /** The panel's PR view: the main part links to the full-screen view. */
+  const links = () => m.state() === "view" && !props.inView;
   /** Whether the main part opens the popover rather than starting a run. */
-  const mainOpens = () => state() !== "analyse" && state() !== "again";
+  const mainOpens = () => !links() && (props.inView ? m.runState() !== undefined : m.state() !== "analyse" && m.state() !== "again");
 
   /** Opens or closes the popover from `from`, which focus goes back to on Escape. */
   const toggle = (from: HTMLButtonElement) => {
@@ -312,9 +354,15 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
   };
 
   const main = (e: MouseEvent & { currentTarget: HTMLButtonElement }) => {
-    // "PR view" opens the full-screen view once it has its route (#181); until then, the popover.
     if (mainOpens()) toggle(e.currentTarget);
-    else void analyse();
+    else void m.analyse(() => setOpen(true));
+  };
+
+  const end = async () => {
+    await m.end();
+    // The run's section went with End run (and came back new, if the end failed): focus moves
+    // to what's first now, enabled again.
+    refocus();
   };
 
   let wrap!: HTMLSpanElement;
@@ -342,77 +390,80 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
       const to = e.relatedTarget as Node | null;
       if (open() && to && !wrap.contains(to)) setOpen(false);
     };
-    // Another tab of this browser kept or dropped a prompt.
-    const stored = (e: StorageEvent) => {
-      if (e.key === null || e.key.startsWith("beghu.prompt.")) setKept((n) => n + 1);
-    };
     const ticking = setInterval(() => {
       if (open()) setTick((n) => n + 1);
     }, TICK_MS);
     document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc, true);
     wrap.addEventListener("focusout", left);
-    addEventListener("storage", stored);
     return () => {
       document.removeEventListener("pointerdown", away);
       document.removeEventListener("keydown", esc, true);
       wrap.removeEventListener("focusout", left);
-      removeEventListener("storage", stored);
       clearInterval(ticking);
-      clearTimeout(copiedTimer);
-      clearTimeout(startedTimer);
     };
   });
 
   /** PR view with a live run, not just copied: its short word, beside the dot. */
-  const short = () => (state() === "view" && !(copied() === "prompt" && !open()) ? runWord() : undefined);
+  const short = () => (m.state() === "view" && !props.inView && !(m.copied() === "prompt" && !open()) ? runWord() : undefined);
 
-  const dot = () => {
-    switch (runState()) {
-      case "waiting":
-        return s.dotWait;
-      case "working":
-        return s.dotWork;
-      case "refused":
-        return s.dotBad;
-      default:
-        return undefined;
-    }
-  };
+  const dot = () => dotOf(m.runState());
+
+  /** The label's text and the live run's dot, as the main part shows them. */
+  const face = () => (
+    <Show
+      when={short()}
+      fallback={
+        <>
+          <Show when={dot()}>{(d) => <span {...stylex.attrs(s.dot, d())} aria-hidden="true" />}</Show>
+          <span {...stylex.attrs(s.labelText)}>{m.copied() === "prompt" && !open() ? "Copied" : label()}</span>
+        </>
+      }
+    >
+      {(w) => (
+        <>
+          <span {...stylex.attrs(s.labelText)}>{view()} ·</span>
+          {/* A flex box: the space is for the text (`textContent`), the gap for the eye. */}
+          <span {...stylex.attrs(s.word)}>
+            <span {...stylex.attrs(s.dot, dot())} aria-hidden="true" /> {w()}
+          </span>
+        </>
+      )}
+    </Show>
+  );
 
   return (
-    <span ref={wrap} {...stylex.attrs(s.wrap)} data-perf="analyse" data-state={state()} data-run={runState()}>
-      <button
-        type="button"
-        {...stylex.attrs(s.main, state() === "view" && s.mainView)}
-        data-perf="analyse-main"
-        disabled={busy() && !mainOpens()}
-        onClick={main}
-        aria-haspopup={mainOpens() ? "dialog" : undefined}
-        aria-expanded={mainOpens() ? (open() ? "true" : "false") : undefined}
-        aria-label={short() ? label() : undefined}
-        title={mainOpens() ? label() : "Copies a prompt for your agent and starts an analysis run"}
+    <span ref={wrap} {...stylex.attrs(s.wrap)} data-perf="analyse" data-state={m.state()} data-run={m.runState()}>
+      <Show
+        when={links()}
+        fallback={
+          <button
+            type="button"
+            {...stylex.attrs(s.main, m.state() === "view" && !props.inView && s.mainView)}
+            data-perf="analyse-main"
+            disabled={m.busy() && !mainOpens()}
+            onClick={main}
+            aria-haspopup={mainOpens() ? "dialog" : undefined}
+            aria-expanded={mainOpens() ? (open() ? "true" : "false") : undefined}
+            aria-label={short() ? label() : undefined}
+            title={mainOpens() ? label() : "Copies a prompt for your agent and starts an analysis run"}
+          >
+            {face()}
+          </button>
+        }
       >
-        <Show
-          when={short()}
-          fallback={
-            <>
-              <Show when={dot()}>{(d) => <span {...stylex.attrs(s.dot, d())} aria-hidden="true" />}</Show>
-              <span {...stylex.attrs(s.labelText)}>{copied() === "prompt" && !open() ? "Copied" : label()}</span>
-            </>
-          }
+        {/* The panel's way back from the view (its top bar's ← ‹repo›#‹n›) keeps the list's view. */}
+        <a
+          href={viewPath(props.d)}
+          state={JSON.stringify({ back: location.pathname + location.search })}
+          {...stylex.attrs(s.main, s.mainView, s.mainLink)}
+          data-perf="analyse-main"
+          aria-label={short() ? label() : undefined}
+          title={label()}
         >
-          {(w) => (
-            <>
-              <span {...stylex.attrs(s.labelText)}>{view()} ·</span>
-              {/* A flex box: the space is for the text (`textContent`), the gap for the eye. */}
-              <span {...stylex.attrs(s.word)}>
-                <span {...stylex.attrs(s.dot, dot())} aria-hidden="true" /> {w()}
-              </span>
-            </>
-          )}
-        </Show>
-      </button>
+          {face()}
+        </a>
+      </Show>
       <button
         type="button"
         {...stylex.attrs(s.caret)}
@@ -426,27 +477,27 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
       </button>
       <Show when={open()}>
         <div ref={pop} role="dialog" aria-label="Analysis" {...stylex.attrs(s.pop)} data-perf="analyse-pop">
-          <Show when={analysis()}>{(a) => <AnalysisPart a={a()} tick={tick} />}</Show>
+          <Show when={m.analysis()}>{(a) => <AnalysisPart a={a()} tick={tick} />}</Show>
           <Show
-            when={run()}
+            when={m.run()}
             fallback={
               <section {...stylex.attrs(s.sec)} data-perf="analyse-none">
                 <div {...stylex.attrs(s.row)}>
-                  <button type="button" {...stylex.attrs(analysis() ? s.secondary : s.primary)} disabled={busy() || writesPaused()} onClick={() => void analyse()}>
-                    {analysis() ? "Analyse again" : "Analyse this PR"}
+                  <button type="button" {...stylex.attrs(m.analysis() ? s.secondary : s.primary)} disabled={m.busy() || writesPaused()} onClick={() => void m.analyse(() => setOpen(true))}>
+                    {m.analysis() ? "Analyse again" : "Analyse this PR"}
                   </button>
                   <span {...stylex.attrs(s.small, s.muted)}>Copies a prompt for your agent</span>
                 </div>
-                <Show when={analysis()}>
+                <Show when={m.analysis()}>
                   <p {...stylex.attrs(s.small, s.muted, s.text)}>An accepted upload replaces the analysis.</p>
                 </Show>
                 <details {...stylex.attrs(s.fold)}>
                   <summary {...stylex.attrs(s.foldSummary)}>
-                    Or run <code {...stylex.attrs(s.code)}>{cli()}</code>
+                    Or run <code {...stylex.attrs(s.code)}>{m.cli()}</code>
                   </summary>
                   <div {...stylex.attrs(s.row, s.foldBody)}>
-                    <button type="button" {...stylex.attrs(s.secondary)} onClick={() => void copyCli()}>
-                      {copied() === "cli" ? "Copied" : "Copy"}
+                    <button type="button" {...stylex.attrs(s.secondary)} onClick={() => void m.copyCli()}>
+                      {m.copied() === "cli" ? "Copied" : "Copy"}
                     </button>
                     <span {...stylex.attrs(s.small, s.muted)}>The beghu CLI starts the run itself.</span>
                   </div>
@@ -457,53 +508,14 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
             {(r) => (
               <section {...stylex.attrs(s.sec)} data-perf="analyse-run">
                 <b>Run</b>
-                <Steps r={r()} uploaded={(analysis()?.createdAt ?? 0) >= r().startedAt} />
-                <p {...stylex.attrs(s.text, r().refused > 0 && s.bad)} data-perf="analyse-status">
-                  {(tick(), statusLine(r()))}
-                </p>
-                <div {...stylex.attrs(s.row)}>
-                  <Show when={r().producer === "button"}>
-                    <Show
-                      when={prompt()}
-                      fallback={
-                        <button type="button" {...stylex.attrs(s.secondary)} disabled={busy() || writesPaused()} onClick={() => void analyse()} title="This browser doesn't hold the prompt: starts a new run in place of this one">
-                          {copied() === "prompt" ? "Copied" : "Copy a new link"}
-                        </button>
-                      }
-                    >
-                      {(p) => (
-                        <button type="button" {...stylex.attrs(s.secondary)} onClick={() => void copyAgain(p())}>
-                          {copied() === "prompt" ? "Copied" : "Copy again"}
-                        </button>
-                      )}
-                    </Show>
-                  </Show>
-                  <button type="button" {...stylex.attrs(s.danger)} disabled={busy() || writesPaused()} onClick={() => void end()}>
-                    End run
-                  </button>
-                </div>
-                <details {...stylex.attrs(s.fold)}>
-                  <summary {...stylex.attrs(s.foldSummary)}>What was copied</summary>
-                  <Show when={r().producer === "button"}>
-                    <Show when={prompt()} fallback={<p {...stylex.attrs(s.small, s.muted, s.text)}>This browser doesn't hold this run's prompt: the browser that started it does.</p>}>
-                      {(p) => (
-                        <p {...stylex.attrs(s.promptText)} data-perf="analyse-prompt">
-                          {p()}
-                        </p>
-                      )}
-                    </Show>
-                  </Show>
-                  <p {...stylex.attrs(s.small, s.muted, s.text)}>
-                    Or run <code {...stylex.attrs(s.code)}>{cli()}</code>
-                  </p>
-                </details>
+                <RunNow m={m} r={r()} tick={tick} end={props.inView ? undefined : () => void end()} show={() => setOpen(true)} />
               </section>
             )}
           </Show>
-          <Show when={failed()}>
-            {(m) => (
+          <Show when={m.failed()}>
+            {(f) => (
               <p role="alert" {...stylex.attrs(s.sec, s.text, s.bad)} data-perf="analyse-failed">
-                {m()}
+                {f()}
               </p>
             )}
           </Show>
@@ -511,6 +523,122 @@ export function AnalyseButton(props: { d: AnalysedPr }) {
       </Show>
     </span>
   );
+}
+
+/**
+ * The live run: its steps, its one status line (with `after`, when given), Copy again (or Copy a
+ * new link) and End run when `end` is given, and what was copied.
+ */
+function RunNow(props: { m: Run; r: PrRun; tick: Accessor<number>; end?: () => void; show: () => void; after?: string }) {
+  const m = props.m;
+  return (
+    <>
+      <Steps r={props.r} uploaded={(m.analysis()?.createdAt ?? 0) >= props.r.startedAt} />
+      <p {...stylex.attrs(s.text, props.r.refused > 0 && s.bad)} data-perf="analyse-status">
+        {(props.tick(), statusLine(props.r))}
+        {props.after ? ` ${props.after}` : ""}
+      </p>
+      <div {...stylex.attrs(s.row)}>
+        <Show when={props.r.producer === "button"}>
+          <Show
+            when={m.prompt()}
+            fallback={
+              <button type="button" {...stylex.attrs(s.secondary)} disabled={m.busy() || writesPaused()} onClick={() => void m.analyse(props.show)} title="This browser doesn't hold the prompt: starts a new run in place of this one">
+                {m.copied() === "prompt" ? "Copied" : "Copy a new link"}
+              </button>
+            }
+          >
+            {(p) => (
+              <button type="button" {...stylex.attrs(s.secondary)} onClick={() => void m.copyAgain(p())}>
+                {m.copied() === "prompt" ? "Copied" : "Copy again"}
+              </button>
+            )}
+          </Show>
+        </Show>
+        <Show when={props.end}>
+          {(end) => (
+            <button type="button" {...stylex.attrs(s.danger)} disabled={m.busy() || writesPaused()} onClick={() => end()()}>
+              End run
+            </button>
+          )}
+        </Show>
+      </div>
+      <details {...stylex.attrs(s.fold)}>
+        <summary {...stylex.attrs(s.foldSummary)}>What was copied</summary>
+        <Show when={props.r.producer === "button"}>
+          <Show when={m.prompt()} fallback={<p {...stylex.attrs(s.small, s.muted, s.text)}>This browser doesn't hold this run's prompt: the browser that started it does.</p>}>
+            {(p) => (
+              <p {...stylex.attrs(s.promptText)} data-perf="analyse-prompt">
+                {p()}
+              </p>
+            )}
+          </Show>
+        </Show>
+        <p {...stylex.attrs(s.small, s.muted, s.text)}>
+          Or run <code {...stylex.attrs(s.code)}>{m.cli()}</code>
+        </p>
+      </details>
+    </>
+  );
+}
+
+/**
+ * The PR view's empty state's start (`NoAnalysis`): Analyse this PR with the CLI's alternative,
+ * or, while a run is live, its steps and status in the button's place, saying the page fills in
+ * when the upload is accepted. No End run here: that's the PR panel's popover's.
+ */
+export function AnalyseStart(props: { d: AnalysedPr }) {
+  const m = createRun(props);
+  /** Bumped every TICK_MS while a run shows: its ages read the clock again. */
+  const [tick, setTick] = createSignal(0);
+  onSettled(() => {
+    const ticking = setInterval(() => setTick((n) => n + 1), TICK_MS);
+    return () => clearInterval(ticking);
+  });
+  return (
+    <div {...stylex.attrs(s.start)} data-perf="analyse-start" data-run={m.runState()}>
+      <Show
+        when={m.run()}
+        fallback={
+          <>
+            <button type="button" {...stylex.attrs(s.primary, s.big)} disabled={m.busy() || writesPaused()} onClick={() => void m.analyse()}>
+              {m.copied() === "prompt" ? "Copied" : "Analyse this PR"}
+            </button>
+            <p {...stylex.attrs(s.small, s.muted, s.text)}>
+              Copies a prompt to paste into Claude Code, Codex or any agent with a shell and git. Or from a terminal:{" "}
+              <code {...stylex.attrs(s.code)}>{m.cli()}</code>{" "}
+              <button type="button" {...stylex.attrs(s.secondary, s.inline)} onClick={() => void m.copyCli()}>
+                {m.copied() === "cli" ? "Copied" : "Copy"}
+              </button>
+            </p>
+          </>
+        }
+      >
+        {(r) => <RunNow m={m} r={r()} tick={tick} show={() => {}} after="This page fills in when the upload is accepted." />}
+      </Show>
+      <Show when={m.failed()}>
+        {(f) => (
+          <p role="alert" {...stylex.attrs(s.text, s.bad)} data-perf="analyse-failed">
+            {f()}
+          </p>
+        )}
+      </Show>
+    </div>
+  );
+}
+
+/** A live run's dot, by its state. */
+function dotOf(r: RunState | undefined) {
+  switch (r) {
+    case "waiting":
+      return s.dotWait;
+    case "working":
+      return s.dotWork;
+    case "refused":
+      return s.dotBad;
+    default:
+      return undefined;
+  }
 }
 
 /** The run's one status line. */
@@ -675,6 +803,12 @@ const s = stylex.create({
     fontWeight: 600,
     whiteSpace: "nowrap",
   },
+  // The panel's PR view: a link that looks like the button it replaces.
+  mainLink: { textDecoration: "none", boxSizing: "border-box" },
+  // The PR view's empty state's start.
+  start: { gap: 8, alignItems: "flex-start", display: "flex", flexDirection: "column" },
+  big: { paddingInline: 16, fontSize: 14, height: 34 },
+  inline: { paddingInline: 8, marginInlineStart: 4, height: 22, },
   primary: {
     borderColor: colors.accentBg,
     borderRadius: 6,

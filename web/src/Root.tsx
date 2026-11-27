@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, Errored, lazy, Loading, onSettl
 import { revalidate, useLocation } from "@solidjs/router";
 import { Dynamic } from "@solidjs/web";
 import { SessionEnded, forgetRemembered, getIssues, getMe, getTree, signIn, signInUrl } from "./api";
+import { isViewPath } from "./analysis";
 import { atOfPath, idAt } from "./at";
 import { FilterBar } from "./FilterBar";
 import { IssueList } from "./IssueList";
@@ -31,7 +32,8 @@ const AccountMenu = lazy(() => import("./AccountMenu"), { export: "AccountMenu" 
 
 /**
  * The app: a header over the list, with the open issue's panel (the route's content) beside the
- * list, or under it below 900 px. The root `Errored` sends a signed-out tab to sign in. The panel
+ * list, or under it below 900 px; or, on a PR view's path, the PR view alone (the route's
+ * content, full screen under the header, with no list: a cold load of the view fetches none). The root `Errored` sends a signed-out tab to sign in. The panel
  * has boundaries of its own, so while its code loads, or if that fails, the list carries on. The
  * bottom bar holds the status slot. The tab's live stream opens with the app. One banner at a
  * time shows under the header. Leaving on purpose (a sign-out or a switch) blanks the whole app
@@ -59,9 +61,11 @@ export function Root(props: { children?: Element }) {
         <Header />
         <Banner />
         <main {...stylex.attrs(s.main)}>
-          <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
-            <List />
-          </div>
+          <Show when={!isViewPath(location.pathname)}>
+            <div {...stylex.attrs(s.listPane)} data-perf="list-pane">
+              <List />
+            </div>
+          </Show>
           <Errored fallback={(err, reset) => <PanelFailure error={err()} reset={reset} />}>
             <Loading fallback={<div {...stylex.attrs(s.panelSlot)} aria-busy="true" />}>{props.children}</Loading>
           </Errored>
@@ -189,7 +193,7 @@ export function reloadOnce(target: string): boolean {
 /**
  * The panel failed outside its own boundaries: its code didn't load (the URL reloads once, then
  * offers Retry), or something else broke in it. The notice names what the panel held: an issue,
- * repo picking, the create form or preferences. The list stays usable, and opening anything else
+ * repo picking, the create form, preferences or the PR view. The list stays usable, and opening anything else
  * tries again.
  */
 function PanelFailure(props: { error: unknown; reset: () => void }) {
@@ -200,7 +204,7 @@ function PanelFailure(props: { error: unknown; reset: () => void }) {
   return (
     <div {...stylex.attrs(s.panelSlot)} aria-busy={reloading ? "true" : undefined}>
       <Show when={!reloading}>
-        <Show when={PAGES[location.pathname]} fallback={<IssueNotice error={props.error} retry={props.reset} />}>
+        <Show when={PAGES[location.pathname] ?? (isViewPath(location.pathname) ? "the PR view" : undefined)} fallback={<IssueNotice error={props.error} retry={props.reset} />}>
           {(what) => <PageNotice what={what()} error={props.error} retry={props.reset} />}
         </Show>
       </Show>
