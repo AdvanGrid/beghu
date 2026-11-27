@@ -196,11 +196,13 @@ Commands:
                               Release builds of each (main in a worktree under the git
                               common dir's beghu-perf/, shared by every worktree and
                               cached by commit) run side by side at 50k, sampled in
-                              turn. A timing more than 10% slower than main fails;
-                              bytes and counts are held to perf-budgets.toml. --full
-                              runs CI's three suites against this tree at their
-                              absolute limits instead (minutes). GLOBs pick gates
-                              ('server.*', '*.scan'). --fresh seeds the data again;
+                              turn, with the layout suite (our layout, in-process,
+                              against main's when main has it). A timing more than 10%
+                              slower than main fails; bytes and counts are held to
+                              perf-budgets.toml. --full runs CI's four suites against
+                              this tree at their absolute limits instead (minutes).
+                              GLOBs pick gates ('server.*', '*.scan', 'layout.*').
+                              --fresh seeds the data again;
                               --build-only stops once both are built and seeded.
                               Writes .dev/perf/last.json and last.md; exit 1 if a gate
                               fails. One run per host at a time (a flock on
