@@ -767,6 +767,8 @@ async fn the_graph_and_its_claims_are_served_as_stored_with_their_etag() {
     assert_eq!(g["mergeBase"], sample()["pr"]["baseSha"]);
     assert_eq!(g["snippets"], "checked");
     assert_eq!(g["migratedIds"], json!([]));
+    // The PR's first analysis replaced none.
+    assert_eq!(g["previous"], Value::Null);
     let claims_url = format!(
         "/api/acme/web/pulls/{number}/analysis/{id}/v{}/claims",
         analysis::VERSION
@@ -918,6 +920,11 @@ async fn an_older_upload_is_migrated_and_so_is_a_stored_analysis_on_read() {
         json!([{ "old": "api.orders", "new": "api.order-flow", "step": 1 }])
     );
     assert!(g.to_string().contains("api.order-flow"));
+    assert_eq!(
+        g["previous"],
+        Value::Null,
+        "a migration keeps what it replaced: none"
+    );
     let claims = |v: u32| format!("/api/acme/web/pulls/{number}/analysis/{id}/v{v}/claims");
     assert_eq!(s.get(&mut b.clone(), &claims(1)).await.status(), 404);
     assert_eq!(s.get(&mut b.clone(), &claims(2)).await.status(), 200);
@@ -949,6 +956,8 @@ async fn an_older_upload_is_migrated_and_so_is_a_stored_analysis_on_read() {
     let res = graph(&s, &b, number, "br", None).await;
     let g = decoded(res).await;
     assert_eq!(g["version"], 2);
+    // It names the analysis it replaced: the view's "Since the last analysis".
+    assert_eq!(g["previous"], id);
     assert_eq!(
         g["migratedIds"],
         json!([{ "old": "api.orders", "new": "api.order-flow", "step": 1 }])

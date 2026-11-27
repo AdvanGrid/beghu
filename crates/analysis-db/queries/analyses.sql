@@ -29,10 +29,10 @@ SELECT claims_gz AS blob FROM analyses WHERE id = :id;
 -- param: repo_id i64
 -- param: number i64
 SELECT id, version, owner, name, head_sha, merge_base, created_at, snippets, migrated_ids,
-       graph_gz, claims_gz
+       previous_id, graph_gz, claims_gz
 FROM analyses WHERE repo_id = :repo_id AND number = :number;
 
--- An accepted upload: the PR's analysis, replacing the one it had.
+-- An accepted upload: the PR's analysis, replacing the one it had (`previous_id`, or NULL).
 -- name: put_analysis :exec
 -- param: id &str
 -- param: repo_id i64
@@ -50,23 +50,25 @@ FROM analyses WHERE repo_id = :repo_id AND number = :number;
 -- param: purposes i64
 -- param: conflicts i64
 -- param: migrated_ids &str
+-- param: previous_id Option<&str>
 -- param: graph_br &[u8]
 -- param: graph_gz &[u8]
 -- param: claims_br &[u8]
 -- param: claims_gz &[u8]
 -- param: upload_gz &[u8]
 INSERT INTO analyses (id, repo_id, owner, name, number, version, head_sha, merge_base, created_at,
-  run_id, snippets, warnings, parts, purposes, conflicts, migrated_ids, graph_br, graph_gz,
-  claims_br, claims_gz, upload_gz)
+  run_id, snippets, warnings, parts, purposes, conflicts, migrated_ids, previous_id, graph_br,
+  graph_gz, claims_br, claims_gz, upload_gz)
 VALUES (:id, :repo_id, :owner, :name, :number, :version, :head_sha, :merge_base, :now, :run_id,
-  :snippets, :warnings, :parts, :purposes, :conflicts, :migrated_ids, :graph_br, :graph_gz,
-  :claims_br, :claims_gz, :upload_gz)
+  :snippets, :warnings, :parts, :purposes, :conflicts, :migrated_ids, :previous_id, :graph_br,
+  :graph_gz, :claims_br, :claims_gz, :upload_gz)
 ON CONFLICT (repo_id, number) DO UPDATE SET id = excluded.id, owner = excluded.owner,
   name = excluded.name, version = excluded.version, head_sha = excluded.head_sha,
   merge_base = excluded.merge_base, created_at = excluded.created_at, run_id = excluded.run_id,
   snippets = excluded.snippets, warnings = excluded.warnings, parts = excluded.parts,
   purposes = excluded.purposes, conflicts = excluded.conflicts,
-  migrated_ids = excluded.migrated_ids, graph_br = excluded.graph_br,
+  migrated_ids = excluded.migrated_ids, previous_id = excluded.previous_id,
+  graph_br = excluded.graph_br,
   graph_gz = excluded.graph_gz, claims_br = excluded.claims_br, claims_gz = excluded.claims_gz,
   upload_gz = excluded.upload_gz;
 
