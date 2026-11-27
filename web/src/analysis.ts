@@ -78,9 +78,10 @@ export const getGraph = query((where: string) => request<Graph>(graphUrl(where))
 
 /**
  * The reads the last route preload of a visit started (a cold load's or a navigation's, not a
- * hover's), until the view takes each (`takePreloaded`). Every visit's preload replaces it, so
- * what the view takes is always its own visit's: no age to check, which on a loaded machine
- * (the view's chunk slow to arrive) would only fetch everything twice.
+ * hover's), until the view takes each (`takePreloaded`). Every visit's preload replaces it, and
+ * the view's first ask for any other PR drops it, so what the view takes is always its own
+ * visit's, never an abandoned visit's kept for a later one: no age to check, which on a loaded
+ * machine (the view's chunk slow to arrive) would only fetch everything twice.
  */
 let handoff: { where: string; graph?: Promise<Graph>; detail?: Promise<IssueDetail> } | undefined;
 
@@ -103,11 +104,19 @@ export function preloadView(a: At, intent: "initial" | "native" | "navigate" | "
   if (intent !== "preload") handoff = { where: where.toLowerCase(), graph, detail };
 }
 
-/** The read of `part` the visit's route preload started for `where`, once. */
+/**
+ * The read of `part` the visit's route preload started for `where`, once. Asked for another PR,
+ * it drops the handoff: that visit's view never came, and a later one starts its own.
+ */
 export function takePreloaded<K extends "graph" | "detail">(where: string, part: K): NonNullable<NonNullable<typeof handoff>[K]> | undefined {
   const h = handoff;
-  if (!h || h.where !== where.toLowerCase()) return undefined;
+  if (!h) return undefined;
+  if (h.where !== where.toLowerCase()) {
+    handoff = undefined;
+    return undefined;
+  }
   const got = h[part];
   h[part] = undefined;
+  if (!h.graph && !h.detail) handoff = undefined;
   return got as NonNullable<NonNullable<typeof handoff>[K]> | undefined;
 }

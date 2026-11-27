@@ -88,7 +88,10 @@ export function PrView(props: RouteSectionProps) {
       <TopBar where={where()} graph={graph} detail={detail} />
       <Errored fallback={(err, reset) => <GraphFailure error={err()} where={where()} detail={detail} reload={reload} reloadDetail={reloadDetail} reset={reset} />}>
         <Loading fallback={<div {...stylex.attrs(s.loading)} aria-busy="true" data-perf="view-loading" />}>
-          <Body graph={graph} detail={detail} where={where()} reload={reload} />
+          {/* One `Body` per PR: another PR's starts with no pill, no note and nothing being left. */}
+          <Show when={where()} keyed>
+            {(w) => <Body graph={graph} detail={detail} where={w} reload={reload} />}
+          </Show>
         </Loading>
       </Errored>
     </div>
