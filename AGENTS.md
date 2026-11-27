@@ -10,6 +10,10 @@ Fake GitHub, the server and Vite in the background in fixture mode (50k issues b
 no GitHub account. Read the logs with `./dev-ctl logs` and `./dev-ctl grep`; avoid `logs -f`,
 which never exits. `./dev-ctl` is TypeScript run directly by Node (23.6 or newer).
 
+The server's crate and binary are `beghu-server` (`cargo test -p beghu-server`). `beghu` is the
+CLI (`crates/cli`): `./dev-ctl cli <args…>` runs it against the stack, and `./dev-ctl login
+<user>` signs it in as well as printing the browser's sign-in URL.
+
 ## Checks
 
 CI runs all of these; run them before you commit:
@@ -110,7 +114,11 @@ CI runs all of these; run them before you commit:
   (`web/e2e/`, Playwright against the `./dev-ctl` stack). Set state up through Fake GitHub or the
   fixture, never by writing to a mirror directly. An analysis reaches a stack only through an
   analysis run (`Stack::upload_recorded` in the harness, `./dev-ctl analyse`), never by seeding an
-  `analyses.db`; every account's starts empty.
+  `analyses.db`; every account's starts empty. The beghu CLI is a seam too: `crates/cli/tests/`
+  runs the built `beghu` binary as a subprocess against the same `common` harness, checking its
+  stdout, stderr, exit codes and the files it writes (in a temporary folder, with its own
+  `BEGHU_CREDENTIALS`), and its self-update replaces a temporary copy of the binary, never
+  `target/`'s.
 - **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
   (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
   (`crates/md-ast/src/scaling.rs`), the server's render cache tests (the `tests`
