@@ -129,6 +129,8 @@ pub(crate) fn seed(tx: &Transaction) -> rusqlite::Result<()> {
             }
         }
     }
+    // The fixture's body history, for Diff mode to show.
+    crate::history::seed(tx)?;
     Ok(())
 }
 

@@ -4938,3 +4938,111 @@ async fn relationship_writes_need_triage_and_an_other_end_the_user_can_see() {
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["message"], "Resource not accessible by integration");
 }
+
+const BODY_HISTORY: &str = "query BodyHistory($id: ID!, $after: String) {
+  node(id: $id) {
+    ... on Issue {
+      includesCreatedEdit
+      userContentEdits(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { editedAt deletedAt editor { login } diff }
+      }
+    }
+    ... on PullRequest {
+      includesCreatedEdit
+      userContentEdits(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { editedAt deletedAt editor { login } diff }
+      }
+    }
+  }
+}";
+
+#[tokio::test]
+async fn a_bodys_revisions_page_100_at_a_time_newest_first_from_the_body_as_created() {
+    let fake = start().await;
+    // Unlinked web issues the fixture's history doesn't seed (numbers 3, 8, … 58 it may).
+    let web: Vec<_> = unlinked_in("web")
+        .into_iter()
+        .filter(|(r, _, _)| {
+            let n: i64 = r.split_once('#').unwrap().1.parse().unwrap();
+            n > 58 || n % 5 != 3
+        })
+        .collect();
+    let ((edited, _, node), (_, _, untouched_node)) = (&web[0], &web[1]);
+    for i in 1..=100 {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit_of(
+                edited,
+                json!({ "as": if i % 2 == 0 { "tomsj" } else { "ilze-k" }, "body": format!("v{i}") }),
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success());
+    }
+    let now = unix_now();
+    let token = fake
+        .installation_token(&app_jwt(now - 30, now + 540, fake_github::DEV_APP_KEY))
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let page = |id: String, after: Value| {
+        let (http, api, token) = (fake.http.clone(), fake.api.clone(), token.clone());
+        async move {
+            let res = http
+                .post(format!("{api}/graphql"))
+                .bearer_auth(token)
+                .json(&json!({ "query": BODY_HISTORY, "variables": { "id": id, "after": after } }))
+                .send()
+                .await
+                .unwrap();
+            res.json::<Value>().await.unwrap()["data"]["node"].clone()
+        }
+    };
+    let first = page(node.clone(), Value::Null).await;
+    assert_eq!(first["includesCreatedEdit"], true);
+    let edits = &first["userContentEdits"];
+    let nodes = edits["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 100);
+    assert_eq!(edits["pageInfo"]["hasNextPage"], true);
+    // Newest first, the newest the current body; each the whole body as of it.
+    assert_eq!(nodes[0]["diff"], "v100");
+    assert_eq!(nodes[0]["editor"], json!({ "login": "tomsj" }));
+    assert_eq!(nodes[0]["deletedAt"], Value::Null);
+    assert_eq!(nodes[99]["diff"], "v1");
+    assert_eq!(nodes[99]["editor"]["login"], "ilze-k");
+    let second = page(node.clone(), edits["pageInfo"]["endCursor"].clone()).await;
+    let rest = &second["userContentEdits"];
+    assert_eq!(rest["pageInfo"]["hasNextPage"], false);
+    let rest = rest["nodes"].as_array().unwrap();
+    // The body as the issue was created, by its author.
+    assert_eq!(rest.len(), 1);
+    assert_ne!(rest[0]["diff"], "v1");
+    assert!(rest[0]["diff"].is_string());
+
+    // Deleted from the history: in its place, with no diff.
+    let res = fake
+        .http
+        .post(format!("{}/history/delete", fake.ctl))
+        .json(&edit_of(edited, json!({ "revision": 1 })))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let first = page(node.clone(), Value::Null).await;
+    let gone = &first["userContentEdits"]["nodes"][1];
+    assert_eq!(gone["diff"], Value::Null);
+    assert!(gone["deletedAt"].is_string());
+
+    // Never edited: no revisions.
+    let never = page(untouched_node.clone(), Value::Null).await;
+    assert_eq!(never["includesCreatedEdit"], false);
+    assert_eq!(never["userContentEdits"]["nodes"], json!([]));
+}

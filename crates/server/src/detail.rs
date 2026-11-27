@@ -209,13 +209,13 @@ pub struct CommentsQuery {
 }
 
 /// An id in the path that isn't a number names no issue.
-fn issue_id(raw: &str) -> Result<i64, ApiError> {
+pub(crate) fn issue_id(raw: &str) -> Result<i64, ApiError> {
     raw.parse().map_err(|_| ApiError::Gone)
 }
 
 /// The item, if the account may read it here: NoAccess if it lies outside the synced repos (a
 /// stub, or a repo no longer synced); if the mirror doesn't hold it, why not ([`gone`]).
-fn readable(c: &Reader, id: i64) -> QueryResult<Result<q::ItemDetailRow, ApiError>> {
+pub(crate) fn readable(c: &Reader, id: i64) -> QueryResult<Result<q::ItemDetailRow, ApiError>> {
     Ok(match q::item_detail(c, id)? {
         None => Err(gone(c, id)?),
         Some(item) if item.is_stub || !item.synced => Err(ApiError::NoAccess(IssueRef {

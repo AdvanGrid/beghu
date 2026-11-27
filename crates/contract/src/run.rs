@@ -522,10 +522,12 @@ async fn graphql_reads(
                 }
                 None => continue,
             },
-            "ImportRelatesTo" | "ImportLabels" | "IssueLinkedPulls" => match issue {
-                Some(i) => json!({ "id": i, "after": null }),
-                None => continue,
-            },
+            "ImportRelatesTo" | "ImportLabels" | "IssueLinkedPulls" | "BodyHistory" => {
+                match issue {
+                    Some(i) => json!({ "id": i, "after": null }),
+                    None => continue,
+                }
+            }
             "ImportPullDetails" => {
                 if p.pr_nodes.is_empty() {
                     continue;

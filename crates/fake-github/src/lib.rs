@@ -27,6 +27,7 @@ mod edits;
 mod events;
 mod faults;
 mod graphql;
+mod history;
 mod hook_deliveries;
 mod issue_edges;
 mod moves;

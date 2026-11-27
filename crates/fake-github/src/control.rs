@@ -34,6 +34,9 @@
 //!   `edits.rs` and `relationships.rs`), with its webhooks; on a PR also `add_linked_issue?`,
 //!   `remove_linked_issue?` (the Development sidebar) and `review?` (`pulls.rs`). `delete: true`
 //!   deletes the issue instead (`issues` `deleted`); its number answers 410 from then on.
+//! - `POST /history/delete {repo, number, revision, as?}`: deletes the issue's or PR's body
+//!   revision `revision` (from the newest, 0) from its history, as GitHub's "Delete revision from
+//!   history" does (`history.rs`).
 //! - `POST /label {repo, name, rename?, color?, description?, as?}`: edits one of the repo's
 //!   labels (a rename, a new colour), or creates it if the repo has none by that name, with
 //!   GitHub's `label` `edited` or `created` delivery (`edits.rs`).
@@ -85,6 +88,7 @@ pub(crate) fn router() -> Router<Fake> {
         .route("/faults", delete(clear))
         .route("/webhooks", put(webhook_target))
         .route("/edit", post(edits::edit))
+        .route("/history/delete", post(crate::history::delete))
         .route("/label", post(edits::label))
         .route("/milestone", post(edits::milestone))
         .route("/transfer", post(moves::transfer))

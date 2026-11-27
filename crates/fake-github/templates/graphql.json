@@ -1,4 +1,43 @@
 {
+  "graphql.BodyHistory": {
+    "request": "POST /graphql BodyHistory",
+    "shape": {
+      "data": {
+        "node": {
+          "includesCreatedEdit": "boolean",
+          "userContentEdits": {
+            "nodes": {
+              "[]": {
+                "deletedAt": [
+                  "string",
+                  "null"
+                ],
+                "diff": [
+                  "string",
+                  "null"
+                ],
+                "editedAt": "string",
+                "editor": [
+                  {
+                    "login": "string"
+                  },
+                  "null"
+                ]
+              }
+            },
+            "pageInfo": {
+              "endCursor": [
+                "string",
+                "null"
+              ],
+              "hasNextPage": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "status": 200
+  },
   "graphql.ImportClosingRefs": {
     "request": "POST /graphql ImportClosingRefs",
     "shape": {

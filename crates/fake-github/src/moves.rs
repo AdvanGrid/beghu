@@ -162,6 +162,7 @@ fn transfer_in(tx: &Transaction, t: &Transfer, now: i64) -> rusqlite::Result<Mov
     q::copy_milestone_by_title(tx, old, new, to.id)?;
     q::copy_assignees(tx, old, new)?;
     q::move_comments(tx, old, new)?;
+    q::move_body_edits(tx, old, new)?;
     q::repoint_children(tx, old, new)?;
     q::repoint_relationships(tx, old, new)?;
     q::delete_issue_labels(tx, old)?;
