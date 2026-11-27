@@ -7,10 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { viewModulesIn } from "./browser.ts";
 
+/** A build's `.vite/`: its module list, and a manifest with the view in `assets/View-b.js`. */
 function build(list: Record<string, string[]> | undefined): string {
   const web = mkdtempSync(join(tmpdir(), "harness-web-"));
   mkdirSync(join(web, ".vite"));
   if (list) writeFileSync(join(web, ".vite", "modules.json"), JSON.stringify(list));
+  const manifest = {
+    "index.html": { file: "assets/index-a.js", isEntry: true, dynamicImports: ["src/pr-view/View.tsx"] },
+    "src/pr-view/View.tsx": { file: "assets/View-b.js", imports: ["index.html"] },
+  };
+  writeFileSync(join(web, ".vite", "manifest.json"), JSON.stringify(manifest));
   return web;
 }
 
@@ -40,5 +46,16 @@ test("a clean cold load finds none; a build without the list leaves the gate unm
   } finally {
     rmSync(web, { recursive: true });
     rmSync(old, { recursive: true });
+  }
+});
+
+test("a module list that names no view module in the view's own chunks fails the gate", () => {
+  // Module ids in another form than the harness reads (absolute paths, say): the view's chunk
+  // lists none of its src/pr-view/ modules, and every cold load would count none.
+  const web = build({ "assets/index-a.js": ["/abs/web/src/main.tsx"], "assets/View-b.js": ["/abs/web/src/pr-view/View.tsx"] });
+  try {
+    assert.throws(() => viewModulesIn(web, ["/assets/index-a.js"]), /lists no src\/pr-view\/ module in the PR view's own chunks \(\/assets\/View-b\.js\)/);
+  } finally {
+    rmSync(web, { recursive: true });
   }
 });

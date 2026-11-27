@@ -52,12 +52,20 @@ const isViewModule = (m: string) => m.startsWith("src/pr-view/") || m === "src/A
  * The PR view's modules (`isViewModule`) in the chunks `fetched` (`/assets/…` paths), the entry
  * included: from the build's module list (`.vite/modules.json`, web/vite.config.ts `moduleList`),
  * each chunk's source modules. Undefined for a build without the list (main, when this tree is
- * compared with it): the gate goes unmeasured there.
+ * compared with it): the gate goes unmeasured there. Throws if the list names no `src/pr-view/`
+ * module in the view's own chunks (`viewChunks`): its module ids no longer match the paths this
+ * looks for (or the view's chunks are gone), and a count of none would pass for nothing.
  */
 export function viewModulesIn(web: string, fetched: string[]): { found: string[]; chunks: number } | undefined {
   const path = join(web, ".vite", "modules.json");
   if (!existsSync(path)) return undefined;
   const list = JSON.parse(readFileSync(path, "utf8")) as Record<string, string[]>;
+  const own = viewChunks(web);
+  if (!own.some((url) => list[url.replace(/^\//, "")]?.some((m) => m.startsWith("src/pr-view/")))) {
+    throw new Error(
+      `browser.cold.pr-view-modules: ${path} lists no src/pr-view/ module in the PR view's own chunks (${own.join(", ") || "none in the manifest"}), so the gate can't tell view code from the rest: check web/vite.config.ts moduleList's paths`,
+    );
+  }
   const found: string[] = [];
   let chunks = 0;
   for (const url of new Set(fetched)) {
