@@ -4686,6 +4686,29 @@ async fn a_deleted_comment_is_gone_and_sends_issue_comment_deleted() {
         .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
         .await;
     assert_eq!(status, 404);
+
+    // GitHub never gives its id to another comment, though it was the latest: a mirror that saw
+    // it deleted refuses the id ever after. By REST and by an outside edit alike.
+    let (_, again) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            ilze,
+            json!({ "body": "To be deleted." }),
+        )
+        .await;
+    assert!(again["id"].as_i64() > c["id"].as_i64(), "{again}");
+    let path = format!("/repos/acme/web/issues/comments/{}", again["id"]);
+    let (status, _) = fake
+        .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
+        .await;
+    assert_eq!(status, 204);
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "After." }))
+        .await;
+    let made = received_for(&mut rx, Duration::from_millis(1500)).await;
+    let after = &made.last().unwrap().payload()["comment"];
+    assert!(after["id"].as_i64() > again["id"].as_i64(), "{after}");
 }
 
 /// An outside edit's `delete_comment`: the issue's latest comment with that body goes, as from its

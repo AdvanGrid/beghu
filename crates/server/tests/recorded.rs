@@ -84,7 +84,9 @@ async fn a_gzipped_upload_is_kept_and_recorded_exactly() {
 }
 
 /// v2 on top of v1: the PR moves to v2's head, a new run pins v2's `pr.json` byte for byte, and
-/// v2 (whose `carried` is checked against v1) is accepted. Moving the PR back restores v1's pin.
+/// v2 (whose `carried` is checked against v1) is accepted. Moving the PR back restores v1's pin,
+/// and moving it on again v2's: the comment v2's thread adds, deleted on the way back, is made
+/// again, as a new comment.
 #[tokio::test(flavor = "multi_thread")]
 async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
     let v1 = fixture::recorded::version(RECORDED, 1).unwrap();
@@ -102,6 +104,9 @@ async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
     let (back, _) = s.pin_recorded(&b, 2, 1).await;
     let back: Value = serde_json::from_str(&back).unwrap();
     assert_eq!(back, v1.pr, "v1's pin, as it was");
+    let (again, _) = s.pin_recorded(&b, 1, 2).await;
+    let again: Value = serde_json::from_str(&again).unwrap();
+    assert_eq!(again, v2.pr, "v2's pin, as it was");
 }
 
 /// Moving the recorded PR to a later version and back restores v1's pin exactly: the PR's title,
