@@ -731,12 +731,14 @@ async fn wrong_codes_asked_at_once_are_held_to_the_limit() {
 }
 
 #[tokio::test]
-async fn a_machines_name_loses_its_control_and_bidi_characters() {
+async fn a_machines_name_loses_its_control_and_format_characters() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;
     let started = login(
         &s,
-        "  build\u{202E}gpj.exe\n\t box \u{7}\u{2066}1\u{2069}  ",
+        // Bidi overrides and isolates, a zero-width space and joiner, a soft hyphen, a
+        // byte-order mark and a tag: all Unicode's Cf, none printing.
+        "  bu\u{200B}il\u{AD}d\u{202E}gpj.exe\n\t \u{FEFF}box \u{7}\u{2066}1\u{200D}\u{E0041}\u{2069}  ",
     )
     .await;
     let (status, shown) = s
