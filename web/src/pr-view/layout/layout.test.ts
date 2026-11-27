@@ -1,7 +1,8 @@
 // Our layout's rules (#144, #163, #166, #180), checked through the engine's own seam (graph in,
 // coordinates out) on the layout suite's committed synthetic graph (fixtures/pr-view/layout/:
 // #2627's shape at 1×, and 3×), on a dense scope, and on random graphs; through runs of opens and
-// folds as the view lays them out (each from the last answer, at 1×), boxes and lonely parts turned on and off, drawings laid out from their own
+// folds as the view lays them out (each from the last answer: at 1×, and on random graphs with
+// boxes on and off), boxes and lonely parts turned on and off, drawings laid out from their own
 // answers, and a later analysis laid out from this one's answer. An exception to "tests
 // go through public seams" (AGENTS.md): the rules are geometry no HTTP answer or page shows.
 // Whether the drawing reads well is the browser suite's and the owner's; how big, crossed and fast
@@ -25,7 +26,10 @@ const CLEAR = 10;
 const EPS = 0.5;
 /** Two stretches closer than this read as one (the engine's NEAR). */
 const NEAR = 4;
-
+/** The least room between two verticals side by side (the engine's TRACK_MIN). */
+const TRACK_MIN = 6;
+/** A random graph's walks of opens and folds, in steps. */
+const WALK = 24;
 
 /** Each input line, with its scope. */
 function linesOf(input: LayoutInput) {
@@ -220,6 +224,14 @@ function checkRules(L: Layout, input: LayoutInput) {
             }
         if (!shared) assert.fail(`${a.id} and ${b.id} run together at ${a.h ? "y" : "x"} ${a.at} from ${lo} to ${hi} on no trunk`);
       }
+  // Two verticals side by side on different tracks sit at least TRACK_MIN apart.
+  const verticals = all.filter((s) => !s.h);
+  for (const [i, a] of verticals.entries())
+    for (let j = i + 1; j < verticals.length && verticals[j]!.at - a.at < TRACK_MIN - EPS; j++) {
+      const b = verticals[j]!;
+      if (a.id === b.id || b.at - a.at < EPS || Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo) < 1) continue;
+      assert.fail(`${a.id} and ${b.id} run side by side ${b.at - a.at} px apart at x ${a.at}, from ${Math.max(a.lo, b.lo)} to ${Math.min(a.hi, b.hi)}`);
+    }
 }
 
 /** `b` is exactly `a`: every part, route and trunk, every scope's rectangle and group frames, and the size. */
@@ -585,7 +597,7 @@ describe("opens and folds at 1x", () => {
     assert.ok(s.open.size > 0);
     // Every step moved the columns right of the block by its column's change of width and the two
     // gutters' beside it (pushedOnly). Only those gutters giving back room they took for an earlier
-    // open can move them against the change: no step of this walk does.
+    // open can move them against the change: no step of this walk (or the random graphs') does.
     // (Longer walks find a few: 300 steps from seeds 11 and 12 have 3 and 1, up to 28.5 px.)
     c.diagnostic(`${s.moved.steps} steps: ${s.moved.against} moved columns right of the block against the change, at most ${s.moved.most} px`);
     assert.equal(s.moved.against, 0, `${s.moved.against} steps moved columns against the change, up to ${s.moved.most} px`);
@@ -639,6 +651,17 @@ describe("our layout on random graphs", () => {
       t.openOne();
       t.foldDeep();
       t.foldAll();
+    });
+    it(`keeps every rule on random walks of opens and folds at seed ${seed}, boxes on and off, and comes back exactly`, () => {
+      for (const view of [{}, { boxes: true }]) {
+        const s = session(g, view);
+        const r = rng(seed);
+        for (let i = 0; i < WALK; i++) {
+          const drawn = s.drawn();
+          s.toggle(drawn[Math.floor(r() * drawn.length)]!);
+        }
+        assert.equal(s.moved.against, 0, `${JSON.stringify(view)}: ${s.moved.against} steps moved columns against the change, up to ${s.moved.most} px`);
+      }
     });
   }
 });
