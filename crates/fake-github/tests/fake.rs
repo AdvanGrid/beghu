@@ -3954,6 +3954,39 @@ async fn a_deleted_issue_answers_410_as_on_github_and_sends_issues_deleted() {
     assert_eq!(p["sender"]["login"], "tomsj");
 }
 
+#[tokio::test]
+async fn a_deleted_issues_comments_never_lend_their_ids_to_a_new_comment() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    // The latest comment is on the issue about to go.
+    let (status, latest) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            token,
+            json!({ "body": "On the doomed issue." }),
+        )
+        .await;
+    assert_eq!(status, 201, "{latest}");
+    fake.control(
+        reqwest::Method::POST,
+        "/edit",
+        json!({ "repo": "web", "number": 1, "as": "tomsj", "delete": true }),
+    )
+    .await;
+    // GitHub never reuses a comment's id, though its issue is gone.
+    let (status, next) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/2/comments",
+            token,
+            json!({ "body": "On another issue." }),
+        )
+        .await;
+    assert_eq!(status, 201, "{next}");
+    assert!(next["id"].as_i64() > latest["id"].as_i64(), "{next}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pr_cant_be_deleted_and_sends_nothing() {
     let fake = start().await;

@@ -206,6 +206,10 @@ DELETE FROM item_labels WHERE item_id = :id;
 -- param: id i64
 DELETE FROM item_assignees WHERE item_id = :id;
 
+-- name: retire_issue_comment_ids :exec
+-- param: id i64
+INSERT OR IGNORE INTO fake_retired_comment_ids (id) SELECT c.id FROM comments c WHERE c.item_id = :id;
+
 -- name: delete_issue_comments :exec
 -- param: id i64
 DELETE FROM comments WHERE item_id = :id;

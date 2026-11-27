@@ -384,6 +384,8 @@ fn delete(
     let issue = issue_json(tx, id)?;
     q::delete_issue_labels(tx, id)?;
     q::delete_issue_assignees(tx, id)?;
+    // Its comments' ids are never reused either.
+    q::retire_issue_comment_ids(tx, id)?;
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
     q::delete_issue(tx, id)?;
