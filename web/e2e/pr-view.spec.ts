@@ -1,7 +1,8 @@
 // The PR view (#181) in a real browser, on the recorded analysis of AdvanGrid/beghu#191: v2, which
 // `./dev-ctl start` and `reset` upload for tomsj (after v1, so its `carried` has v1's IDs). Its
 // canvas is a placeholder until slice 8 (pr-view/Canvas.tsx); everything else is the view's:
-// a cold open (one read of the graph, the claims after it, no list), the top bar, every place the
+// a cold open (one read of the graph, the claims after it, no list), the top bar, the PR panel's
+// PR view into the view and its ← back with the list's view kept, every place the
 // panel shows (the PR, a part, a line, a step, a claim and its evidence), back and forward through
 // picks, the graph failing and its Retry (and a migration's own message), the claims failing in
 // every place with one Retry, the skeleton while they're on their way, v1's IDs forwarding on v2
@@ -67,7 +68,9 @@ async function open(page: Page, search = ""): Promise<void> {
 }
 
 test("A cold open reads the graph once, then the claims, and no list; the top bar names the PR and the analysis", async ({ context }) => {
-  const page = await signIn(context, "tomsj");
+  await signIn(context, "tomsj");
+  // A tab of its own: the list the sign-in landed on refetches on its stream's opening reset.
+  const page = await context.newPage();
   const api = apiRequests(page);
   await open(page);
   // The top bar: back to the PR panel, the title, the analysis's head and age, Analyse again.
@@ -91,6 +94,27 @@ test("A cold open reads the graph once, then the claims, and no list; the top ba
   expect(api.filter((u) => u.endsWith("/claims"))).toHaveLength(1);
   expect(api.indexOf("/api/AdvanGrid/beghu/pulls/191/analysis")).toBeLessThan(api.findIndex((u) => u.endsWith("/claims")));
   expect(api.filter((u) => u.startsWith("/api/issues") || u.startsWith("/api/facets") || u.startsWith("/api/tree"))).toEqual([]);
+});
+
+test("The PR panel's PR view opens the view, and its ← goes back to the panel with the list's view", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  const list = `?q=${encodeURIComponent("is:pr repo:AdvanGrid/beghu")}`;
+  await page.goto(`/AdvanGrid/beghu/pull/191${list}`);
+  const main = page.locator('[data-perf="analyse-main"]');
+  await expect(main).toHaveAttribute("href", VIEW);
+  await main.click();
+  await expect(panel(page)).toBeVisible({ timeout: 30_000 });
+  expect(new URL(page.url()).pathname).toBe(VIEW);
+  const back = page.locator('[data-perf="view-back"]');
+  await expect(back).toHaveAttribute("href", `/AdvanGrid/beghu/pull/191${list}`);
+  // A pick keeps the way back.
+  await page.locator('[data-perf="block"]').first().click();
+  await expect.poll(() => selOf(page)).toMatch(/^part:/);
+  await expect(back).toHaveAttribute("href", `/AdvanGrid/beghu/pull/191${list}`);
+  await back.click();
+  await expect(page.locator('[data-perf="list-pane"]')).toBeVisible();
+  await expect(page.locator('[data-perf="analyse"]')).toBeVisible();
+  expect(new URL(page.url()).search).toBe(list);
 });
 
 test("The PR's panel: All changes by kind, the description, coverage, the facets found, and Since the last analysis", async ({ context }) => {
