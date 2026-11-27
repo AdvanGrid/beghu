@@ -225,7 +225,7 @@ export async function local(opts: { full: boolean; fresh: boolean; buildOnly: bo
   let rows: Row[];
   try {
     const [ha, hb] = await quick(a, b, opts.globs, 1);
-    const [la, lb] = await quickLayout(main.commit, opts.globs);
+    const [la, lb] = await quickLayout(main.commit, opts.globs, 1);
     Object.assign(ha, la);
     Object.assign(hb, lb);
     rows = compare(ha, hb, budgets, opts.globs);
@@ -234,7 +234,7 @@ export async function local(opts: { full: boolean; fresh: boolean; buildOnly: bo
     if (slow.length) {
       console.log(`confirming ${slow.join(", ")}`);
       const [ca, cb] = await quick(a, b, slow, 2);
-      const [cla, clb] = await quickLayout(main.commit, slow);
+      const [cla, clb] = await quickLayout(main.commit, slow, 2);
       Object.assign(ca, cla);
       Object.assign(cb, clb);
       for (const g of slow) {
@@ -301,10 +301,11 @@ async function quick(a: Stack, b: Stack, globs: string[], times: number): Promis
 }
 
 /**
- * The layout suite on this tree and on main (its worktree, at the commit built), sampled in turn;
- * only this tree's when main has no layout engine yet.
+ * The layout suite on this tree and on main (its worktree, at the commit built), sampled in turn,
+ * `times` as many samples as the quick set's; a drawing main doesn't have (it has no layout engine
+ * yet, or not that drawing) is this tree's alone, so its timing is held to its budget.
  */
-async function quickLayout(mainCommit: string, globs: string[]): Promise<[Record<string, unknown>, Record<string, unknown>]> {
+async function quickLayout(mainCommit: string, globs: string[], times: number): Promise<[Record<string, unknown>, Record<string, unknown>]> {
   if (globs.length && !globs.some((g) => g.startsWith("layout") || g.startsWith("*"))) return [{}, {}];
   const pick = (ps: Probe[] | null) => (ps ?? []).filter((p) => selectedProbe(p, globs));
   const head = pick(await layoutProbes(ROOT));
@@ -313,10 +314,13 @@ async function quickLayout(mainCommit: string, globs: string[]): Promise<[Record
   const main = atMain ? pick(await layoutProbes(src)) : [];
   if (!head.length) return [{}, {}];
   const t = Date.now();
-  console.log(`layout: ${head.map((p) => p.name).join(", ")}${main.length ? "" : " (main has no layout engine: budgets only)"}`);
-  const out: [Record<string, unknown>, Record<string, unknown>] = main.length
-    ? await measurePairs(head.map((p) => [p, main.find((m) => m.name === p.name) ?? p] as [Probe, Probe]), QUICK.layoutIterations, WARMUP.layout)
-    : [await measure(head, QUICK.layoutIterations, WARMUP.layout), {}];
+  const pairs = head.flatMap((p) => main.filter((m) => m.name === p.name).map((m) => [p, m] as [Probe, Probe]));
+  const alone = head.filter((p) => !pairs.some(([q]) => q === p));
+  console.log(`layout: ${head.map((p) => p.name).join(", ")}${alone.length ? ` (not on main, budgets only: ${alone.map((p) => p.name).join(", ")})` : ""}`);
+  const iterations = QUICK.layoutIterations * times;
+  const [pa, pb] = pairs.length ? await measurePairs(pairs, iterations, WARMUP.layout) : [{}, {}];
+  const solo = alone.length ? await measure(alone, iterations, WARMUP.layout) : {};
+  const out: [Record<string, unknown>, Record<string, unknown>] = [{ ...pa, ...solo }, pb];
   console.log(`  layout probes: ${Math.round((Date.now() - t) / 1000)} s`);
   return out;
 }
