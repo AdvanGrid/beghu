@@ -77,7 +77,7 @@ export interface Scope {
 
 export interface LayoutInput {
   root: Scope;
-  /** The last answer: every scope keeps its parts where they were, as heavy anchors. */
+  /** The last answer: every scope keeps its parts and gutters where they were (its anchors). */
   previous?: Layout;
   /** Room in every gap between columns for a line's count, where it leaves its part (px). */
   countRoom?: number;
@@ -114,6 +114,28 @@ export interface ScopeLayout {
   groups: { column: "changed" | "unchanged"; rect: Rect }[];
 }
 
+/**
+ * What the next layout keeps of one scope. The anchors come from the answer that first laid the
+ * scope out (with its blocks folded): an open or a fold then moves only what the changed block
+ * pushes, and folding back restores the drawing exactly. `last` is the answer's own, for what the
+ * next change doesn't push.
+ */
+export interface Anchors {
+  /** Each part's place: its y with every block in the scope folded. */
+  ys: Map<string, number>;
+  /** The room for routes above each part (in its column). */
+  room: Map<string, number>;
+  /** Each gutter's width, by the columns either side. */
+  gutters: Map<string, number>;
+  last: {
+    sizes: Map<string, { w: number; h: number }>;
+    /** How far the open blocks above each part pushed it down. */
+    growth: Map<string, number>;
+    room: Map<string, number>;
+    gutters: Map<string, number>;
+  };
+}
+
 export interface Layout {
   /** Every part, frame and box drawn. */
   parts: Map<string, Placed>;
@@ -121,8 +143,8 @@ export interface Layout {
   routes: Map<string, P[]>;
   trunks: Trunk[];
   scopes: Map<string, ScopeLayout>;
-  /** What the next layout keeps: per scope, each part's place (its y in the scope). */
-  anchors: Map<string, Map<string, number>>;
+  /** What the next layout keeps, per scope. */
+  anchors: Map<string, Anchors>;
   width: number;
   height: number;
 }

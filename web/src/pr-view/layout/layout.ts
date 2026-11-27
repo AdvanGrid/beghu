@@ -17,7 +17,7 @@
 // Boxes (group frames round some of a scope's parts) are frames too: each is laid out as a scope
 // of its own, its lines crossing its edge through ports, and joined back into one route.
 import { columnsOf, layoutScope, PAD, FRAME_PAD, tidy, type SLine, type SOut, type SPart, type Side } from "./scope.ts";
-import type { Column, Layout, LayoutInput, Line, P, Part, Placed, Scope, ScopeLayout, Trunk } from "./types.ts";
+import type { Anchors, Column, Layout, LayoutInput, Line, P, Part, Placed, Scope, ScopeLayout, Trunk } from "./types.ts";
 
 /** Room in each gap between columns for a line's count (px). */
 export const COUNT_ROOM = 30;
@@ -70,7 +70,8 @@ export function layout(input: LayoutInput): Layout {
   for (const w of work) for (const l of w.scope.lines) lineOf.set(l.id, l);
 
   const sParts = (w: Work, sized: (p: Part) => { w: number; h: number; ports?: Map<string, number> }, portSide: Map<string, Side>): SPart[] => [
-    ...w.scope.parts.map((p) => ({ id: p.id, side: w.inside ? 1 : SIDE[p.column], port: false, ...sized(p) })),
+    // An open block's closed height: where the parts below it go back to when it folds.
+    ...w.scope.parts.map((p) => ({ id: p.id, side: w.inside ? 1 : SIDE[p.column], port: false, ...sized(p), ...(p.frame && !boxes.has(p.id) ? { closedW: p.w, closedH: p.h } : {}) })),
     ...[...w.ports.values()].map((id) => ({ id, side: portSide.get(id) ?? 3, w: 0, h: 0, port: true })),
   ];
   const sLines = (w: Work): SLine[] => w.scope.lines.map((l) => ({ id: l.id, from: end(w.id, l.from), to: end(w.id, l.to) }));
@@ -120,7 +121,7 @@ export function layout(input: LayoutInput): Layout {
   const routes = new Map<string, P[]>();
   const trunks: Trunk[] = [];
   const scopes = new Map<string, ScopeLayout>();
-  const anchors = new Map<string, Map<string, number>>();
+  const anchors = new Map<string, Anchors>();
   const origin = new Map<string, P>([[root.id, { x: 0, y: 0 }]]);
   const pieceOf = new Map<string, string>();
   for (const [line, ps] of pieces) for (const p of ps) pieceOf.set(p, line);
