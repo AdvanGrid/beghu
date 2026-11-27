@@ -347,7 +347,9 @@ impl Stack {
             .strip_prefix("http://")
             .expect("the server's URL")
             .to_owned();
-        self.restart_gated(adjust, None, Some(&addr)).await.unwrap();
+        self.restart_gated(adjust, None, Some(&addr))
+            .await
+            .unwrap_or_else(|e| panic!("restarting the server on {addr}: {e}"));
     }
 
     /// As [`Stack::restart_with`], but holding the startup back once the server serves, before
@@ -371,7 +373,8 @@ impl Stack {
         addr: Option<&str>,
     ) -> Result<(), String> {
         self.stop();
-        // The same address as before is free once the stopped server's listener has closed.
+        // The same address as before is free once the stopped server's listener has closed: tried
+        // for up to 10 s, then failed by name.
         let listener = match addr {
             None => std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
             Some(a) => {
@@ -379,11 +382,13 @@ impl Stack {
                 loop {
                     match std::net::TcpListener::bind(a) {
                         Ok(l) => break l,
-                        Err(_) if tries < 100 => {
+                        Err(_) if tries < 200 => {
                             tries += 1;
                             std::thread::sleep(Duration::from_millis(50));
                         }
-                        Err(e) => panic!("can't listen on {a} again: {e}"),
+                        Err(e) => panic!(
+                            "restarting the server in place: {a} is still taken 10 s after it stopped (another process may have bound it meanwhile): {e}"
+                        ),
                     }
                 }
             }
