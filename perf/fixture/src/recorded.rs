@@ -25,6 +25,23 @@ pub const INSTALLATION_ID: i64 = crate::ORG_INSTALLATION_ID + 2;
 /// shape and to three times that, for the perf gates. Numbered above every real one.
 pub const TILED: [(i64, &str); 2] = [(9_001, "tiled-1x"), (9_003, "tiled-3x")];
 
+/// When the fixture dates item `number` of the repo: 400 days before the fixture's now, a minute
+/// apart by number, so the repo's items sit far below the top of every list, the generated
+/// items' newest first.
+pub fn dated(number: i64) -> i64 {
+    crate::FIXTURE_NOW - 400 * crate::DAY + number * 60
+}
+
+/// When the fixture dates the `n`th (from 0) comment of an item dated `at`: a minute apart.
+pub fn comment_dated(at: i64, n: usize) -> i64 {
+    at + (n as i64 + 1) * 60
+}
+
+/// An item dated `at` with `comments` comments, as the fixture leaves it: its last comment's time.
+pub fn latest(at: i64, comments: usize) -> i64 {
+    at + comments as i64 * 60
+}
+
 /// A recorded PR at one version: its pinned `pr.json`.
 #[derive(Debug, Clone)]
 pub struct Version {
@@ -119,7 +136,51 @@ pub fn analysis_path(number: u32, version: u32) -> Option<std::path::PathBuf> {
 /// then `moves(b, a)` leaves the PR as it was. An issue a version doesn't serve is as the
 /// fixture made it there: as the first version that serves it has it. Nothing when the two are
 /// the same version.
+///
+/// Each call is dated (`at`) as the fixture dates the PR, not now, so moving it never brings the
+/// repo's items up to the top of a list: an item's changes come a second apart, from a second
+/// after the item as the fixture made it (its last comment), so they land just after its state
+/// there, still far below the generated items. The recordings carry no times of their own.
+/// (Fake GitHub never moves an item's `updated_at` back, so a move after another lands at the
+/// item's `updated_at` where its own date is older.)
 pub fn moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
+    let mut out = undated_moves(from, to);
+    let all = versions();
+    // Each item's calls, numbered from 0 in order.
+    let mut made: Vec<(Value, i64)> = Vec::new();
+    for (_, body) in &mut out {
+        let n = body["number"].clone();
+        let k = match made.iter_mut().find(|(m, _)| *m == n) {
+            Some((_, k)) => {
+                *k += 1;
+                *k
+            }
+            None => {
+                made.push((n.clone(), 0));
+                0
+            }
+        };
+        let number = n.as_i64().unwrap_or_default();
+        // As the fixture made it: the PR with no comments, an issue as the first version that
+        // serves it has it.
+        let comments = all
+            .iter()
+            .flat_map(|v| v.pr["issues"].as_array().into_iter().flatten())
+            .find(|i| {
+                i["repo"]
+                    .as_str()
+                    .is_some_and(|r| r.eq_ignore_ascii_case(REPO))
+                    && i["number"] == n
+            })
+            .and_then(|i| i["comments"].as_array().map(Vec::len))
+            .filter(|_| number != i64::from(to.number))
+            .unwrap_or(0);
+        body["at"] = (latest(dated(number), comments) + 1 + k).into();
+    }
+    out
+}
+
+fn undated_moves(from: &Version, to: &Version) -> Vec<(&'static str, Value)> {
     let mut out = Vec::new();
     if from.number != to.number || from.version == to.version {
         return out;

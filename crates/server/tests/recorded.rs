@@ -188,3 +188,59 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
     let (back, _) = s.pin_when(&b, "a run pins v1 again", |p| p == &v1.pr).await;
     assert_eq!(back, first, "v1's pin, as it was");
 }
+
+/// Seeding the recordings leaves tomsj's default list (Recently updated) in the order it has
+/// without them, as `./dev-ctl start` seeds v1 then v2: the move to v2's head is dated as the
+/// fixture dates the recorded PR, so its edits, comment and push land just after v1's state, far
+/// below the top, where the browser suite's tests open the first rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn seeding_v1_then_v2_leaves_the_default_list_in_its_order() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let list = async |b: &mut common::Browser| -> Vec<Value> {
+        let mut rows = Vec::new();
+        let mut path = "/api/issues".to_owned();
+        loop {
+            let (status, page) = s.api(b, &path).await;
+            assert_eq!(status, 200);
+            rows.extend(page["rows"].as_array().unwrap().iter().cloned());
+            let Some(next) = page["next"].as_str() else {
+                return rows;
+            };
+            path = format!("/api/issues?after={next}");
+        }
+    };
+    let before = list(&mut b).await;
+    let up = s.upload_recorded(&b, 1, 1).await;
+    assert_eq!(up.status, 201, "{}", up.answer);
+    let up = s.upload_recorded(&b, 1, 2).await;
+    assert_eq!(up.status, 201, "{}", up.answer);
+    let after = list(&mut b).await;
+
+    let ids = |rows: &[Value]| rows.iter().map(|r| r["id"].clone()).collect::<Vec<_>>();
+    let (without, with) = (ids(&before), ids(&after));
+    let at = without.iter().zip(&with).position(|(a, b)| a != b);
+    assert!(
+        without == with,
+        "the list's order, as without them: from row {at:?}, {:?} became {:?}",
+        at.map(|i| &without[i..(i + 5).min(without.len())]),
+        at.map(|i| &with[i..(i + 5).min(with.len())]),
+    );
+    // The move did change the PR (its push bumped `updated_at`), only not to now.
+    let pr = |rows: &[Value]| {
+        rows.iter()
+            .find(|r| r["owner"] == "AdvanGrid" && r["repo"] == "beghu" && r["number"] == RECORDED)
+            .expect("the recorded PR lists")["updated_at"]
+            .as_i64()
+            .unwrap()
+    };
+    let (was, now) = (pr(&before), pr(&after));
+    assert!(
+        now > was,
+        "v2's push dates the PR after v1's state: {was} → {now}"
+    );
+    assert!(
+        now < fixture::FIXTURE_NOW - 300 * 86_400,
+        "and long before the fixture's now: {now}"
+    );
+}
