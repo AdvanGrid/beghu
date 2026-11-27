@@ -135,18 +135,18 @@ test("a key rebound on the setup page works at once, and in another tab through 
   await expect(keysOf(setup, "next")).toHaveText("j");
 
   const heard = rereadsMe(other);
-  await record(setup, "Next issue", "n");
-  await expect(keysOf(setup, "next")).toHaveText("n");
+  await record(setup, "Next issue", "y");
+  await expect(keysOf(setup, "next")).toHaveText("y");
   await heard;
 
   const first = await rowId(other, 0);
   await other.keyboard.press("j");
   await expect(detail(other)).toBeHidden();
-  await other.keyboard.press("n");
+  await other.keyboard.press("y");
   await expect(detail(other)).toHaveAttribute("data-id", String(first));
   // The `?` overlay shows it too.
   await other.keyboard.press("?");
-  await expect(other.getByRole("dialog", { name: "Keyboard shortcuts" }).locator("tr", { hasText: "Next issue" })).toContainText("n");
+  await expect(other.getByRole("dialog", { name: "Keyboard shortcuts" }).locator("tr", { hasText: "Next issue" })).toContainText("y");
 });
 
 test("a sequence under way finishes on the keymap it started on, then the new one takes effect", async ({ context }) => {
@@ -170,8 +170,8 @@ test("a sequence under way finishes on the keymap it started on, then the new on
     await route.continue();
   });
   heard = rereadsMe(other);
-  await record(setup, "Next issue", "n");
-  await expect(keysOf(setup, "next")).toHaveText("n");
+  await record(setup, "Next issue", "y");
+  await expect(keysOf(setup, "next")).toHaveText("y");
   await asking;
   await other.keyboard.press("g");
   release();
@@ -181,7 +181,7 @@ test("a sequence under way finishes on the keymap it started on, then the new on
   await other.keyboard.press("j");
   await expect(detail(other)).toHaveAttribute("data-id", String(first));
   // From then on, the new map.
-  await other.keyboard.press("n");
+  await other.keyboard.press("y");
   await expect(detail(other)).toHaveAttribute("data-id", String(second));
   await other.keyboard.press("g");
   await other.keyboard.press("j");
@@ -205,7 +205,7 @@ test("a read of the keymap that lands after a newer one leaves the newer in effe
     await held;
     await route.fulfill({ response: answer });
   });
-  await record(setup, "Next issue", "n");
+  await record(setup, "Next issue", "y");
   await asking;
   const newer = rereadsMe(other);
   await record(setup, "Next issue", "u");
@@ -216,7 +216,7 @@ test("a read of the keymap that lands after a newer one leaves the newer in effe
   await older;
   await other.unroute("**/api/me");
 
-  // The older read said `n`: the tab keeps `u`, as the `?` overlay shows.
+  // The older read said `y`: the tab keeps `u`, as the `?` overlay shows.
   const first = await rowId(other, 0);
   await other.keyboard.press("u");
   await expect(detail(other)).toHaveAttribute("data-id", String(first));
