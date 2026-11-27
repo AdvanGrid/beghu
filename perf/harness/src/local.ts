@@ -31,7 +31,16 @@ const git = (args: string[], cwd = ROOT) => execFileSync("git", args, { cwd, enc
 /** Main's worktree, builds, fixtures and data: one copy for every worktree of the repo. */
 const SHARED = join(git(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "beghu-perf");
 /** What the fixture generator hashes (perf/fixture/build.rs). */
-const FIXTURE_INPUTS = ["perf/fixture", "crates/mirror-db/migrations", "crates/mirror-db/queries", "crates/mirror-db/src/lib.rs", "crates/dbrt/src/stats.rs"];
+const FIXTURE_INPUTS = [
+  "perf/fixture",
+  "crates/mirror-db/migrations",
+  "crates/mirror-db/queries",
+  "crates/mirror-db/src/lib.rs",
+  "crates/dbrt/src/stats.rs",
+  "fixtures/pr-view",
+  "crates/analysis/src",
+  "crates/analysis/Cargo.toml",
+];
 
 /** The quick set: what most changes move, cheap enough for a minute. */
 const QUICK = {
@@ -43,6 +52,8 @@ const QUICK = {
 };
 
 const BINARIES = ["beghu", "fake-github", "fixture"];
+/** Built where the tree has them: a main from before the PR view's fixtures has no `pr-fixtures`. */
+const OPTIONAL = ["pr-fixtures"];
 
 function sh(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): void {
   const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "inherit", "inherit"] });
@@ -79,7 +90,8 @@ function buildTree(src: string, dest: string, commit: string, target: string): B
   });
   mkdirSync(bin, { recursive: true });
   // Through a rename: a binary a running stack has open can't be written over.
-  for (const b of BINARIES) {
+  for (const b of [...BINARIES, ...OPTIONAL]) {
+    if (OPTIONAL.includes(b) && !existsSync(join(target, "release", b))) continue;
     copyFileSync(join(target, "release", b), join(bin, `${b}.new`));
     renameSync(join(bin, `${b}.new`), join(bin, b));
   }

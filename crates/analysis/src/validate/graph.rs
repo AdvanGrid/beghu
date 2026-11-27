@@ -19,8 +19,8 @@ pub(super) fn check(ix: &Index, ctx: &Context, r: &mut Report) {
     scenarios(ix, r);
 }
 
-pub(super) fn words(r: &mut Report, path: String, text: &str) {
-    if let Some(w) = judging(text) {
+pub(super) fn words(ix: &Index, r: &mut Report, path: String, text: &str) {
+    if let Some(w) = judging(text, &ix.names) {
         r.warn(
             path,
             rule::WORDS_JUDGING,
@@ -200,7 +200,7 @@ fn nodes(ix: &Index, ctx: &Context, r: &mut Report) {
                     "a responsibility needs claims",
                 );
             }
-            words(r, format!("{p}/responsibilities/{ri}/text"), &rs.text);
+            words(ix, r, format!("{p}/responsibilities/{ri}/text"), &rs.text);
         }
         for (fi, f) in n.files.iter().enumerate() {
             if let Some(first) = placed.insert(f.path.as_str(), n.id.as_str()) {
@@ -274,12 +274,12 @@ fn nodes(ix: &Index, ctx: &Context, r: &mut Report) {
                     "`built` needs claims with code evidence",
                 );
             }
-            words(r, format!("{p}/built/{bi}/text"), &b.text);
+            words(ix, r, format!("{p}/built/{bi}/text"), &b.text);
         }
-        questions(r, &p, &n.questions);
-        words(r, format!("{p}/summary"), &n.summary);
+        questions(ix, r, &p, &n.questions);
+        words(ix, r, format!("{p}/summary"), &n.summary);
         if let Some(s) = &n.change_summary {
-            words(r, format!("{p}/changeSummary"), s);
+            words(ix, r, format!("{p}/changeSummary"), s);
         }
         assignments(ix, r, &p, &n.facets, AppliesTo::Node);
     }
@@ -396,7 +396,7 @@ fn grouping_facets(ix: &Index, r: &mut Report) {
     }
 }
 
-fn questions(r: &mut Report, p: &str, qs: &[Question]) {
+fn questions(ix: &Index, r: &mut Report, p: &str, qs: &[Question]) {
     for (qi, q) in qs.iter().enumerate() {
         if q.claims.is_empty() {
             r.error(
@@ -405,7 +405,7 @@ fn questions(r: &mut Report, p: &str, qs: &[Question]) {
                 "an answer needs claims",
             );
         }
-        words(r, format!("{p}/questions/{qi}/answer"), &q.answer);
+        words(ix, r, format!("{p}/questions/{qi}/answer"), &q.answer);
     }
 }
 
@@ -672,8 +672,8 @@ fn edges(ix: &Index, r: &mut Report) {
                 );
             }
         }
-        questions(r, &p, &e.questions);
-        words(r, format!("{p}/label"), &e.label);
+        questions(ix, r, &p, &e.questions);
+        words(ix, r, format!("{p}/label"), &e.label);
         assignments(ix, r, &p, &e.facets, AppliesTo::Edge);
     }
 }
@@ -726,7 +726,7 @@ fn scenarios(ix: &Index, r: &mut Report) {
                 );
             }
         }
-        words(r, format!("{p}/title"), &s.title);
+        words(ix, r, format!("{p}/title"), &s.title);
         let n = s.steps.len() as u32;
         if s.chapters.is_empty() {
             r.error(
@@ -767,7 +767,7 @@ fn scenarios(ix: &Index, r: &mut Report) {
                     ),
                 );
             }
-            words(r, format!("{cp}/title"), &c.title);
+            words(ix, r, format!("{cp}/title"), &c.title);
         }
     }
 }

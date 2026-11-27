@@ -28,6 +28,19 @@ pub fn fixture() -> PathBuf {
     .unwrap()
 }
 
+/// The 1k fixture without the PR view's recorded PR and its installation (`SingleInstallation`),
+/// generated once per test run: for tests that watch one installation's background reads.
+pub fn single_installation_fixture() -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    fixture::cached_variant(
+        fixture::Scale::K1,
+        fixture::Variant::SingleInstallation,
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fixture"),
+    )
+    .unwrap()
+}
+
 /// The 1k fixture's `TwinRepo` variant (a second org's `web` repo), generated once per test run.
 pub fn twin_repo_fixture() -> PathBuf {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -1072,4 +1085,104 @@ pub fn uuid() -> String {
         0x8000 | ((n >> 48) & 0x3fff),
         n & 0xffff_ffff_ffff
     )
+}
+
+/// The PR view's recorded PR (`fixtures/pr-view/beghu-191/`), which every fixture serves at v1.
+/// Tests opt in: the harness starts every account's `analyses.db` empty.
+pub const RECORDED: u32 = 191;
+
+/// A run's pin and upload of a recorded version.
+pub struct Recorded {
+    /// The pinned `pr.json`, as the run serves it (its content is the recorded one's; the run
+    /// serves it indented, and stores it as the recording has it).
+    pub pinned: String,
+    /// The upload's status and body.
+    pub status: u16,
+    pub answer: Value,
+    /// The run's token.
+    pub token: String,
+}
+
+impl Stack {
+    /// A run on the recorded PR for `b`'s account, pinned once the PR is as recorded version
+    /// `version` has it (its `pr.json` holds what the recorded one does): its pin, and its token. The fake is moved there from `from` first (the
+    /// control calls `fixture::recorded::moves` names); each edit's webhooks take a moment to
+    /// reach the mirror, which a run's issues come from, so a pin that isn't the recorded one yet
+    /// is superseded by a new run until it is.
+    pub async fn pin_recorded(&self, b: &Browser, from: u32, version: u32) -> (String, String) {
+        let (was, to) = (
+            fixture::recorded::version(RECORDED, from).expect("recorded"),
+            fixture::recorded::version(RECORDED, version).expect("recorded"),
+        );
+        for (path, body) in fixture::recorded::moves(&was, &to) {
+            self.fake("POST", path, body).await;
+        }
+        self.pin_when(b, "a run pins the recorded pr.json", |p| p == &to.pr)
+            .await
+    }
+
+    /// A run on the recorded PR for `b`'s account whose pinned `pr.json` is `ok`: its pin as
+    /// served, and its token. A pin that isn't yet is superseded by a new run until one is.
+    pub async fn pin_when(
+        &self,
+        b: &Browser,
+        what: &str,
+        ok: impl Fn(&Value) -> bool,
+    ) -> (String, String) {
+        until(30.0, what, || async {
+            let res = self
+                .api_write(
+                    b,
+                    reqwest::Method::POST,
+                    &format!("/api/AdvanGrid/beghu/pulls/{RECORDED}/runs"),
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 201);
+            let token = res.json::<Value>().await.unwrap()["token"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let pinned = self
+                .http
+                .get(format!("{}/api/runs/{token}/pr.json", self.server))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            serde_json::from_str::<Value>(&pinned)
+                .ok()
+                .filter(&ok)
+                .map(|_| (pinned, token))
+        })
+        .await
+    }
+
+    /// Recorded version `version` uploaded through a run, as the agent sent it (byte for byte,
+    /// `Beghu-Snippets: checked`), after moving the PR from `from` to it.
+    pub async fn upload_recorded(&self, b: &Browser, from: u32, version: u32) -> Recorded {
+        let (pinned, token) = self.pin_recorded(b, from, version).await;
+        let body =
+            std::fs::read(fixture::recorded::analysis_path(RECORDED, version).expect("recorded"))
+                .unwrap();
+        let res = self
+            .http
+            .post(format!("{}/api/runs/{token}/analysis", self.server))
+            .header("content-type", "application/json")
+            .header("beghu-snippets", "checked")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        Recorded {
+            pinned,
+            status,
+            answer: res.json().await.unwrap_or(Value::Null),
+            token,
+        }
+    }
 }

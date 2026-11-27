@@ -388,9 +388,15 @@ async fn repos_seen_by(fake: &Fake, login: &str) -> Vec<(String, Value)> {
         .json()
         .await
         .unwrap();
-    assert_eq!(inst["total_count"], 1, "{inst}");
-    let inst = &inst["installations"][0];
-    assert_eq!(inst["account"]["login"], "acme");
+    // The org's, and, for an account that sees the recorded PR's repo, `AdvanGrid`'s.
+    let inst = inst["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["account"]["login"] == "acme")
+        .unwrap_or_else(|| panic!("{inst}"))
+        .clone();
+    let inst = &inst;
     assert_eq!(inst["account"]["type"], "Organization");
     let id = inst["id"].as_i64().unwrap();
 
@@ -457,6 +463,28 @@ async fn installations_list_the_repos_each_account_sees_with_its_permissions() {
         ext.iter()
             .all(|(_, p)| *p == perms(false, false, false, false))
     );
+
+    // The PR view's recorded PR's repo, under an installation of its own: tomsj and ilze-k see
+    // it, octo-ext doesn't.
+    let fake = &fake;
+    let installations = |login: &'static str| async move {
+        let token = &fake.sign_in(login).await["access_token"];
+        let inst: Value = fake
+            .get("/user/installations", token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        inst["installations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["account"]["login"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(installations("tomsj").await, ["acme", "AdvanGrid"]);
+    assert_eq!(installations("ilze-k").await, ["acme", "AdvanGrid"]);
+    assert_eq!(installations("octo-ext").await, ["acme"]);
 }
 
 #[tokio::test]
@@ -754,6 +782,11 @@ impl Received {
 
 /// A webhook receiver standing in for beghu, with the fake pointed at it.
 async fn receiver(fake: &Fake) -> tokio::sync::mpsc::UnboundedReceiver<Received> {
+    receiver_at(fake).await.0
+}
+
+/// [`receiver`], and its URL.
+async fn receiver_at(fake: &Fake) -> (tokio::sync::mpsc::UnboundedReceiver<Received>, String) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let app = axum::Router::new().route(
         "/webhook",
@@ -779,7 +812,7 @@ async fn receiver(fake: &Fake) -> tokio::sync::mpsc::UnboundedReceiver<Received>
     tokio::spawn(async move { axum::serve(listener, app).await });
     fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": url }))
         .await;
-    rx
+    (rx, url)
 }
 
 impl Fake {
@@ -875,6 +908,40 @@ async fn an_outside_edit_sends_its_signed_webhooks_about_a_second_later() {
     assert_eq!(comment["user"]["login"], "ilze-k");
     let guids: std::collections::HashSet<_> = got.iter().map(|r| r.guid.clone()).collect();
     assert_eq!(guids.len(), 4, "every delivery has its own GUID");
+}
+
+#[tokio::test]
+async fn a_change_made_while_webhooks_go_nowhere_is_never_delivered() {
+    let fake = start().await;
+    let (mut rx, url) = receiver_at(&fake).await;
+    // As an inactive webhook: GitHub makes no delivery for these.
+    fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": null }))
+        .await;
+    fake.control(
+        reqwest::Method::POST,
+        "/revoke",
+        json!({ "login": "ilze-k" }),
+    )
+    .await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "Unheard." }))
+        .await;
+    // Pointed at a receiver again well inside the delivery delay, as a restarted beghu is.
+    fake.control(reqwest::Method::PUT, "/webhooks", json!({ "url": url }))
+        .await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "Heard." }))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    let heard: Vec<(String, Value)> = got
+        .iter()
+        .map(|r| (r.event.clone(), r.payload()["comment"]["body"].clone()))
+        .collect();
+    assert_eq!(heard, [("issue_comment".into(), json!("Heard."))]);
+    // Nor does GitHub's log have an attempt for them.
+    let (log, _) = fake.deliveries("").await;
+    assert!(
+        log.iter().all(|d| d["event"] != "github_app_authorization"),
+        "{log:?}"
+    );
 }
 
 #[tokio::test]
@@ -1505,20 +1572,39 @@ async fn the_users_installations_page_as_github_pages_them() {
     let res = fake
         .get("/user/installations?per_page=1&page=1", &user)
         .await;
+    // The org's and `AdvanGrid`'s (the PR view's recorded PR's repo).
     assert!(
-        res.headers().get("link").is_none(),
-        "one installation, one page"
+        res.headers()
+            .get("link")
+            .is_some_and(|l| l.to_str().unwrap().contains("rel=\"next\"")),
+        "two installations, two pages"
     );
     let body = res.json::<Value>().await.unwrap();
-    assert_eq!(body["total_count"], 1);
+    assert_eq!(body["total_count"], 2);
     assert_eq!(body["installations"].as_array().unwrap().len(), 1);
-    let past = fake
+    let last = fake
         .get("/user/installations?per_page=1&page=2", &user)
+        .await;
+    assert!(
+        last.headers()
+            .get("link")
+            .is_none_or(|l| !l.to_str().unwrap().contains("rel=\"next\"")),
+        "page 2 is the last"
+    );
+    assert_eq!(
+        last.json::<Value>().await.unwrap()["installations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let past = fake
+        .get("/user/installations?per_page=1&page=3", &user)
         .await;
     let body = past.json::<Value>().await.unwrap();
     assert_eq!(
         (body["total_count"].clone(), body["installations"].clone()),
-        (json!(1), json!([]))
+        (json!(2), json!([]))
     );
 }
 
@@ -4602,6 +4688,114 @@ async fn a_deleted_comment_is_gone_and_sends_issue_comment_deleted() {
     assert_eq!(status, 404);
 }
 
+/// An outside edit's `delete_comment`: the issue's latest comment with that body goes, as from its
+/// menu on GitHub, with the same `issue_comment` `deleted` the REST delete sends.
+#[tokio::test]
+async fn an_outside_edit_deletes_a_comment_by_its_body() {
+    let fake = start().await;
+    let mut rx = receiver(&fake).await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    for _ in 0..2 {
+        fake.edit(json!({ "repo": "web", "number": 1, "comment": "Twice." }))
+            .await;
+    }
+    let made = received_for(&mut rx, Duration::from_millis(1500)).await;
+    let latest = made.last().unwrap().payload()["comment"].clone();
+    async fn thread(fake: &Fake, token: &Value) -> Vec<Value> {
+        fake.get("/repos/acme/web/issues/1/comments?per_page=100", token)
+            .await
+            .json()
+            .await
+            .unwrap()
+    }
+    let before = thread(&fake, token).await;
+
+    fake.edit(json!({ "repo": "web", "number": 1, "delete_comment": "Twice." }))
+        .await;
+    let after = thread(&fake, token).await;
+    assert_eq!(after.len(), before.len() - 1);
+    assert!(
+        !after.iter().any(|c| c["id"] == latest["id"]),
+        "the latest one goes"
+    );
+    assert!(
+        after.iter().any(|c| c["body"] == "Twice."),
+        "the other stays"
+    );
+    let got = received_for(&mut rx, Duration::from_secs(2)).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].event, "issue_comment");
+    let p = got[0].payload();
+    assert_eq!(p["action"], "deleted");
+    assert_eq!(p["comment"], latest);
+    assert_eq!(p["issue"]["comments"], json!(after.len()));
+
+    // A body the thread doesn't have is refused, and changes nothing.
+    let res = fake
+        .http
+        .post(format!("{}/edit", fake.ctl))
+        .json(&json!({ "repo": "web", "number": 1, "delete_comment": "Never said." }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(thread(&fake, token).await.len(), after.len());
+}
+
+/// `delete_comment` with an author: that author's latest comment with the body goes, though
+/// someone else's with it is later. An edit that both makes and deletes a body is refused.
+#[tokio::test]
+async fn an_outside_edit_deletes_a_comment_by_its_author_and_body() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    for who in ["ilze-k", "tomsj"] {
+        fake.edit(json!({ "repo": "web", "number": 1, "comment": "Same.", "as": who }))
+            .await;
+    }
+    let same = |thread: &[Value]| -> Vec<Value> {
+        thread
+            .iter()
+            .filter(|c| c["body"] == "Same.")
+            .map(|c| c["user"]["login"].clone())
+            .collect()
+    };
+    async fn thread(fake: &Fake, token: &Value) -> Vec<Value> {
+        fake.get("/repos/acme/web/issues/1/comments?per_page=100", token)
+            .await
+            .json()
+            .await
+            .unwrap()
+    }
+    assert_eq!(same(&thread(&fake, token).await), ["ilze-k", "tomsj"]);
+
+    fake.edit(json!({
+        "repo": "web", "number": 1,
+        "delete_comment": { "body": "Same.", "author": "ilze-k" },
+    }))
+    .await;
+    assert_eq!(same(&thread(&fake, token).await), ["tomsj"]);
+
+    // Refused, and nothing changes: no such comment by that author, no such user, and a body the
+    // edit also makes.
+    for edit in [
+        json!({ "repo": "web", "number": 1,
+                "delete_comment": { "body": "Same.", "author": "ilze-k" } }),
+        json!({ "repo": "web", "number": 1,
+                "delete_comment": { "body": "Same.", "author": "nobody-at-all" } }),
+        json!({ "repo": "web", "number": 1, "comment": "Same.", "delete_comment": "Same." }),
+    ] {
+        let res = fake
+            .http
+            .post(format!("{}/edit", fake.ctl))
+            .json(&edit)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{edit}");
+    }
+    assert_eq!(same(&thread(&fake, token).await), ["tomsj"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_installation_token_writing_or_asking_for_the_user_is_not_accessible_by_integration() {
     let fake = start().await;
@@ -5168,4 +5362,72 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     let got = received_for(&mut rx, Duration::from_secs(3)).await;
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].payload()["before"], second);
+}
+
+/// The PR view's recorded PR (`fixture::recorded`): `AdvanGrid/beghu#191` as its v1 run pinned it,
+/// with its real title, description, head, base and changed files; a push may name the base's new
+/// tip, as v2's does.
+#[tokio::test]
+async fn the_recorded_pr_is_served_at_v1_and_a_push_moves_its_base() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let v1 = fixture::recorded::version(191, 1).expect("v1 is recorded");
+    let base = "/repos/AdvanGrid/beghu/pulls/191";
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["title"], v1.pr["title"]);
+    assert_eq!(pull["body"], v1.pr["body"]);
+    assert_eq!(pull["head"]["sha"], v1.pr["headSha"]);
+    assert_eq!(pull["base"]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(pull["base"]["ref"], "main");
+    assert_eq!(pull["changed_files"], v1.pr["stats"]["files"]);
+    assert_eq!(pull["additions"], v1.pr["stats"]["additions"]);
+    assert_eq!(pull["deletions"], v1.pr["stats"]["deletions"]);
+    let files = all_pages(&fake, &format!("{base}/files?per_page=100"), &token).await;
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|f| f["filename"].as_str().unwrap())
+        .collect();
+    let recorded: Vec<String> = v1.files().into_iter().map(|f| f.0).collect();
+    assert_eq!(paths, recorded);
+    // The first commit's parent is the base.
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(commits.last().unwrap()["sha"], v1.pr["headSha"]);
+
+    let (head, main) = (
+        "1111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222",
+    );
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "AdvanGrid/beghu", "number": 191, "sha": head, "base_sha": main }),
+    )
+    .await;
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["head"]["sha"], head);
+    assert_eq!(pull["base"]["sha"], main);
+    // The files stay v1's until a push names others.
+    assert_eq!(pull["changed_files"], v1.pr["stats"]["files"]);
+    // Main moving moves `base.sha` only: the PR's first commit still sits on v1's base.
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], v1.pr["base"]["sha"]);
+    assert_eq!(commits.last().unwrap()["sha"], head);
+
+    // A force push (a rebase onto main) starts the new history on the base's tip.
+    let (rebased, newer) = (
+        "3333333333333333333333333333333333333333",
+        "4444444444444444444444444444444444444444",
+    );
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "AdvanGrid/beghu", "number": 191, "sha": rebased, "base_sha": newer, "force": true }),
+    )
+    .await;
+    let commits = all_pages(&fake, &format!("{base}/commits"), &token).await;
+    assert_eq!(commits[0]["parents"][0]["sha"], newer);
+    assert_eq!(commits.last().unwrap()["sha"], rebased);
+    let pull: Value = fake.get(base, &token).await.json().await.unwrap();
+    assert_eq!(pull["base"]["sha"], newer);
 }

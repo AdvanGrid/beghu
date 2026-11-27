@@ -200,20 +200,29 @@ fn evidence_in(v: &Value, out: &mut Vec<(String, u64, u64, String)>) {
     }
 }
 
-/// The committed recordings: the crate's sample, and the recorded analyses under
-/// `fixtures/pr-view/recordings/` once slice 4 commits them.
+/// The committed analyses: the crate's sample, the recordings of beghu's own PR
+/// (`fixtures/pr-view/beghu-<n>/analysis-v<N>.json`) and the hand-written cases
+/// (`fixtures/pr-view/cases/`).
 fn recordings() -> Vec<PathBuf> {
     let mut out = vec![root().join("tests/sample/analysis.json")];
-    let dir = root().join("../../fixtures/pr-view/recordings");
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        let mut more: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .collect();
-        more.sort();
-        out.extend(more);
+    let dir = root().join("../../fixtures/pr-view");
+    let mut more = Vec::new();
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("beghu-") || name == "cases") {
+            continue;
+        }
+        for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+            let p = f.path();
+            let file = f.file_name().to_string_lossy().into_owned();
+            let analysis = name == "cases" || file.starts_with("analysis-v");
+            if analysis && p.extension().is_some_and(|x| x == "json") {
+                more.push(p);
+            }
+        }
     }
+    more.sort();
+    out.extend(more);
     out
 }
 

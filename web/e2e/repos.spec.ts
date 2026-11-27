@@ -70,7 +70,8 @@ test("the picker lists every visible repo, ticked as synced, and shows in both t
   await page.locator('[data-perf="repos-link"]').click();
   await page.waitForURL((u) => u.pathname === "/repos");
   const repos = page.locator('[data-perf="pick-repo"]');
-  await expect(repos).toHaveCount(10);
+  // The org's ten, and AdvanGrid/beghu (the PR view's recorded PR, its own installation).
+  await expect(repos).toHaveCount(11);
   for (const box of await repos.getByRole("checkbox").all()) await expect(box).toBeChecked();
   // Nothing changed: nothing to save.
   await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();

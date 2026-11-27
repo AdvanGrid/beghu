@@ -1,0 +1,21 @@
+[package]
+name = "analysis-fixtures"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "The PR view's committed analyses (fixtures/pr-view/): recording an accepted analysis from an analyses.db, the full validator over the real commits for CI, and the coverage test."
+
+[dependencies]
+analysis = { path = "../analysis" }
+analysis-db = { workspace = true }
+# The stored graph and claims are gzip blobs (beside brotli ones).
+flate2 = "1"
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The coverage test reads each kind's names from the schema's own Deserialize.
+serde = { workspace = true }
+
+[lints]
+workspace = true

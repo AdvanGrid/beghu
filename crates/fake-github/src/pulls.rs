@@ -19,8 +19,12 @@
 //!   fixture PR derives them from its id (1 to 4 commits, 1 to 9 files), its head being the
 //!   fixture's head SHA for it (`headRefOid` in GraphQL); a push on the control port (`POST
 //!   /push`, [`push`]) adds a commit on top, moving the head and sending `pull_request`
-//!   `synchronize`, and may say which files the PR changes from then on. A force push replaces
-//!   the PR's history, so its old commits leave its commit list. The pulls API pages as GitHub's does (`per_page` up to 100,
+//!   `synchronize`, and may say which files the PR changes from then on, and where its base
+//!   branch's tip is (`base_sha`: `base.sha` only, as on GitHub, where main moving doesn't move
+//!   the commit the PR's first one sits on). The PR view's recorded PR (`fixture::recorded`)
+//!   starts at its v1 head, with v1's files and base, its first commit on that base
+//!   ([`seed_recorded`]). A force push replaces the PR's history, so its old commits leave its
+//!   commit list, and its new first commit sits on the base's tip, as after a rebase. The pulls API pages as GitHub's does (`per_page` up to 100,
 //!   default 30, with `Link` headers), and stops at GitHub's caps: 3,000 files and 250 commits.
 //!   A number that isn't a PR, or a repo the token can't see, is a 404.
 
@@ -100,7 +104,10 @@ pub(crate) fn pr_json(c: &Connection, id: i64) -> rusqlite::Result<Value> {
         "milestone": issue["milestone"],
         "draft": p.draft.unwrap_or(false),
         "head": branch(p.head_ref.as_deref(), head.sha.clone()),
-        "base": branch(p.base_ref.as_deref(), base_sha(r.id, base_ref)),
+        "base": branch(
+            p.base_ref.as_deref(),
+            head.base.clone().unwrap_or_else(|| base_sha(r.id, base_ref)),
+        ),
         "author_association": issue["author_association"],
         "auto_merge": null,
         "active_lock_reason": null,
@@ -153,6 +160,10 @@ pub(crate) struct Head {
     pub commits: i64,
     files_set: bool,
     rewrites: i64,
+    /// The base's tip, when the seed or a push named it rather than deriving it.
+    base: Option<String>,
+    /// The first commit's parent, when the seed or a force push put it on a base it named.
+    first_parent: Option<String>,
 }
 
 /// PR `id`'s head. Before any push it's the fixture's head SHA for the PR (what the import reads
@@ -165,6 +176,8 @@ pub(crate) fn head(c: &Connection, id: i64) -> rusqlite::Result<Head> {
             commits: base + h.pushes,
             files_set: h.files_set,
             rewrites: h.rewrites,
+            base: h.base_sha,
+            first_parent: h.first_parent,
         },
         None => Head {
             sha: match q::pr_details(c, id)?.head_sha {
@@ -174,6 +187,8 @@ pub(crate) fn head(c: &Connection, id: i64) -> rusqlite::Result<Head> {
             commits: base,
             files_set: false,
             rewrites: 0,
+            base: None,
+            first_parent: None,
         },
     })
 }
@@ -399,7 +414,9 @@ async fn commits(
             let mut out = Vec::new();
             for k in offset + 1..=end {
                 let parent = if k == 1 {
-                    base_sha(r.id, &base)
+                    head.first_parent
+                        .clone()
+                        .unwrap_or_else(|| base_sha(r.id, &base))
                 } else {
                     commit_at(c, id, &head, k - 1)?
                 };
@@ -476,6 +493,38 @@ fn commit_json(
     })
 }
 
+/// The recorded PR at its v1 head, as its run pinned it: its head, its changed files and its
+/// base's tip (its real merge base), so a run against it pins what the recording's run did.
+pub(crate) fn seed_recorded(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    use fixture::recorded;
+    let Ok(repo) = crate::edits::find_repo(tx, recorded::REPO)? else {
+        // A fixture from before the recorded PR: nothing to seed.
+        return Ok(());
+    };
+    for v in recorded::versions().iter().filter(|v| v.version == 1) {
+        let Some(id) = q::any_item_id(tx, repo, i64::from(v.number))? else {
+            continue;
+        };
+        q::set_pull_head(tx, id, v.head_sha(), 0, true, 0)?;
+        q::set_pull_base(tx, id, Some(v.base_sha()))?;
+        q::set_pull_first_parent(tx, id, Some(v.base_sha()))?;
+        q::clear_pull_files(tx, id)?;
+        for (k, (path, previous, status, additions, deletions)) in v.files().iter().enumerate() {
+            q::add_pull_file(
+                tx,
+                id,
+                k as i64,
+                path,
+                previous.as_deref(),
+                status,
+                *additions,
+                *deletions,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// `POST /push` on the control port: a push to a PR's head branch.
 #[derive(Deserialize)]
 pub(crate) struct Push {
@@ -484,8 +533,13 @@ pub(crate) struct Push {
     number: i64,
     /// The new head's SHA; derived when left out.
     sha: Option<String>,
+    /// The base branch's tip from now on, as main moved meanwhile; left out, it stays. It moves
+    /// `base.sha` only: the PR's first commit stays on what it was on, unless the push is a force
+    /// push.
+    base_sha: Option<String>,
     /// A force push: the PR's history is replaced by new commits (derived anew) under the new
-    /// head, so none of its old commits is in its list any more.
+    /// head, so none of its old commits is in its list any more, the first of them on the base's
+    /// tip (after `base_sha`), as a rebase onto it puts it.
     #[serde(default)]
     force: bool,
     /// The files the PR changes from now on, in order; left out, they stay as they were.
@@ -544,8 +598,12 @@ pub(crate) fn push(
     };
     let k = derived_commits(id) + pushes;
     let sha = p.sha.clone().unwrap_or_else(|| commit_sha(id, rewrites, k));
-    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let hex = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex(&sha) {
         return Ok(Err("sha must be 40 hex digits".into()));
+    }
+    if p.base_sha.as_deref().is_some_and(|b| !hex(b)) {
+        return Ok(Err("base_sha must be 40 hex digits".into()));
     }
     let files: Option<Vec<File>> = match (&p.files, p.file_count) {
         (Some(_), Some(_)) => return Ok(Err("give files or file_count, not both".into())),
@@ -595,6 +653,14 @@ pub(crate) fn push(
     }
     q::add_pull_commit(tx, id, k, &sha)?;
     q::set_pull_head(tx, id, &sha, pushes, files_set, rewrites)?;
+    if let Some(b) = p.base_sha.as_deref() {
+        q::set_pull_base(tx, id, Some(b))?;
+    }
+    if p.force {
+        // The new history sits on the base's tip (NULL: the derived one).
+        let tip = p.base_sha.as_deref().or(before.base.as_deref());
+        q::set_pull_first_parent(tx, id, tip)?;
+    }
     q::touch_pull(tx, id, at)?;
     let after = head(tx, id)?;
     let totals = file_totals(tx, id)?;

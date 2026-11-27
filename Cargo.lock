@@ -107,6 +107,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis-fixtures"
+version = "0.0.0"
+dependencies = [
+ "analysis",
+ "analysis-db",
+ "flate2",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "analysis-wasm"
 version = "0.0.0"
 dependencies = [
@@ -205,6 +217,7 @@ dependencies = [
  "aes-gcm",
  "analysis",
  "analysis-db",
+ "analysis-fixtures",
  "axum",
  "base64 0.22.1",
  "brotli 8.0.4",
@@ -648,9 +661,11 @@ checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
 name = "fixture"
 version = "0.0.0"
 dependencies = [
+ "analysis",
  "dbrt",
  "mirror-db",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

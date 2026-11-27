@@ -33,6 +33,12 @@ CI runs all of these; run them before you commit:
   `npx vite build` (which also prerenders the public site, `web/site/`, in its own Node process)
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
+- `cargo run -p analysis-fixtures -- check` after changing the analysis crate or anything in
+  `fixtures/pr-view/` (CI's `pr-view-fixtures` job): the full validator, snippet check included,
+  on every committed recording and case against the real commits, read by SHA from this clone.
+  The recordings (`fixtures/pr-view/beghu-<n>/`) are written by `./dev-ctl analysis record` and
+  never edited by hand; `cargo test -p analysis-fixtures` (the coverage test) says which feature
+  needs a hand-written case in `fixtures/pr-view/cases/`, and which case a recording now covers
 - npm installs run no install scripts: always `npm ci --ignore-scripts` (CI, the `Dockerfile`
   and `./dev-ctl` do). After changing a lockfile, `npm audit signatures` in that directory checks
   the packages' registry signatures, as CI does. A new package that needs its install script is
@@ -102,7 +108,9 @@ CI runs all of these; run them before you commit:
   Fake GitHub behind it (`crates/server/tests/`, whose `common` harness starts both on a fresh
   data dir with the 1k fixture), Fake GitHub's own HTTP and control surfaces, and the browser
   (`web/e2e/`, Playwright against the `./dev-ctl` stack). Set state up through Fake GitHub or the
-  fixture, never by writing to a mirror directly.
+  fixture, never by writing to a mirror directly. An analysis reaches a stack only through an
+  analysis run (`Stack::upload_recorded` in the harness, `./dev-ctl analyse`), never by seeding an
+  `analyses.db`; every account's starts empty.
 - **The allowed exceptions**, each saying why in its file: md-ast's GFM spec conformance run
   (`crates/md-ast/src/gfm_spec.rs`, 670 examples scored on comrak's HTML), md-ast's work counts
   (`crates/md-ast/src/scaling.rs`), the server's render cache tests (the `tests`

@@ -250,6 +250,11 @@ impl Webhooks {
     }
 
     fn send_one(&self, mut d: Delivery) {
+        // An inactive webhook: GitHub makes no delivery for the change, so none goes out once a
+        // URL is set again (within `DELAY`, a restart's new server would otherwise get it).
+        if self.target().is_none() {
+            return;
+        }
         let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         let due = Instant::now() + DELAY + Duration::from_millis(rules.delay_ms);
         let droppable = rules.drop_only.as_deref().is_none_or(|only| {
@@ -346,6 +351,7 @@ pub(crate) async fn run(fake: crate::Fake, mut rx: mpsc::UnboundedReceiver<(Inst
     while let Some((due, d)) = rx.recv().await {
         tokio::time::sleep_until(due).await;
         let w = &fake.state().webhooks;
+        // Switched off since the change: nothing is attempted.
         let Some(url) = w.target() else {
             continue;
         };

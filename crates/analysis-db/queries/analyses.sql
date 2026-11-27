@@ -54,19 +54,21 @@ FROM analyses WHERE repo_id = :repo_id AND number = :number;
 -- param: graph_gz &[u8]
 -- param: claims_br &[u8]
 -- param: claims_gz &[u8]
+-- param: upload_gz &[u8]
 INSERT INTO analyses (id, repo_id, owner, name, number, version, head_sha, merge_base, created_at,
   run_id, snippets, warnings, parts, purposes, conflicts, migrated_ids, graph_br, graph_gz,
-  claims_br, claims_gz)
+  claims_br, claims_gz, upload_gz)
 VALUES (:id, :repo_id, :owner, :name, :number, :version, :head_sha, :merge_base, :now, :run_id,
   :snippets, :warnings, :parts, :purposes, :conflicts, :migrated_ids, :graph_br, :graph_gz,
-  :claims_br, :claims_gz)
+  :claims_br, :claims_gz, :upload_gz)
 ON CONFLICT (repo_id, number) DO UPDATE SET id = excluded.id, owner = excluded.owner,
   name = excluded.name, version = excluded.version, head_sha = excluded.head_sha,
   merge_base = excluded.merge_base, created_at = excluded.created_at, run_id = excluded.run_id,
   snippets = excluded.snippets, warnings = excluded.warnings, parts = excluded.parts,
   purposes = excluded.purposes, conflicts = excluded.conflicts,
   migrated_ids = excluded.migrated_ids, graph_br = excluded.graph_br,
-  graph_gz = excluded.graph_gz, claims_br = excluded.claims_br, claims_gz = excluded.claims_gz;
+  graph_gz = excluded.graph_gz, claims_br = excluded.claims_br, claims_gz = excluded.claims_gz,
+  upload_gz = excluded.upload_gz;
 
 -- A read that migrated the analysis writes it back at the build's version: only over the version
 -- it read (0 rows when an upload replaced it, or another read migrated it, meanwhile).
@@ -124,3 +126,11 @@ ON CONFLICT (repo_id, number, analysed, head) DO UPDATE SET behind = excluded.be
 -- param: repo_id i64
 -- param: number i64
 DELETE FROM behind WHERE repo_id = :repo_id AND number = :number;
+
+-- The analysis an upload to run `id` made (or the analysis `id`), while it's still the PR's, with
+-- the upload's body (NULL for one stored before bodies were kept): what
+-- `./dev-ctl analysis record` saves as a fixture. A dev tool's read: it scans the few rows an
+-- account has.
+-- name: recorded_analysis :opt
+-- param: id &str
+SELECT id, run_id, version, head_sha, upload_gz FROM analyses WHERE run_id = :id OR id = :id;

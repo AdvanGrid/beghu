@@ -657,7 +657,9 @@ async fn fts_syntax_is_searched_as_text() {
         ("quetzal -\"\"", "quetzal"),
         ("\"\"\"", ""),
         ("-\"\"", ""),
-        ("it's", "\"it s\""),
+        // A quote inside a word is punctuation like any other: its parts are a phrase whose last
+        // is a prefix (so `it's` finds "it should", as `"it s"` wouldn't).
+        ("it's", "it-s"),
     ];
     for (q, plain) in same {
         assert_eq!(

@@ -70,7 +70,7 @@ pub(super) fn check(ix: &Index, r: &mut Report) {
                 format!("`{}` is undetermined: say where you looked", c.id),
             );
         }
-        words(r, format!("{p}/text"), &c.text);
+        words(ix, r, format!("{p}/text"), &c.text);
         for (ei, e) in c.evidence.iter().enumerate() {
             if let Evidence::Code { start, end, .. } = e {
                 let ep = format!("{p}/evidence/{ei}");
