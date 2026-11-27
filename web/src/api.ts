@@ -8,6 +8,7 @@ import { query, revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { noteBuild, whileWriting } from "./build";
 import { accountHeaders, cookieAccount, noteActive, noteAnswered, noteSignedOut, noteSwitched, stale, tabAccount } from "./account";
+import type { BodyHistory } from "./bindings/BodyHistory";
 import type { ErrorBody } from "./bindings/ErrorBody";
 import type { ErrorKind } from "./bindings/ErrorKind";
 import type { Facet } from "./bindings/Facet";
@@ -32,7 +33,7 @@ import { LOST_MESSAGE } from "./bindings/lostMessage";
 import { setKeymap } from "./keys";
 import { issuePath, learn, parseAt, pathOf } from "./at";
 
-export type { Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
+export type { BodyHistory, Comment, CommentOrder, CommentPage, Facet, FacetCount, Facets, IssueDetail, IssuePage, IssueRef, Me, Op, OpReply, PrefChange };
 export type { IssueRow } from "./bindings/IssueRow";
 export type { TreeNode } from "./bindings/TreeNode";
 export type { TreePage };
@@ -181,6 +182,20 @@ export class MaybePosted extends Error {
     readonly after?: number,
     /** Its Markdown's digest (see `ErrorBody`), if beghu said. */
     readonly digest?: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * GitHub didn't give a body's history: it's down or didn't answer, its rate limit is reached
+ * (`retryAfter`), or it refused. The message is the server's, for the user.
+ */
+export class HistoryUnavailable extends Error {
+  constructor(
+    message: string,
+    /** Seconds until GitHub takes reads again, when its rate limit is the reason. */
+    readonly retryAfter?: number,
   ) {
     super(message);
   }
@@ -774,6 +789,23 @@ export function refetchIssue(id: number, order: CommentOrder, through?: Comment)
 /** The page of an issue's comments after the cursor `after` (the first page without), in `order`. */
 export function getComments(id: number, order: CommentOrder, after?: string): Promise<CommentPage> {
   return request<CommentPage>(`/api/issues/${id}/comments?order=${order}${after === undefined ? "" : `&after=${after}`}`);
+}
+
+/**
+ * An issue's or PR's body history, for Diff mode: its earlier versions, newest first, rendered.
+ * GitHub not giving it (down, rate limited, refused) fails as `HistoryUnavailable`.
+ */
+export const getHistory = query((id: number) => fetchHistory(id), "history");
+
+/** An issue's or PR's body history, read afresh: the body changed since the cached read's. */
+export async function fetchHistory(id: number): Promise<BodyHistory> {
+  try {
+    return await request<BodyHistory>(`/api/issues/${id}/history`);
+  } catch (e) {
+    if (e instanceof GitHubDown || e instanceof Refused) throw new HistoryUnavailable(e.message);
+    if (e instanceof RateLimited) throw new HistoryUnavailable(e.message, e.retryAfter);
+    throw e;
+  }
 }
 
 /** An issue's body as Markdown, for its editor, with its digest (as the detail's `body_digest`). */
