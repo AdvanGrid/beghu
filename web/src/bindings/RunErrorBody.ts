@@ -8,7 +8,8 @@ export type RunErrorBody = {
  * `bad_token`, `run_ended`, `too_large`, `head_moved`, `refused`, `not_found`,
  * `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`;
  * and for the CLI, `bad_credential`, `cli_too_old`, `cli_too_new`, `sign_in_again`,
- * `login_denied` or `login_expired`.
+ * `login_denied`, `login_expired`, `login_account_gone` or `too_many_logins` (with
+ * `retry-after`).
  */
 error: string, message: string, 
 /**

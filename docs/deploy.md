@@ -307,6 +307,11 @@ it (Cloudflare proxied DNS, a Kubernetes ingress, Caddy, nginx) must:
   `private, max-age=300` on the shell (kept by browsers only, so no shared cache serves an old
   build's shell after a deploy), `no-store` on the API, and
   `public, max-age=31536000, immutable` on `/assets/*`.
+- **Limit `beghu login`s per client at the edge, if you need it per person.** beghu caps the
+  `beghu login`s waiting for approval at 10,000 at once and 20 per client, answering `429` with
+  `Retry-After` past either. It counts a client by the TCP peer's address (an IPv6 one by its
+  /64) and reads no `X-Forwarded-For`, so behind a proxy every login comes from the proxy and
+  the 20 are shared by everyone. The counts are in memory, and a restart forgets them.
 - **Leave `POST /webhook` unchallenged** by WAF, bot and rate rules. GitHub can't answer a
   challenge. beghu checks each delivery's signature itself.
 

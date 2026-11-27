@@ -18,6 +18,7 @@
 //! `curl` on a button run carries no CLI version.
 
 pub(crate) mod dist;
+pub(crate) mod limits;
 pub(crate) mod login;
 pub(crate) mod sign_ins;
 
@@ -130,6 +131,7 @@ pub(crate) async fn gate(State(app): State<App>, req: Request, next: Next) -> Re
                 return RunError::CliTooOld {
                     minimum: floor,
                     host: app.cfg().public_url.clone(),
+                    server: ours,
                 }
                 .into_response();
             }

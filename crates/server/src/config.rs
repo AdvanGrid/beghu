@@ -156,6 +156,14 @@ pub struct CliConfig {
     pub login_for: Duration,
     /// A CLI credential unused this long expires (90 days).
     pub unused_for: Duration,
+    /// At most this many `beghu login`s wait for their approval at once (10,000), and
+    /// ([`CliConfig::logins_per_client`]) from one client (20): `cli::limits`.
+    pub logins_at_once: usize,
+    pub logins_per_client: usize,
+    /// A browser session that asks for this many codes that aren't a live login's (10) within
+    /// [`CliConfig::wrong_codes_for`] (10 minutes) is refused more until the oldest is that old.
+    pub wrong_codes: usize,
+    pub wrong_codes_for: Duration,
 }
 
 impl Default for CliConfig {
@@ -165,6 +173,10 @@ impl Default for CliConfig {
             poll_every: Duration::from_secs(5),
             login_for: Duration::from_secs(10 * 60),
             unused_for: Duration::from_secs(90 * 24 * 3600),
+            logins_at_once: 10_000,
+            logins_per_client: 20,
+            wrong_codes: 10,
+            wrong_codes_for: Duration::from_secs(10 * 60),
         }
     }
 }

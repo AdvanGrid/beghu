@@ -389,8 +389,10 @@ pub async fn disconnect(
             }
             q::delete_tokens(tx, account)?;
             q::delete_preferences(tx, account)?;
-            // Its CLI sign-ins go with it: the next call of each answers 401.
+            // Its CLI sign-ins go with it: the next call of each answers 401. So do the logins it
+            // approved that no poll has collected, so none mints a credential after.
             q::delete_account_cli_tokens(tx, account)?;
+            q::delete_account_cli_logins(tx, account)?;
             // Its analyses are to go, whatever happens to beghu before that's done: a startup
             // finishes the delete, and so does a sign-in before it brings the file back. In the
             // write that signs it out, so no sign-in activates it with the mark on (tokens.rs).
@@ -692,8 +694,10 @@ async fn go_dormant(app: &App, account: i64, seen: i64) {
                         if n == 0 {
                             return Ok(None);
                         }
-                        // Its CLI sign-ins die with it (#179).
+                        // Its CLI sign-ins die with it (#179), and the logins it approved that no
+                        // poll has collected.
                         q::delete_account_cli_tokens(tx, account)?;
+                        q::delete_account_cli_logins(tx, account)?;
                         app.imports().stop(account);
                         let deleting: Pin<
                             Box<dyn Future<Output = Result<(), analysis_db::Error>> + Send>,

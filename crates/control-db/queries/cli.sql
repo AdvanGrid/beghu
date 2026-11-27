@@ -79,6 +79,12 @@ ORDER BY created_at DESC, id;
 -- param: id &str
 DELETE FROM cli_tokens WHERE github_user_id = :account AND id = :id;
 
+-- Dormancy and Disconnect: every login the account approved that no poll has collected yet, so
+-- none mints a token after.
+-- name: delete_account_cli_logins :exec
+-- param: account i64
+DELETE FROM cli_logins WHERE github_user_id = :account;
+
 -- Dormancy and Disconnect: every one of the account's tokens.
 -- name: delete_account_cli_tokens :exec
 -- param: account i64

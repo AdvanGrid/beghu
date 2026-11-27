@@ -503,3 +503,203 @@ async fn a_cli_dir_without_its_version_refuses_startup() {
         .unwrap_err();
     assert!(err.contains("BEGHU_CLI_DIR"), "{err}");
 }
+
+/// `POST /api/cli/login` as the CLI sends it: the whole answer.
+async fn login_answer(s: &Stack, name: &str) -> reqwest::Response {
+    s.http
+        .post(format!("{}/api/cli/login", s.server))
+        .header("user-agent", format!("beghu-cli/{}", beghu_server::MIN_CLI))
+        .json(&json!({ "name": name }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// A `429`'s `Retry-After`, in seconds.
+fn retry_after(res: &reqwest::Response) -> u64 {
+    res.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn too_many_logins_waiting_from_one_client_are_refused_until_one_ends() {
+    let s = start().await;
+    let b = s.sign_in("tomsj").await;
+    let mut first = None;
+    for i in 0..20 {
+        let started = login(&s, &format!("machine {i}")).await;
+        first.get_or_insert(started);
+    }
+    let res = login_answer(&s, "one too many").await;
+    assert_eq!(res.status(), 429);
+    // Until the oldest of them expires: at most a login's life (10 minutes).
+    let wait = retry_after(&res);
+    assert!((1..=600).contains(&wait), "{wait}");
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "too_many_logins", "{body}");
+
+    // One ended by its poll (denied here) makes room for one more.
+    let first = first.unwrap();
+    assert_eq!(
+        s.decide_cli_login(&b, first["code"].as_str().unwrap(), false)
+            .await,
+        204
+    );
+    assert_eq!(poll(&s, first["device"].as_str().unwrap()).await.0, 410);
+    assert_eq!(login_answer(&s, "now there's room").await.status(), 201);
+    assert_eq!(login_answer(&s, "and full again").await.status(), 429);
+}
+
+#[tokio::test]
+async fn the_logins_waiting_at_once_are_capped_for_everyone() {
+    let s = start_with(|c| c.cli.logins_at_once = 2).await;
+    login(&s, "a").await;
+    login(&s, "b").await;
+    let res = login_answer(&s, "c").await;
+    assert_eq!(res.status(), 429);
+    assert!(retry_after(&res) >= 1);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "too_many_logins", "{body}");
+}
+
+#[tokio::test]
+async fn a_browser_that_tries_too_many_wrong_codes_is_refused_for_a_while() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let real = login(&s, "a machine").await;
+    let code = real["code"].as_str().unwrap();
+    // Ten wrong ones: codes no login holds, and things that can't be codes.
+    for i in 0..10 {
+        let wrong = if i % 2 == 0 { "BBBB-BBBB" } else { "nope" };
+        let (status, _) = s.api(&mut b, &format!("/api/cli/codes/{wrong}")).await;
+        assert_eq!(status, 404, "wrong code {i}");
+    }
+    // The next is refused, the right code included, and so are Approve and Deny.
+    let res = s.get(&mut b, &format!("/api/cli/codes/{code}")).await;
+    assert_eq!(res.status(), 429);
+    let wait = retry_after(&res);
+    assert!((1..=600).contains(&wait), "{wait}");
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "too_many_codes", "{body}");
+    assert_eq!(s.decide_cli_login(&b, code, true).await, 429);
+    assert_eq!(s.decide_cli_login(&b, code, false).await, 429);
+    // Another browser isn't held back by this one's guesses.
+    let mut other = s.sign_in("tomsj").await;
+    let (status, shown) = s.api(&mut other, &format!("/api/cli/codes/{code}")).await;
+    assert_eq!((status, shown["state"].as_str()), (200, Some("pending")));
+}
+
+#[tokio::test]
+async fn a_machines_name_loses_its_control_and_bidi_characters() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let started = login(
+        &s,
+        "  build\u{202E}gpj.exe\n\t box \u{7}\u{2066}1\u{2069}  ",
+    )
+    .await;
+    let (status, shown) = s
+        .api(
+            &mut b,
+            &format!("/api/cli/codes/{}", started["code"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(status, 200, "{shown}");
+    assert_eq!(shown["name"], "buildgpj.exe box 1");
+    // When it started, for the confirm page.
+    let created = shown["createdAt"].as_i64().unwrap();
+    assert_eq!(shown["expiresAt"].as_i64().unwrap() - created, 600);
+    // Nothing printable left: it's named for what it is.
+    let blank = login(&s, "\u{202E}\u{200F}\n").await;
+    let (_, shown) = s
+        .api(
+            &mut b,
+            &format!("/api/cli/codes/{}", blank["code"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(shown["name"], "unnamed machine");
+}
+
+#[tokio::test]
+async fn an_approved_login_whose_account_disconnected_or_lost_access_mints_nothing() {
+    let s = start().await;
+    // Approved, then Disconnect before the CLI's next poll: the login goes with the account.
+    let mut ilze = s.sign_in("ilze-k").await;
+    let started = login(&s, "ilze's laptop").await;
+    assert_eq!(
+        s.decide_cli_login(&ilze, started["code"].as_str().unwrap(), true)
+            .await,
+        204
+    );
+    let account = s.api(&mut ilze, "/api/me").await.1["account"]["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    let res = s
+        .post_form(&mut ilze, "/auth/disconnect", &[("account", &account)])
+        .await;
+    assert_eq!(res.status(), 303);
+    let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (410, Some("login_expired"))
+    );
+
+    // Approved, then the account must sign in again (its grant revoked on GitHub): the poll
+    // refuses to mint for it.
+    let b = s.sign_in("tomsj").await;
+    let started = login(&s, "tomsj's laptop").await;
+    assert_eq!(
+        s.decide_cli_login(&b, started["code"].as_str().unwrap(), true)
+            .await,
+        204
+    );
+    s.fake("POST", "/revoke", json!({ "login": "tomsj" })).await;
+    until(10.0, "tomsj signed out by the revoke", || {
+        let mut b = b.clone();
+        let s = &s;
+        async move { (s.api(&mut b, "/api/me").await.0 == 401).then_some(()) }
+    })
+    .await;
+    let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (410, Some("login_account_gone"))
+    );
+    // The login is over.
+    let (status, _) = poll(&s, started["device"].as_str().unwrap()).await;
+    assert_eq!(status, 410);
+}
+
+#[tokio::test]
+async fn an_approved_login_whose_account_went_dormant_mints_nothing() {
+    let s = start_with(|c| {
+        c.accounts_check_every = Duration::from_millis(100);
+        c.dormant_after = Duration::from_secs(3);
+        c.activity_every = Duration::ZERO;
+    })
+    .await;
+    let mut b = s.sign_in("tomsj").await;
+    let id = s.api(&mut b, "/api/me").await.1["account"]["id"]
+        .as_i64()
+        .unwrap();
+    let started = login(&s, "a machine").await;
+    assert_eq!(
+        s.decide_cli_login(&b, started["code"].as_str().unwrap(), true)
+            .await,
+        204
+    );
+    let mirror = s.data.join("mirrors").join(format!("{id}.db"));
+    until(15.0, "the account dormant", || async {
+        (!mirror.exists()).then_some(())
+    })
+    .await;
+    let (status, body) = poll(&s, started["device"].as_str().unwrap()).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (410, Some("login_expired"))
+    );
+}

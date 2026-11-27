@@ -138,6 +138,8 @@ pub(crate) enum RunError {
     CliTooOld {
         minimum: crate::CliVersion,
         host: String,
+        /// The CLI this server serves, which `beghu update` installs.
+        server: crate::CliVersion,
     },
     /// 409: the CLI is newer than the one this server serves.
     CliTooNew {
@@ -148,6 +150,14 @@ pub(crate) enum RunError {
     /// 410: a `beghu login` that was denied, or expired (or never was).
     LoginEnded {
         denied: bool,
+    },
+    /// 410: a `beghu login` approved for an account that has since disconnected, gone dormant
+    /// or must sign in again: no credential was minted.
+    LoginAccountGone,
+    /// 429: too many `beghu login`s waiting, from this client or from everyone
+    /// (`cli::limits`): try again after `retry_after`.
+    TooManyLogins {
+        retry_after: Duration,
     },
     /// 410: the run ended.
     Ended(Ended),
@@ -189,7 +199,8 @@ pub struct RunErrorBody {
     /// `bad_token`, `run_ended`, `too_large`, `head_moved`, `refused`, `not_found`,
     /// `bad_request`, `unsupported_encoding`, `unavailable`, `migration_failed` or `internal`;
     /// and for the CLI, `bad_credential`, `cli_too_old`, `cli_too_new`, `sign_in_again`,
-    /// `login_denied` or `login_expired`.
+    /// `login_denied`, `login_expired`, `login_account_gone` or `too_many_logins` (with
+    /// `retry-after`).
     pub error: &'static str,
     pub message: String,
     /// With `run_ended`: why.
@@ -289,12 +300,17 @@ impl IntoResponse for RunError {
                         .into();
                 StatusCode::UNAUTHORIZED
             }
-            RunError::CliTooOld { minimum, host } => {
+            RunError::CliTooOld {
+                minimum,
+                host,
+                server,
+            } => {
                 body.error = "cli_too_old";
                 body.message = format!(
                     "This beghu needs beghu CLI {minimum} or newer: run `beghu update`, or `curl -fsSL {host}/cli/install.sh | sh`."
                 );
                 body.minimum = Some(minimum.to_string());
+                body.server = Some(server.to_string());
                 StatusCode::UPGRADE_REQUIRED
             }
             RunError::CliTooNew { server } => {
@@ -323,6 +339,20 @@ impl IntoResponse for RunError {
                             .into();
                 }
                 StatusCode::GONE
+            }
+            RunError::LoginAccountGone => {
+                body.error = "login_account_gone";
+                body.message = "The account that approved this sign-in has since disconnected, gone dormant or must sign in to beghu again: sign in in a browser, then run `beghu login` again.".into();
+                StatusCode::GONE
+            }
+            RunError::TooManyLogins { retry_after } => {
+                body.error = "too_many_logins";
+                body.message = format!(
+                    "Too many beghu logins are waiting for approval: try again in {} s.",
+                    retry_after.as_secs().max(1)
+                );
+                retry = Some(retry_after);
+                StatusCode::TOO_MANY_REQUESTS
             }
             RunError::Ended(why) => {
                 body.error = "run_ended";

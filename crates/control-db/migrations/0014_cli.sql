@@ -2,9 +2,11 @@
 --
 -- `cli_logins`: a `beghu login` waiting for a person to approve it at `/cli/login`, for 10
 -- minutes. The CLI keeps the device secret and polls with it; the person types (or follows a link
--- with) the short code. Only each one's SHA-256 is stored. Approving names the account; the
--- CLI's next poll mints the token and deletes the row, so the token itself is never stored. A
--- login past `expires_at` is dead whatever its state, and goes at the next login's start.
+-- with) the short code. Only each one's SHA-256 is stored: of the device secret's 32 random
+-- bytes (not of its base64 text), and of the code's 8 letters, upper case without the dash.
+-- Approving names the account; the CLI's next poll mints the token and deletes the row, so the
+-- token itself is never stored. A login past `expires_at` is dead whatever its state, and goes
+-- at the next login's start.
 CREATE TABLE cli_logins (
   device_hash BLOB PRIMARY KEY,
   code_hash BLOB NOT NULL UNIQUE,
@@ -17,11 +19,14 @@ CREATE TABLE cli_logins (
   github_user_id INTEGER REFERENCES accounts(github_user_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE INDEX cli_logins_by_expiry ON cli_logins(expires_at);
+-- Dormancy and Disconnect delete the logins an account approved.
+CREATE INDEX cli_logins_by_account ON cli_logins(github_user_id);
 
--- `cli_tokens`: each CLI credential (`beghu_cli_` and 256 random bits), by the SHA-256 of the
--- whole token. `id` is public: the setup page lists and revokes by it. A token expires 90 days
+-- `cli_tokens`: each CLI credential (`beghu_cli_`, then 256 random bits in URL-safe base64), by
+-- the SHA-256 of those 32 random bytes: not of the prefix, nor of the base64 text. `id` is public: the setup page lists and revokes by it. A token expires 90 days
 -- after its last use, with no absolute cap, and goes with its account at dormancy and at
--- Disconnect. Signing out in a browser leaves it.
+-- Disconnect, as do the logins it approved that no poll has collected. Signing out in a browser
+-- leaves it.
 CREATE TABLE cli_tokens (
   id TEXT PRIMARY KEY,
   token_hash BLOB NOT NULL UNIQUE,
