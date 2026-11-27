@@ -642,8 +642,8 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   const isPort = (it: Item) => it.part!.port;
   const gapOf = (a: Item, b: Item) => (isPort(a) && isPort(b) ? PORT_GAP : GAP);
   const mid = (it: Item) => it.y + it.h / 2;
-  // Laid out afresh, each group has its top flush with the scope's (no empty band): the groups,
-  // and inside a frame everything but the ports.
+  // Laid out afresh, each column of a group has its first part at the top but for the room routes
+  // take above it (no empty band): the groups, and inside a frame everything but the ports.
   const groupOf = (c: number) => (o.inside ? (sideOfCol(c) === 1 ? 1 : -1) : sideOfCol(c) === 1 || sideOfCol(c) === 2 ? sideOfCol(c) : -1);
   /** How far the open blocks above a part in its column push it down. */
   const growth = new Map<Item, number>();
@@ -654,9 +654,9 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   /**
    * Every part placed. From anchors, each where the scope's folded drawing had it, pushed down by
    * what grew above it in its column, and no further than the parts above it push it. Afresh, each
-   * column is packed from the top and pulled toward what its parts connect to by isotonic
-   * regression, and each group lifted flush with the top. Every y is a multiple of 1/64 px, so the
-   * same anchors always give the same places.
+   * column is packed from the top and its parts pulled toward what they connect to by isotonic
+   * regression, a group's column below its first part (which stays at the top), and any other
+   * column whole. Every y is a multiple of 1/64 px, so the same anchors always give the same places.
    */
   const place = (extra: number[][]) => {
     if (keep) {
@@ -699,19 +699,11 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
           t.push((want * ns.length + home * pull) / (ns.length + pull) - off[i]!);
           w.push(ns.length + pull);
         });
-        const z = isotonic(t, w);
+        const pinned = groupOf(c) >= 0 ? 1 : 0;
+        const z = [...t.slice(0, pinned).fill(TOP), ...isotonic(t.slice(pinned), w.slice(pinned))];
         col.forEach((it, i) => (it.y = Math.max(TOP, z[i]!) + off[i]!));
       });
-    const groups = new Map<number, number>();
-    partCols.forEach((col, c) => {
-      const g = groupOf(c);
-      if (g < 0 || !col.length) return;
-      groups.set(g, Math.min(groups.get(g) ?? Infinity, col[0]!.y - TOP - (extra[c]![0] ?? 0)));
-    });
-    partCols.forEach((col, c) => {
-      const lift = groups.get(groupOf(c)) ?? 0;
-      for (const it of col) it.y = half(lift > 0.01 ? it.y - lift : it.y);
-    });
+    for (const col of partCols) for (const it of col) it.y = half(it.y);
   };
 
   // 4–5. Street routing, and the gaps widened where routes pass.
@@ -765,7 +757,10 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         paths.set(l.id, { lv, long });
         streets.mark(l.ca, lv, ya, yb, local, +1);
       }
-    // Widen each gap to fit the levels routed through it, LEVEL apart and clear of the parts.
+    // Widen each gap to fit the levels routed through it, LEVEL apart and clear of the parts. The
+    // band above a column's first part is what the levels routed through it need, so it never
+    // keeps room a route no longer takes (no empty band); the gaps between parts only widen, so
+    // the rounds settle.
     if (keep) break;
     let grew = false;
     const widened = partCols.map((col, c) => {
@@ -776,8 +771,8 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         const n = used.filter((y) => y > top && y < it.y).length;
         const need = n ? n * LEVEL + 2 * CLEAR : 0;
         const was = extra[c]![i] ?? 0;
-        const add = Math.max(was, need - (it.y - top) + was);
-        if (add > was + 1) grew = true;
+        const add = i ? Math.max(was, need - (it.y - top) + was) : Math.max(0, need - (it.y - top) + was);
+        if (Math.abs(add - was) > 1) grew = true;
         return add;
       });
     });
