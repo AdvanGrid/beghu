@@ -1,0 +1,17 @@
+ok   beghu-191/analysis-v1.json (0 warnings)
+ok   beghu-191/analysis-v2.json (9 warnings)
+     warning claim.unused /claims/150: nothing refers to `c151`
+     warning claim.unused /claims/272: nothing refers to `c273`
+     warning claim.unused /claims/288: nothing refers to `c289`
+     warning claim.unused /claims/289: nothing refers to `c290`
+     warning claim.unused /claims/302: nothing refers to `c303`
+     warning claim.unused /claims/310: nothing refers to `c311`
+     warning claim.unused /claims/437: nothing refers to `c438`
+     warning claim.unused /claims/444: nothing refers to `c445`
+     warning claim.unused /claims/457: nothing refers to `c458`
+ok   cases/carried-renamed.after-v1.json (0 warnings)
+ok   cases/carried-split.after-v1.json (0 warnings)
+ok   cases/conflict-purpose-outside.json (0 warnings)
+ok   cases/conflict-purpose-purpose.json (0 warnings)
+ok   cases/drawn-partial.json (0 warnings)
+ok   cases/shared-cause.json (0 warnings)
