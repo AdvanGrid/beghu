@@ -954,6 +954,15 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   const framed = (c: number) => !o.inside && (sideOfCol(c) === 1 || sideOfCol(c) === 2);
   // A gutter's name for the anchors: the least part ID in the columns either side.
   const least = partCols.map((col) => col.reduce((m, it) => (it.id < m ? it.id : m), col[0]?.id ?? ""));
+  // Count room on each side of a gutter where a line leaves a part into it: its real `from`, the
+  // left column's for a line laid as given, the right's for one turned round (a port has none).
+  const leaves = cols.map(() => [false, false]);
+  for (const l of laid) {
+    const flip = flipped.has(l.id);
+    if (byId.get(flip ? l.b : l.a)!.port) continue;
+    if (flip) leaves[l.cb - 1]![1] = true;
+    else leaves[l.ca]![0] = true;
+  }
   let firstChange = Infinity;
   if (keep) for (const it of partItem.values()) if (changed(it)) firstChange = Math.min(firstChange, it.col);
   const gutterAnchors = new Map<string, number>();
@@ -968,8 +977,8 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     const padR = crossing && framed(c + 1) ? FRAME_PAD : 0;
     const tw = trackW[c]!;
     const sum = tw.reduce((s, w) => s + w, 0);
-    const room = o.countRoom;
-    const fixed = (crossing ? CROSS_ROOM : 0) + room;
+    const [roomL, roomR] = leaves[c]!.map((on) => (on ? o.countRoom : 0)) as [number, number];
+    const fixed = (crossing ? CROSS_ROOM : 0) + roomL + roomR;
     const name = JSON.stringify([least[c], least[c + 1]]);
     const last = keep?.last.gutters.get(name);
     let step = TRACK;
@@ -982,9 +991,9 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     }
     gutterAnchors.set(name, keep?.gutters.get(name) ?? width);
     gutterWidths.set(name, width);
-    // The tracks sit in the middle of the gutter, between the frames, after the count room.
+    // The tracks sit in the middle of the gutter, between the frames and the count room.
     const inner = sum + Math.max(0, tw.length - 1) * step;
-    let tx = x + padL + room + (width - fixed - inner) / 2;
+    let tx = x + padL + roomL + (width - fixed - inner) / 2;
     const xs = tw.map((w) => {
       const at = tx + w / 2;
       tx += w + step;
