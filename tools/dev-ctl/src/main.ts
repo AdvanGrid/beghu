@@ -1,7 +1,7 @@
 // ./dev-ctl: runs the beghu dev stack (Fake GitHub, the server, Vite) in the background.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -93,10 +93,10 @@ Commands:
   login USER                  Print the URL that signs the browser in as a fixture user
                               (skipping the fake's account picker), and sign the beghu CLI
                               in as USER too (./dev-ctl cli), approving its device code.
-  cli ARGS…                   Run the workspace's beghu CLI (built first) against the stack:
-                              BEGHU_HOST is the app, and its credentials file is under the
-                              stack's data (.dev/data/cli/), never your own. Its exit code
-                              is the CLI's. ./dev-ctl cli analyse AdvanGrid/beghu#191.
+  cli ARGS…                   Run the workspace's beghu CLI (rebuilt if its sources changed)
+                              against the stack: BEGHU_HOST is the app, and its credentials
+                              file is under the stack's data (.dev/data/cli/), never your
+                              own. Its exit code is the CLI's. ./dev-ctl cli analyse AdvanGrid/beghu#191.
   fake [state]                The fake's accounts, sign-ins, token lifetimes and faults.
   fake latency ENDPOINT MS [--count N]
                               Delay calls to ENDPOINT by MS (0 removes the rule); with
@@ -553,15 +553,53 @@ async function login(args: string[]): Promise<void> {
     die(`${user} isn't a fixture account; one of ${s.accounts.map((a) => a.login).join(", ")}`);
   }
   const url = `${urls().app}/auth/login?login=${encodeURIComponent(user)}`;
-  const cli = await cliLogin(user).catch((e: unknown) => `the CLI didn't sign in: ${e instanceof Error ? e.message : String(e)}`);
+  // The browser's URL is printed whatever happens to the CLI's sign-in (its build included).
+  const cli = await cliLogin(user).catch((e: unknown) => `warning: the beghu CLI didn't sign in: ${e instanceof Error ? e.message : String(e)}`);
   print(json, { user, url, cli }, `open ${url}\n(signs in as ${user} through Fake GitHub, without its account picker)\n${cli}`);
 }
 
-/** The workspace's `beghu`, built if need be: its path. */
+/** The newest modification time among `path`'s files (it, if it's a file), in ms; 0 if missing. */
+function newest(path: string): number {
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return 0;
+  }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let most = st.mtimeMs;
+  for (const name of readdirSync(path, { recursive: true, encoding: "utf8" })) {
+    try {
+      most = Math.max(most, statSync(join(path, name)).mtimeMs);
+    } catch {
+      // Gone since the listing.
+    }
+  }
+  return most;
+}
+
+/**
+ * The workspace's `beghu`: its path. Built only when it's missing or older than what it's built
+ * from (its crate's and the analysis crate's sources, the manifests and the lockfile), so a
+ * login or a `./dev-ctl cli` doesn't wait on cargo each time. A failed build throws.
+ */
 function cliBinary(): string {
+  const bin = join(ROOT, "target", "debug", "beghu");
+  // Not their tests, which a build of the binary doesn't relink for.
+  const sources = [
+    "crates/cli/src",
+    "crates/cli/Cargo.toml",
+    "crates/analysis/src",
+    "crates/analysis/generated",
+    "crates/analysis/instructions",
+    "crates/analysis/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock",
+  ].map((p) => newest(join(ROOT, p)));
+  if (existsSync(bin) && statSync(bin).mtimeMs > Math.max(...sources)) return bin;
   const r = spawnSync("cargo", ["build", "--quiet", "-p", "beghu"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
-  if (r.status !== 0) die("building the beghu CLI failed");
-  return join(ROOT, "target", "debug", "beghu");
+  if (r.status !== 0) throw new Error("building the beghu CLI failed");
+  return bin;
 }
 
 /** The CLI's environment on the stack: its host is the app, its credentials the stack's. */
@@ -603,7 +641,12 @@ async function cliLogin(user: string): Promise<string> {
 
 /** `./dev-ctl cli ARGS…`: the CLI against the stack; exits with its code. */
 function cli(args: string[]): void {
-  const bin = cliBinary();
+  let bin: string;
+  try {
+    bin = cliBinary();
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
   const r = spawnSync(bin, args, { cwd: process.cwd(), env: cliEnv(), stdio: "inherit" });
   process.exit(r.status ?? 1);
 }
