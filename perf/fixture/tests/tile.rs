@@ -2,7 +2,7 @@
 //! the server takes, the same bytes every time and cached by the generator's hash.
 
 use analysis::{Analysis, Context, NodeKind, PinnedPr, Previous, validate};
-use fixture::tile::cached;
+use fixture::tile::{cached, layout_dir, layout_graphs};
 use std::collections::{HashMap, HashSet};
 
 /// An analysis's shape as #2627's is told (#162): its top-level parts, its lines at the top level
@@ -128,5 +128,33 @@ fn the_tiles_have_their_shape_pass_the_servers_checks_and_are_cached() {
     for (a, b) in tiles.iter().zip(cached(other.path()).unwrap()) {
         assert!(std::fs::read(&a.2).unwrap() == std::fs::read(&b.2).unwrap());
         assert!(std::fs::read(&a.3).unwrap() == std::fs::read(&b.3).unwrap());
+    }
+}
+
+/// The layout suite's committed graphs (#180) are the tiler's output, byte for byte, so they
+/// can't drift from the tiles the server's gates use. Regenerate them with
+/// `cargo run -p fixture --bin pr-fixtures -- layout`.
+#[test]
+fn the_committed_layout_graphs_are_the_tilers_output() {
+    let graphs = layout_graphs().unwrap();
+    assert_eq!(graphs.len(), 2);
+    for (name, text) in &graphs {
+        let path = layout_dir().join(name);
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == *text,
+            "{} differs from the tiler's output: run `cargo run -p fixture --bin pr-fixtures -- layout` and commit it",
+            path.display()
+        );
+        // The same bytes every time.
+        assert_eq!(
+            *text,
+            layout_graphs()
+                .unwrap()
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap()
+                .1
+        );
     }
 }

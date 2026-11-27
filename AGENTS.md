@@ -33,6 +33,9 @@ CI runs all of these; run them before you commit:
   `npx vite build` (which also prerenders the public site, `web/site/`, in its own Node process)
 - `cargo test` regenerates `web/src/bindings/` (the server's wire types, through ts-rs): commit it
   with the Rust change
+- `cargo run -p fixture --bin pr-fixtures -- layout` after changing the tiler or the recorded
+  analysis: it rewrites the layout suite's committed graphs (`fixtures/pr-view/layout/`), which
+  `cargo test -p fixture` holds to the tiler's output
 - `cargo run -p analysis-fixtures -- check` after changing the analysis crate or anything in
   `fixtures/pr-view/` (CI's `pr-view-fixtures` job): the full validator, snippet check included,
   on every committed recording and case against the real commits, read by SHA from this clone.
