@@ -8,16 +8,20 @@
 // every place with one Retry, the skeleton while they're on their way, v1's IDs forwarding on v2
 // (merged, dropped, unknown), and both themes.
 //
-// As ilze-k: NoAnalysis on a PR of acme/web with no run or analysis, and the start from it,
-// whose upload's push fills the page in; and on #191, the newer-analysis pill. ilze-k has no
+// NoAnalysis on a PR of acme/web with no run or analysis: as tomsj, the PR's details failing
+// (the start can't show) and Retry; as ilze-k, the start, whose upload's push fills the page in.
+// As ilze-k on #191, the newer-analysis pill from the upload's push; as tomsj on a PR of acme/web
+// set up as the sample's, the pill from the reopened stream's reset, the push lost to a dropped
+// stream. ilze-k has no
 // analysis of #191 on a fresh stack: `./dev-ctl analyse --version 1 --as ilze-k` uploads v1, the
 // view opens on a line `carried-split.after-v1.json` splits, and `./dev-ctl analyse --version
 // carried-split --as ilze-k` uploads that case over it (dev-ctl skips v1, which she has), so the
 // open view gets the `analysis` push: the pill, Show it, and the place kept through the split.
 // That leaves her analysis at the case, so a rerun of that test needs `./dev-ctl reset`.
 //
-// Graph and claims failures go through Playwright's request routing (Fake GitHub isn't
-// involved); so does one part made partly drawn (`drawn`), which no recording has at v2.
+// Graph, claims and detail failures go through Playwright's request routing (Fake GitHub isn't
+// involved); so do one part made partly drawn (`drawn`) and a split across kinds, which no
+// recording has at v2.
 //
 // Its uploads move #191 on Fake GitHub between v1's and v2's heads, which moves the PR to the top
 // of every tab's list: it runs on its own after analyse.spec.ts (playwright.config.ts).
@@ -538,21 +542,22 @@ async function control(path: string, body: unknown): Promise<void> {
   expect(res.ok, await res.clone().text()).toBe(true);
 }
 
-test("NoAnalysis: the empty state starts a run, shows it in the button's place, and the accepted upload fills the page in", async ({ context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  const page = await signIn(context, "ilze-k");
-  // A PR of acme/web with neither a run nor an analysis for ilze-k.
+/** An open PR of acme/web with neither a run nor an analysis for the page's account. */
+async function barePr(page: Page): Promise<number> {
   const rows = ((await (await page.request.get(`/api/issues?q=${encodeURIComponent("is:pr is:open repo:acme/web")}`)).json()) as { rows: { number: number }[] }).rows;
-  let number: number | undefined;
   for (const r of rows) {
     const d = (await (await page.request.get(`/api/at/acme/web/${r.number}`)).json()) as { pr: { run?: unknown; analysis?: unknown } };
-    if (!d.pr.run && !d.pr.analysis) {
-      number = r.number;
-      break;
-    }
+    if (!d.pr.run && !d.pr.analysis) return r.number;
   }
-  if (number === undefined) throw new Error("no PR of acme/web without a run or an analysis for ilze-k: ./dev-ctl reset");
-  // Set up as the analysis crate's sample's PR, so the sample uploads to it.
+  throw new Error("no PR of acme/web without a run or an analysis: ./dev-ctl reset");
+}
+
+/**
+ * A bare PR of acme/web (`barePr`) set up as the analysis crate's sample's (its description, a
+ * push of the sample's files to a new head), so the sample, at that head, uploads to it.
+ */
+async function asSamplesPr(page: Page): Promise<{ number: number; head: string; analysis: Json }> {
+  const number = await barePr(page);
   const head = [...crypto.getRandomValues(new Uint8Array(20))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const sample = JSON.parse(readFileSync(SAMPLE, "utf8")) as Json;
   const analysis = { ...sample, pr: { ...sample.pr, headSha: head }, carried: [] };
@@ -566,6 +571,52 @@ test("NoAnalysis: the empty state starts a run, shows it in the button's place, 
       { filename: "api/orders/refund.go", status: "added", additions: 21, deletions: 0 },
     ],
   });
+  return { number, head, analysis };
+}
+
+/** Analyse this PR on the NoAnalysis page: the run's token, from the prompt it copied. */
+async function startFromEmpty(page: Page): Promise<string> {
+  await page.locator('[data-perf="no-analysis"]').getByRole("button", { name: "Analyse this PR" }).click();
+  await expect(page.locator('[data-perf="no-analysis"] [data-perf="analyse-start"] [data-perf="analyse-status"]')).toBeVisible();
+  const prompt = await page.evaluate(() => navigator.clipboard.readText());
+  return /\/api\/runs\/([^/`]+)\/instructions/.exec(prompt)![1]!;
+}
+
+/** What the agent does with a run: fetches its pr.json (pinning it) and uploads `analysis`. */
+async function agentUploads(token: string, analysis: Json): Promise<void> {
+  expect((await fetch(`${status().urls.server}/api/runs/${token}/pr.json`)).status).toBe(200);
+  const up = await fetch(`${status().urls.server}/api/runs/${token}/analysis`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "beghu-snippets": "not-checked" },
+    body: JSON.stringify(analysis),
+  });
+  expect(up.status, await up.clone().text()).toBe(201);
+}
+
+test("NoAnalysis: the PR's details failing says the run can't start from here, and Retry recovers", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  const number = await barePr(page);
+  // The PR's detail, by where it is (a cold load) or by id (once the tab knows it).
+  const detail = (u: URL) => u.pathname === `/api/at/acme/web/${number}` || /^\/api\/issues\/\d+$/.test(u.pathname);
+  await page.route(detail, (route: Route) => route.fulfill({ status: 500, json: { error: "internal", message: "test" } }));
+  await page.goto(`/acme/web/pull/${number}/view`);
+  const empty = page.locator('[data-perf="no-analysis"]');
+  await expect(empty.locator("h2")).toHaveText("No analysis of this PR yet");
+  const failed = empty.locator('[data-perf="no-analysis-failed"]');
+  await expect(failed).toHaveText(/^Couldn't load the PR's details, so the run can't start from here · Retry$/);
+  await expect(empty.getByRole("button", { name: "Analyse this PR" })).toHaveCount(0);
+
+  await page.unroute(detail);
+  await failed.getByRole("button", { name: "Retry" }).click();
+  await expect(failed).toHaveCount(0);
+  await expect(empty.getByRole("button", { name: "Analyse this PR" })).toBeVisible();
+  await expect(page.locator('[data-perf="view-title"]')).not.toBeEmpty();
+});
+
+test("NoAnalysis: the empty state starts a run, shows it in the button's place, and the accepted upload fills the page in", async ({ context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const page = await signIn(context, "ilze-k");
+  const { number, head, analysis } = await asSamplesPr(page);
 
   await page.goto(`/acme/web/pull/${number}/view`);
   const empty = page.locator('[data-perf="no-analysis"]');
@@ -576,21 +627,13 @@ test("NoAnalysis: the empty state starts a run, shows it in the button's place, 
   // No analysis: the top bar has no Analyse again.
   await expect(page.locator('[data-perf="view-bar"] [data-perf="analyse"]')).toHaveCount(0);
 
-  await empty.getByRole("button", { name: "Analyse this PR" }).click();
+  const token = await startFromEmpty(page);
   const start = empty.locator('[data-perf="analyse-start"]');
   await expect(start.locator('[data-perf="analyse-status"]')).toContainText("This page fills in when the upload is accepted.");
   await expect(start.getByRole("button", { name: "End run" })).toHaveCount(0);
-  const prompt = await page.evaluate(() => navigator.clipboard.readText());
-  const token = /\/api\/runs\/([^/`]+)\/instructions/.exec(prompt)![1]!;
 
   // The agent fetches and uploads: the `analysis` push loads the view.
-  expect((await fetch(`${status().urls.server}/api/runs/${token}/pr.json`)).status).toBe(200);
-  const up = await fetch(`${status().urls.server}/api/runs/${token}/analysis`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "beghu-snippets": "not-checked" },
-    body: JSON.stringify(analysis),
-  });
-  expect(up.status, await up.clone().text()).toBe(201);
+  await agentUploads(token, analysis);
   await expect(page.locator('[data-perf="canvas"]')).toBeVisible({ timeout: 20_000 });
   await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
   await expect(page.locator('[data-perf="view-analysed"]')).toContainText(`analysed at ${head.slice(0, 7)}`);
@@ -692,4 +735,52 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await open(page, `?sel=line:${encodeURIComponent(split.was)}`);
   await expect.poll(() => selOf(page)).toBe(`line:${split.now.join(",")}`);
   await expect(note(page)).toContainText("was split into");
+});
+
+test("An upload while the stream was down shows the pill once the stream's reset says so", async ({ context }) => {
+  // On a PR of its own, as the sample's, through a run started from its empty state: a run takes
+  // more than one upload, and the sample again keeps every ID, so it needs no `carried`. (Not
+  // #191 through ./dev-ctl analyse: each account takes its recorded chain once per reset, and the
+  // other tests use tomsj's and ilze-k's.)
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const page = await signIn(context, "tomsj");
+  // A handle on the tab's EventSources, to cut the live one as a dropped connection would
+  // (live.spec.ts does the same).
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    const all: EventSource[] = [];
+    (window as unknown as { streams: EventSource[] }).streams = all;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        all.push(this);
+      }
+    };
+  });
+  const { number, analysis } = await asSamplesPr(page);
+  await page.goto(`/acme/web/pull/${number}/view`);
+  const token = await startFromEmpty(page);
+  await agentUploads(token, analysis);
+  const body = page.locator('[data-perf="view-body"]');
+  await expect(body).toBeVisible({ timeout: 20_000 });
+  const shown = await body.getAttribute("data-analysis");
+  await page.waitForFunction(() => (window as unknown as { streams: EventSource[] }).streams.at(-1)?.readyState === EventSource.OPEN);
+  const pill = page.locator('[data-perf="newer"]');
+
+  // The stream drops and stays down: every retry is refused, so the upload's push is lost.
+  const stream = (u: URL) => u.pathname === "/api/stream";
+  await page.route(stream, (route: Route) => route.abort("connectionrefused"));
+  await page.evaluate(() => (window as unknown as { streams: EventSource[] }).streams.at(-1)!.dispatchEvent(new Event("error")));
+  await agentUploads(token, analysis);
+  await page.waitForTimeout(1500);
+  await expect(pill).toHaveCount(0);
+
+  // Back: the stream opens with a reset, the PR's detail is read again, and it names a newer
+  // analysis than the one shown.
+  await page.unroute(stream);
+  await expect(pill).toHaveText(/A newer analysis is ready\s*Show it/, { timeout: 20_000 });
+  await expect(body).toHaveAttribute("data-analysis", shown!);
+  await pill.getByRole("button", { name: "Show it" }).click();
+  await expect(body).not.toHaveAttribute("data-analysis", shown!);
+  await expect(pill).toHaveCount(0);
 });
