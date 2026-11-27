@@ -2,7 +2,8 @@ name: Perf
 
 # The perf gates (perf/harness, limits in perf-budgets.toml): three suites in parallel against
 # release builds at 50k, unthrottled, on loopback, each timing the median of 10 with one
-# confirming re-run. `perf` is the check to require: it always runs, and passes when no PR
+# confirming re-run, and the layout suite, which runs our layout (web/src/pr-view/layout/) in
+# Node on the committed synthetic graph with no build or stack. `perf` is the check to require: it always runs, and passes when no PR
 # change could move a gate. It posts the table as a PR comment.
 
 on:
@@ -38,6 +39,7 @@ jobs:
               - perf/**
               - perf-budgets.toml
               - fixtures/pr-view/beghu-*/**
+              - fixtures/pr-view/layout/**
               - web/src/**
               - web/index.html
               - web/theme.js
@@ -57,15 +59,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [server, load, browser]
+        suite: [server, load, browser, layout]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        if: matrix.suite != 'layout'
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: matrix.suite != 'layout'
         with:
           # One release cache for the three suites.
           shared-key: perf-release
@@ -78,14 +82,18 @@ jobs:
             web/package-lock.json
             perf/harness/package-lock.json
 
+      # The layout suite needs only the harness: the engine has no dependencies.
       - name: Install
+        env:
+          SUITE: ${{ matrix.suite }}
         run: |
-          npm --prefix web ci --ignore-scripts
+          if [ "$SUITE" != layout ]; then npm --prefix web ci --ignore-scripts; fi
           npm --prefix perf/harness ci --ignore-scripts
 
       # The fixture is named by its generator's hash, so a stale cache only costs a regeneration.
       # The key hashes what perf/fixture/build.rs hashes: keep the two lists in step.
       - name: Fixture cache
+        if: matrix.suite != 'layout'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: perf/data
@@ -95,6 +103,7 @@ jobs:
       # `-p fixture` builds the generator and `pr-fixtures`, which tiles the recorded analysis
       # for the server suite's analysis gates (cached in perf/data beside the fixture).
       - name: Build (release server and Fake GitHub, production web build)
+        if: matrix.suite != 'layout'
         run: |
           cargo build --release --locked -p beghu-server -p fake-github -p fixture &
           (cd web && npx vite build --logLevel warn --outDir "$RUNNER_TEMP/web") &
@@ -106,10 +115,18 @@ jobs:
         working-directory: perf/harness
 
       - name: Run the ${{ matrix.suite }} suite
+        if: matrix.suite != 'layout'
         run: >
           node perf/harness/src/main.ts run ${{ matrix.suite }}
           --bin target/release --web "$RUNNER_TEMP/web" --data "$RUNNER_TEMP/perf-data"
           --out perf-results/${{ matrix.suite }}.json
+          --commit ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Run the layout suite
+        if: matrix.suite == 'layout'
+        run: >
+          node perf/harness/src/main.ts run layout
+          --out perf-results/layout.json
           --commit ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -155,7 +172,7 @@ jobs:
         run: |
           npm --prefix perf/harness ci --ignore-scripts
           set +e
-          node perf/harness/src/main.ts report perf-results/*.json --md perf-comment.md --title "Perf gates" --expect server,load,browser
+          node perf/harness/src/main.ts report perf-results/*.json --md perf-comment.md --title "Perf gates" --expect server,load,browser,layout
           echo "code=$?" >> "$GITHUB_OUTPUT"
           cat perf-comment.md >> "$GITHUB_STEP_SUMMARY"
 
