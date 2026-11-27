@@ -210,6 +210,37 @@ async fn a_denied_login_stores_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_it_cant_save_is_revoked_at_once() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let m = Machine::new(&s);
+    // The credentials' folder can't be written: the sign-in is minted, then can't be kept.
+    let dir = m.credentials().parent().unwrap().to_owned();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = dir.join(".probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("skipped: this user can write in a read-only folder (root?)");
+        return;
+    }
+    let out = m.login(&s, &b).await;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("couldn't save it"), "{out:?}");
+    assert!(out.stderr.contains("It's revoked again"), "{out:?}");
+    // Not printed, and not left live on the server.
+    assert!(
+        !out.stdout.contains("beghu_cli_") && !out.stderr.contains("beghu_cli_"),
+        "{out:?}"
+    );
+    let (status, sign_ins) = s.api(&mut b, "/api/cli/sign-ins").await;
+    assert_eq!((status, sign_ins), (200, serde_json::json!([])));
+    assert!(!m.credentials().exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_revoked_sign_in_is_signed_out_on_its_next_call() {
     let s = start().await;
     let mut b = s.sign_in("tomsj").await;

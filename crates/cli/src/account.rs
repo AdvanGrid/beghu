@@ -233,7 +233,8 @@ pub async fn login(rest: &[String]) -> Result<(), Fail> {
         }
     };
     // Saved under the file's lock, read again then: another beghu may have changed it since.
-    let replaced = Credentials::update(&path, |c| {
+    let token = approved.token.clone();
+    let saved = Credentials::update(&path, |c| {
         let old = c.hosts.insert(
             host.clone(),
             SignIn {
@@ -244,8 +245,11 @@ pub async fn login(rest: &[String]) -> Result<(), Fail> {
         );
         c.active = Some(host.clone());
         old
-    })
-    .map_err(Fail::Msg)?;
+    });
+    let replaced = match saved {
+        Ok(r) => r,
+        Err(e) => return Err(unsaved(&host, &name, token, &e).await),
+    };
     // The sign-in this one replaces is revoked, if the host still knows it.
     if let Some(old) = replaced
         && let Ok(old_api) = Api::new(&host, Some(old.token))
@@ -261,6 +265,28 @@ pub async fn login(rest: &[String]) -> Result<(), Fail> {
         );
     }
     Ok(())
+}
+
+/// A sign-in minted but not saved: it's revoked at once, so no live credential is left that
+/// nobody holds. Printing it instead would leave it in a terminal's scrollback or a CI log, and a
+/// failed save is better fixed and signed in again than worked around by hand.
+async fn unsaved(host: &str, name: &str, token: String, why: &str) -> Fail {
+    let revoked = match Api::new(host, Some(token)) {
+        Ok(api) => api
+            .post_json("/api/cli/logout", &serde_json::json!({}))
+            .await
+            .map(|r| r.status == 204),
+        Err(e) => Err(e),
+    };
+    let cmd = format!("beghu login{}", host_flag(host));
+    Fail::msg(match revoked {
+        Ok(true) => format!(
+            "{host} signed this machine in, but beghu couldn't save it: {why}. It's revoked again, so nothing is left signed in: fix that and run `{cmd}`"
+        ),
+        _ => format!(
+            "{host} signed this machine in, but beghu couldn't save it: {why}, nor revoke it: revoke {name:?} under \"CLI sign-ins\" on {host}'s setup page, then fix that and run `{cmd}`"
+        ),
+    })
 }
 
 /// `beghu logout [--host URL | --all]`: revokes each sign-in on its server, then forgets it here,
@@ -427,8 +453,13 @@ pub async fn status(rest: &[String]) -> Result<(), Fail> {
                 && let (Some(e), Some(entry)) = (s.expires_at, c.hosts.get(&host))
                 && entry.expires != e
             {
+                // Only if it's still the sign-in asked about: another beghu may have signed in
+                // again meanwhile, and its expiry is its own.
+                let asked = entry.token.clone();
                 let _ = Credentials::update(&path, |c| {
-                    if let Some(entry) = c.hosts.get_mut(&host) {
+                    if let Some(entry) = c.hosts.get_mut(&host)
+                        && entry.token == asked
+                    {
                         entry.expires = e;
                     }
                 });
