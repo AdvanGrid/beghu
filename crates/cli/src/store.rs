@@ -8,7 +8,8 @@
 //! containers and in CI. Both files are written `0600`, through a new temporary file and a rename
 //! (the folder synced after), so a crash never leaves half of one, and `credentials.toml` is
 //! changed only under an advisory lock (`credentials.toml.lock`), so two `beghu`s at once don't
-//! lose each other's sign-ins.
+//! lose each other's sign-ins. On a file system with no locks (an NFS mount without its lock
+//! daemon, some FUSE ones) it's changed without, and that's said on stderr.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -224,6 +225,8 @@ pub fn temp_beside(path: &Path, mode: u32) -> std::io::Result<(std::fs::File, Pa
 }
 
 /// Renames `tmp` over `path`, then syncs their folder, so the rename itself survives a crash.
+/// The sync is best-effort: the rename has happened, and some file systems (some network and
+/// FUSE ones) can't sync a folder at all, which is no reason to call the write failed.
 pub fn rename_durably(tmp: &Path, path: &Path) -> std::io::Result<()> {
     std::fs::rename(tmp, path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -232,7 +235,8 @@ pub fn rename_durably(tmp: &Path, path: &Path) -> std::io::Result<()> {
     } else {
         dir
     };
-    std::fs::File::open(dir)?.sync_all()
+    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    Ok(())
 }
 
 /// Writes `text` to `path` as `0600`, through a new temporary file beside it and a rename, making
@@ -302,6 +306,19 @@ pub struct Credentials {
 
 const HOSTS: &str = "hosts";
 
+/// Whether `flock` failed because the file system has no locks (`ENOLCK`, `ENOTSUP`,
+/// `EOPNOTSUPP`), not for a fault of beghu's or the file's.
+fn no_locks_here(e: &std::io::Error) -> bool {
+    #[cfg(target_os = "linux")]
+    const NO_LOCKS: &[i32] = &[37, 95]; // ENOLCK; ENOTSUP and EOPNOTSUPP are one
+    #[cfg(target_os = "macos")]
+    const NO_LOCKS: &[i32] = &[77, 45, 102]; // ENOLCK, ENOTSUP, EOPNOTSUPP
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    const NO_LOCKS: &[i32] = &[];
+    e.kind() == std::io::ErrorKind::Unsupported
+        || e.raw_os_error().is_some_and(|c| NO_LOCKS.contains(&c))
+}
+
 impl Credentials {
     /// The file, or none yet.
     pub fn load(path: &Path) -> Result<Credentials, String> {
@@ -354,8 +371,14 @@ impl Credentials {
             .mode(0o600)
             .open(&lock_path)
             .map_err(|e| format!("can't open {}: {e}", lock_path.display()))?;
-        lock.lock()
-            .map_err(|e| format!("can't lock {}: {e}", lock_path.display()))?;
+        match lock.lock() {
+            Ok(()) => {}
+            Err(e) if no_locks_here(&e) => eprintln!(
+                "beghu: {} can't be locked on this file system ({e}): changing the sign-ins without the lock, so don't run two beghu logins or logouts at once",
+                lock_path.display()
+            ),
+            Err(e) => return Err(format!("can't lock {}: {e}", lock_path.display())),
+        }
         let mut c = Credentials::load(path)?;
         let out = f(&mut c);
         c.save(path)?;
