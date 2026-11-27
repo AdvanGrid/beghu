@@ -1,7 +1,7 @@
 // ./dev-ctl: runs the beghu dev stack (Fake GitHub, the server, Vite) in the background.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, utimesSync, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -27,6 +27,7 @@ import {
   type Seeded,
   STATE,
   SUPERVISOR,
+  TARGET,
   type State,
   URLS,
   WEB_BUILDS,
@@ -584,7 +585,7 @@ function newest(path: string): number {
  * login or a `./dev-ctl cli` doesn't wait on cargo each time. A failed build throws.
  */
 function cliBinary(): string {
-  const bin = join(ROOT, "target", "debug", "beghu");
+  const bin = join(TARGET, "beghu");
   // Not their tests, which a build of the binary doesn't relink for.
   const sources = [
     "crates/cli/src",
@@ -599,6 +600,10 @@ function cliBinary(): string {
   if (existsSync(bin) && statSync(bin).mtimeMs > Math.max(...sources)) return bin;
   const r = spawnSync("cargo", ["build", "--quiet", "-p", "beghu"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
   if (r.status !== 0) throw new Error("building the beghu CLI failed");
+  // Cargo leaves the binary as it was when nothing it links changed (a touched file, a comment in
+  // a test): newer than its sources now, so the next call doesn't build again.
+  const now = new Date();
+  utimesSync(bin, now, now);
   return bin;
 }
 

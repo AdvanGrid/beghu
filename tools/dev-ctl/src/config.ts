@@ -31,7 +31,11 @@ export const DEPLOYED = join(DEV, "deployed.json");
 /** The volume's asset store, and each build's record of its assets (crates/server/src/assets.rs). */
 export const ASSETS = join(DATA, "assets");
 export const BUILDS = join(DATA, "builds");
-export const TARGET = join(ROOT, "target", "debug");
+/**
+ * Where cargo builds the debug binaries: under CARGO_TARGET_DIR when it's set (relative to the
+ * repo, where ./dev-ctl runs cargo), as cargo itself honours it, else target/.
+ */
+export const TARGET = join(process.env.CARGO_TARGET_DIR ? resolve(ROOT, process.env.CARGO_TARGET_DIR) : join(ROOT, "target"), "debug");
 /**
  * The agent's tools, validate.mjs and merge.mjs, as crates/analysis-wasm/build.sh builds them
  * from this tree: the server serves them to analysis runs (BEGHU_ANALYSIS_DIR).
