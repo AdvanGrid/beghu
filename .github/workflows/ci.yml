@@ -366,7 +366,9 @@ jobs:
     # each ending in a clean error. The x86_64 build runs too, under Rosetta when the runner has
     # it; without Rosetta the job says so, having only downloaded it.
     needs: image
-    runs-on: macos-14
+    # Apple silicon (arm64), pinned rather than macos-latest so an image change is a choice:
+    # macos-14 was retired.
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
