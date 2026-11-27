@@ -57,6 +57,12 @@ const CROSS_ROOM = 24;
 const SHORT = 40;
 /** Verticals that run together this far share a track. */
 const STRETCH = 20;
+/** Between two of a part's lines where they meet it. */
+const SLOT = 12;
+/** Horizontals closer than this would read as one. */
+const NEAR = 4;
+/** A track order that must hold, ahead of any that saves crossings. */
+const MUST = 1e9;
 /** An anchor's weight against a neighbour's pull: kept parts stay put. */
 const KEEP = 1000;
 /** A part's pull back to its packed place, against its neighbours'; a port's is light. */
@@ -452,6 +458,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     });
     // Per column, per level, how many lines ride it; per gutter, per level step, how many.
     hUse = cols.map(() => new Int32Array(L));
+    const hLocal = cols.map(() => new Int32Array(L));
     const vUse: Int32Array[] = cols.map(() => new Int32Array(L));
     /** Bumped whenever a stretch of the gutter goes from unused to used or back. */
     const version = new Int32Array(nCols);
@@ -468,6 +475,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     paths = new Map();
     const mark = (l: Laid, lv: number[], sign: number) => {
       for (let i = 0; i < lv.length; i++) hUse[l.ca + 1 + i]![lv[i]!]! += sign;
+      if (span(l) < LOCAL_GUTTERS) for (let i = 0; i < lv.length; i++) hLocal[l.ca + 1 + i]![lv[i]!]! += sign;
       const ys = ysOf(l, lv);
       for (let i = 0; i + 1 < ys.length; i++) {
         const g = l.ca + i;
@@ -505,7 +513,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     const loV = new Float64Array(L), hiV = new Float64Array(L);
     const loI = new Int32Array(L), hiI = new Int32Array(L);
     let back = new Int32Array(0);
-    const route = (l: Laid, long: boolean): number[] | null => {
+    const route = (l: Laid, long: boolean, strict = true): number[] | null => {
       const n = l.cb - l.ca - 1;
       if (n <= 0) return [];
       const ya = endY(partItem.get(l.a)!, l.id), yb = endY(partItem.get(l.b)!, l.id);
@@ -513,11 +521,11 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
       if (back.length < n * L) back = new Int32Array(n * L);
       pre(l.ca, long);
       {
-        const c = l.ca + 1, f = free[c]!, use = hUse[c]!, w = colWidth[c]!, at = levelOf(ya);
-        for (let j = 0; j < L; j++) dp[j] = f[j] ? toLevel(ya, at, j) + w * (use[j] ? busy : 1) : Infinity;
+        const c = l.ca + 1, f = free[c]!, use = hUse[c]!, loc = hLocal[c]!, w = colWidth[c]!, at = levelOf(ya);
+        for (let j = 0; j < L; j++) dp[j] = f[j] && !(strict && (long ? loc[j] : use[j])) ? toLevel(ya, at, j) + w * (use[j] ? busy : 1) : Infinity;
       }
       for (let k = 1; k < n; k++) {
-        const g = l.ca + k, c = g + 1, f = free[c]!, use = hUse[c]!, w = colWidth[c]!;
+        const g = l.ca + k, c = g + 1, f = free[c]!, use = hUse[c]!, loc = hLocal[c]!, w = colWidth[c]!;
         pre(g, long);
         // The cheapest level to come from, in O(L): from below j costs dp[i] - P[i] + P[j],
         // from above dp[i] + P[i] - P[j] (P is a running sum), so a running minimum from each
@@ -536,7 +544,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         }
         const row = k * L;
         for (let j = 0; j < L; j++) {
-          if (!f[j]) {
+          if (!f[j] || (strict && (long ? loc[j] : use[j]))) {
             next[j] = Infinity;
             back[row + j] = -1;
             continue;
@@ -569,7 +577,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         const long = span(l) >= LOCAL_GUTTERS;
         const old = paths.get(l.id);
         if (old) mark(l, old.lv, -1);
-        const lv = route(l, long);
+        const lv = route(l, long) ?? route(l, long, false);
         if (!lv) continue;
         paths.set(l.id, { lv, long });
         mark(l, lv, +1);
@@ -598,10 +606,12 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   const riders: Map<number, string[]>[] = cols.map(() => new Map());
   for (const l of laid) {
     const p = paths.get(l.id);
-    if (!p?.long) continue;
+    if (!p) continue;
     p.lv.forEach((j, i) => {
       const m = riders[l.ca + 1 + i]!;
-      m.set(j, [...(m.get(j) ?? []), l.id]);
+      const ids = m.get(j);
+      if (ids) ids.push(l.id);
+      else m.set(j, [l.id]);
     });
   }
   const per: { c: number; j: number; members: string[] }[] = [];
@@ -613,10 +623,15 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     if (last && last.to === p.c - 1 && last.j === p.j && last.members.join() === p.members.join()) last.to = p.c;
     else clusters.push({ members: p.members, from: p.c, to: p.c, j: p.j });
   }
-  const trunkAt = new Map<string, number>(); // `${line}|${column}` → its cluster
-  clusters.forEach((cl, k) => cl.members.forEach((m) => {
-    for (let c = cl.from; c <= cl.to; c++) trunkAt.set(`${m}|${c}`, k);
-  }));
+  // Each line's cluster in each column it rides one.
+  const trunkAt = new Map<string, Map<number, number>>();
+  clusters.forEach((cl, k) =>
+    cl.members.forEach((m) => {
+      let at = trunkAt.get(m);
+      if (!at) trunkAt.set(m, (at = new Map()));
+      for (let c = cl.from; c <= cl.to; c++) at.set(c, k);
+    }),
+  );
 
   // Each line's chain of stops: its parts, and between them its level in each column (its own,
   // or its trunk's).
@@ -631,7 +646,8 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     const p = paths.get(l.id);
     const a = partItem.get(l.a)!, b = partItem.get(l.b)!;
     const s: Stop[] = [{ col: l.ca, part: a, y: mid(a) }];
-    (p?.lv ?? []).forEach((j, i) => s.push({ col: l.ca + 1 + i, trunk: trunkAt.get(`${l.id}|${l.ca + 1 + i}`), y: Y[j]! }));
+    const at = trunkAt.get(l.id);
+    (p?.lv ?? []).forEach((j, i) => s.push({ col: l.ca + 1 + i, trunk: at?.get(l.ca + 1 + i), y: Y[j]! }));
     // A line no level could carry runs straight to its part (it never happens on a free column).
     if (!p) for (let c = l.ca + 1; c < l.cb; c++) s.push({ col: c, y: mid(a) });
     s.push({ col: l.cb, part: b, y: mid(b) });
@@ -640,24 +656,45 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
 
   // Ports: a part's lines leave (and arrive) spread down its side, ordered by the other end; a
   // port's all meet at its point, and a frame's at its fixed ports.
-  const portR = new Map<string, number>(); // `${part}|${line}` → y
+  // Each line's y where it leaves its first part (its right side) and meets its last (left).
+  const portR = new Map<string, number>();
   const portL = new Map<string, number>();
   {
     const outs = new Map<Item, { key: string; toward: number }[]>();
     const ins = new Map<Item, { key: string; toward: number }[]>();
+    const add = (m: Map<Item, { key: string; toward: number }[]>, it: Item, e: { key: string; toward: number }) => {
+      const es = m.get(it);
+      if (es) es.push(e);
+      else m.set(it, [e]);
+    };
     for (const [key, s] of stops) {
       const [first, second, last, before] = [s[0]!, s[1]!, s[s.length - 1]!, s[s.length - 2]!];
-      outs.set(first.part!, [...(outs.get(first.part!) ?? []), { key, toward: second.y }]);
-      ins.set(last.part!, [...(ins.get(last.part!) ?? []), { key, toward: before.y }]);
+      add(outs, first.part!, { key, toward: second.y });
+      add(ins, last.part!, { key, toward: before.y });
     }
     const spread = (it: Item, keys: { key: string; toward: number }[], into: Map<string, number>) => {
       keys.sort((a, b) => a.toward - b.toward || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-      const n = keys.length;
-      const step = n > 1 ? Math.min(12, (it.h - 16) / (n - 1)) : 0;
-      keys.forEach((k, i) => {
-        const fixed = it.part!.ports?.get(k.key);
-        into.set(`${it.id}|${k.key}`, fixed !== undefined ? it.y + fixed : isPort(it) ? mid(it) : mid(it) + (i - (n - 1) / 2) * step);
-      });
+      const fixed: number[] = [];
+      const free: typeof keys = [];
+      for (const k of keys) {
+        const f = it.part!.ports?.get(k.key);
+        if (f === undefined) free.push(k);
+        else into.set(k.key, it.y + f), fixed.push(it.y + f);
+      }
+      if (isPort(it)) return free.forEach((k) => into.set(k.key, mid(it)));
+      const n = free.length;
+      if (!fixed.length) {
+        const step = n > 1 ? Math.min(12, (it.h - 16) / (n - 1)) : 0;
+        return free.forEach((k, i) => into.set(k.key, mid(it) + (i - (n - 1) / 2) * step));
+      }
+      // A frame's other lines take slots round its middle, clear of its fixed ports.
+      const slots: number[] = [];
+      const [lo, hi] = [it.y + 8, it.y + it.h - 8];
+      for (let d = 0; slots.length < n && (mid(it) - d * SLOT >= lo || mid(it) + d * SLOT <= hi); d++)
+        for (const y of d ? [mid(it) - d * SLOT, mid(it) + d * SLOT] : [mid(it)])
+          if (slots.length < n && y >= lo && y <= hi && fixed.every((f) => Math.abs(f - y) >= SLOT / 2)) slots.push(y);
+      slots.sort((a, b) => a - b);
+      free.forEach((k, i) => into.set(k.key, slots[i] ?? mid(it)));
     };
     for (const [it, ks] of outs) spread(it, ks, portR);
     for (const [it, ks] of ins) spread(it, ks, portL);
@@ -671,25 +708,29 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     thick: number;
     track: number;
     x: number;
+    /** The port it leaves (on the gutter's left) or meets (right): a port's lines share a track. */
+    port?: Item;
   }
   const gutters: Seg[][] = Array.from({ length: Math.max(0, nCols - 1) }, () => []);
-  const segOf = new Map<string, Seg>(); // `${gutter}|${line}`
+  // Per gutter, each line's vertical there, and each trunk's.
+  const segOf: Map<string, Seg>[] = gutters.map(() => new Map());
+  const trunkSeg: Map<number, Seg>[] = gutters.map(() => new Map());
   for (const [key, s] of stops) {
     for (let i = 0; i + 1 < s.length; i++) {
       const [p, q] = [s[i]!, s[i + 1]!];
       const g = p.col;
       const shared = p.trunk !== undefined && p.trunk === q.trunk;
-      const sid = shared ? `${g}|t${p.trunk}` : `${g}|${key}`;
-      let seg = segOf.get(sid);
+      let seg = shared ? trunkSeg[g]!.get(p.trunk!) : undefined;
       if (!seg) {
-        const y1 = p.part ? portR.get(`${p.part.id}|${key}`)! : p.y;
-        const y2 = q.part ? portL.get(`${q.part.id}|${key}`)! : q.y;
-        seg = { keys: [], y1, y2, thick: shared ? trunkWidth(clusters[p.trunk!]!.members.length) : 1.5, track: -1, x: 0 };
-        segOf.set(sid, seg);
+        const y1 = p.part ? portR.get(key)! : p.y;
+        const y2 = q.part ? portL.get(key)! : q.y;
+        const port = p.part && isPort(p.part) ? p.part : q.part && isPort(q.part) ? q.part : undefined;
+        seg = { keys: [], y1, y2, thick: shared ? trunkWidth(clusters[p.trunk!]!.members.length) : 1.5, track: -1, x: 0, port };
+        if (shared) trunkSeg[g]!.set(p.trunk!, seg);
         gutters[g]!.push(seg);
       }
       seg.keys.push(key);
-      segOf.set(`${g}|${key}`, seg);
+      segOf[g]!.set(key, seg);
     }
   }
   interface V {
@@ -715,7 +756,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
       if (gr) gr.segs.push(x), (gr.all = { lo: Math.min(gr.all.lo, r.lo), hi: Math.max(gr.all.hi, r.hi) });
       else groups.push({ segs: [x], all: r });
     }
-    const units: V[] = groups.map(({ segs: ss }) => {
+    const unitOf = (ss: Seg[]): V => {
       const ys = ss.flatMap((x) => [x.y1, x.y2]);
       const keys = ss.reduce((n, x) => n + x.keys.length, 0);
       return {
@@ -727,18 +768,36 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         thick: ss.length > 1 ? Math.max(trunkWidth(keys), ...ss.map((x) => x.thick)) : ss[0]!.thick,
         track: 0,
       };
-    });
-    vunits[g] = units;
+    };
     const inside = (y: number, v: V) => y > v.lo + 0.5 && y < v.hi - 0.5;
     // a left of b crosses where b's lines come in across a's vertical, or a's go out across b's.
     const cost = (a: V, b: V) => b.ins.filter((y) => inside(y, a)).length + a.outs.filter((y) => inside(y, b)).length;
+    // A line leaving left at the level another leaves right at would run on top of it between
+    // their tracks unless the one going left sits left.
+    const must = (a: V, b: V) => a.ins.some((y) => b.outs.some((z) => Math.abs(y - z) < NEAR));
     const clash = (a: V, b: V) => !(a.hi + 5 <= b.lo - 5 || b.hi + 5 <= a.lo - 5);
+    const units: V[] = groups.map(({ segs: ss }) => unitOf(ss));
+    // Two that must each sit left of the other share a track: their stubs then only meet.
+    for (let merged = true; merged; ) {
+      merged = false;
+      for (let i = 0; i < units.length && !merged; i++)
+        for (let j = i + 1; j < units.length && !merged; j++) {
+          const [a, b] = [units[i]!, units[j]!];
+          if (clash(a, b) && must(a, b) && must(b, a)) (units[i] = unitOf([...a.segs, ...b.segs])), units.splice(j, 1), (merged = true);
+        }
+    }
+    vunits[g] = units;
     const index = new Map(units.map((v, i) => [v, i]));
     const prefs: { a: number; b: number; gain: number }[] = [];
     for (let i = 0; i < units.length; i++)
       for (let j = i + 1; j < units.length; j++) {
         const [a, b] = [units[i]!, units[j]!];
         if (!clash(a, b)) continue;
+        const mab = must(a, b), mba = must(b, a);
+        if (mab !== mba) {
+          prefs.push(mab ? { a: i, b: j, gain: MUST } : { a: j, b: i, gain: MUST });
+          continue;
+        }
         const ab = cost(a, b), ba = cost(b, a);
         // Ties: lines going down nest outside-in, so the longer drop sits further out.
         const down = a.outs[0]! - a.ins[0]! >= 0;
@@ -827,7 +886,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
     const pts: P[] = [];
     for (let i = 0; i + 1 < s.length; i++) {
       const [p, q] = [s[i]!, s[i + 1]!];
-      const seg = segOf.get(`${p.col}|${key}`)!;
+      const seg = segOf[p.col]!.get(key)!;
       if (i === 0) pts.push({ x: colX[p.col]! + p.part!.part!.w, y: seg.y1 });
       if (apart(seg.y1, seg.y2)) pts.push({ x: seg.x, y: seg.y1 }, { x: seg.x, y: seg.y2 });
       if (i + 2 === s.length) pts.push({ x: colX[q.col]!, y: seg.y2 });
@@ -860,6 +919,35 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
         else flush(), (piece = { from: ya, to: yb, members });
       }
       flush();
+    }
+  });
+  // A port's fan: its lines run together from the port to their track.
+  gutters.forEach((segs, g) => {
+    const fans = new Map<Item, Seg[]>();
+    for (const sg of segs) {
+      if (!sg.port) continue;
+      const ss = fans.get(sg.port);
+      if (ss) ss.push(sg);
+      else fans.set(sg.port, [sg]);
+    }
+    for (const [port, ss] of fans) {
+      if (ss.length < 2) continue;
+      // Out from the port, each line turns off at its track (one that runs straight on, at the
+      // gutter's far side), so the stretch to each turn is shared by every line not off yet.
+      const left = port.col === g;
+      const y = left ? ss[0]!.y1 : ss[0]!.y2;
+      const px = colX[port.col]!;
+      const far = left ? colX[g + 1]! : colX[g]! + colWidth[g]!;
+      const turns = ss.map((sg) => ({ keys: sg.keys, at: Math.abs((apart(sg.y1, sg.y2) ? sg.x : far) - px) })).sort((a, b) => a.at - b.at);
+      let from = 0;
+      turns.forEach((t, i) => {
+        const on = turns.slice(i).flatMap((u) => u.keys);
+        if (on.length > 1 && t.at - from >= 1) {
+          const [x0, x1] = left ? [px + from, px + t.at] : [px - t.at, px - from];
+          trunks.push({ lines: on, pts: [{ x: x0, y }, { x: x1, y }], width: trunkWidth(on.length) });
+        }
+        from = Math.max(from, t.at);
+      });
     }
   });
   const groups: SOut["groups"] = [];
