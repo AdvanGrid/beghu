@@ -33,6 +33,11 @@ function claim(id: number): boolean {
   }
 }
 
+/** Claims the issue with id `id` for this test, by name: false if another test has it. */
+export function claimId(id: number): boolean {
+  return claim(id);
+}
+
 export type Row = {
   id: number;
   /** `issue` or `pr`: the default list shows both. */

@@ -66,7 +66,8 @@ const LIST_QUICK: Action[] = ["next", "previous", "scrollDown", "scrollUp", "col
 const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
-  panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "focusIssue", "toList", "help"],
+  // Diff mode's change keys are on offer only while it's on.
+  panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "diff", "nextChange", "previousChange", "imageOpen", "focusIssue", "toList", "help"],
   lightbox: ["imageClose"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
@@ -101,6 +102,7 @@ const PICKER: Syntax[] = [
 const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[] }[] = [
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode", "focusIssue"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
+  { name: "Diff", areas: ["panel"], actions: ["diff", "fromOlder", "fromNewer", "toOlder", "toNewer", "nextChange", "previousChange"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },

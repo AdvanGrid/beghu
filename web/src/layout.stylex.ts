@@ -32,3 +32,11 @@ export const colW = stylex.defineVars({
   who: "0px",
   updated: "0px",
 });
+
+/**
+ * The issue detail's sticky title bar's height (IssuePanel.tsx): Diff mode's header sticks under
+ * it (diff/BodyDiff.tsx), and turning Diff on scrolls the body's post to just under it.
+ */
+export const detailBars = stylex.defineConsts({
+  titleBar: 34,
+});
