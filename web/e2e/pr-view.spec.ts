@@ -466,6 +466,26 @@ test("v1's IDs forward on v2: merged to the new part, dropped and unknown to the
   await expect(note(page)).toHaveCount(0);
 });
 
+test("A split to parts and a line selects the parts, and says the line is selected separately, not that it's missing", async ({ context }) => {
+  const page = await signIn(context, "tomsj");
+  // No recording splits across kinds: a split added on the way in, to two parts, a line and an
+  // ID no analysis has.
+  const [a, b] = V2.nodes.filter((n: Json) => n.kind !== "system" && n.parent === V2.nodes.find((x: Json) => x.kind === "system").id);
+  const e = V2.edges[0];
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    g.analysis.carried.push({ kind: "split", was: "old-mixed", now: [a.id, e.id, b.id, "no-such-part"], cause: "correction", reason: "test split", claims: [] });
+    await route.fulfill({ response: res, json: g });
+  });
+  await open(page, "?sel=part:old-mixed");
+  await expect.poll(() => selOf(page)).toBe(`part:${a.id},${b.id}`);
+  await expect(note(page)).toContainText(`old-mixed was split into ${a.name} and ${b.name}: test split`);
+  await expect(note(page)).toContainText("can be selected separately");
+  await expect(note(page)).toContainText("no-such-part not found in this analysis");
+  await expect(note(page)).not.toContainText(`${e.id} not found`);
+});
+
 test("Typed IDs are written once: a conflict, a purpose and a step without their own prefixes", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   // v2 has no conflict: v1's first, added on the way in.

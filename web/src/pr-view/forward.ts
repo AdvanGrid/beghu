@@ -7,6 +7,8 @@
 // - split: to all the new IDs, selected together (the canvas opens down to the level that holds
 //   them all);
 // - dropped: to the nearest surviving parent, or the top level, with the reason;
+// - split to IDs of more than one kind (parts and lines): to those of the kind most of them are,
+//   the note naming the others as selectable separately;
 // - renamed, merged or split to IDs this analysis doesn't have either: to those of them it has,
 //   or, with none, up as for a drop, the note saying where it went wasn't found (one step only:
 //   a `now` ID that moved again isn't followed);
@@ -83,13 +85,21 @@ function one(id: string, kind: Kind, m: Model, before?: Model): { ids: string[];
   // The nearest parent that's still here, for a drop or a move to nowhere here.
   const up = () => parentsOf(id, kind, before).find((p) => kindIn(m, p) !== undefined && !(kindIn(m, p) === "part" && m.nodes.get(p)?.kind === "system"));
   if (c && c.kind !== "dropped") {
-    const k = c.now.map((n) => kindIn(m, n)).find((x) => x !== undefined);
-    const here = c.now.filter((n) => k !== undefined && kindIn(m, n) === k);
-    const missing = c.now.filter((n) => !here.includes(n));
+    // A selection holds one kind: the one most of `now` is here, the first on a tie.
+    const kinds = c.now.map((n) => kindIn(m, n));
+    const count = (k: Kind) => kinds.filter((x) => x === k).length;
+    const k = kinds.reduce<Kind | undefined>((best, x) => (x !== undefined && (best === undefined || count(x) > count(best)) ? x : best), undefined);
+    const here = c.now.filter((_, i) => k !== undefined && kinds[i] === k);
+    const apart = c.now.filter((n, i) => kinds[i] !== undefined && !here.includes(n));
+    const missing = c.now.filter((_, i) => kinds[i] === undefined);
     if (here.length > 0) {
       const names = here.map((n) => label(m, n));
       const how = c.kind === "renamed" ? `was renamed to ${names[0]}` : c.kind === "merged" ? `was merged into ${names[0]}` : `was split into ${words(names)}`;
-      const rest = missing.length ? ` (${words(missing)} not found in this analysis)` : "";
+      const asides = [
+        ...(apart.length ? [`${words(apart.map((n) => label(m, n)))}, also from it, can be selected separately`] : []),
+        ...(missing.length ? [`${words(missing)} not found in this analysis`] : []),
+      ];
+      const rest = asides.length ? ` (${asides.join("; ")})` : "";
       return { ids: here, kind: k!, note: `${was} ${how}: ${c.reason}${rest}` };
     }
     const where = c.kind === "renamed" ? "renamed to" : c.kind === "merged" ? "merged into" : "split into";
