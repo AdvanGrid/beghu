@@ -1,8 +1,8 @@
 //! The PR view's recorded PR (#178): `AdvanGrid/beghu#191`, which every fixture holds and Fake
 //! GitHub serves at v1's head. A run on it pins the recorded `pr.json` byte for byte, the
 //! recorded analysis uploads through the run as the agent sent it and is accepted, and the server
-//! keeps the upload's body, which `./dev-ctl analysis record` reads back untouched. v2, once the
-//! owner records it, follows on the same run after the PR moves to its head.
+//! keeps the upload's body, which `./dev-ctl analysis record` reads back untouched. v2 follows on
+//! the same account after the PR moves to its head.
 
 mod common;
 
@@ -83,14 +83,14 @@ async fn a_gzipped_upload_is_kept_and_recorded_exactly() {
     assert!(got.analysis == committed, "kept as the agent wrote it");
 }
 
-/// v2 on top of v1, once recorded: the PR moves to v2's head, a new run pins v2's `pr.json`, and
-/// v2 (whose `carried` is checked against v1) is accepted. Nothing to check before then.
+/// v2 on top of v1: the PR moves to v2's head, a new run pins v2's `pr.json` byte for byte, and
+/// v2 (whose `carried` is checked against v1) is accepted. Moving the PR back restores v1's pin,
+/// and moving it on again v2's: the comment v2's thread adds, deleted on the way back, is made
+/// again, as a new comment.
 #[tokio::test(flavor = "multi_thread")]
 async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
-    let Some(v2) = fixture::recorded::version(RECORDED, 2) else {
-        eprintln!("v2 isn't recorded yet");
-        return;
-    };
+    let v1 = fixture::recorded::version(RECORDED, 1).unwrap();
+    let v2 = fixture::recorded::version(RECORDED, 2).expect("v2 is recorded");
     let s = start().await;
     let b = s.sign_in("tomsj").await;
     let up = s.upload_recorded(&b, 1, 1).await;
@@ -98,13 +98,22 @@ async fn v2_is_accepted_after_v1_once_the_pr_moves_to_its_head() {
     let up = s.upload_recorded(&b, 1, 2).await;
     assert_eq!(up.status, 201, "{}", up.answer);
     assert_eq!(up.answer["headSha"], v2.pr["headSha"]);
+    let pinned: Value = serde_json::from_str(&up.pinned).unwrap();
+    assert_eq!(pinned, v2.pr, "the pin is v2's pr.json");
+
+    let (back, _) = s.pin_recorded(&b, 2, 1).await;
+    let back: Value = serde_json::from_str(&back).unwrap();
+    assert_eq!(back, v1.pr, "v1's pin, as it was");
+    let (again, _) = s.pin_recorded(&b, 1, 2).await;
+    let again: Value = serde_json::from_str(&again).unwrap();
+    assert_eq!(again, v2.pr, "v2's pin, as it was");
 }
 
 /// Moving the recorded PR to a later version and back restores v1's pin exactly: the PR's title,
 /// description, head, base and files, and its linked issues' descriptions and comment threads,
 /// authors and repeated bodies included (a comment the later version's thread added is made by
-/// its author, and deleted by its author and body). v2 isn't recorded yet, so the later
-/// version is made up here from v1.
+/// its author, and deleted by its author and body). The later version is made up here from v1,
+/// as real v2 neither moves the base nor edits an issue's description, nor repeats a comment.
 #[tokio::test(flavor = "multi_thread")]
 async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
     let s = start().await;
@@ -178,4 +187,60 @@ async fn moving_the_recorded_pr_to_a_later_version_and_back_restores_v1s_pin() {
     }
     let (back, _) = s.pin_when(&b, "a run pins v1 again", |p| p == &v1.pr).await;
     assert_eq!(back, first, "v1's pin, as it was");
+}
+
+/// Seeding the recordings leaves tomsj's default list (Recently updated) in the order it has
+/// without them, as `./dev-ctl start` seeds v1 then v2: the move to v2's head is dated as the
+/// fixture dates the recorded PR, so its edits, comment and push land just after v1's state, far
+/// below the top, where the browser suite's tests open the first rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn seeding_v1_then_v2_leaves_the_default_list_in_its_order() {
+    let s = start().await;
+    let mut b = s.sign_in("tomsj").await;
+    let list = async |b: &mut common::Browser| -> Vec<Value> {
+        let mut rows = Vec::new();
+        let mut path = "/api/issues".to_owned();
+        loop {
+            let (status, page) = s.api(b, &path).await;
+            assert_eq!(status, 200);
+            rows.extend(page["rows"].as_array().unwrap().iter().cloned());
+            let Some(next) = page["next"].as_str() else {
+                return rows;
+            };
+            path = format!("/api/issues?after={next}");
+        }
+    };
+    let before = list(&mut b).await;
+    let up = s.upload_recorded(&b, 1, 1).await;
+    assert_eq!(up.status, 201, "{}", up.answer);
+    let up = s.upload_recorded(&b, 1, 2).await;
+    assert_eq!(up.status, 201, "{}", up.answer);
+    let after = list(&mut b).await;
+
+    let ids = |rows: &[Value]| rows.iter().map(|r| r["id"].clone()).collect::<Vec<_>>();
+    let (without, with) = (ids(&before), ids(&after));
+    let at = without.iter().zip(&with).position(|(a, b)| a != b);
+    assert!(
+        without == with,
+        "the list's order, as without them: from row {at:?}, {:?} became {:?}",
+        at.map(|i| &without[i..(i + 5).min(without.len())]),
+        at.map(|i| &with[i..(i + 5).min(with.len())]),
+    );
+    // The move did change the PR (its push bumped `updated_at`), only not to now.
+    let pr = |rows: &[Value]| {
+        rows.iter()
+            .find(|r| r["owner"] == "AdvanGrid" && r["repo"] == "beghu" && r["number"] == RECORDED)
+            .expect("the recorded PR lists")["updated_at"]
+            .as_i64()
+            .unwrap()
+    };
+    let (was, now) = (pr(&before), pr(&after));
+    assert!(
+        now > was,
+        "v2's push dates the PR after v1's state: {was} → {now}"
+    );
+    assert!(
+        now < fixture::FIXTURE_NOW - 300 * 86_400,
+        "and long before the fixture's now: {now}"
+    );
 }

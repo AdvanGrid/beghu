@@ -36,6 +36,9 @@
 //! `locked` locks the conversation (`issues` `locked`) or unlocks it (`unlocked`), as someone
 //! with Write or up does in the issue's sidebar.
 //!
+//! `at` (Unix seconds) is when the edit happened, for a fixture that dates its changes; left out,
+//! it's the fake's clock. An item's `updated_at` never goes back (see [`Change::apply`]).
+//!
 //! Every field but `repo` and `number` is optional; `as` defaults to the first fixture account,
 //! and may name any user the fake has (someone with no beghu account, as a recorded thread's
 //! authors are).
@@ -103,6 +106,8 @@ pub(crate) struct Edit {
     /// The issue is deleted, and nothing else in the edit is made.
     #[serde(default)]
     delete: bool,
+    /// When the edit happened (Unix seconds); left out, now.
+    at: Option<i64>,
 }
 
 /// A comment an edit deletes: by its body, or by its body and its author's login.
@@ -146,7 +151,7 @@ pub(crate) async fn edit(State(fake): State<Fake>, axum::Json(e): axum::Json<Edi
     {
         return bad_request("state is open or closed");
     }
-    let now = fake.now();
+    let now = e.at.unwrap_or_else(|| fake.now());
     let done = fake.state().truth.write(move |tx| apply(tx, &e, now)).await;
     match done {
         Ok(Ok((issue, deliveries))) => {
@@ -384,6 +389,8 @@ fn delete(
     let issue = issue_json(tx, id)?;
     q::delete_issue_labels(tx, id)?;
     q::delete_issue_assignees(tx, id)?;
+    // Its comments' ids are never reused either.
+    q::retire_issue_comment_ids(tx, id)?;
     q::delete_issue_comments(tx, id)?;
     q::delete_issue_relationships(tx, id)?;
     q::delete_issue(tx, id)?;

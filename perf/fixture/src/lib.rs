@@ -1054,7 +1054,7 @@ fn beghu_repo(tx: &Connection, summary: &mut Summary) -> rusqlite::Result<()> {
     let mut pr_id = FIRST_PR_ID;
     for (k, it) in items.iter().enumerate() {
         let id = FIRST_ITEM_ID + k as i64;
-        let at = FIXTURE_NOW - 400 * DAY + it.number * 60;
+        let at = recorded::dated(it.number);
         let pr = it.kind == "pr";
         let author = user(&it.author)?;
         q::insert_item(
@@ -1097,7 +1097,7 @@ fn beghu_repo(tx: &Connection, summary: &mut Summary) -> rusqlite::Result<()> {
                 id,
                 a,
                 body,
-                at + (n as i64 + 1) * 60,
+                recorded::comment_dated(at, n),
                 seq,
             )?;
             comment += 1;
@@ -1107,7 +1107,7 @@ fn beghu_repo(tx: &Connection, summary: &mut Summary) -> rusqlite::Result<()> {
                 tx,
                 id,
                 it.comments.len() as i64,
-                at + it.comments.len() as i64 * 60,
+                recorded::latest(at, it.comments.len()),
             )?;
         }
         if pr {

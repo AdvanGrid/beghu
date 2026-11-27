@@ -3954,6 +3954,39 @@ async fn a_deleted_issue_answers_410_as_on_github_and_sends_issues_deleted() {
     assert_eq!(p["sender"]["login"], "tomsj");
 }
 
+#[tokio::test]
+async fn a_deleted_issues_comments_never_lend_their_ids_to_a_new_comment() {
+    let fake = start().await;
+    let token = &fake.sign_in("tomsj").await["access_token"];
+    // The latest comment is on the issue about to go.
+    let (status, latest) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            token,
+            json!({ "body": "On the doomed issue." }),
+        )
+        .await;
+    assert_eq!(status, 201, "{latest}");
+    fake.control(
+        reqwest::Method::POST,
+        "/edit",
+        json!({ "repo": "web", "number": 1, "as": "tomsj", "delete": true }),
+    )
+    .await;
+    // GitHub never reuses a comment's id, though its issue is gone.
+    let (status, next) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/2/comments",
+            token,
+            json!({ "body": "On another issue." }),
+        )
+        .await;
+    assert_eq!(status, 201, "{next}");
+    assert!(next["id"].as_i64() > latest["id"].as_i64(), "{next}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pr_cant_be_deleted_and_sends_nothing() {
     let fake = start().await;
@@ -4686,6 +4719,29 @@ async fn a_deleted_comment_is_gone_and_sends_issue_comment_deleted() {
         .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
         .await;
     assert_eq!(status, 404);
+
+    // GitHub never gives its id to another comment, though it was the latest: a mirror that saw
+    // it deleted refuses the id ever after. By REST and by an outside edit alike.
+    let (_, again) = fake
+        .rest(
+            reqwest::Method::POST,
+            "/repos/acme/web/issues/1/comments",
+            ilze,
+            json!({ "body": "To be deleted." }),
+        )
+        .await;
+    assert!(again["id"].as_i64() > c["id"].as_i64(), "{again}");
+    let path = format!("/repos/acme/web/issues/comments/{}", again["id"]);
+    let (status, _) = fake
+        .rest(reqwest::Method::DELETE, &path, ilze, Value::Null)
+        .await;
+    assert_eq!(status, 204);
+    received_for(&mut rx, Duration::from_millis(1500)).await;
+    fake.edit(json!({ "repo": "web", "number": 1, "comment": "After." }))
+        .await;
+    let made = received_for(&mut rx, Duration::from_millis(1500)).await;
+    let after = &made.last().unwrap().payload()["comment"];
+    assert!(after["id"].as_i64() > again["id"].as_i64(), "{after}");
 }
 
 /// An outside edit's `delete_comment`: the issue's latest comment with that body goes, as from its
@@ -5362,6 +5418,104 @@ async fn a_push_sends_synchronize_and_a_force_push_replaces_the_commits() {
     let got = received_for(&mut rx, Duration::from_secs(3)).await;
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].payload()["before"], second);
+}
+
+/// An outside edit or a push dated with `at` (a fixture's clock, as the recorded PR's moves
+/// between versions are) happens then: the item's `updated_at`, a comment's times and the
+/// webhooks' payloads carry it, and an `at` older than the item's `updated_at` never moves it
+/// back.
+#[tokio::test]
+async fn an_edit_or_a_push_dated_with_at_happens_then_and_never_moves_updated_at_back() {
+    let fake = start().await;
+    let token = fake.sign_in("tomsj").await["access_token"].clone();
+    let mut rx = receiver(&fake).await;
+    let items: Vec<Value> = fake
+        .get(
+            "/repos/acme/web/issues?state=all&sort=updated&direction=asc&per_page=100",
+            &token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pr = items
+        .iter()
+        .find(|i| i.get("pull_request").is_some())
+        .unwrap();
+    let number = pr["number"].as_i64().unwrap();
+    // Its `updated_at` in Unix seconds: `rfc3339` is in order, so search for it.
+    let was = pr["updated_at"].as_str().unwrap();
+    let (mut lo, mut hi) = (0i64, 1i64 << 34);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if fake_github::rfc3339(mid).as_str() < was {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    assert_eq!(fake_github::rfc3339(lo), was);
+    let updated = || async {
+        let issue: Value = fake
+            .get(&format!("/repos/acme/web/issues/{number}"), &token)
+            .await
+            .json()
+            .await
+            .unwrap();
+        issue["updated_at"].clone()
+    };
+
+    let at = lo + 600;
+    fake.edit(json!({ "repo": "acme/web", "number": number, "comment": "Dated", "at": at }))
+        .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    let p = got[0].payload();
+    assert_eq!(p["comment"]["created_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(p["comment"]["updated_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(p["issue"]["updated_at"], fake_github::rfc3339(at), "{p}");
+    assert_eq!(updated().await, fake_github::rfc3339(at));
+
+    // Older than that: the edit and the push are made, at the item's `updated_at`.
+    fake.edit(
+        json!({ "repo": "acme/web", "number": number, "title": "Dated earlier", "at": lo + 60 }),
+    )
+    .await;
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "at": lo + 300 }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 2);
+    for r in &got {
+        let p = r.payload();
+        assert_eq!(
+            p["pull_request"]["updated_at"],
+            fake_github::rfc3339(at),
+            "{p}"
+        );
+    }
+    assert_eq!(updated().await, fake_github::rfc3339(at));
+
+    // A later push moves it on, to its `at`.
+    fake.control(
+        reqwest::Method::POST,
+        "/push",
+        json!({ "repo": "acme/web", "number": number, "at": at + 300 }),
+    )
+    .await;
+    let got = received_for(&mut rx, Duration::from_secs(3)).await;
+    assert_eq!(got.len(), 1);
+    let p = got[0].payload();
+    assert_eq!(p["action"], "synchronize");
+    assert_eq!(
+        p["pull_request"]["updated_at"],
+        fake_github::rfc3339(at + 300),
+        "{p}"
+    );
+    assert_eq!(updated().await, fake_github::rfc3339(at + 300));
 }
 
 /// The PR view's recorded PR (`fixture::recorded`): `AdvanGrid/beghu#191` as its v1 run pinned it,

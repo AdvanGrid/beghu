@@ -104,8 +104,10 @@ INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (:item_id, :label_i
 -- param: label_id i64
 DELETE FROM item_labels WHERE item_id = :item_id AND label_id = :label_id;
 
+-- The id a new comment gets: past every comment's, and past every deleted one's.
 -- name: next_comment_id :one
-SELECT coalesce(max(c.id), 0) + 1 AS "id!: i64" FROM comments c;
+SELECT max(coalesce((SELECT max(c.id) FROM comments c), 0),
+           coalesce((SELECT max(r.id) FROM fake_retired_comment_ids r), 0)) + 1 AS "id!: i64";
 
 -- name: add_comment :exec
 -- param: id i64
@@ -127,6 +129,11 @@ WHERE id = :item_id;
 -- name: delete_comment :exec
 -- param: id i64
 DELETE FROM comments WHERE id = :id;
+
+-- An id GitHub gives no other comment again: the comment was deleted.
+-- name: retire_comment_id :exec
+-- param: id i64
+INSERT OR IGNORE INTO fake_retired_comment_ids (id) VALUES (:id);
 
 -- name: uncount_comment :exec
 -- param: item_id i64
@@ -198,6 +205,10 @@ DELETE FROM item_labels WHERE item_id = :id;
 -- name: delete_issue_assignees :exec
 -- param: id i64
 DELETE FROM item_assignees WHERE item_id = :id;
+
+-- name: retire_issue_comment_ids :exec
+-- param: id i64
+INSERT OR IGNORE INTO fake_retired_comment_ids (id) SELECT c.id FROM comments c WHERE c.item_id = :id;
 
 -- name: delete_issue_comments :exec
 -- param: id i64
