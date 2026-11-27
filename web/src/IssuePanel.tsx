@@ -78,6 +78,7 @@ import { applyAtOnce, createDetailHeld, type Unit, type UnitCue } from "./HeldDe
 import { ago, fullDate } from "./time";
 import { colors, fonts, media as mediaQueries } from "./tokens.stylex";
 import { copied, copyRef } from "./copyRef";
+import { BodyDiffPrototype, DiffToggle, DiffVariantSwitcher, diffOn } from "./BodyDiff.prototype";
 
 /** Below 900 px of viewport the panel sits under the list (Root.tsx lays that out). */
 const STACKED = mediaQueries.stacked.replace(/^@media /, "");
@@ -721,6 +722,9 @@ function Body(props: {
   const editTitle = () => edit("title", d().title);
   const editBody = () => edit("body");
   const backToIssue = () => scroller.focus();
+  // PROTOTYPE (BodyDiff.prototype.tsx): Diff brings the body's post into view.
+  let bodySlot!: HTMLDivElement;
+  const showBody = () => requestAnimationFrame(() => bodySlot.scrollIntoView({ block: "start" }));
   // The title scrolled out of view (the marker under it is above the view): the sticky bar shows.
   let titleEnd!: HTMLDivElement;
   const [past, setPast] = createSignal(false);
@@ -762,6 +766,9 @@ function Body(props: {
             </span>
             <span {...stylex.attrs(s.stickyTitle)}>{d().title}</span>
           </button>
+          <Show when={d().kind === "issue"}>
+            <DiffToggle floating shown={past()} onEnable={showBody} />
+          </Show>
         </div>
         {/* Nothing here moves when a value changes length: the badge has a fixed width and comes
             first, and each property is one row of its own, so more labels only grow their row. */}
@@ -806,6 +813,9 @@ function Body(props: {
             <Dynamic component={overlay()?.StateNote} issue={d().id} at={at()} />
           </Show>
           <span {...stylex.attrs(s.spacer)} />
+          <Show when={d().kind === "issue"}>
+            <DiffToggle onEnable={showBody} />
+          </Show>
           <Show
             when={d().pr}
             fallback={
@@ -917,7 +927,7 @@ function Body(props: {
           <RelatesTo d={d()} search={props.search} write={allows(d(), "relationships")} />
         </HeldUnit>
         {/* The body is a post like each comment: on its tint, its byline inside. */}
-        <div {...stylex.attrs(s.bodySlot)}>
+        <div {...stylex.attrs(s.bodySlot)} ref={bodySlot}>
           <div {...stylex.attrs(s.post)}>
             <div {...stylex.attrs(s.postHead)} data-k="byline">
               <Byline author={d().author}>
@@ -941,6 +951,14 @@ function Body(props: {
             <Show
               when={editing("body")}
               fallback={
+                <Show
+                  when={!(diffOn() && d().kind === "issue")}
+                  fallback={
+                    <div {...stylex.attrs(s.text)}>
+                      <BodyDiffPrototype body={d().body} id={d().id} author={d().author} created={d().created_at} links={links(d(), d().refs, d().media, props.search)} />
+                    </div>
+                  }
+                >
                 <div {...stylex.attrs(s.text)} data-perf="body">
                   <Show
                     when={d().typedBody === undefined}
@@ -959,6 +977,7 @@ function Body(props: {
                     </Show>
                   </Show>
                 </div>
+                </Show>
               }
             >
               <div {...stylex.attrs(s.text)}>
@@ -1035,6 +1054,7 @@ function Body(props: {
           </Loading>
         </Errored>
       </Show>
+      <DiffVariantSwitcher />
     </>
   );
 }
