@@ -660,3 +660,54 @@ async fn install_sh_installs_a_working_beghu() {
         "{out:?}"
     );
 }
+
+/// The analysis crate's split sample (`crates/analysis/tests/sample/split/`).
+fn sample(file: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../analysis/tests/sample/split")
+        .join(file)
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_joins_fragments_and_finish_refuses_unresolved_hints() {
+    // The merge needs no run and no host.
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: Vec<String>| {
+        let mut c = Command::new(BIN);
+        c.args(args)
+            .current_dir(dir.path())
+            .env("BEGHU_CREDENTIALS", dir.path().join("none.toml"));
+        Machine::output(c)
+    };
+    let out = run(vec![
+        "analyse".into(),
+        "merge".into(),
+        "--split".into(),
+        sample("split.json"),
+        sample("1-skeleton.json"),
+        sample("2-api.json"),
+        sample("3-lib.json"),
+    ])
+    .await;
+    assert_eq!(out.code, 0, "{out:?}");
+    let merged: Value = serde_json::from_str(&out.stdout).unwrap();
+    let hints = merged["hints"].as_array().unwrap().len();
+    assert!(hints > 0, "the seam pass's work is left as hints");
+    assert!(
+        out.stderr
+            .contains(&format!("{hints} hints left for the seam pass")),
+        "{out:?}"
+    );
+    std::fs::write(dir.path().join("merged.json"), &out.stdout).unwrap();
+    let out = run(vec![
+        "analyse".into(),
+        "merge".into(),
+        "--finish".into(),
+        "merged.json".into(),
+    ])
+    .await;
+    assert_eq!(out.code, 1, "unresolved hints: {out:?}");
+}
