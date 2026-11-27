@@ -126,9 +126,10 @@ CI runs all of these; run them before you commit:
   layout's letters, and the areas of touchpoints no view offers yet. Rebinding itself (swaps,
   refusals, sequences, other tabs) goes through the setup page (`web/e2e/prefs.spec.ts`). And
   our layout's rules test (`web/src/pr-view/layout/layout.test.ts`), which checks the engine's
-  rules (no overlaps, groups packed from the top, every line laid one way, no line through a
-  part, trunks only where lines share a stretch, anchors that hold through a fold) on the
-  committed synthetic graph: they're geometry no HTTP answer or page shows. The three web
+  rules (no overlaps, groups packed from the top, every line routed once and laid one way, no
+  line through a part, trunks exactly where lines share a stretch, an open or fold moving only
+  what it pushes, anchors that hold through a fold) on the committed synthetic graph, a dense
+  scope and random graphs: they're geometry no HTTP answer or page shows. The three web
   tests run under `npm run test:lint`.
 - **Perf budgets are owner-reviewed.** `perf-budgets.toml` holds every gate's limit with a reason
   (CODEOWNERS). A new gate gets its budget in the same change, calibrated from a measured run
