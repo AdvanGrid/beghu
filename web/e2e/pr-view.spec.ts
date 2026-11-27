@@ -215,20 +215,57 @@ test("A part's panel says which folders are partly drawn, at any depth, and the 
   const page = await signIn(context, "tomsj");
   // No recording has a partly drawn part at v2: one made so on the way in. crates-server draws
   // folders two deep (src/reconcile/sweep) and file parts (src/accounts.rs, whose folder counts).
+  // Three unchanged parts are added whose names an extension misreads, each its own claim's
+  // evidence saying what it is: docker/Dockerfile and LICENSE files, conf.d a folder.
+  const extra: [string, string, string][] = [
+    ["crates-server.docker", "crates/server/docker/Dockerfile", "crates/server/docker/Dockerfile"],
+    ["crates-server.license", "crates/server/LICENSE", "crates/server/LICENSE"],
+    ["crates-server.conf-d", "crates/server/conf.d", "crates/server/conf.d/app.conf"],
+  ];
+  const claim = (id: string, path: string) => ({
+    id: `c-${id}`,
+    status: "supported",
+    text: `${path} line 1`,
+    evidence: [{ kind: "code", side: "head", path, start: 1, end: 1, note: "test", snippet: "x" }],
+  });
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
     const n = g.analysis.nodes.find((x: Json) => x.id === "crates-server");
     n.drawn = { partial: true, folders: 20 };
+    for (const [id, path] of extra) {
+      g.analysis.nodes.push({
+        id,
+        kind: "module",
+        parent: "crates-server",
+        name: path.slice(path.lastIndexOf("/") + 1),
+        paths: [path],
+        summary: "test",
+        change: "unchanged",
+        responsibilities: [{ id: "r", text: "test", change: "unchanged", claims: [`c-${id}`] }],
+        facets: [],
+        questions: [],
+        files: [],
+      });
+      g.analysis.claims.push({ id: `c-${id}`, status: "supported", code: 1, description: 0, issue: 0 });
+    }
     await route.fulfill({ response: res, json: g });
   });
+  await page.route(CLAIMS, async (route: Route) => {
+    const res = await route.fetch();
+    const f = (await res.json()) as Json;
+    f.claims.push(...extra.map(([id, , shown]) => claim(id, shown)));
+    await route.fulfill({ response: res, json: f });
+  });
   await open(page, "?sel=part:crates-server");
-  const drawn = ["src", "src/analyses", "src/import", "src/reconcile", "src/reconcile/sweep", "tests"];
-  await expect(panel(page).locator('[data-perf="partly-drawn"]')).toHaveText(
-    `Partly drawn: ${drawn.length} of 20 folders drawn (${drawn.join(", ")}): no line, step, purpose or conflict in this PR reaches the other ${20 - drawn.length}.`,
-  );
+  const drawn = ["conf.d", "docker", "src", "src/analyses", "src/import", "src/reconcile", "src/reconcile/sweep", "tests"];
+  const line = `${drawn.length} of 20 folders drawn (${drawn.join(", ")}): no line, step, purpose or conflict in this PR reaches the other ${20 - drawn.length}.`;
+  await expect(panel(page).locator('[data-perf="partly-drawn"]')).toHaveText(`Partly drawn: ${line}`);
   await open(page);
-  await expect(panel(page).locator('[data-perf="coverage"]')).toContainText("Partly drawn parts (1)");
+  const coverage = panel(page).locator('[data-perf="coverage"]');
+  await expect(coverage).toContainText("Partly drawn parts (1)");
+  await coverage.locator("summary", { hasText: "Partly drawn parts (1)" }).click();
+  await expect(coverage).toContainText(`${V2.nodes.find((x: Json) => x.id === "crates-server").name}: ${line}`);
 });
 
 test("A line's panel: what it carries, when, mode, what it crosses, and its evidence", async ({ context }) => {

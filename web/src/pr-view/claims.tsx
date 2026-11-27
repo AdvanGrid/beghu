@@ -52,6 +52,18 @@ function useClaims(): ClaimsRead {
   return c;
 }
 
+/**
+ * The paths the code evidence of a list of claims shows. Suspends while the claims are on their
+ * way and throws their failure, so ask only when the graph alone can't say.
+ */
+export function useEvidencePaths(): (ids: readonly string[]) => string[] {
+  const read = useClaims();
+  return (ids) => {
+    const map = read.byId();
+    return ids.flatMap((id) => map.get(id)?.evidence.flatMap((e) => (e.kind === "code" ? [e.path] : [])) ?? []);
+  };
+}
+
 /** What a list of claims holds, from the graph's stubs: "2 claims · code ×3". Never waits. */
 export function claimCount(m: Model, ids: readonly string[]): string {
   let code = 0;

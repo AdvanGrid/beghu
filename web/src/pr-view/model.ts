@@ -47,10 +47,12 @@ export interface Model {
   /** `id` and every node inside it, at any depth. */
   subtree(id: string): ReadonlySet<string>;
   /**
-   * Whether a node's path names a file rather than a folder: a changed file's path, or one with
-   * nothing under it and an extension (`crates/server/src/live.rs`).
+   * What the graph says a node's path is: a file if the PR changed it (a file part lists itself
+   * in its `files`), a folder if a node's path or a changed file lies under it, else undefined
+   * (an unchanged part with nothing drawn inside it). Never guessed from the name: `Dockerfile`
+   * is a file and `conf.d` a folder.
    */
-  isFile(path: string): boolean;
+  pathIs(path: string): "file" | "folder" | undefined;
   /** Lines out of and into `id` or anything inside it, from or to outside it. */
   connections(id: string): { out: Edge[]; into: Edge[] };
   /** The parts whose lines use the node's responsibility (from the lines' `uses`), in order. */
@@ -149,9 +151,9 @@ export function buildModel(g: Graph): Model {
     ancestors,
     within,
     subtree,
-    isFile(path) {
+    pathIs(path) {
       const p = path.replace(/\/+$/, "");
-      return filePaths.has(p) || (!folders.has(p) && /\.[^./]+$/.test(p.slice(p.lastIndexOf("/") + 1)));
+      return filePaths.has(p) ? "file" : folders.has(p) ? "folder" : undefined;
     },
     connections(id) {
       const w = subtree(id);

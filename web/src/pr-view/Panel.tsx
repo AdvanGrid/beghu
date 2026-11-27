@@ -13,9 +13,9 @@
 //
 // Every claim sits in its own boundary (claims.tsx). Answers are short; depth is a fold away.
 import * as stylex from "@stylexjs/stylex";
-import { For, Show, type Element } from "solid-js";
+import { Errored, For, Loading, Show, type Element } from "solid-js";
 import type { Carried, CarriedCause, Edge, FacetAssignment, Node, Question } from "../bindings/analysis";
-import { claimCount, ClaimList } from "./claims";
+import { claimCount, ClaimList, useEvidencePaths } from "./claims";
 import type { Model } from "./model";
 import { line, part, selOf, useNav } from "./nav";
 import { hiddenBy, parseLines, type Sel } from "./state";
@@ -182,7 +182,9 @@ function PrPanel() {
               <For each={partlyDrawn()}>
                 {(n) => (
                   <li>
-                    <Pick to={part(n.id)}>{n.name}</Pick>: <span {...stylex.attrs(ui.muted)}>{drawnLine(m(), n)}</span>
+                    <Pick to={part(n.id)}>{n.name}</Pick>: <span {...stylex.attrs(ui.muted)}>
+                      <DrawnLine n={n} />
+                    </span>
                   </li>
                 )}
               </For>
@@ -304,13 +306,30 @@ function CarriedItem(props: { x: Carried }) {
 
 // ---- A part ------------------------------------------------------------------------------------
 
+/** The paths a list of claims' code evidence shows (`useEvidencePaths`). */
+type EvidencePaths = (ids: readonly string[]) => string[];
+
+/**
+ * Whether `p`, one of `d`'s paths, is a file: what the graph says (`Model.pathIs`), else `d`'s own
+ * claims' code evidence, lines of `p` itself making it a file and of a path under it a folder.
+ * Without `evidence` (the claims not in, or failed), or with neither, a folder, as a module
+ * mostly is.
+ */
+function isFile(m: Model, d: Node, p: string, evidence?: EvidencePaths): boolean {
+  const known = m.pathIs(p);
+  if (known !== undefined) return known === "file";
+  if (!evidence) return false;
+  const shown = evidence([...d.responsibilities.flatMap((r) => r.claims), ...d.questions.flatMap((q) => q.claims)]);
+  return shown.includes(p) && !shown.some((x) => x.startsWith(`${p}/`));
+}
+
 /**
  * The folders inside a part's paths that its drawing reaches, relative to the path they're in
  * and sorted: every folder, at any depth, on the way to a part drawn inside it (a folder part is
  * one itself; a file part's folders are), counted as `drawn.folders` counts them (the part's own
  * paths aside).
  */
-export function drawnFolders(m: Model, n: Node): string[] {
+export function drawnFolders(m: Model, n: Node, evidence?: EvidencePaths): string[] {
   const bases = n.paths.map((p) => p.replace(/\/+$/, ""));
   const inside = new Set<string>();
   for (const id of m.subtree(n.id)) {
@@ -324,7 +343,7 @@ export function drawnFolders(m: Model, n: Node): string[] {
       const rel = base === "" || base === "." ? p : p.slice(base.length + 1);
       const segs = rel.split("/");
       // A file part reaches its folders; a folder part, itself too.
-      const folders = m.isFile(p) ? segs.length - 1 : segs.length;
+      const folders = isFile(m, d, p, evidence) ? segs.length - 1 : segs.length;
       for (let i = 1; i <= folders; i++) inside.add(segs.slice(0, i).join("/"));
     }
   }
@@ -332,12 +351,26 @@ export function drawnFolders(m: Model, n: Node): string[] {
 }
 
 /** "6 of 20 folders drawn (src, tests): …", for a partly drawn part. */
-function drawnLine(m: Model, n: Node): string {
+function drawnLine(m: Model, n: Node, evidence?: EvidencePaths): string {
   const total = n.drawn?.folders ?? 0;
-  const drawn = drawnFolders(m, n);
+  const drawn = drawnFolders(m, n, evidence);
   const rest = Math.max(0, total - drawn.length);
   const which = drawn.length ? ` (${drawn.join(", ")})` : "";
   return `${drawn.length} of ${total} folders drawn${which}: no line, step, purpose or conflict in this PR reaches the other ${rest}.`;
+}
+
+/**
+ * `drawnLine`, the claims' evidence deciding the paths the graph can't: a moment's placeholder
+ * while they're on their way, and the graph's word alone if they failed.
+ */
+function DrawnLine(props: { n: Node }) {
+  const nav = useNav();
+  const evidence = useEvidencePaths();
+  return (
+    <Errored fallback={drawnLine(nav.model(), props.n)}>
+      <Loading fallback="counting the folders drawn…">{drawnLine(nav.model(), props.n, evidence)}</Loading>
+    </Errored>
+  );
 }
 
 const KIND: Record<string, string> = {
@@ -403,7 +436,7 @@ function PartPanel(props: { n: Node }) {
       <p {...stylex.attrs(ui.p, s.gap)}>{n.summary}</p>
       <Show when={n.drawn}>
         <p {...stylex.attrs(ui.p, ui.muted, ui.small, s.gap)} data-perf="partly-drawn">
-          Partly drawn: {drawnLine(m(), n)}
+          Partly drawn: <DrawnLine n={n} />
         </p>
       </Show>
       <Show
