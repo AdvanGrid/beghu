@@ -717,9 +717,13 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await expect(panel(page).locator('[data-perf="line"]')).toHaveAttribute("data-id", split.was);
 
   // v1's reference places that v2 lacks: an undetermined claim, with where it looked.
-  // (On the same page: a link to the outside system, which the PR's fold (#183) draws only in its
-  // rest block, so it opens the fold down to it; and back.)
-  await open(page, "?sel=part:ext-image-hosts&lens=external");
+  // (On the same page: a link to the outside system followed in the tab, as the router hears it,
+  // which the PR's fold (#183) draws only in its rest block, so it opens the fold down to it; and
+  // back.)
+  await page.evaluate(() => {
+    history.pushState(history.state, "", "?sel=part:ext-image-hosts&lens=external");
+    dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+  });
   await expect.poll(() => selOf(page)).toBe("part:ext-image-hosts");
   await expect(page.locator('[data-perf="block"][data-id="ext-image-hosts"]')).toHaveAttribute("data-selected", "");
   await reference(page);

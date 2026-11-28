@@ -5,7 +5,8 @@
 // purpose (dots, "N of M parts serve it", the purpose's own lines strong in its colour, rest
 // blocks, groups, Back and Start over over the plan, the same plan after a reload), within 16
 // blocks on the 3× tiled analysis at the PR and every purpose; a line between two closed blocks
-// whose parts that serve nothing meet; picks of parts the fold doesn't draw; Outside the diff,
+// whose parts that serve nothing meet, and a pick of one the fold drops; picks of parts the fold
+// doesn't draw, and of a part inside a group the plan folds; Outside the diff,
 // within the budget; Code view at a part and back; Show it under the fold; the unclaimed parts;
 // the fallback; both themes' purpose colours and the panel's and canvas's tokens; and the
 // server's claim stubs against the ones the cases are served with.
@@ -542,6 +543,21 @@ test("A line between two closed blocks that serve the place is drawn, though onl
   await settled(page);
   await expect(lineBetween(page, P, Q)).toHaveCount(1);
   expect((await lineBetween(page, P, Q).getAttribute("data-members"))!.split(" ").sort()).toEqual([...across].sort());
+
+  // A pick of one of those lines, which the PR's fold (the same members, so the same plan) drops:
+  // the fold opens down to both its ends, each pulled out of its rest block, and draws it; one
+  // Back step.
+  const e = V2.edges.find((x: Json) => x.id === across[0]);
+  await open(page, `?sel=line:${encodeURIComponent(e.id)}`, { fit: true });
+  await settled(page);
+  await expect(page.locator('[data-perf="canvas-undoes"]')).toContainText("undoes: opened down to");
+  for (const end of [e.from, e.to]) await expect(item(page, end)).toHaveAttribute("data-perf", /^(block|frame)$/);
+  expect(await drawnMembers(page)).toContain(e.id);
+  await page.locator('[data-perf="canvas-back"]').click();
+  await settled(page);
+  await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
+  for (const end of [e.from, e.to]) await expect(item(page, end)).toHaveCount(0);
+  expect(await drawnMembers(page)).not.toContain(e.id);
 });
 
 test("A pick of a part the fold draws only inside a rest block or a closed block opens the fold down to it; one it can't draw goes to the code view", async ({ context }) => {
@@ -610,7 +626,7 @@ test("Outside the diff stays within the budget: 29 parts only a conflict reaches
   await expect(item(page, cut)).toHaveAttribute("data-selected", "");
 });
 
-test("Show it under the fold: the newer analysis's plan for the place, the reader's own opens kept, a fresh Back history", async ({ context }) => {
+test("Show it under the fold: the newer analysis's plan for the place, the reader's own opens and pulled-out parts kept, a fresh Back history", async ({ context }) => {
   const page = await signIn(context);
   const v1 = await serveNewer(page, "v1");
   const at = "purpose:analysis-run";
@@ -647,6 +663,25 @@ test("Show it under the fold: the newer analysis's plan for the place, the reade
   await settled(page);
   await expect(page.locator('[data-perf="canvas-start-over"]')).toBeDisabled();
   expect((await blockIds(page)).length).toBeLessThanOrEqual(16);
+
+  // From a part a cold link pulled out of the PR's fold's rest block (one that serves nothing in
+  // either analysis): still a block of its own, and still the selection, on v1's plan.
+  const tab = await signIn(context);
+  const newer = await serveNewer(tab, "v1");
+  const servers = (a: Json) => a.purposes.flatMap((x: Json) => x.serves.map((s: Json) => s.node as string)) as string[];
+  const none = V2.nodes.find((x: Json) => x.parent === "system" && x.change === "unchanged" && x.kind === "library");
+  expect(newer.nodes.some((x: Json) => x.id === none.id)).toBe(true);
+  expect([...servers(V2), ...servers(newer)].some((n) => n === none.id || n.startsWith(`${none.id}.`))).toBe(false);
+  await open(tab, `?sel=part:${none.id}`);
+  await settled(tab);
+  await expect(item(tab, none.id)).toHaveAttribute("data-perf", "block");
+  await expect(tab.locator('[data-perf="canvas-undoes"]')).toContainText(`undoes: opened down to ${none.name}`);
+  await tab.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
+  await expect(tab.locator('[data-perf="view-body"]')).toHaveAttribute("data-analysis", "e2e-newer-v1");
+  await settled(tab);
+  await expect(tab.locator('[data-perf="canvas-back"]')).toBeDisabled();
+  await expect(item(tab, none.id)).toHaveAttribute("data-perf", "block");
+  await expect(item(tab, none.id)).toHaveAttribute("data-selected", "");
 });
 
 test("Show it onto an analysis with no backed purpose: the canvas goes to layout A", async ({ context }) => {
@@ -706,12 +741,15 @@ test("The claim stubs the cases are served with are the server's own: v2's graph
 
 test.describe("the 3× tiled analysis", () => {
   const TILE = "/AdvanGrid/beghu/pull/9003/view";
+  /** tomsj's analysis of #9003, uploaded once per stack. */
+  const upload = async (page: Page) => {
+    if ((await page.request.get("/api/AdvanGrid/beghu/pulls/9003/analysis")).status() !== 200) devCtl(["analyse", "AdvanGrid/beghu#9003", "--version", "tiled-3x", "--as", "tomsj"]);
+  };
 
   test("The fold plan stays within 16 blocks, at the PR and at each purpose; groups fold siblings of one kind, with a breakdown", async ({ context }) => {
     test.setTimeout(120_000);
     const page = await signIn(context);
-    // tomsj's analysis of #9003, uploaded once per stack.
-    if ((await page.request.get("/api/AdvanGrid/beghu/pulls/9003/analysis")).status() !== 200) devCtl(["analyse", "AdvanGrid/beghu#9003", "--version", "tiled-3x", "--as", "tomsj"]);
+    await upload(page);
     await open(page, "", { view: TILE, fit: true });
     expect((await blockIds(page)).length).toBeLessThanOrEqual(16);
     const groups = viewport(page).locator('[data-perf="group-block"]:not([hidden] *)');
@@ -750,6 +788,31 @@ test.describe("the 3× tiled analysis", () => {
       await open(page, `?sel=${q.id}`, { view: TILE });
       expect((await blockIds(page)).length, q.id).toBeLessThanOrEqual(16);
     }
+  });
+
+  test("A pick of a part inside a group the plan folds unfolds the group, down to it: one Back step", async ({ context }) => {
+    test.setTimeout(120_000);
+    const page = await signIn(context);
+    await upload(page);
+    await open(page, "", { view: TILE, fit: true });
+    const g = viewport(page).locator('[data-perf="group-block"]:not([hidden] *)').first();
+    const gid = (await g.getAttribute("data-item"))!;
+    await g.click();
+    await expect.poll(() => selOf(page)).toBe(`group:${gid}`);
+    const member = panel(page).locator('[data-perf="group-member"]').first();
+    const id = (await member.getAttribute("data-id"))!;
+    await expect(item(page, id)).toHaveCount(0);
+    // Picked from the group's panel: the group opens into a frame of its parts, the part selected in it.
+    await member.locator("button").click();
+    await expect.poll(() => selOf(page)).toBe(`part:${id}`);
+    await settled(page);
+    await expect(item(page, gid)).toHaveAttribute("data-perf", "frame");
+    await expect(item(page, id)).toHaveAttribute("data-selected", "");
+    await expect(page.locator('[data-perf="canvas-undoes"]')).toContainText("undoes: opened down to");
+    await page.locator('[data-perf="canvas-back"]').click();
+    await settled(page);
+    await expect(item(page, gid)).toHaveAttribute("data-perf", "group-block");
+    await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
   });
 });
 
