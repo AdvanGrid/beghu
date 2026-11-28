@@ -54,12 +54,17 @@ UPDATE preferences SET
   key_zoom_fit = CASE :action WHEN 'zoomFit' THEN :binding ELSE key_zoom_fit END,
   key_out_level = CASE :action WHEN 'outLevel' THEN :binding ELSE key_out_level END,
   key_canvas_escape = CASE :action WHEN 'canvasEscape' THEN :binding ELSE key_canvas_escape END,
+  key_open_fold = CASE :action WHEN 'openFold' THEN :binding ELSE key_open_fold END,
+  key_part_left = CASE :action WHEN 'partLeft' THEN :binding ELSE key_part_left END,
+  key_part_right = CASE :action WHEN 'partRight' THEN :binding ELSE key_part_right END,
+  key_part_up = CASE :action WHEN 'partUp' THEN :binding ELSE key_part_up END,
+  key_part_down = CASE :action WHEN 'partDown' THEN :binding ELSE key_part_down END,
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
   'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'focusIssue', 'collapse', 'expand', 'labels', 'assignees',
   'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
   'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'zoomIn', 'zoomOut', 'zoomReset', 'zoomFit', 'outLevel',
-  'canvasEscape', 'help');
+  'canvasEscape', 'openFold', 'partLeft', 'partRight', 'partUp', 'partDown', 'help');
 
 -- The account's own bindings, by action (as the web app names it): only those it set, '' for
 -- one it left unbound. An action not listed has the preset's.
@@ -99,6 +104,11 @@ UNION ALL SELECT 'zoomReset' AS "action!: String", key_zoom_reset AS "binding!" 
 UNION ALL SELECT 'zoomFit' AS "action!: String", key_zoom_fit AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_zoom_fit IS NOT NULL
 UNION ALL SELECT 'outLevel' AS "action!: String", key_out_level AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_out_level IS NOT NULL
 UNION ALL SELECT 'canvasEscape' AS "action!: String", key_canvas_escape AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_canvas_escape IS NOT NULL
+UNION ALL SELECT 'openFold' AS "action!: String", key_open_fold AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_open_fold IS NOT NULL
+UNION ALL SELECT 'partLeft' AS "action!: String", key_part_left AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_left IS NOT NULL
+UNION ALL SELECT 'partRight' AS "action!: String", key_part_right AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_right IS NOT NULL
+UNION ALL SELECT 'partUp' AS "action!: String", key_part_up AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_up IS NOT NULL
+UNION ALL SELECT 'partDown' AS "action!: String", key_part_down AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_down IS NOT NULL
 UNION ALL SELECT 'help' AS "action!: String", key_help AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_help IS NOT NULL;
 
 -- Disconnect: the account's preferences go.

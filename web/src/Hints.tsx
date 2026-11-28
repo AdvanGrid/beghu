@@ -42,8 +42,13 @@ export const LABEL: Record<Action, string> = {
   zoomOut: "Zoom out",
   zoomReset: "Reset zoom",
   zoomFit: "Fit the drawing",
+  openFold: "Open or fold the selection",
   outLevel: "Out one level",
   canvasEscape: "Unpin, close a card or clear the selection",
+  partLeft: "Select the part to the left",
+  partRight: "Select the part to the right",
+  partUp: "Select the part above",
+  partDown: "Select the part below",
   help: "All keys",
 };
 
@@ -67,7 +72,7 @@ const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbo
   list: LIST_QUICK,
   panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "focusIssue", "toList", "help"],
   lightbox: ["imageClose"],
-  canvas: ["zoomIn", "zoomOut", "zoomReset", "zoomFit", "outLevel", "canvasEscape", "help"],
+  canvas: ["openFold", "outLevel", "zoomIn", "zoomOut", "zoomFit", "canvasEscape", "help"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
   editor: ["saveEdit", "cancelEdit", "help"],
@@ -102,7 +107,7 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode", "focusIssue"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
-  { name: "PR view's canvas", areas: ["canvas"], actions: ["zoomIn", "zoomOut", "zoomReset", "zoomFit", "outLevel", "canvasEscape"] },
+  { name: "PR view's canvas", areas: ["canvas"], actions: ["partLeft", "partRight", "partUp", "partDown", "openFold", "outLevel", "zoomIn", "zoomOut", "zoomReset", "zoomFit", "canvasEscape"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },

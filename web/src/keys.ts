@@ -59,10 +59,13 @@
 // or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
 // The PR view's canvas (pr-view/canvas/) is an area of its own, `canvas`, marked on the drawing's
-// viewport (focusable): it offers `zoomIn`, `zoomOut`, `zoomReset` and `zoomFit`, `outLevel`
-// (Backspace: folds the innermost open frame round the selection and selects it), and
-// `canvasEscape` (unpins a legend row or closes a trunk card, else clears the selection). Space +
-// drag pans, fixed: it's the canvas's own pointer gesture, not a key.
+// viewport (its one tab stop is the selection, or the changed column): it offers `zoomIn`,
+// `zoomOut`, `zoomReset` and `zoomFit`, `openFold` (Enter: opens the selected block, folds an open
+// one, or glides along a selected line), `outLevel` (Backspace: folds the innermost open frame
+// round the selection and selects it), `canvasEscape` (unpins a legend row or closes a trunk card,
+// else clears the selection), and `partLeft`, `partRight`, `partUp` and `partDown` (the arrow
+// keys, fixed there, as the list's are: the nearest block that way is selected). Space + drag
+// pans, fixed: it's the canvas's own pointer gesture, not a key.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
@@ -110,8 +113,13 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   zoomOut: ["-"],
   zoomReset: ["0"],
   zoomFit: ["f"],
+  openFold: ["Enter"],
   outLevel: ["Backspace"],
   canvasEscape: ["Escape"],
+  partLeft: [],
+  partRight: [],
+  partUp: [],
+  partDown: [],
   help: ["?", "Ctrl+?"],
 };
 
@@ -165,20 +173,26 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   zoomOut: ["canvas"],
   zoomReset: ["canvas"],
   zoomFit: ["canvas"],
+  openFold: ["canvas"],
   outLevel: ["canvas"],
   canvasEscape: ["canvas"],
+  partLeft: ["canvas"],
+  partRight: ["canvas"],
+  partUp: ["canvas"],
+  partDown: ["canvas"],
   help: ANYWHERE,
 };
 
 /**
  * Fixed keys, not rebindable, each in its area: the ARIA list and tree keys while the focus is in
  * the list (← and → only do anything in Tree mode), Escape out of the comment box into the issue,
- * and Escape cancelling an edit.
+ * Escape cancelling an edit, and the arrow keys moving the canvas's selection.
  */
 const FIXED: Partial<Record<Area, Readonly<Record<string, Action>>>> = {
   list: { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last", ArrowLeft: "collapse", ArrowRight: "expand" },
   composer: { Escape: "openIssue" },
   editor: { Escape: "cancelEdit" },
+  canvas: { ArrowLeft: "partLeft", ArrowRight: "partRight", ArrowUp: "partUp", ArrowDown: "partDown" },
 };
 
 /** Whether `binding` can fire in `where`: while text is typed, only a Ctrl or Cmd chord without Alt. */
@@ -359,6 +373,7 @@ const FIXED_WHY: Partial<Record<Area, string>> = {
   list: "The list keeps the arrow keys, Home and End",
   composer: "Escape leaves the comment box",
   editor: "Escape cancels an edit",
+  canvas: "The canvas keeps the arrow keys",
 };
 
 /**

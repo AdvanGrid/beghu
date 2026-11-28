@@ -173,6 +173,34 @@ test("a canvas key rebound on the setup page works on the PR view's canvas, and 
   await expect(view.locator('[data-perf="hints"]')).toContainText("i Zoom in");
 });
 
+test("the canvas keeps its arrow keys, and Open or fold the selection rebinds from Enter", async ({ context }) => {
+  const setup = await tab(context, "/prefs");
+  // The arrows move the canvas's selection there: no canvas action can have one.
+  await record(setup, "Zoom in", "ArrowUp");
+  await expect(prefs(setup).locator('[data-perf="key-refused"]')).toHaveText(/can't be bound: The canvas keeps the arrow keys\.$/);
+  await expect(keysOf(setup, "zoomIn")).toHaveText("+=");
+  await expect(keysOf(setup, "openFold")).toHaveText("Enter");
+  await record(setup, "Open or fold the selection", "o");
+  await expect(keysOf(setup, "openFold")).toHaveText("o");
+
+  const view = await context.newPage();
+  await view.setViewportSize({ width: 1400, height: 900 });
+  await view.goto("/AdvanGrid/beghu/pull/191/view");
+  const canvas = view.locator('[data-perf="canvas-viewport"]');
+  await expect(canvas).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+  const block = view.locator('[data-perf="block"][data-id="crates-server"]');
+  const frame = view.locator('[data-perf="frame"][data-id="crates-server"]:not([hidden] *)');
+  await block.click();
+  await expect.poll(() => new URL(view.url()).searchParams.get("sel")).toBe("part:crates-server");
+  // Enter gave way; o opens the selected block.
+  await view.keyboard.press("Enter");
+  await view.waitForTimeout(200);
+  await expect(frame).toHaveCount(0);
+  await view.keyboard.press("o");
+  await expect(frame).toBeVisible();
+  await expect(view.locator('[data-perf="hints"]')).toContainText("o Open or fold the selection");
+});
+
 test("a sequence under way finishes on the keymap it started on, then the new one takes effect", async ({ context }) => {
   const setup = await tab(context, "/prefs");
   const other = await tab(context);

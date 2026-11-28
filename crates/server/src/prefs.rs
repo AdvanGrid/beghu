@@ -87,8 +87,13 @@ actions! {
     ZoomOut = "zoomOut",
     ZoomReset = "zoomReset",
     ZoomFit = "zoomFit",
+    OpenFold = "openFold",
     OutLevel = "outLevel",
     CanvasEscape = "canvasEscape",
+    PartLeft = "partLeft",
+    PartRight = "partRight",
+    PartUp = "partUp",
+    PartDown = "partDown",
     Help = "help",
 }
 
