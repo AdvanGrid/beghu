@@ -1,0 +1,21 @@
+- A cold open reads the graph once, then the claims, and no list; the top bar names the PR and the analysis
+- The PR panel's PR view opens the view, and its ← goes back to the panel with the list's view
+- The PR's panel: All changes by kind, the description, coverage, the facets found, and Since the last analysis
+- All changes by kind lists a line's changed facet with the parts' changed responsibilities and facets
+- A part's panel: questions to evidence, what it does and who uses it, how it's built, connections with hidden ones faded, files
+- A part's panel says which folders are partly drawn, at any depth, and the PR's coverage lists it
+- A line's panel: what it carries, when, mode, what it crosses, and its evidence
+- A step's panel: previous and next, and the whole flow
+- Back and forward walk the picks; a setting replaces its entry and stays through picks
+- A setting replaces its history entry, normalised, and the panel follows it
+- The graph failing replaces the canvas with Retry, the chrome stays; a failed migration says so
+- The claims failing: every place says so and the counts stay; one Retry reads the one file again
+- A drill-down that beats the claims shows a skeleton until they arrive
+- v1's IDs forward on v2: merged to the new part, dropped and unknown to the PR, each with its note
+- A split to parts and a line selects the parts, and says the line is selected separately, not that it's missing
+- Typed IDs are written once: a conflict, a purpose and a step without their own prefixes
+- Both themes: the view's chrome and change colours take their tokens
+- NoAnalysis: the PR's details failing says the run can't start from here, and Retry recovers
+- NoAnalysis: the empty state starts a run, shows it in the button's place, and the accepted upload fills the page in
+- A newer analysis shows a pill, never swaps by itself, and Show it keeps the place through the upload's carried
+- An upload while the stream was down shows the pill once the stream's reset says so
