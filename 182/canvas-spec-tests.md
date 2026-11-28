@@ -1,0 +1,28 @@
+- Layout A: the columns as frames, each part's face, lines with no labels but their counts
+- Each lens draws its own lines and parts
+- Show: the change and what it connects to, and changed parts only
+- Colour by a facet: words on the face, a multi-valued part's stripes, the legend's rows
+- Boxes: a Shared box for a part with several values, its Group panel with each member's values and claims
+- Outlines: rings in the values' colours, a legend row per value
+- The Lines menu: counts at this level, test lines on, and the no-lines grid
+- Opening in place, folding by the title, Back, Start over and Fold to groups
+- The glide: contents grow out of the block and the lines come back once it lands; reduced motion snaps
+- An open cut short by another continues from where everything is drawn: nothing jumps
+- Parts come back whole after fold → Back and fold → open, and the clicked block stays still going back
+- A selection inside a folded block opens down to it, as one Back step
+- A double-click on a line glides to its far end and selects it
+- A reversed Data flow line's double-click glides to the end it reaches, opening down to it
+- A line's flight cut short by a drag leaves nothing lit or faded
+- The start view: the content's width fitted, never under 85%, from the changed column's top left
+- The start view keeps a people column left of the changed one in view when the drawing fits
+- The wheel scrolls the legend over it, and pans the drawing elsewhere
+- The keyboard: Tab lands on the changed column, arrows select the nearest part, Enter opens and folds
+- A partly drawn part: marked folded, its frame says how many folders are drawn, and a rest block
+- A line only an undetermined claim backs is dotted, in the legend and its card says not confirmed
+- Hover cards: a part's and a line's, each with Drawn as; a line's boundary opens its panel
+- A trunk's card: pinned by a click, dragged by its head, closed by × and Escape; a row lights its line
+- The legend: its rows match what's drawn, hover fades the rest, a click pins, folding is remembered
+- Keys: zoom in, out, reset and fit; Backspace goes out one level; Escape clears the selection
+- Clicks: one selects, the background clears, a drag on the background pans
+- The Group panel: a column folded by Fold to groups, its counts, neighbours and members
+- Both themes: the canvas's lines, parts and frames take their tokens
