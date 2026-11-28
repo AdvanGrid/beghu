@@ -55,6 +55,7 @@ function page() {
     button: new El("INPUT", panel, undefined, "button"),
     help: new El("BUTTON", new El("DIALOG", body, "help")),
     lightbox: new El("BUTTON", new El("DIALOG", body, "lightbox")),
+    canvas: new El("DIV", new El("DIV", body, "canvas")),
   };
 }
 
@@ -225,7 +226,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
     it("keeps every touchpoint silent outside the areas it works in", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help", "lightbox"] as const;
+      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help", "lightbox", "canvas"] as const;
       for (const action of keys.ACTIONS) {
         const withdraw = keys.touch(action, () => ran.push(action));
         for (const area of areas.filter((a) => !keys.WHERE[action].includes(a))) {

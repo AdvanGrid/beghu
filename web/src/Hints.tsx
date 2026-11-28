@@ -38,6 +38,12 @@ export const LABEL: Record<Action, string> = {
   imageClose: "Close image",
   scrollDown: "Scroll the issue down",
   scrollUp: "Scroll the issue up",
+  zoomIn: "Zoom in",
+  zoomOut: "Zoom out",
+  zoomReset: "Reset zoom",
+  zoomFit: "Fit the drawing",
+  outLevel: "Out one level",
+  canvasEscape: "Unpin, close a card or clear the selection",
   help: "All keys",
 };
 
@@ -56,11 +62,12 @@ function off(action: Action): string | undefined {
 
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
 const LIST_QUICK: Action[] = ["next", "previous", "scrollDown", "scrollUp", "collapse", "expand", "openIssue", "focusFilter", "create", "toggleMode", "focusIssue", "help"];
-const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text", Action[]> = {
+const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text" | "canvas", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
   panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "focusIssue", "toList", "help"],
   lightbox: ["imageClose"],
+  canvas: ["zoomIn", "zoomOut", "zoomReset", "zoomFit", "outLevel", "canvasEscape", "help"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
   editor: ["saveEdit", "cancelEdit", "help"],
@@ -95,6 +102,7 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode", "focusIssue"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
+  { name: "PR view's canvas", areas: ["canvas"], actions: ["zoomIn", "zoomOut", "zoomReset", "zoomFit", "outLevel", "canvasEscape"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },

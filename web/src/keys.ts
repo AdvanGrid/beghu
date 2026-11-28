@@ -58,6 +58,12 @@
 // tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
 // or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
+// The PR view's canvas (pr-view/canvas/) is an area of its own, `canvas`, marked on the drawing's
+// viewport (focusable): it offers `zoomIn`, `zoomOut`, `zoomReset` and `zoomFit`, `outLevel`
+// (Backspace: folds the innermost open frame round the selection and selects it), and
+// `canvasEscape` (unpins a legend row or closes a trunk card, else clears the selection). Space +
+// drag pans, fixed: it's the canvas's own pointer gesture, not a key.
+//
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
 import { createEffect, createSignal, getOwner, onCleanup } from "solid-js";
@@ -100,6 +106,12 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   imageClose: ["Escape"],
   scrollDown: ["Shift+j"],
   scrollUp: ["Shift+k"],
+  zoomIn: ["+", "="],
+  zoomOut: ["-"],
+  zoomReset: ["0"],
+  zoomFit: ["f"],
+  outLevel: ["Backspace"],
+  canvasEscape: ["Escape"],
   help: ["?", "Ctrl+?"],
 };
 
@@ -108,16 +120,16 @@ export const ACTIONS = Object.keys(GITHUB) as Action[];
 
 /**
  * Where the focus is: nowhere in particular (`page`), the list, the issue panel, the comment box,
- * a title or body editor, a picker, the filter box, the `?` overlay, the lightbox, or another text
- * field. Views mark their region with `data-keys`.
+ * a title or body editor, a picker, the filter box, the `?` overlay, the lightbox, another text
+ * field, or the PR view's canvas. Views mark their region with `data-keys`.
  */
-export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "lightbox" | "text";
+export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "lightbox" | "text" | "canvas";
 
 /** The areas where text is typed: there only Ctrl or Cmd chords fire, and plain keys go to the widget. */
 export const TYPING: readonly Area[] = ["composer", "editor", "picker", "filter", "text"];
 
 const BROWSE: readonly Area[] = ["page", "list", "panel"];
-const ANYWHERE: readonly Area[] = ["page", "list", "panel", ...TYPING];
+const ANYWHERE: readonly Area[] = ["page", "list", "panel", "canvas", ...TYPING];
 
 /** The areas each touchpoint works in. An issue's write keys need the focus in its panel. */
 export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
@@ -149,6 +161,12 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   imageClose: ["lightbox", ...BROWSE],
   scrollDown: BROWSE,
   scrollUp: BROWSE,
+  zoomIn: ["canvas"],
+  zoomOut: ["canvas"],
+  zoomReset: ["canvas"],
+  zoomFit: ["canvas"],
+  outLevel: ["canvas"],
+  canvasEscape: ["canvas"],
   help: ANYWHERE,
 };
 

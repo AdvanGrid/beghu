@@ -83,6 +83,12 @@ actions! {
     ImageClose = "imageClose",
     ScrollDown = "scrollDown",
     ScrollUp = "scrollUp",
+    ZoomIn = "zoomIn",
+    ZoomOut = "zoomOut",
+    ZoomReset = "zoomReset",
+    ZoomFit = "zoomFit",
+    OutLevel = "outLevel",
+    CanvasEscape = "canvasEscape",
     Help = "help",
 }
 
