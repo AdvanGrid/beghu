@@ -137,8 +137,8 @@ export interface SOut {
   routes: Map<string, P[]>;
   flipped: Set<string>;
   trunks: STrunk[];
-  /** The changed and unchanged groups' frames (not inside a frame). */
-  groups: { side: 1 | 2; x: number; y: number; w: number; h: number }[];
+  /** Each column's frame: people, the changed and unchanged groups, outside (not inside a frame). */
+  groups: { side: Side; x: number; y: number; w: number; h: number }[];
   /** Closed parts drawn taller than given, to fit their lines' stubs. */
   grown: Map<string, number>;
   width: number;
@@ -1111,7 +1111,9 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   // them. Its width is then a function of its anchor and its tracks alone, so coming back to an
   // earlier open set gives it back exactly.
   const colX: number[] = [];
-  const framed = (c: number) => !o.inside && (sideOfCol(c) === 1 || sideOfCol(c) === 2);
+  // Every column of the top scope is framed (people, both groups, outside), so a gutter where
+  // one ends gives its frame room.
+  const framed = (_c: number) => !o.inside;
   // A gutter's name for the anchors: the least part ID in the columns either side.
   const least = partCols.map((col) => col.reduce((m, it) => (it.id < m ? it.id : m), col[0]?.id ?? ""));
   // Count room on each side of a gutter where a line leaves a part into it: its real `from`, the
@@ -1232,7 +1234,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   });
   const groups: SOut["groups"] = [];
   if (!o.inside)
-    for (const side of [1, 2] as const) {
+    for (const side of [0, 1, 2, 3] as const) {
       if (!sideCols[side]) continue;
       const c0 = offset[side]!, c1 = offset[side]! + sideCols[side]! - 1;
       let bottom = TOP;

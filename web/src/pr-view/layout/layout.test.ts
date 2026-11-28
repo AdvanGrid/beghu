@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { layoutInput, type DrawableEdge, type DrawableGraph, type DrawableNode, type View } from "./graph.ts";
+import { columnGroup, layoutInput, type DrawableEdge, type DrawableGraph, type DrawableNode, type View } from "./graph.ts";
 import { layout } from "./layout.ts";
 import type { Layout, LayoutInput, Line, P, Placed, Rect, Scope } from "./types.ts";
 
@@ -96,15 +96,21 @@ function checkRules(L: Layout, input: LayoutInput) {
     }
   }
 
-  // Each group frame holds its group's parts and no other.
+  // Every column with parts has one frame (people, both groups, outside), which holds its
+  // column's parts and no other, with its title's room above the first; no two frames touch.
   const root = L.scopes.get(input.root.id)!;
-  if (input.root.parts.some((p) => p.column === "changed" || p.column === "unchanged")) assert.ok(root.groups.length > 0);
-  for (const g of root.groups)
+  const columns = new Set(input.root.parts.map((p) => p.column));
+  assert.deepEqual(root.groups.map((g) => g.column).sort(), [...columns].sort(), "one frame per column with parts");
+  for (const g of root.groups) {
     for (const p of input.root.parts) {
       const r = L.parts.get(p.id)!;
       if (p.column === g.column) assert.ok(!disjoint(r, g.rect) && r.x >= g.rect.x && r.x + r.w <= g.rect.x + g.rect.w && r.y >= g.rect.y && r.y + r.h <= g.rect.y + g.rect.h, `${p.id} sits outside the ${g.column} group`);
       else assert.ok(disjoint(r, g.rect), `${p.id} sits in the ${g.column} group`);
     }
+    const first = Math.min(...input.root.parts.filter((p) => p.column === g.column).map((p) => L.parts.get(p.id)!.y));
+    assert.ok(first - g.rect.y >= TOP_INSET - EPS, `the ${g.column} frame has no room for its title`);
+    for (const h of root.groups) if (h !== g) assert.ok(g.rect.x + g.rect.w < h.rect.x - EPS || h.rect.x + h.rect.w < g.rect.x - EPS, `the ${g.column} and ${h.column} frames touch`);
+  }
 
   // Both groups, and every frame's inside, packed from the top: in every column of each, the
   // first part sits at the top but for the room the levels routed above it take.
@@ -136,7 +142,9 @@ function checkRules(L: Layout, input: LayoutInput) {
     });
     assert.ok(bands.every((b) => b.band <= b.room + EPS), `${what}: an empty band above (${bands.map((b) => `${b.band} px for ${b.room}`).join(", ")})`);
   };
+  // (People and outside systems aren't packed: each column is pulled whole toward what it connects to.)
   for (const g of root.groups) {
+    if (g.column !== "changed" && g.column !== "unchanged") continue;
     const inGroup = parts.filter(([, p]) => p.scope === input.root.id && !disjoint(p, g.rect)).map(([, p]) => p);
     packed(`the ${g.column} group`, root.rect.y + PAD + TOP_INSET, inGroup);
   }
@@ -704,4 +712,82 @@ describe("the adapter", () => {
     for (const id of ["a", "b", "e"]) assert.equal(L.parts.get(id)?.scope, "sys", `${id} at the top level`);
     assert.ok(L.parts.has("c") && L.parts.has("d"));
   });
+
+  it("draws a folded column or box as one block, its lines rolled up to it and summed, and keeps the rules", () => {
+    const g = graph("1x");
+    const { input: top } = layoutInput(g, { open: new Set() });
+    const changed = top.root.parts.filter((p) => p.column === "changed").map((p) => p.id);
+    const folded = layoutInput(g, { open: new Set(), folded: new Set([columnGroup("changed")]) });
+    const L = layout(folded.input);
+    checkRules(L, folded.input);
+    // One block stands for the changed column: none of its parts is drawn, and it holds them all.
+    assert.deepEqual(folded.input.root.parts.filter((p) => p.column === "changed").map((p) => p.id), [columnGroup("changed")]);
+    for (const id of changed) assert.ok(!L.parts.has(id), `${id} is drawn inside a folded column`);
+    for (const id of changed) assert.ok(folded.groups.get(columnGroup("changed"))!.includes(id), `the folded column stands for ${id}`);
+    // Every analysis line with one end inside it and the other outside is on one of its lines; none between its own parts.
+    const inside = new Set<string>();
+    for (const m of folded.groups.get(columnGroup("changed"))!) for (const n of g.nodes) if (n.id === m || chainOf(g, n.id).includes(m)) inside.add(n.id);
+    for (const e of g.edges) {
+      const ends = [inside.has(e.from), inside.has(e.to)];
+      const drawn = folded.drawnAs.get(e.id) ?? [];
+      if (ends[0] && ends[1]) assert.deepEqual(drawn, [], `${e.id} runs inside the folded column`);
+    }
+    const count = folded.input.root.lines.filter((l) => l.from === columnGroup("changed") || l.to === columnGroup("changed")).reduce((n, l) => n + l.count, 0);
+    assert.equal(count, g.edges.filter((e) => inside.has(e.from) !== inside.has(e.to) && !isSystem(g, e.from) && !isSystem(g, e.to)).length, "the folded column's lines carry every line in or out of it");
+
+    // A folded box likewise, its column's other parts drawn as they were.
+    const boxOf = (n: DrawableNode, column: string) => (column === "changed" ? `box:${n.paths[0]?.split("/")[0] ?? ""}` : undefined);
+    const boxed = layoutInput(g, { open: new Set(), boxes: boxOf });
+    checkRules(layout(boxed.input), boxed.input);
+    const [box, ps] = [...boxed.boxes].sort((a, b) => b[1].length - a[1].length)[0]!;
+    const shut = layoutInput(g, { open: new Set(), boxes: boxOf, folded: new Set([box]) });
+    const S = layout(shut.input);
+    checkRules(S, shut.input);
+    assert.ok(S.parts.has(box) && !S.parts.get(box)!.box, "the folded box is a closed block");
+    for (const id of ps) assert.ok(!S.parts.has(id), `${id} is drawn inside a folded box`);
+    assert.ok(!shut.boxes.has(box));
+  });
+
+  it("draws a Boxes picker's box of one part, and every box's parts share a column", () => {
+    const g: DrawableGraph = {
+      nodes: [node("sys", undefined, "system"), node("a"), node("b"), node("c"), node("d"), node("x", undefined, "external")],
+      edges: [edge("a", "b"), edge("c", "d"), edge("a", "x"), edge("d", "x")],
+      facets: [],
+    };
+    const { input, boxes } = layoutInput(g, { open: new Set(), boxes: (n) => (n.id === "x" ? "box:outside" : n.id === "a" ? "box:one" : "box:many") });
+    const L = layout(input);
+    checkRules(L, input);
+    assert.deepEqual(boxes.get("box:one"), ["a"]);
+    assert.deepEqual(boxes.get("box:outside"), ["x"]);
+    for (const [id, ps] of boxes) for (const p of ps) assert.equal(L.parts.get(p)!.scope, id, `${p} is drawn in ${id}`);
+  });
+
+  it("puts each drawn line's arrowheads where its lines point, both ends for both ways", () => {
+    const g: DrawableGraph = {
+      nodes: [node("sys", undefined, "system"), node("a"), node("b"), node("c"), node("d", "c"), node("e", "c")],
+      edges: [edge("a", "b"), { ...edge("b", "a"), id: "back" }, edge("a", "d"), edge("e", "a")],
+      facets: [],
+    };
+    const fwd = layoutInput(g, { open: new Set() });
+    const ab = JSON.stringify(["a", "b"]);
+    assert.deepEqual(fwd.heads.get(ab), { to: true, from: true });
+    assert.ok(fwd.both.has(ab));
+    // a → d and e → a roll up to one line between a and c, each way.
+    assert.deepEqual(fwd.heads.get(JSON.stringify(["a", "c"])), { to: true, from: true });
+    // Read back (the data's direction): a → d points at a; inside the open c, its piece too.
+    const back = layoutInput(g, { open: new Set(["c"]), direction: (e) => (e.id === "a->d" ? "back" : "forward") });
+    const ad = back.drawnAs.get("a->d")!;
+    assert.equal(ad.length, 2);
+    for (const id of ad) assert.deepEqual(back.heads.get(id), { to: false, from: true }, id);
+    checkRules(layout(back.input), back.input);
+  });
 });
+
+/** `id`'s ancestors in `g`, nearest first. */
+function chainOf(g: DrawableGraph, id: string): string[] {
+  const out: string[] = [];
+  for (let p = g.nodes.find((n) => n.id === id)?.parent; p !== undefined && !out.includes(p); p = g.nodes.find((n) => n.id === p)?.parent) out.push(p);
+  return out;
+}
+
+const isSystem = (g: DrawableGraph, id: string) => g.nodes.find((n) => n.id === id)?.kind === "system";

@@ -26,6 +26,7 @@ import type { Anchors, Column, Layout, LayoutInput, Line, P, Part, Placed, Scope
 export const COUNT_ROOM = 30;
 
 const SIDE: Record<Column, Side> = { people: 0, changed: 1, unchanged: 2, outside: 3 };
+const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside"];
 
 // Made IDs are JSON arrays, so no ID's own characters can make two of them one.
 const portId = (scope: string, line: string) => JSON.stringify(["port", scope, line]);
@@ -132,7 +133,7 @@ export function layout(input: LayoutInput): Layout {
       trunks.push({ id: `${w.id}#${trunks.length}`, scope: w.id, points: t.pts.map(mv), lines: ls, width: t.width, changed: t.lines.some((l) => lineOf.get(l)?.changed) });
     }
     const rect = f ? { x: o0.x, y: o0.y, w: f.w, h: f.h } : { x: 0, y: 0, w: out.width, h: out.height };
-    scopes.set(w.id, { rect, groups: out.groups.map((g) => ({ column: g.side === 1 ? "changed" : "unchanged", rect: { x: g.x + dx, y: g.y + dy, w: g.w, h: g.h } })) });
+    scopes.set(w.id, { rect, groups: out.groups.map((g) => ({ column: COLUMNS[g.side]!, rect: { x: g.x + dx, y: g.y + dy, w: g.w, h: g.h } })) });
     anchors.set(w.id, out.anchors);
   }
   // A boxed line's pieces, joined into its one route.
