@@ -14,7 +14,8 @@ import { useNav } from "../nav";
 import { CHANGE } from "../ui";
 import { drawnAs, type KeyRow } from "./key";
 import { SampleView } from "./Legend";
-import { changeKey, CHANGE_WORD, kindWord, sizeLine } from "./look";
+import { changeKey, CHANGE_WORD, colourOf, kindWord, sizeLine, valueLabel, valuesOf } from "./look";
+import { FACET_FILL } from "./Canvas";
 import type { DLine, Item, Scene } from "./scene";
 import { useCanvas } from "./store";
 
@@ -48,7 +49,8 @@ export function Cards(props: {
   const stop = (e: Event) => e.stopPropagation();
   return (
     <>
-      <Show when={card()}>
+      {/* No hover card for the trunk whose card is pinned. */}
+      <Show when={card() && !(card()!.kind === "trunk" && props.pinned()?.trunk === card()!.id) && card()}>
         {(h) => (
           <Placed
             x={h().x}
@@ -242,8 +244,35 @@ function ItemCard(props: { it: Item }) {
       <div {...stylex.attrs(s.small)}>
         {[sizeLine(m(), n.id), inside ? `${inside} inside` : undefined].filter(Boolean).join(" · ")}
       </div>
+      <SharedChips it={it} />
       <DrawnAs rows={rows()} />
     </div>
+  );
+}
+
+/** A part in a Shared box: a chip per value of the box's facet, in its colour. */
+function SharedChips(props: { it: Item }) {
+  const nav = useNav();
+  const c = useCanvas();
+  const box = () => {
+    const p = props.it.parent === undefined ? undefined : c.scene().items.get(props.it.parent);
+    return p?.group?.kind === "shared" ? p.group : undefined;
+  };
+  return (
+    <Show when={box()}>
+      {(g) => (
+        <div {...stylex.attrs(s.chips)} data-perf="value-chips">
+          <span {...stylex.attrs(s.small)}>{g().by}:</span>
+          <For each={valuesOf(props.it.node!, g().facet!)}>
+            {(v) => (
+              <span {...stylex.attrs(s.chip, FACET_FILL[colourOf(nav.model(), g().facet!, v)])} data-perf="value-chip">
+                {valueLabel(nav.model(), g().facet!, v)}
+              </span>
+            )}
+          </For>
+        </div>
+      )}
+    </Show>
   );
 }
 
@@ -434,6 +463,8 @@ const s = stylex.create({
     top: 0,
     width: "max-content",
   },
+  chips: { gap: 4, alignItems: "center", display: "flex", flexWrap: "wrap", marginTop: 6, },
+  chip: { borderRadius: 999, paddingInline: 7, fontSize: 11, borderTopStyle: "solid", borderTopWidth: 2, },
   // A part's or trunk's card never takes the pointer: it's only read. A line's stays for its picks.
   inert: { pointerEvents: "none" },
   pinnedCard: { zIndex: 41, maxWidth: 420, paddingTop: 0, },

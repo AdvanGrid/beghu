@@ -180,8 +180,13 @@ test("Boxes: a Shared box for a part with several values, its Group panel with e
   const shared = item(page, "box:changed:inside-product:*shared");
   await expect(shared.locator('[data-perf="frame-title"]')).toHaveText("▾ Shared: 2 Product area");
   expect(await inside(block(page, "crates-server"), shared)).toBe(true);
-  // Never copied into each of its values' boxes.
+  // Never copied into each of its values' boxes; its card shows a chip per value.
   await expect(page.locator('[data-perf="block"][data-id="crates-server"]')).toHaveCount(1);
+  await block(page, "crates-server").hover();
+  const label = (v: string) => V2.facets.find((f: Json) => f.id === "inside-product").values.find((x: Json) => x.id === v).label;
+  const values = nodeOf("crates-server").facets.find((f: Json) => f.facet === "inside-product").values.map((v: Json) => label(v.value));
+  await expect(page.locator('[data-perf="hover-card"] [data-perf="value-chip"]')).toHaveText(values);
+  await page.mouse.move(5, 5);
   // Its body selects it: the Group panel.
   const box = (await shared.boundingBox())!;
   await page.mouse.click(box.x + box.width - 6, box.y + box.height - 6);
@@ -360,6 +365,28 @@ test("A partly drawn part: marked folded, its frame says how many folders are dr
   await expect(rest).toBeVisible();
   await expect(page.locator('[data-perf="legend-row"][data-row="rest"]')).toContainText("Dashed, muted: stands for parts left out");
   await expect(page.locator('[data-perf="legend-row"][data-row="partial"]')).toContainText("Partly drawn: some folders not drawn");
+});
+
+test("A line only an undetermined claim backs is dotted, in the legend and its card says not confirmed", async ({ context }) => {
+  const page = await signIn(context);
+  // No recording has one at v2: a line of one connection, its claims made undetermined on the way in.
+  await open(page);
+  const id = (await page.locator('[data-perf="canvas-line"][data-count="1"]').first().getAttribute("data-members"))!;
+  const e = V2.edges.find((x: Json) => x.id === id);
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    for (const c of g.analysis.claims) if (e.claims.includes(c.id)) c.status = "undetermined";
+    await route.fulfill({ response: res, json: g });
+  });
+  await open(page);
+  const line = page.locator(`[data-perf="canvas-line"][data-members="${e.id}"]`);
+  await expect(line).toHaveAttribute("data-style", /dotted/);
+  await expect(page.locator('[data-perf="legend-row"][data-row="line:dotted"]')).toContainText("Dotted: not confirmed");
+  const p = await pointOn(line);
+  await page.mouse.move(p.x, p.y);
+  await expect(page.locator('[data-perf="line-card"]')).toContainText("not confirmed");
+  await expect(page.locator('[data-perf="line-card"] [data-perf="drawn-as-row"][data-row="line:dotted"]')).toBeVisible();
 });
 
 test("Hover cards: a part's and a line's, each with Drawn as; a line's boundary opens its panel", async ({ context }) => {
