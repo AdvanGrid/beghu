@@ -676,6 +676,29 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   await page.keyboard.press("Enter");
   await expect(block(page, "crates-server")).toBeVisible();
   await expect(undoes(page)).toHaveText(`undoes: folded ${nodeOf("crates-server").name}`);
+  // ] and [ step through the selected part's lines, the focus on each: a line is reached without a pointer.
+  await block(page, "crates-server").click();
+  await expect.poll(active).toBe("crates-server");
+  const server = page.locator('[data-perf="block"][data-id="crates-server"]');
+  await expect(server).toHaveAttribute("role", "button");
+  await expect(server).toHaveAttribute("aria-pressed", "true");
+  await expect(server).toHaveAttribute("aria-label", `service · changed, ${nodeOf("crates-server").name}`);
+  const focusedLine = () => page.evaluate(() => (document.activeElement as SVGElement | null)?.dataset?.line ?? null);
+  /** The focused line's words: its two ends and how many connections it carries. */
+  const said = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+  await page.keyboard.press("]");
+  await expect.poll(() => selOf(page)).toMatch(/^line:/);
+  await expect.poll(focusedLine).not.toBeNull();
+  const line1 = (await focusedLine())!;
+  expect(await said()).toContain(nodeOf("crates-server").name);
+  await page.keyboard.press("]");
+  await expect.poll(focusedLine).not.toBe(line1);
+  expect(await said()).toContain(nodeOf("crates-server").name);
+  await page.keyboard.press("[");
+  await expect.poll(focusedLine).toBe(line1);
+  await expect(server).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("Escape");
+  await expect.poll(() => selOf(page)).toBeNull();
   // Space on a card's or the legend's button is the button's.
   await page.locator('[data-perf="legend-close"]').focus();
   await page.keyboard.press(" ");

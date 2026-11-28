@@ -49,6 +49,8 @@ export const LABEL: Record<Action, string> = {
   partRight: "Select the part to the right",
   partUp: "Select the part above",
   partDown: "Select the part below",
+  nextLine: "Select the part's next line",
+  previousLine: "Select the part's previous line",
   help: "All keys",
 };
 
@@ -72,7 +74,7 @@ const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbo
   list: LIST_QUICK,
   panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "focusIssue", "toList", "help"],
   lightbox: ["imageClose"],
-  canvas: ["openFold", "outLevel", "zoomIn", "zoomOut", "zoomFit", "canvasEscape", "help"],
+  canvas: ["openFold", "nextLine", "outLevel", "zoomIn", "zoomOut", "zoomFit", "canvasEscape", "help"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
   editor: ["saveEdit", "cancelEdit", "help"],
@@ -107,7 +109,7 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode", "focusIssue"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
-  { name: "PR view's canvas", areas: ["canvas"], actions: ["partLeft", "partRight", "partUp", "partDown", "openFold", "outLevel", "zoomIn", "zoomOut", "zoomReset", "zoomFit", "canvasEscape"] },
+  { name: "PR view's canvas", areas: ["canvas"], actions: ["partLeft", "partRight", "partUp", "partDown", "nextLine", "previousLine", "openFold", "outLevel", "zoomIn", "zoomOut", "zoomReset", "zoomFit", "canvasEscape"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },

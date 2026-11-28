@@ -21,7 +21,9 @@
 // it; a double-click opens a block with parts inside, or glides to a line's far end and selects
 // it; a click on the background clears the selection; a drag on the background, or Space + drag
 // anywhere, pans; Ctrl/Cmd + scroll zooms round the pointer, and scroll pans. Keys are touchpoints
-// (keys.ts, the `canvas` area): + − 0 Fit, Backspace out one level, Escape.
+// (keys.ts, the `canvas` area): + − 0 Fit, Backspace out one level, Escape, the arrows to the
+// nearest part, ] and [ through the selected part's lines. Each block is a button named by its
+// face (kind, change, name), pressed while selected; a line is named by its ends.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createProjection, createSignal, For, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { touch } from "../../keys";
@@ -32,7 +34,7 @@ import { part, useNav } from "../nav";
 import type { Sel } from "../state";
 import { Cards, type Hover } from "./Cards";
 import { Legend, useKeyRows } from "./Legend";
-import { changeKey, faceOf, fillOf, ringsOf, titleOf, CHANGE_WORD, type ChangeKey } from "./look";
+import { changeKey, faceOf, fillOf, ringsOf, titleOf, CHANGE_WORD, type ChangeKey, type Face } from "./look";
 import { arrow, countAt, rounded, tipOf } from "./paths";
 import type { DLine, Item, Scene } from "./scene";
 import { useCanvas } from "./store";
@@ -138,6 +140,7 @@ export function Canvas() {
       if (drawnFor !== undefined && drawnFor !== analysis) {
         const gone = [...known].filter((id) => !sc.items.has(id));
         if (gone.length) {
+          if (gone.some((id) => els.get(id) === document.activeElement)) refocus();
           for (const id of gone) known.delete(id), els.delete(id);
           setOrder((o) => o.filter((id) => known.has(id)));
         }
@@ -304,6 +307,18 @@ export function Canvas() {
   });
   const lineEls = new Map<string, Element>();
   const stopEl = (t = untrack(stop)) => (t?.kind === "item" ? els.get(t.id) : t ? lineEls.get(t.id) : undefined) as HTMLElement | SVGElement | undefined;
+  /** The focused block or line went (Show it's newer analysis, a fold): the focus goes to the tab stop, not the page. */
+  const refocus = () =>
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (a && a !== document.body && a.isConnected && !a.closest("[hidden]")) return;
+      stopEl()?.focus({ preventScroll: true });
+    });
+  /** A line's element, gone with its line: the focus moves on if it had it. */
+  const lineGone = (id: string, el: Element | undefined) => {
+    if (lineEls.get(id) === el) lineEls.delete(id);
+    if (el && el === document.activeElement) refocus();
+  };
   createEffect(stop, () => {
     // Only while the canvas has the focus, and not from a card's or the legend's button.
     const active = document.activeElement;
@@ -901,6 +916,50 @@ export function Canvas() {
   touch("partRight", () => move(1, 0));
   touch("partUp", () => move(0, -1));
   touch("partDown", () => move(0, 1));
+  /** The part whose lines ] and [ walk, while the selection is one of them. */
+  let lineHub: string | undefined;
+  /** An item's lines, clockwise round it from twelve o'clock by where their far ends are. */
+  const linesRound = (sc: Scene, id: string): string[] => {
+    const it = sc.items.get(id);
+    if (!it) return [];
+    let ls = [...sc.lines.values()].filter((l) => l.from === id || l.to === id);
+    // An open frame or column with no line of its own: the lines of what's inside it.
+    if (!ls.length) ls = [...relatedItem(sc, id).lines].map((l) => sc.lines.get(l)!).filter(Boolean);
+    const cx = it.rect.x + it.rect.w / 2, cy = it.rect.y + it.rect.h / 2;
+    const angle = (l: DLine) => {
+      const farId = l.from === id ? l.to : l.from;
+      const far = farId === undefined ? undefined : sc.items.get(farId);
+      const p = far ? { x: far.rect.x + far.rect.w / 2, y: far.rect.y + far.rect.h / 2 } : (l.from === id ? l.route.at(-1) : l.route[0]) ?? { x: cx, y: cy };
+      const a = Math.atan2(p.x - cx, cy - p.y);
+      return a < 0 ? a + 2 * Math.PI : a;
+    };
+    return ls.map((l) => ({ id: l.id, a: angle(l) })).sort((a, b) => a.a - b.a || (a.id < b.id ? -1 : 1)).map((x) => x.id);
+  };
+  /** Selects the selected part's next (or previous) line; from a line, the next of its part's. */
+  const stepLine = (dir: 1 | -1) => {
+    const sc = untrack(scene);
+    const [l] = untrack(selLines);
+    let hub: string | undefined;
+    if (l !== undefined) {
+      const line = sc.lines.get(l);
+      hub = lineHub !== undefined && linesRound(sc, lineHub).includes(l) ? lineHub : (line?.from ?? line?.to);
+    } else hub = target()?.id;
+    if (hub === undefined || !sc.items.has(hub)) return;
+    const ls = linesRound(sc, hub);
+    if (!ls.length) return;
+    const i = l === undefined ? -1 : ls.indexOf(l);
+    const next = sc.lines.get(i < 0 ? ls[dir > 0 ? 0 : ls.length - 1]! : ls[(i + dir + ls.length) % ls.length]!)!;
+    lineHub = hub;
+    nav.select({ kind: "line", ids: next.members });
+    // Off screen, its route comes into view.
+    const xs = next.route.map((p) => p.x), ys = next.route.map((p) => p.y);
+    const r = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    const v = untrack(view), sz = untrack(size);
+    const x0 = r.x * v.z + v.x, y0 = r.y * v.z + v.y;
+    if (x0 + r.w * v.z < 0 || x0 > sz.w || y0 + r.h * v.z < 0 || y0 > sz.h) reveal(r);
+  };
+  touch("nextLine", () => stepLine(1));
+  touch("previousLine", () => stepLine(-1));
   touch("canvasEscape", () => {
     if (untrack(keyPin) !== undefined) return setKeyPin(undefined);
     if (untrack(pinned)) return setPinned(undefined);
@@ -942,7 +1001,7 @@ export function Canvas() {
         tabindex={stop() ? -1 : 0}
         role="group"
         aria-roledescription="drawing"
-        aria-label="The PR's parts and lines: arrow keys move the selection, Enter opens or folds it"
+        aria-label="The PR's parts and lines: arrow keys move the selection, Enter opens or folds it, ] and [ step through its lines"
         data-keys="canvas"
         data-perf="canvas-viewport"
         data-flying={flying() === undefined ? undefined : ""}
@@ -969,7 +1028,7 @@ export function Canvas() {
             )}
           </Show>
           <For each={order()}>{(id) => <ItemView id={id} els={els} looks={looks} />}</For>
-          <LineLayer gliding={gliding()} lineEls={lineEls} stop={isStopLine} focusing={focusing} inFocus={isFocusLine} trunkInFocus={isFocusTrunk} lit={isLitLine} trunkLit={isLitTrunk} />
+          <LineLayer gliding={gliding()} lineEls={lineEls} lineGone={lineGone} stop={isStopLine} focusing={focusing} inFocus={isFocusLine} trunkInFocus={isFocusTrunk} lit={isLitLine} trunkLit={isLitTrunk} />
         </div>
         <ZoomBar zoom={() => view().z} zoomBy={zoomBy} fit={fit} />
         <Legend hover={setKeyHover} pin={keyPin} setPin={setKeyPin} />
@@ -1030,6 +1089,21 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
     return x ? x.depth * 2 + (closed() ? 1 : 0) : 0;
   };
   const shown = () => !!it() && (c.scene().items.has(id) || c.glide() !== undefined);
+  // A closed block's face, an open one's title: what it shows, and what a screen reader says it is.
+  const face = createMemo(() => {
+    const x = it();
+    return x && closed() ? faceOf(m(), x, c.settings()) : undefined;
+  });
+  const title = createMemo(() => {
+    const x = it();
+    return x && !closed() ? titleOf(m(), x, (n) => drawnFolders(m(), n).length) : undefined;
+  });
+  const label = () => {
+    const f = face();
+    if (f) return `${f.kind ? `${f.kind}${f.change !== "none" ? ` · ${CHANGE_WORD[f.change]}` : ""}, ` : ""}${f.name}`;
+    const t = title();
+    return t === undefined ? undefined : `${t.replace(/^▾ /, "")}, open`;
+  };
   const perf = () => {
     const l = look();
     return l === "part" ? "block" : l === "groupBlock" ? "group-block" : l === "changedColumn" ? "column" : l === "shared" ? "box" : l;
@@ -1050,29 +1124,29 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
         data-faded={c.scene().faded.has(id) ? "" : undefined}
         data-selected={L.sel[id] ? "" : undefined}
         data-focus={L.focusing() ? (L.lit[id] ? "lit" : "dim") : undefined}
+        role="button"
+        aria-label={label()}
+        aria-pressed={L.sel[id] ? "true" : "false"}
         style={{ "--x": `${it()?.rect.x ?? 0}px`, "--y": `${it()?.rect.y ?? 0}px`, "--w": `${it()?.rect.w ?? 0}px`, "--h": `${it()?.rect.h ?? 0}px` }}
       >
-        <Show when={it()}>{(x) => <Show when={closed()} fallback={<FrameTitle it={x()} />}>{<Block it={x()} />}</Show>}</Show>
+        <Show when={it()}>{(x) => <Show when={face()} fallback={<FrameTitle it={x()} title={title() ?? ""} />}>{(f) => <Block it={x()} face={f()} />}</Show>}</Show>
       </div>
     </div>
   );
 }
 
-function FrameTitle(props: { it: Item }) {
-  const nav = useNav();
-  const title = () => titleOf(nav.model(), props.it, (n) => drawnFolders(nav.model(), n).length);
+function FrameTitle(props: { it: Item; title: string }) {
   return (
-    <div class={props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title" title={undefined}>
-      {title()}
+    <div class={props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title">
+      {props.title}
     </div>
   );
 }
 
-
-function Block(props: { it: Item }) {
+function Block(props: { it: Item; face: Face }) {
   const nav = useNav();
   const c = useCanvas();
-  const face = createMemo(() => faceOf(nav.model(), props.it, c.settings()));
+  const face = () => props.face;
   const fill = createMemo(() => (props.it.node ? fillOf(nav.model(), props.it.node, c.settings()) : undefined));
   const rings = createMemo(() => (props.it.node ? ringsOf(nav.model(), props.it.node, c.settings()) : undefined));
   const stripes = () => {
@@ -1144,6 +1218,7 @@ export const lineWidth = (n: number) => Math.min(1.5 + 0.6 * (n - 1), 5);
 function LineLayer(props: {
   gliding: boolean;
   lineEls: Map<string, Element>;
+  lineGone: (id: string, el: Element | undefined) => void;
   stop: Readonly<Record<string, true | undefined>>;
   focusing: () => boolean;
   inFocus: Readonly<Record<string, true | undefined>>;
@@ -1172,12 +1247,15 @@ function LineLayer(props: {
         </For>
       </g>
       <For each={ids()}>
-        {(id) => (
+        {(id) => {
+          let el: Element | undefined;
+          onCleanup(() => props.lineGone(id, el));
+          return (
           <Show when={c.scene().lines.get(id)}>
             {(l) => (
               <path
                 d={rounded(l().route)}
-                ref={(el) => props.lineEls.set(id, el)}
+                ref={(x) => props.lineEls.set(id, (el = x))}
                 class={HIT}
                 tabindex={props.stop[id] ? 0 : -1}
                 aria-label={lineLabel(l())}
@@ -1190,7 +1268,8 @@ function LineLayer(props: {
               />
             )}
           </Show>
-        )}
+          );
+        }}
       </For>
       <g aria-hidden="true">
         <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>

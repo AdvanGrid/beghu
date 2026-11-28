@@ -59,12 +59,14 @@ UPDATE preferences SET
   key_part_right = CASE :action WHEN 'partRight' THEN :binding ELSE key_part_right END,
   key_part_up = CASE :action WHEN 'partUp' THEN :binding ELSE key_part_up END,
   key_part_down = CASE :action WHEN 'partDown' THEN :binding ELSE key_part_down END,
+  key_next_line = CASE :action WHEN 'nextLine' THEN :binding ELSE key_next_line END,
+  key_previous_line = CASE :action WHEN 'previousLine' THEN :binding ELSE key_previous_line END,
   key_help = CASE :action WHEN 'help' THEN :binding ELSE key_help END
 WHERE github_user_id = :github_user_id AND :action IN ('next', 'previous', 'first', 'last',
   'openIssue', 'toList', 'focusFilter', 'create', 'toggleMode', 'focusIssue', 'collapse', 'expand', 'labels', 'assignees',
   'milestone', 'blockedBy', 'blocking', 'relatesTo', 'comment', 'editTitle', 'closeReopen', 'send', 'saveEdit', 'cancelEdit',
   'imageOpen', 'imageClose', 'scrollDown', 'scrollUp', 'zoomIn', 'zoomOut', 'zoomReset', 'zoomFit', 'outLevel',
-  'canvasEscape', 'openFold', 'partLeft', 'partRight', 'partUp', 'partDown', 'help');
+  'canvasEscape', 'openFold', 'partLeft', 'partRight', 'partUp', 'partDown', 'nextLine', 'previousLine', 'help');
 
 -- The account's own bindings, by action (as the web app names it): only those it set, '' for
 -- one it left unbound. An action not listed has the preset's.
@@ -109,6 +111,8 @@ UNION ALL SELECT 'partLeft' AS "action!: String", key_part_left AS "binding!" FR
 UNION ALL SELECT 'partRight' AS "action!: String", key_part_right AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_right IS NOT NULL
 UNION ALL SELECT 'partUp' AS "action!: String", key_part_up AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_up IS NOT NULL
 UNION ALL SELECT 'partDown' AS "action!: String", key_part_down AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_part_down IS NOT NULL
+UNION ALL SELECT 'nextLine' AS "action!: String", key_next_line AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_next_line IS NOT NULL
+UNION ALL SELECT 'previousLine' AS "action!: String", key_previous_line AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_previous_line IS NOT NULL
 UNION ALL SELECT 'help' AS "action!: String", key_help AS "binding!" FROM preferences WHERE github_user_id = :github_user_id AND key_help IS NOT NULL;
 
 -- Disconnect: the account's preferences go.

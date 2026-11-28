@@ -64,8 +64,10 @@
 // one, or glides along a selected line), `outLevel` (Backspace: folds the innermost open frame
 // round the selection and selects it), `canvasEscape` (unpins a legend row or closes a trunk card,
 // else clears the selection), and `partLeft`, `partRight`, `partUp` and `partDown` (the arrow
-// keys, fixed there, as the list's are: the nearest block that way is selected). Space + drag
-// pans, fixed: it's the canvas's own pointer gesture, not a key.
+// keys, fixed there, as the list's are: the nearest block that way is selected), and `nextLine`
+// and `previousLine` (] and [: the selected part's lines one by one, round it clockwise from
+// twelve o'clock, so a line is reached without a pointer). Space + drag pans, fixed: it's the
+// canvas's own pointer gesture, not a key.
 //
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
@@ -120,6 +122,8 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   partRight: [],
   partUp: [],
   partDown: [],
+  nextLine: ["]"],
+  previousLine: ["["],
   help: ["?", "Ctrl+?"],
 };
 
@@ -180,6 +184,8 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   partRight: ["canvas"],
   partUp: ["canvas"],
   partDown: ["canvas"],
+  nextLine: ["canvas"],
+  previousLine: ["canvas"],
   help: ANYWHERE,
 };
 

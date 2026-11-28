@@ -94,6 +94,8 @@ actions! {
     PartRight = "partRight",
     PartUp = "partUp",
     PartDown = "partDown",
+    NextLine = "nextLine",
+    PreviousLine = "previousLine",
     Help = "help",
 }
 
