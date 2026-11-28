@@ -753,11 +753,14 @@ export function Canvas() {
 
   const onTitle = (e: Event) => e.target instanceof window.Element && !!e.target.closest("[data-title]");
   let press: { x: number; y: number; pan: boolean; moved: boolean; v: View; id: number } | undefined;
-  /** A press that panned: its click selects nothing. */
+  /** A press that moved past the slop, panning or not: its click selects nothing. */
   let dragged = false;
   const onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0) return;
     viewport.focus({ preventScroll: true, focusVisible: false } as FocusOptions);
+    // Mid-flight the drawing moves under the pointer: a press anywhere takes over, so the flight
+    // stops where it is and picks nothing, whatever it lands on.
+    if (untrack(flying) !== undefined) takeOver();
     // A drag pans from the background or an open frame's body; Space + drag from anywhere.
     const el = itemAt(e.target);
     const onThing = (el && !isOpen(scene().items.get(el.dataset.item!))) || lineAt(e.target) || (e.target instanceof window.Element && e.target.closest("[data-chrome]"));
@@ -781,7 +784,7 @@ export function Canvas() {
   };
   const onPointerUp = (e: PointerEvent) => {
     if (!press || press.id !== e.pointerId) return;
-    dragged = press.moved && press.pan;
+    dragged = press.moved;
     press = undefined;
     setPanning(false);
     if (viewport.hasPointerCapture(e.pointerId)) viewport.releasePointerCapture(e.pointerId);

@@ -599,20 +599,46 @@ test("A reversed Data flow line's double-click glides to the end it reaches, ope
 test("A line's flight cut short by a drag leaves nothing lit or faded", async ({ context }) => {
   const page = await signIn(context);
   await open(page);
-  // Zoomed in to 200%, a flight runs its longest (1.1 s): time to cut it short.
+  // Zoomed in to 200%, a flight to a far end runs its longest (1.1 s): time to cut it short.
   await viewport(page).focus();
   for (let i = 0; i < 4; i++) await page.keyboard.press("+");
   await expect(page.locator('[data-perf="zoom-level"]')).toHaveText("200%");
-  let p: { x: number; y: number } | undefined;
+  // The line of one connection in view whose far end is farthest from the middle of the view, so
+  // the flight is long whatever the start view is (it runs 360 ms and 0.35 ms per px it pans,
+  // Canvas.tsx): a short one can land before the drag.
+  let best: { p: { x: number; y: number }; far: number } | undefined;
+  const mid = await viewport(page).evaluate((vp) => {
+    const r = vp.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
   for (const line of await page.locator('[data-perf="canvas-line"][data-count="1"]').all()) {
-    p = await pointOn(line).catch(() => undefined);
-    if (p) break;
+    const p = await pointOn(line).catch(() => undefined);
+    if (!p) continue;
+    const ends = JSON.parse((await line.getAttribute("data-line"))!) as string[];
+    const centres = await Promise.all(
+      ends.map((id) =>
+        viewport(page)
+          .locator(`[data-item="${id.replace(/"/g, '\\"')}"]`)
+          .first()
+          .evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }),
+      ),
+    );
+    // The far end is the one farther from the click; the flight pans it to the middle.
+    const [a, b] = centres.map((c) => Math.hypot(c.x - p.x, c.y - p.y));
+    const end = centres[a! > b! ? 0 : 1]!;
+    const far = Math.hypot(end.x - mid.x, end.y - mid.y);
+    if (!best || far > best.far) best = { p, far };
   }
-  if (!p) throw new Error("no line of one connection in view");
-  const bg = await backgroundPoint(page);
-  await page.mouse.dblclick(p.x, p.y);
-  // Mid-flight (once any open down to its far end has landed), a drag on the background takes over.
+  if (!best) throw new Error("no line of one connection in view");
+  expect(360 + best.far * 0.35, "the flight's length (ms)").toBeGreaterThan(700);
+  await page.mouse.dblclick(best.p.x, best.p.y);
+  // Mid-flight (once any open down to its far end has landed), a drag takes over: from where the
+  // background is now, though the drawing moves under it, a press anywhere stops the flight.
   await expect(viewport(page)).toHaveAttribute("data-flying", "", { timeout: 2_000 });
+  const bg = await backgroundPoint(page);
   await page.mouse.move(bg.x, bg.y);
   await page.mouse.down();
   await page.mouse.move(bg.x + 40, bg.y + 30, { steps: 2 });
@@ -980,7 +1006,7 @@ test("Keys: zoom in, out, reset and fit; Backspace goes out one level; Escape cl
   await expect.poll(() => selOf(page)).toBeNull();
 });
 
-test("Clicks: one selects, the background clears, a drag on the background pans", async ({ context }) => {
+test("Clicks: one selects, the background clears, a drag on the background pans, a drag from a block selects nothing", async ({ context }) => {
   const page = await signIn(context);
   await open(page);
   await block(page, "crates-analysis").click();
@@ -995,6 +1021,14 @@ test("Clicks: one selects, the background clears, a drag on the background pans"
   await page.mouse.up();
   const after = (await block(page, "crates-analysis").boundingBox())!;
   expect(before.x - after.x).toBeGreaterThan(80);
+  expect(selOf(page)).toBe("part:crates-analysis");
+  // A drag from a closed block doesn't pan, and selects nothing either, though it ends on it.
+  const other = (await block(page, "crates-server").boundingBox())!;
+  await page.mouse.move(other.x + 20, other.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(other.x + 40, other.y + 34, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
   expect(selOf(page)).toBe("part:crates-analysis");
   // A click on the background clears it.
   await page.mouse.click(vp.x + vp.width - 40, vp.y + vp.height - 120);
