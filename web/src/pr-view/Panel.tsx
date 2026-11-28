@@ -10,10 +10,15 @@
 // - A line: each connection's questions, facets, what it carries, when, mode, boundaries crossed
 //   and evidence.
 // - A step: previous and next, and the whole flow.
+// - A group (a column, a box, the Shared box; slice 8): its name and what groups it, "N parts · N
+//   changed", its lines to other blocks grouped by neighbour with counts, its members to pick
+//   from, and for a box each member's placement with its claims (for the Shared box, each
+//   member's values with theirs).
+// - A boundary: what it is, its claims, and every line crossing it.
 //
 // Every claim sits in its own boundary (claims.tsx). Answers are short; depth is a fold away.
 import * as stylex from "@stylexjs/stylex";
-import { Errored, For, Loading, Show, type Element } from "solid-js";
+import { createMemo, Errored, For, Loading, Show, type Element } from "solid-js";
 import type { Carried, CarriedCause, Edge, FacetAssignment, Node, Question } from "../bindings/analysis";
 import { claimCount, ClaimList, useEvidencePaths } from "./claims";
 import type { Model } from "./model";
@@ -21,6 +26,8 @@ import { line, part, selOf, useNav } from "./nav";
 import { hiddenBy, parseLines, type Sel } from "./state";
 import { ChangeWord, changeText, Fold, githubBlob, githubTree, Mark, ui } from "./ui";
 import { colors } from "../tokens.stylex";
+import { touched } from "./canvas/look";
+import { useCanvas } from "./canvas/store";
 
 export function Panel(props: { note?: string; dismiss: () => void }) {
   const nav = useNav();
@@ -71,13 +78,9 @@ function Place(props: { sel: Sel }) {
     case "unclaimed":
       return <UnclaimedPanel />;
     case "group":
-      return (
-        <div data-perf="group-panel">
-          <p {...stylex.attrs(ui.p, ui.muted)}>Group</p>
-          <h2 {...stylex.attrs(ui.h2)}>{sel.id}</h2>
-          <p {...stylex.attrs(ui.p, ui.muted, s.gap)}>A group's panel comes with the canvas.</p>
-        </div>
-      );
+      return <GroupPanel id={sel.id} />;
+    case "boundary":
+      return <BoundaryPanel id={sel.id} />;
   }
 }
 
@@ -752,10 +755,19 @@ function LineDetail(props: { e: Edge }) {
         <Show when={e.boundaries.length > 0}>
           <dt {...stylex.attrs(s.key)}>Crosses</dt>
           <dd {...stylex.attrs(s.value)} data-perf="crosses">
-            {e.boundaries.map((b) => {
-              const x = m().boundaries.get(b);
-              return x ? `${x.name} (${x.kind})` : b;
-            }).join(", ")}
+            <For each={e.boundaries}>
+              {(b, i) => {
+                const x = m().boundaries.get(b);
+                return (
+                  <>
+                    {i() > 0 ? ", " : ""}
+                    <Pick to={{ kind: "boundary", id: b }} accent perf="boundary-pick">
+                      {x ? `${x.name} (${x.kind})` : b}
+                    </Pick>
+                  </>
+                );
+              }}
+            </For>
           </dd>
         </Show>
       </dl>
@@ -941,6 +953,148 @@ function ConflictPanel(props: { id: string }) {
           </section>
         )}
       </For>
+    </div>
+  );
+}
+
+// ---- A group -----------------------------------------------------------------------------------
+
+function GroupPanel(props: { id: string }) {
+  const nav = useNav();
+  const c = useCanvas();
+  const m = () => nav.model();
+  const g = () => c.scene().groups.get(props.id);
+  return (
+    <div data-perf="group-panel" data-id={props.id}>
+      <Show
+        when={g()}
+        fallback={
+          <>
+            <p {...stylex.attrs(ui.p, ui.muted)}>Group</p>
+            <p {...stylex.attrs(ui.p, s.gap)}>This group isn't drawn with the canvas's current Boxes and lens.</p>
+          </>
+        }
+      >
+        {(gr) => {
+          const members = () => gr().members.map((id) => m().nodes.get(id)).filter((n): n is Node => n !== undefined);
+          const changed = () => members().filter((n) => touched(m(), n.id) && n.kind !== "actor" && n.kind !== "external" && n.kind !== "store").length;
+          const what = () => {
+            const x = gr();
+            if (x.kind === "column") return COLUMN_WHAT[x.column];
+            if (x.kind === "shared") return `Parts with several values of ${x.by}, in one box rather than in each value's.`;
+            if (x.facet === undefined) return `Parts whose paths share the folder ${x.value}.`;
+            return `Parts whose ${x.by} is ${x.title}.`;
+          };
+          // Lines to other blocks, by neighbour: the drawn block holding each line's other end.
+          const neighbours = createMemo(() => {
+            const sc = c.scene();
+            const inside = new Set<string>();
+            for (const top of gr().members) for (const x of m().subtree(top)) inside.add(x);
+            const by = new Map<string, { out: string[]; into: string[] }>();
+            for (const e of sc.edges) {
+              const a = inside.has(e.from), b = inside.has(e.to);
+              if (a === b) continue;
+              const other = a ? e.to : e.from;
+              const h = sc.holder(other) ?? other;
+              const row = by.get(h) ?? { out: [], into: [] };
+              (a ? row.out : row.into).push(e.id);
+              by.set(h, row);
+            }
+            return [...by].map(([id, r]) => ({ id, name: sc.groups.get(id)?.title ?? m().name(id), ...r })).sort((x, y) => y.out.length + y.into.length - (x.out.length + x.into.length));
+          });
+          return (
+            <>
+              <p {...stylex.attrs(ui.p, ui.muted)}>{gr().kind === "column" ? "Column" : gr().kind === "shared" ? `Shared box · ${gr().by}` : `Box · grouped by ${gr().by}`}</p>
+              <h2 {...stylex.attrs(ui.h2)}>{gr().title}</h2>
+              <p {...stylex.attrs(ui.p, s.gap)}>{what()}</p>
+              <p {...stylex.attrs(ui.p, ui.muted, s.gap)} data-perf="group-counts">
+                {members().length} {members().length === 1 ? "part" : "parts"} · {changed()} changed
+              </p>
+              <H3>Lines to other blocks</H3>
+              <Show when={neighbours().length > 0} fallback={<p {...stylex.attrs(ui.p, ui.muted)}>None in this lens.</p>}>
+                <ul {...stylex.attrs(ui.list)} data-perf="group-neighbours">
+                  <For each={neighbours()}>
+                    {(r) => (
+                      <li {...stylex.attrs(ui.item)} data-perf="group-neighbour">
+                        <Pick to={{ kind: "line", ids: [...r.out, ...r.into] }}>{r.name}</Pick>
+                        <span {...stylex.attrs(ui.muted, ui.small)}>
+                          {[r.out.length ? `${r.out.length} out` : "", r.into.length ? `${r.into.length} in` : ""].filter(Boolean).join(" · ")}
+                        </span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+              <H3>{gr().kind === "column" ? "Its parts" : "Its parts, and why each is here"}</H3>
+              <ul {...stylex.attrs(ui.list)} data-perf="group-members">
+                <For each={members()}>
+                  {(n) => (
+                    <li data-perf="group-member" data-id={n.id}>
+                      <div {...stylex.attrs(ui.item)}>
+                        <Mark change={n.change} />
+                        <Pick to={part(n.id)} accent>
+                          {n.name}
+                        </Pick>
+                      </div>
+                      <Show when={gr().kind !== "column"}>
+                        <Show when={gr().facet} fallback={<p {...stylex.attrs(ui.p, ui.muted, ui.small)}>Its paths: {n.paths.join(", ")}</p>}>
+                          {(f) => <Facets m={m()} list={n.facets.filter((x) => x.facet === f())} />}
+                        </Show>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </>
+          );
+        }}
+      </Show>
+    </div>
+  );
+}
+
+const COLUMN_WHAT: Record<string, string> = {
+  people: "People and callers that reach the system: they never change, and their lines carry the change.",
+  changed: "Parts whose own code changed in this PR, or a part inside them did.",
+  unchanged: "Parts this PR leaves alone: their code and everything inside them is as it was.",
+  outside: "External systems and stores the system talks to. The PR never changes them; their lines carry the change.",
+};
+
+// ---- A boundary --------------------------------------------------------------------------------
+
+function BoundaryPanel(props: { id: string }) {
+  const nav = useNav();
+  const m = () => nav.model();
+  const b = () => m().boundaries.get(props.id);
+  const crossing = () => m().a.edges.filter((e) => e.boundaries.includes(props.id));
+  return (
+    <div data-perf="boundary-panel" data-id={props.id}>
+      <Show when={b()} fallback={<p {...stylex.attrs(ui.p, ui.muted)}>This boundary isn't in this analysis.</p>}>
+        {(x) => (
+          <>
+            <p {...stylex.attrs(ui.p, ui.muted)}>Boundary · {x().kind}</p>
+            <h2 {...stylex.attrs(ui.h2)}>{x().name}</h2>
+            <H3>Evidence</H3>
+            <Show when={x().claims.length > 0} fallback={<p {...stylex.attrs(ui.p, ui.muted)}>None.</p>}>
+              <span {...stylex.attrs(ui.muted, ui.small)}>{claimCount(m(), x().claims)}</span>
+              <ClaimList m={m()} ids={x().claims} />
+            </Show>
+            <H3>What crosses it ({crossing().length})</H3>
+            <ul {...stylex.attrs(ui.list)} data-perf="boundary-crossing">
+              <For each={crossing()}>
+                {(e) => (
+                  <li {...stylex.attrs(ui.item)} data-perf="crossing">
+                    <Mark change={e.change} />
+                    <Pick to={line(e.id)}>
+                      {m().name(e.from)} → {m().name(e.to)}: {e.label}
+                    </Pick>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </>
+        )}
+      </Show>
     </div>
   );
 }

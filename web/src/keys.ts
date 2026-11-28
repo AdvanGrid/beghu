@@ -7,9 +7,13 @@
 // `/api/me`; the setup page, Prefs.tsx, changes them): each action's bindings, one per line, ""
 // for one deliberately left unbound. A binding is a key written `Ctrl+Shift+x`, or a sequence of
 // two plain keys written `g i`. One with Alt names the physical key (`Alt+KeyL`, matched on
-// `e.code`), since Alt changes the character a key types on macOS and on many layouts. While
-// text is typed (a text field, a picker), only Ctrl or Cmd chords without Alt fire: Alt and AltGr
-// type characters there, and a sequence's keys are plain. Browser-reserved keys are refused
+// `e.code`), since Alt changes the character a key types on macOS and on many layouts. A plain
+// key is the character it types, whatever the layout: a letter, or `]`, that a layout of another
+// script (Cyrillic, Greek, Arabic) types a letter of its own in place of is that key's place's
+// (`charOf`), and one a layout types with AltGr (a German `]`, AltGr+9), or a Mac's Option, is
+// that character, outside text (`typedAction`). While text is typed (a text field, a picker),
+// only Ctrl or Cmd chords without Alt fire: Alt and AltGr type characters there, and a sequence's
+// keys are plain. Browser-reserved keys are refused
 // (`refusal`). A preset key the account gave to another action stays theirs: the preset's action
 // loses it, unbound if it had no other (as a new action does whose default an account already
 // uses). A keymap change applies at once, except mid sequence: a sequence finishes on the map it
@@ -58,6 +62,17 @@
 // tree pattern has them (fixed keys in the list area, as ↑ ↓ Home End are): → opens a closed node
 // or steps into an open one's first child, ← closes an open node or steps out to its parent.
 //
+// The PR view's canvas (pr-view/canvas/) is an area of its own, `canvas`, marked on the drawing's
+// viewport (its one tab stop is the selection, or the changed column): it offers `zoomIn`,
+// `zoomOut`, `zoomReset` and `zoomFit`, `openFold` (Enter: opens the selected block, folds an open
+// one, or glides along a selected line), `outLevel` (Backspace: folds the innermost open frame
+// round the selection and selects it), `canvasEscape` (unpins a legend row or closes a trunk card,
+// else clears the selection), and `partLeft`, `partRight`, `partUp` and `partDown` (the arrow
+// keys, fixed there, as the list's are: the nearest block that way is selected), and `nextLine`
+// and `previousLine` (] and [: the selected part's lines one by one, round it clockwise from
+// twelve o'clock, so a line is reached without a pointer). Space + drag pans, fixed: it's the
+// canvas's own pointer gesture, not a key.
+//
 // This file is in first-load JS, so it holds only what dispatch needs; the words the hint bar
 // and the overlay show are in Hints.tsx, loaded after first paint.
 import { createEffect, createSignal, getOwner, onCleanup } from "solid-js";
@@ -100,6 +115,19 @@ export const GITHUB: Readonly<Record<Action, readonly string[]>> = {
   imageClose: ["Escape"],
   scrollDown: ["Shift+j"],
   scrollUp: ["Shift+k"],
+  zoomIn: ["+", "="],
+  zoomOut: ["-"],
+  zoomReset: ["0"],
+  zoomFit: ["f"],
+  openFold: ["Enter"],
+  outLevel: ["Backspace"],
+  canvasEscape: ["Escape"],
+  partLeft: [],
+  partRight: [],
+  partUp: [],
+  partDown: [],
+  nextLine: ["]"],
+  previousLine: ["["],
   help: ["?", "Ctrl+?"],
 };
 
@@ -108,16 +136,16 @@ export const ACTIONS = Object.keys(GITHUB) as Action[];
 
 /**
  * Where the focus is: nowhere in particular (`page`), the list, the issue panel, the comment box,
- * a title or body editor, a picker, the filter box, the `?` overlay, the lightbox, or another text
- * field. Views mark their region with `data-keys`.
+ * a title or body editor, a picker, the filter box, the `?` overlay, the lightbox, another text
+ * field, or the PR view's canvas. Views mark their region with `data-keys`.
  */
-export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "lightbox" | "text";
+export type Area = "page" | "list" | "panel" | "composer" | "editor" | "picker" | "filter" | "help" | "lightbox" | "text" | "canvas";
 
 /** The areas where text is typed: there only Ctrl or Cmd chords fire, and plain keys go to the widget. */
 export const TYPING: readonly Area[] = ["composer", "editor", "picker", "filter", "text"];
 
 const BROWSE: readonly Area[] = ["page", "list", "panel"];
-const ANYWHERE: readonly Area[] = ["page", "list", "panel", ...TYPING];
+const ANYWHERE: readonly Area[] = ["page", "list", "panel", "canvas", ...TYPING];
 
 /** The areas each touchpoint works in. An issue's write keys need the focus in its panel. */
 export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
@@ -149,18 +177,32 @@ export const WHERE: Readonly<Record<Action, readonly Area[]>> = {
   imageClose: ["lightbox", ...BROWSE],
   scrollDown: BROWSE,
   scrollUp: BROWSE,
+  zoomIn: ["canvas"],
+  zoomOut: ["canvas"],
+  zoomReset: ["canvas"],
+  zoomFit: ["canvas"],
+  openFold: ["canvas"],
+  outLevel: ["canvas"],
+  canvasEscape: ["canvas"],
+  partLeft: ["canvas"],
+  partRight: ["canvas"],
+  partUp: ["canvas"],
+  partDown: ["canvas"],
+  nextLine: ["canvas"],
+  previousLine: ["canvas"],
   help: ANYWHERE,
 };
 
 /**
  * Fixed keys, not rebindable, each in its area: the ARIA list and tree keys while the focus is in
  * the list (← and → only do anything in Tree mode), Escape out of the comment box into the issue,
- * and Escape cancelling an edit.
+ * Escape cancelling an edit, and the arrow keys moving the canvas's selection.
  */
 const FIXED: Partial<Record<Area, Readonly<Record<string, Action>>>> = {
   list: { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last", ArrowLeft: "collapse", ArrowRight: "expand" },
   composer: { Escape: "openIssue" },
   editor: { Escape: "cancelEdit" },
+  canvas: { ArrowLeft: "partLeft", ArrowRight: "partRight", ArrowUp: "partUp", ArrowDown: "partDown" },
 };
 
 /** Whether `binding` can fire in `where`: while text is typed, only a Ctrl or Cmd chord without Alt. */
@@ -247,13 +289,37 @@ export function overlap(a: Action, b: Action): boolean {
 }
 
 /**
- * The letter `e` types, for a Latin binding: on a layout that types another script (Cyrillic,
- * Greek), the Latin letter of the key's place.
+ * The punctuation a US layout types at the places where a layout of another script types letters
+ * (a Russian `ъ` where `]` is), unshifted and shifted.
  */
-function letterOf(e: KeyboardEvent): string {
-  if (/^\p{L}$/u.test(e.key) && !/^[a-z]$/i.test(e.key) && /^Key[A-Z]$/.test(e.code)) return e.code.slice(3).toLowerCase();
+const PLACES: Readonly<Record<string, readonly [string, string]>> = {
+  BracketLeft: ["[", "{"],
+  BracketRight: ["]", "}"],
+  Semicolon: [";", ":"],
+  Quote: ["'", '"'],
+  Comma: [",", "<"],
+  Period: [".", ">"],
+  Backquote: ["`", "~"],
+  Backslash: ["\\", "|"],
+};
+
+/**
+ * The character `e` types, for a binding (a letter in lower case): on a layout that types another
+ * script (Cyrillic, Greek), a letter's place's Latin letter, and at a punctuation key's place
+ * where it types a letter of its own script, that place's punctuation (`ъ` is `]`). A Latin
+ * letter of its own (a German `ü` where `[` is) stays itself.
+ */
+function charOf(e: KeyboardEvent): string {
+  if (/^\p{L}$/u.test(e.key) && !/^[a-z]$/i.test(e.key)) {
+    if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3).toLowerCase();
+    const place = PLACES[e.code];
+    if (place && !/^\p{Script=Latin}$/u.test(e.key)) return place[e.shiftKey ? 1 : 0];
+  }
   return e.key.toLowerCase();
 }
+
+/** Whether AltGr is down for `e`: the character it types is the layout's. */
+const altGraph = (e: KeyboardEvent) => e.getModifierState?.("AltGraph") ?? false;
 
 /** Whether `e` is the key `p` names. */
 function matches(p: Key, e: KeyboardEvent): boolean {
@@ -262,9 +328,9 @@ function matches(p: Key, e: KeyboardEvent): boolean {
   // A letter matches either case, Shift deciding (so Caps Lock changes nothing); other characters
   // already say whether Shift was down ("?").
   if (p.key.length === 1) {
-    if (/^[a-z]$/i.test(p.key)) return letterOf(e) === norm(p.key) && e.shiftKey === p.shift;
+    if (/^[a-z]$/i.test(p.key)) return charOf(e) === norm(p.key) && e.shiftKey === p.shift;
     if (norm(p.key) !== p.key.toUpperCase()) return norm(e.key) === norm(p.key) && e.shiftKey === p.shift;
-    return e.key === p.key;
+    return charOf(e) === p.key;
   }
   if (p.key === "Space") return e.key === " " && e.shiftKey === p.shift;
   return e.key === p.key && e.shiftKey === p.shift;
@@ -280,6 +346,8 @@ const MODIFIERS = new Set(["Control", "Alt", "AltGraph", "Shift", "Meta", "CapsL
  */
 export function keyOf(e: KeyboardEvent): string | undefined {
   if (MODIFIERS.has(e.key)) return undefined;
+  // A character a layout types with AltGr is that character (on Windows AltGr is Ctrl+Alt too).
+  if (altGraph(e) && e.key.length === 1 && e.key !== " ") return e.key;
   // Alt names the key by its place, so the character it types doesn't matter: on a Mac, Option+E
   // or Option+U is a dead key (an accent waiting for its letter), and still a key to bind.
   const byPlace = e.altKey && /^(Key[A-Z]|Digit\d)$/.test(e.code);
@@ -293,11 +361,12 @@ export function keyOf(e: KeyboardEvent): string | undefined {
   if (e.altKey) key = e.code;
   else if (e.key === " ") key = "Space";
   else if (e.key.length === 1) {
-    const letter = letterOf(e);
-    if (/^[a-z]$/.test(letter)) key = letter;
+    const c = charOf(e);
+    if (/^[a-z]$/.test(c)) key = c;
     else {
-      // A character other than a letter says whether Shift was down ("?").
-      key = e.key;
+      // A character other than a Latin letter says whether Shift was down ("?", "}"): as typed,
+      // or its place's on a layout of another script.
+      key = c === e.key.toLowerCase() ? e.key : c;
       shift = false;
     }
   } else key = e.key;
@@ -341,7 +410,20 @@ const FIXED_WHY: Partial<Record<Area, string>> = {
   list: "The list keeps the arrow keys, Home and End",
   composer: "Escape leaves the comment box",
   editor: "Escape cancels an edit",
+  canvas: "The canvas keeps the arrow keys",
 };
+/** The same, for the action an area's fixed key already runs. */
+const FIXED_OWN: Partial<Record<Area, string>> = {
+  list: "This is already on the arrow keys, Home and End in the list, fixed",
+  composer: "This is already on Escape in the comment box, fixed",
+  editor: "This is already on Escape while editing, fixed",
+  canvas: "This is already on the arrow keys on the canvas, fixed",
+};
+
+/** The keys an area keeps for `action` (the list's arrows, the canvas's), in the areas it works in: not rebindable. */
+export function fixedKeys(action: Action): string[] {
+  return [...new Set(WHERE[action].flatMap((w) => Object.keys(FIXED[w] ?? {}).filter((k) => FIXED[w]![k] === action)))];
+}
 
 /**
  * Why `binding` can't be bound to `action`, or undefined if it can: a key the browser keeps, a
@@ -355,7 +437,7 @@ export function refusalFor(action: Action, binding: string): string | undefined 
   const p = parse(binding)!;
   if (plain(p[0]!) && !p[0]!.shift) {
     const at = WHERE[action].find((w) => FIXED[w]?.[p[0]!.key] !== undefined);
-    if (at) return FIXED_WHY[at];
+    if (at) return FIXED[at]![p[0]!.key] === action && p.length === 1 ? FIXED_OWN[at] : FIXED_WHY[at];
   }
   if (WHERE[action].every((w) => TYPING.includes(w)) && !firesIn(binding, WHERE[action][0]!)) return "This works while you type: it needs Ctrl or Cmd";
   return undefined;
@@ -530,7 +612,17 @@ function actionFor(e: KeyboardEvent, where: Area): Action | undefined {
   const fixed = plainKey && !e.shiftKey ? FIXED[where]?.[e.key] : undefined;
   if (fixed && available(fixed)) return fixed;
   if (TYPING.includes(where) && !((e.ctrlKey || e.metaKey) && !e.altKey)) return undefined;
-  return latest(bound(keymap(), (p) => p.length === 1 && matches(p[0]!, e)), where);
+  return latest(bound(keymap(), (p) => p.length === 1 && matches(p[0]!, e)), where) ?? (MAC && e.altKey && !e.ctrlKey && !e.metaKey ? typedAction(e, where) : undefined);
+}
+
+/**
+ * The action a character typed with AltGr, or a Mac's Option, asks for in `where`: a plain
+ * binding of that character, never a letter's (a German `]` is AltGr+9, a Mac's German `[`
+ * Option+5). Never while text is typed: there it's the text's.
+ */
+function typedAction(e: KeyboardEvent, where: Area): Action | undefined {
+  if (TYPING.includes(where) || e.key.length !== 1 || /^\p{L}$/u.test(e.key)) return undefined;
+  return latest(bound(keymap(), (p) => p.length === 1 && plain(p[0]!) && !p[0]!.shift && p[0]!.key === e.key), where);
 }
 
 /** How long a sequence waits for its second key. */
@@ -562,10 +654,18 @@ function startSequence(e: KeyboardEvent, where: Area): boolean {
 document.addEventListener("focusin", () => setArea(areaOf(document.activeElement)));
 document.addEventListener("focusout", (e) => setArea(areaOf(e.relatedTarget as Element | null)));
 // On the window, so it hears a key after the widgets (Solid delegates their handlers to the
-// document): one that took the key has prevented its default. A key AltGr is down for, or one an
-// input method is composing, is the text's.
+// document): one that took the key has prevented its default. A key an input method is composing
+// is the text's; one AltGr is down for is only ever the character it types (`typedAction`).
 window.addEventListener("keydown", (e) => {
-  if (e.defaultPrevented || e.getModifierState("AltGraph") || e.isComposing || e.keyCode === 229) return;
+  if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+  if (altGraph(e)) {
+    const typed = typedAction(e, areaOf(document.activeElement));
+    if (typed !== undefined) {
+      e.preventDefault();
+      trigger(typed);
+    }
+    return;
+  }
   // Holding Shift for a sequence's second key isn't that key yet.
   if (MODIFIERS.has(e.key)) return;
   const where = areaOf(document.activeElement);

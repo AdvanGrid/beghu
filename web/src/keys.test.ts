@@ -55,6 +55,7 @@ function page() {
     button: new El("INPUT", panel, undefined, "button"),
     help: new El("BUTTON", new El("DIALOG", body, "help")),
     lightbox: new El("BUTTON", new El("DIALOG", body, "lightbox")),
+    canvas: new El("DIV", new El("DIV", body, "canvas")),
   };
 }
 
@@ -225,7 +226,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
     it("keeps every touchpoint silent outside the areas it works in", async () => {
       const { keys, els, press } = await load(platform);
       const ran: string[] = [];
-      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help", "lightbox"] as const;
+      const areas = ["page", "list", "panel", "composer", "editor", "picker", "filter", "text", "help", "lightbox", "canvas"] as const;
       for (const action of keys.ACTIONS) {
         const withdraw = keys.touch(action, () => ran.push(action));
         for (const area of areas.filter((a) => !keys.WHERE[action].includes(a))) {
@@ -290,6 +291,49 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
       assert.ok(press(els.list, { key: "о", code: "KeyJ" })); // Russian
       assert.ok(press(els.list, { key: "κ", code: "KeyK" })); // Greek
       assert.deepEqual(ran, ["next", "previous"]);
+    });
+
+    it("steps through the canvas's lines by ] and [ on a layout of another script, with AltGr, and by a Mac's Option", async () => {
+      const { keys, els, press } = await load(platform);
+      const ran: string[] = [];
+      keys.touch("nextLine", () => ran.push("next"));
+      keys.touch("previousLine", () => ran.push("previous"));
+      // Russian: ъ and х where ] and [ are, by their place; shifted, they're } and {, no binding's.
+      assert.ok(press(els.canvas, { key: "ъ", code: "BracketRight" }));
+      assert.ok(press(els.canvas, { key: "х", code: "BracketLeft" }));
+      assert.equal(press(els.canvas, { key: "Ъ", code: "BracketRight", shift: true }), false);
+      // German: ] and [ are AltGr+9 and AltGr+8 (on Windows AltGr is Ctrl+Alt as well); the key where
+      // [ is on a US layout types ü there, a Latin letter of its own, so it stays ü.
+      assert.ok(press(els.canvas, { key: "]", code: "Digit9", altGraph: true }));
+      assert.ok(press(els.canvas, { key: "[", code: "Digit8", altGraph: true, ctrl: true, alt: true }));
+      assert.equal(press(els.canvas, { key: "ü", code: "BracketLeft" }), false);
+      // A Mac's German layout: Option+6 and Option+5.
+      assert.equal(press(els.canvas, { key: "]", code: "Digit6", alt: true }), mac);
+      assert.equal(press(els.canvas, { key: "[", code: "Digit5", alt: true }), mac);
+      assert.deepEqual(ran, ["next", "previous", "next", "previous", ...(mac ? ["next", "previous"] : [])]);
+      // Rebound, the key that runs it is the new one, and AltGr's ] no longer is.
+      assert.deepEqual(keys.setKeymap({ nextLine: "n" }), []);
+      assert.equal(press(els.canvas, { key: "]", code: "Digit9", altGraph: true }), false);
+      assert.ok(press(els.canvas, { key: "т", code: "KeyN" }));
+      assert.deepEqual(ran.slice(-1), ["next"]);
+      // Typed with AltGr in a text field, ] is the text's.
+      keys.touch("focusFilter", () => ran.push("filter"));
+      assert.deepEqual(keys.setKeymap({ focusFilter: "]" }), []);
+      ran.length = 0;
+      assert.equal(press(els.composer, { key: "]", code: "Digit9", altGraph: true }), false);
+      assert.ok(press(els.list, { key: "]", code: "Digit9", altGraph: true }));
+      assert.deepEqual(ran, ["filter"]);
+    });
+
+    it("records ] as ], typed with AltGr or in its place on a layout of another script", async () => {
+      const { keys } = await load(platform);
+      const ev = (p: Press) =>
+        Object.assign(new Event("keydown"), { key: p.key, code: p.code, ctrlKey: !!p.ctrl, altKey: !!p.alt, shiftKey: !!p.shift, metaKey: !!p.meta, getModifierState: (m: string) => m === "AltGraph" && !!p.altGraph }) as unknown as KeyboardEvent;
+      assert.equal(keys.keyOf(ev({ key: "ъ", code: "BracketRight" })), "]");
+      assert.equal(keys.keyOf(ev({ key: "Ъ", code: "BracketRight", shift: true })), "}");
+      assert.equal(keys.keyOf(ev({ key: "]", code: "Digit9", altGraph: true })), "]");
+      assert.equal(keys.keyOf(ev({ key: "]", code: "Digit9", altGraph: true, ctrl: true, alt: true })), "]");
+      assert.equal(keys.keyOf(ev({ key: "ü", code: "BracketLeft" })), "ü");
     });
 
     it("sends a comment by its chord from the comment box only, and Escape leaves the box for the issue", async () => {

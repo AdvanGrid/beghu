@@ -10,7 +10,9 @@
 //   lines, as `line:<a>,<b>`; `part:<a>,<b>` likewise), `purpose:<slug>` (`purpose:<a>,<b>` for a
 //   split's halves; the purpose `purpose:analysis-run` is `purpose:analysis-run`, not
 //   `purpose:purpose:…`), `conflict:<id>` (likewise), `step:<scenario>/<n>` (1-based; the
-//   scenario `scenario:upload`'s second step is `step:upload/2`), `group:<id>` or `unclaimed`.
+//   scenario `scenario:upload`'s second step is `step:upload/2`), `group:<id>` (a column,
+//   `group:column:changed`, or a box, `group:box:<column>:<slot>:<value>`), `boundary:<id>` or
+//   `unclaimed`.
 //   `selString` and `parseSel` are the one place that adds and strips those prefixes; a `Sel`
 //   holds the analysis's IDs as they are (nav.ts `selOf` makes one from them);
 // - `lens`, `show`, `colour`, `boxes`, `outlines`, `lines`, and `scenario` and `chapter` under
@@ -41,6 +43,7 @@ export type Sel =
   | { kind: "conflict"; id: string }
   | { kind: "step"; scenario: string; n: number }
   | { kind: "group"; id: string }
+  | { kind: "boundary"; id: string }
   | { kind: "unclaimed" };
 
 /** The view's state as its URL holds it. */
@@ -93,6 +96,8 @@ export function selString(s: Sel): string {
       return `conflict:${bare(PREFIX.conflict, s.id)}`;
     case "group":
       return `group:${s.id}`;
+    case "boundary":
+      return `boundary:${s.id}`;
     case "step":
       return `step:${bare(PREFIX.step, s.scenario)}/${s.n}`;
     case "unclaimed":
@@ -123,6 +128,7 @@ export function parseSel(v: string | null): Sel | undefined {
     case "conflict":
       return { kind, id: PREFIX.conflict + rest };
     case "group":
+    case "boundary":
       return { kind, id: rest };
     case "step": {
       const m = /^(.+)\/(\d+)$/.exec(rest);

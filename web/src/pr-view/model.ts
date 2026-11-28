@@ -79,7 +79,8 @@ export function buildModel(g: Graph): Model {
   const ancestors = (id: string): string[] => {
     const out: string[] = [];
     const seen = new Set<string>([id]);
-    for (let p = nodes.get(id)?.parent; p !== undefined && !seen.has(p); p = nodes.get(p)?.parent) {
+    // The served graph writes an absent parent as null (the system's).
+    for (let p = nodes.get(id)?.parent ?? undefined; p !== undefined && p !== null && !seen.has(p); p = nodes.get(p)?.parent ?? undefined) {
       seen.add(p);
       out.push(p);
     }

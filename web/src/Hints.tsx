@@ -1,10 +1,11 @@
 // The words for the keys: the hint bar's quick keys for where the focus is, and the `?` overlay
 // with every binding in effect. Its own chunk, loaded after first paint (Root.tsx); the keys
-// module (keys.ts) does the work. The keymap's setup page (Prefs.tsx) uses `LABEL` and
-// `showBinding` too.
+// module (keys.ts) does the work, and keyNames.ts writes the keys' names. The keymap's setup page
+// (Prefs.tsx) uses `LABEL` too.
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
-import { area, available, deniedWhy, keysIn, MAC, touch, type Action, type Area } from "./keys";
+import { area, available, deniedWhy, keysIn, touch, type Action, type Area } from "./keys";
+import { showBinding } from "./keyNames";
 import { writesPaused } from "./live";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -38,6 +39,19 @@ export const LABEL: Record<Action, string> = {
   imageClose: "Close image",
   scrollDown: "Scroll the issue down",
   scrollUp: "Scroll the issue up",
+  zoomIn: "Zoom in",
+  zoomOut: "Zoom out",
+  zoomReset: "Reset zoom",
+  zoomFit: "Fit the drawing",
+  openFold: "Open or fold the selection",
+  outLevel: "Out one level",
+  canvasEscape: "Unpin, close a card or clear the selection",
+  partLeft: "Select the part to the left",
+  partRight: "Select the part to the right",
+  partUp: "Select the part above",
+  partDown: "Select the part below",
+  nextLine: "Select the part's next line",
+  previousLine: "Select the part's previous line",
   help: "All keys",
 };
 
@@ -56,11 +70,12 @@ function off(action: Action): string | undefined {
 
 /** The quick keys the hint bar offers in each area, those on offer and working there. */
 const LIST_QUICK: Action[] = ["next", "previous", "scrollDown", "scrollUp", "collapse", "expand", "openIssue", "focusFilter", "create", "toggleMode", "focusIssue", "help"];
-const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text", Action[]> = {
+const QUICK: Record<"page" | "list" | "panel" | "composer" | "editor" | "lightbox" | "text" | "canvas", Action[]> = {
   page: LIST_QUICK,
   list: LIST_QUICK,
   panel: ["next", "previous", "scrollDown", "scrollUp", "labels", "assignees", "milestone", "comment", "editTitle", "closeReopen", "imageOpen", "focusIssue", "toList", "help"],
   lightbox: ["imageClose"],
+  canvas: ["openFold", "nextLine", "outLevel", "zoomIn", "zoomOut", "zoomFit", "canvasEscape", "help"],
   // Only bindings with Ctrl or Cmd work while typing.
   composer: ["send", "openIssue", "focusFilter", "help"],
   editor: ["saveEdit", "cancelEdit", "help"],
@@ -95,27 +110,12 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "List", areas: ["list", "page"], actions: ["next", "previous", "scrollDown", "scrollUp", "first", "last", "collapse", "expand", "openIssue", "create", "toggleMode", "focusIssue"] },
   { name: "Issue", areas: ["panel"], actions: ["scrollDown", "scrollUp", "labels", "assignees", "milestone", "blockedBy", "blocking", "relatesTo", "comment", "editTitle", "closeReopen", "imageOpen", "toList"] },
   { name: "Image", areas: ["lightbox"], actions: ["imageClose"] },
+  { name: "PR view's canvas", areas: ["canvas"], actions: ["partLeft", "partRight", "partUp", "partDown", "nextLine", "previousLine", "openFold", "outLevel", "zoomIn", "zoomOut", "zoomReset", "zoomFit", "canvasEscape"] },
   { name: "Comment box", areas: ["composer"], actions: ["send", "openIssue"] },
   { name: "Title or description editor", areas: ["editor"], actions: ["saveEdit", "cancelEdit"] },
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },
   { name: "Anywhere", areas: ["page", "filter", "text"], actions: ["focusFilter", "help"] },
 ];
-
-const ARROWS: Record<string, string> = { ArrowDown: "↓", ArrowUp: "↑", ArrowLeft: "←", ArrowRight: "→", Escape: "Esc" };
-
-/** A binding as people read it: `Alt+KeyL` is Alt+L, `Shift+x` is Shift+X, a sequence `g i`. */
-export function showBinding(binding: string): string {
-  return binding.split(" ").map(showKey).join(" ");
-}
-
-/** One key of a binding as people read it. */
-function showKey(key: string): string {
-  return key
-    .split(/\+(?=.)/)
-    .map((part) => ARROWS[part] ?? part.replace(/^(Key|Digit)(?=.)/, "").replace(/^[a-z]$/, (c) => (key.includes("+") ? c.toUpperCase() : c)))
-    .join("+")
-    .replace(/^Mod\+/, MAC ? "⌘" : "Ctrl+");
-}
 
 /** The keys that run `action` now in `where`, as people read them. */
 function keysOf(action: Action, where: Area): string[] {

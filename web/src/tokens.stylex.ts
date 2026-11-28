@@ -63,3 +63,66 @@ export const media = stylex.defineConsts({
   /** Below 900 px of viewport the issue panel sits under the list instead of beside it. */
   stacked: "@media (max-width: 899px)",
 });
+
+/**
+ * The PR view's canvas (pr-view/canvas/). Lines and trunks are purple, apart from the change
+ * colours, so a frame's lines never read as part of the group it opens in (#166): `lineQuiet` for
+ * an unchanged line, `line` for an added, changed or removed one. (Named apart from `colors.line`,
+ * the app's borders.) The change fills tint a part by how the PR changed it; its border takes the
+ * change colour itself (`colors.open`, `warn`, `danger`). `facet0`–`facet11` are the categorical
+ * colours a facet's values take (canvas/colour.ts), each with the tint its stripe fills with: told
+ * apart in both themes, and always paired with words, and none of them is a line's colour (`line`,
+ * `lineQuiet`, `lineLit`), so a part's fill never reads as a line. Their tints are the colour at
+ * 16% (light) and 24% (dark). No two of the twelve, nor one of them and a line's colour, are under
+ * ΔE2000 10 apart in either theme (the closest: facet2 and facet9, 10.5 light and 10.1 dark;
+ * facet1 and facet4, 11.6 light): slate (facet8), brown (facet10) and navy (facet11) keep clear
+ * of the lines' purple and of each other's neighbours.
+ */
+export const graph = stylex.defineVars({
+  line: "light-dark(#7c3aed, #a78bfa)",
+  lineQuiet: "light-dark(#b9a6e8, #5b4a8a)",
+  // Lit: a hovered or selected line, a route lit through its trunks. Purple still, only stronger:
+  // a lit line never reads as a facet's colour.
+  lineLit: "light-dark(#4c1d95, #ddd6fe)",
+  canvas: "light-dark(#fbfbfc, #0c0c0f)",
+  part: "light-dark(#ffffff, #17171b)",
+  partEdge: "light-dark(#a1a1aa, #52525b)",
+  // People and outside systems: no change word, and a fill of their own.
+  outsideFill: "light-dark(#f4f4f5, #1c1c21)",
+  addedFill: "light-dark(rgb(26 127 55 / 0.10), rgb(63 185 80 / 0.14))",
+  modifiedFill: "light-dark(rgb(154 103 0 / 0.10), rgb(210 153 34 / 0.14))",
+  insideFill: "light-dark(rgb(154 103 0 / 0.04), rgb(210 153 34 / 0.06))",
+  removedFill: "light-dark(rgb(207 34 46 / 0.10), rgb(248 81 73 / 0.14))",
+  // The column frames: the changed group tinted, the others plain.
+  changedGroup: "light-dark(rgb(154 103 0 / 0.035), rgb(210 153 34 / 0.05))",
+  groupEdge: "light-dark(#d4d4d8, #3f3f46)",
+  boxFill: "light-dark(rgb(113 113 122 / 0.06), rgb(161 161 170 / 0.07))",
+  boxEdge: "light-dark(#a1a1aa, #52525b)",
+  // A facet's "no value found".
+  noValue: "light-dark(#d4d4d8, #3f3f46)",
+  noValueFill: "light-dark(rgb(161 161 170 / 0.14), rgb(113 113 122 / 0.22))",
+  facet0: "light-dark(#2563eb, #60a5fa)",
+  facet1: "light-dark(#d97706, #fbbf24)",
+  facet2: "light-dark(#059669, #34d399)",
+  facet3: "light-dark(#db2777, #f472b6)",
+  facet4: "light-dark(#ea580c, #fb923c)",
+  facet5: "light-dark(#0891b2, #22d3ee)",
+  facet6: "light-dark(#65a30d, #a3e635)",
+  facet7: "light-dark(#dc2626, #f87171)",
+  facet8: "light-dark(#475569, #94a3b8)",
+  facet9: "light-dark(#0d9488, #2dd4bf)",
+  facet10: "light-dark(#854d0e, #d6a77a)",
+  facet11: "light-dark(#1e40af, #bfdbfe)",
+  facet0Fill: "light-dark(rgb(37 99 235 / 0.16), rgb(96 165 250 / 0.24))",
+  facet1Fill: "light-dark(rgb(217 119 6 / 0.16), rgb(251 191 36 / 0.24))",
+  facet2Fill: "light-dark(rgb(5 150 105 / 0.16), rgb(52 211 153 / 0.24))",
+  facet3Fill: "light-dark(rgb(219 39 119 / 0.16), rgb(244 114 182 / 0.24))",
+  facet4Fill: "light-dark(rgb(234 88 12 / 0.16), rgb(251 146 60 / 0.24))",
+  facet5Fill: "light-dark(rgb(8 145 178 / 0.16), rgb(34 211 238 / 0.24))",
+  facet6Fill: "light-dark(rgb(101 163 13 / 0.16), rgb(163 230 53 / 0.24))",
+  facet7Fill: "light-dark(rgb(220 38 38 / 0.16), rgb(248 113 113 / 0.24))",
+  facet8Fill: "light-dark(rgb(71 85 105 / 0.16), rgb(148 163 184 / 0.24))",
+  facet9Fill: "light-dark(rgb(13 148 136 / 0.16), rgb(45 212 191 / 0.24))",
+  facet10Fill: "light-dark(rgb(133 77 14 / 0.16), rgb(214 167 122 / 0.24))",
+  facet11Fill: "light-dark(rgb(30 64 175 / 0.16), rgb(191 219 254 / 0.24))",
+});

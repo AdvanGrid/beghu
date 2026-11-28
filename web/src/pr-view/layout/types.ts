@@ -116,11 +116,15 @@ export interface Trunk {
   changed: boolean;
 }
 
-/** One scope's answer: its rectangle in the drawing, and its group frames (the top scope's). */
+/** One scope's answer: its rectangle in the drawing, and its column frames (the top scope's). */
 export interface ScopeLayout {
   rect: Rect;
-  /** The changed and unchanged groups' frames (the top scope only). */
-  groups: { column: "changed" | "unchanged"; rect: Rect }[];
+  /**
+   * Each column's frame (the top scope only): people, the changed and unchanged groups, outside,
+   * each round its column's parts with room above the first for its title. A gutter where a
+   * column ends gives its frame room, so no two frames touch.
+   */
+  groups: { column: Column; rect: Rect }[];
 }
 
 /**

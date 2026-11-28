@@ -6,9 +6,16 @@
 // reset refetches it: measured, with no exemption), the round trips of a filter and of opening
 // an issue, the refetch batches of a push, the rows rendered while
 // scrolling and the long tasks meanwhile.
+//
+// The PR view's canvas (#182), on the tiled analyses (#2627's shape at 1×, and 3×; uploaded on
+// the first sample that needs them, unless the stack has them): a cold navigation to the frame
+// with the top-level drawing, and the round trips chained before it; from the PR panel's link in
+// a warm app to the drawing; a revisit's bytes for the analysis; and a double-click on a block to
+// the frame its glide starts in, with the long tasks from the click to the glide's end.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, type CDPSession, type Page, chromium } from "playwright-core";
+import { ensureTiles, type Tile } from "./analyses.ts";
 import { expected, fetchRaw, Session, settle } from "./http.ts";
 import { probe, type Check, type Outcome } from "./probe.ts";
 import { control, type Stack } from "./stack.ts";
@@ -169,9 +176,10 @@ const strip = (u: string) => u.split("#")[0]!;
 /**
  * The load's depth: the longest chain of network round trips, each request one deeper than what
  * started it, a cache hit adding none. Only the first request for each URL begun before the list
- * was ready counts (the stream's reset refetch comes after, from the stream).
+ * was ready counts (the stream's reset refetch comes after, from the stream). `only`: the chains
+ * to the URLs it picks alone (what a drawing waits on), not every request begun before.
  */
-function depth(reqs: Map<string, Req>, readyAt: number): { depth: number; chain: string[] } {
+function depth(reqs: Map<string, Req>, readyAt: number, only?: (url: string) => boolean): { depth: number; chain: string[] } {
   const firsts = new Map<string, Req>();
   for (const r of reqs.values()) {
     const u = strip(r.url);
@@ -192,6 +200,7 @@ function depth(reqs: Map<string, Req>, readyAt: number): { depth: number; chain:
   };
   let best = { depth: 0, chain: [] as string[] };
   for (const u of firsts.keys()) {
+    if (only && !only(u)) continue;
     const d = of(u, new Set());
     if (d.depth > best.depth) best = d;
   }
@@ -573,5 +582,179 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
     },
   });
 
+  probes.push(...prViewProbes(c));
+  return probes;
+}
+
+/** How long a PR view sample may wait for its drawing (the first can wait on the server's first read). */
+const DRAWING_MS = 120_000;
+/** The canvas's glide (web/src/pr-view/canvas/Canvas.tsx `GLIDE_MS`), and a frame's margin. */
+const GLIDE_MS = 420;
+/** The block browser.pr-block-open(-3x) opens: beghu#191's analysis-wasm crate, in each tile's start view. */
+const OPENED = "crates-analysis-wasm";
+/** A long task, as the Long Tasks API reports one. */
+const LONG_TASK_MS = 50;
+
+/** The PR view's gates (#182), on the tiled analyses. */
+function prViewProbes(c: BrowserCtx): Probe[] {
+  let tilesP: Promise<Tile[]> | undefined;
+  const tile = async (name: "tiled-1x" | "tiled-3x") => {
+    tilesP ??= ensureTiles(c.stack, c.session);
+    const t = (await tilesP).find((x) => x.name === name);
+    if (!t) throw new Error(`no ${name} analysis`);
+    return t;
+  };
+  const viewOf = (t: Tile) => `/${t.repo}/pull/${t.number}/view`;
+  const probes: Probe[] = [];
+  const view = viewChunks(c.stack.build.web);
+  let depthCounted = false;
+  let bytesCounted = false;
+
+  // A cold navigation to the view: navigation start to the frame with the top-level drawing.
+  for (const [name, which] of [
+    ["browser.pr-cold", "tiled-1x"],
+    ["browser.pr-cold-3x", "tiled-3x"],
+  ] as const) {
+    const gates = which === "tiled-1x" ? [`${name}.ms`, `${name}.depth`] : [`${name}.ms`];
+    probes.push({
+      name,
+      gates,
+      async sample(): Promise<Sample> {
+        const t = await tile(which);
+        const ctx = await c.browser.newContext({ viewport: VIEWPORT, baseURL: c.stack.url, storageState: c.state });
+        try {
+          await ctx.addInitScript(probe, { kind: "drawing", analysis: t.analysis } as Check);
+          const page = await ctx.newPage();
+          const cdp = await ctx.newCDPSession(page);
+          const reqs = await network(cdp);
+          await page.goto(viewOf(t));
+          const at = await outcome(page, DRAWING_MS);
+          const values: Record<string, number> = { [`${name}.ms`]: at.t };
+          const evidence: Record<string, string[]> = {};
+          if (which === "tiled-1x" && !depthCounted) {
+            // The round trips the drawing waits on: the graph's and the view's chunks' chains
+            // (the claims come after the graph, and the drawing never waits for them).
+            const graph = `/api/${t.repo}/pulls/${t.number}/analysis`;
+            const d = depth(reqs, at.date, (u) => new URL(u).pathname === graph || view.includes(new URL(u).pathname));
+            values[`${name}.depth`] = d.depth;
+            evidence[`${name}.depth`] = [d.chain.join(" → ")];
+            depthCounted = true;
+          }
+          return { values, evidence };
+        } finally {
+          await ctx.close();
+        }
+      },
+    });
+  }
+
+  // The PR panel's link to the view in a warm app, to the drawing; then a revisit's bytes.
+  probes.push({
+    name: "browser.pr-open",
+    gates: ["browser.pr-open.ms", "browser.pr-warm.kb"],
+    async sample(): Promise<Sample> {
+      const t = await tile("tiled-1x");
+      const page = await c.warm.newPage();
+      try {
+        await page.goto(`/${t.repo}/pull/${t.number}`);
+        const link = page.locator(`[data-perf="analyse-main"][href="${viewOf(t)}"]`);
+        await link.waitFor({ timeout: DRAWING_MS });
+        const r = await act(page, { kind: "drawing", analysis: t.analysis }, () => link.click());
+        const values: Record<string, number> = { "browser.pr-open.ms": r.ms };
+        const evidence: Record<string, string[]> = {};
+        if (!bytesCounted) {
+          // A revisit: the graph revalidated (a 304), the claims from the cache. Their bodies'
+          // bytes on the wire.
+          await sleep(QUIET_MS);
+          const again = await c.warm.newPage();
+          try {
+            const cdp = await c.warm.newCDPSession(again);
+            const got = new Map<string, { url: string; status: number; cached: boolean; bytes: number }>();
+            await cdp.send("Network.enable");
+            cdp.on("Network.requestWillBeSent", (e) => {
+              const u = new URL(e.request.url);
+              if (u.pathname.includes("/analysis")) got.set(e.requestId, { url: u.pathname, status: 0, cached: false, bytes: 0 });
+            });
+            cdp.on("Network.requestServedFromCache", (e) => {
+              const g = got.get(e.requestId);
+              if (g) g.cached = true;
+            });
+            cdp.on("Network.responseReceived", (e) => {
+              const g = got.get(e.requestId);
+              if (!g) return;
+              g.status = e.response.status;
+              g.cached ||= !!(e.response.fromDiskCache || e.response.fromPrefetchCache || e.response.fromServiceWorker);
+            });
+            cdp.on("Network.dataReceived", (e) => {
+              const g = got.get(e.requestId);
+              if (g) g.bytes += e.encodedDataLength;
+            });
+            await again.addInitScript(probe, null);
+            await again.goto(viewOf(t));
+            await again.evaluate((x) => window.__perf.arm(x), { kind: "drawing", analysis: t.analysis } as Check);
+            await outcome(again, DRAWING_MS);
+            await sleep(QUIET_MS);
+            const all = [...got.values()];
+            if (!all.some((g) => g.url.endsWith("/claims"))) throw new Error("the revisit never asked for the claims");
+            values["browser.pr-warm.kb"] = all.reduce((n, g) => n + g.bytes, 0) / 1024;
+            evidence["browser.pr-warm.kb"] = all.map((g) => `${g.url} ${g.cached ? "cache" : g.status} ${(g.bytes / 1024).toFixed(1)}`);
+          } finally {
+            await again.close();
+          }
+          bytesCounted = true;
+        }
+        return { values, evidence };
+      } finally {
+        await page.close();
+      }
+    },
+  });
+
+  // A double-click on a block to the frame its glide starts in (the clicked block's first click
+  // selects it), and the long tasks from the click to the glide's end. The block is OPENED, a
+  // top-level part of beghu#191's recording that every tile draws in the start view.
+  for (const [name, which] of [
+    ["browser.pr-block-open", "tiled-1x"],
+    ["browser.pr-block-open-3x", "tiled-3x"],
+  ] as const) {
+    probes.push({
+      name,
+      gates: [`${name}.ms`, `${name}.long-tasks`],
+      async sample(): Promise<Sample> {
+        const t = await tile(which);
+        const page = await c.warm.newPage();
+        try {
+          await page.goto(viewOf(t));
+          await page.evaluate((x) => window.__perf.arm(x), { kind: "drawing", analysis: t.analysis } as Check);
+          await outcome(page, DRAWING_MS);
+          // The same block each sample and each run, by its ID: a change to the start view can't
+          // change what's measured. It must be in view and open: if it isn't, the probe fails.
+          const target = await page.evaluate((id) => {
+            const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
+            const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
+            if (!el || !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
+            const r = el.getBoundingClientRect();
+            if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
+            return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }, OPENED);
+          if (typeof target === "string") throw new Error(`${name}: ${target}`);
+          await sleep(QUIET_MS);
+          const n = Number((await page.locator('[data-perf="canvas-viewport"]').getAttribute("data-glide")) ?? 0) + 1;
+          const since = await page.evaluate(() => performance.now());
+          await page.mouse.move(target.x, target.y, { steps: 1 });
+          const r = await act(page, { kind: "glide", n }, () => page.mouse.dblclick(target.x, target.y));
+          await sleep(GLIDE_MS + 200);
+          const long = await page.evaluate((t0) => window.__perf.longTasks.filter((l) => l.start >= t0).map((l) => l.duration), since);
+          const over = long.filter((d) => d > LONG_TASK_MS);
+          return {
+            values: { [`${name}.ms`]: r.ms, [`${name}.long-tasks`]: over.length },
+            evidence: { [`${name}.long-tasks`]: [`opening ${target.id}`, ...over.map((d) => `${Math.round(d)} ms`)] },
+          };
+        } finally {
+          await page.close();
+        }
+      },
+    });
+  }
   return probes;
 }

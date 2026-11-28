@@ -349,9 +349,65 @@ measured = 0
 reason = "Modules of the PR view (web/src/pr-view/, and src/Analyse.tsx, which it shares with the lazy PR panel) in any chunk the list's cold load fetches, the entry chunk included, from the build's module list (.vite/modules.json, web/vite.config.ts moduleList): none, exact (#152, #181). Counting modules, not chunks, catches view code a static import inlines into the entry, which has no chunk of its own. The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
 
 [gates."browser.pr-view.kb"]
-max = 25.9
-measured = 24.7
-reason = "The PR view's chunks, gzip as served: the view's own (18.5 KB: route, top bar, panel, the placeholder canvas) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 7's measured run after its review fixes (#181: typed IDs, split purposes, the panel keyed on the analysis, the detail's newer-analysis check, named partly drawn folders, URL normalising and the placeholder's Lines choices took the view's own from 16.8 KB); slice 8's canvas and layout will add to it, with their own calibration."
+max = 66.3
+measured = 63.14
+reason = "The PR view's chunks, gzip as served: the view's own (56.9 KB: route, top bar, panel, and since #182 the canvas with our layout engine, its toolbar, cards and legend) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 8's review fixes (#182: the keyboard's selection, FLIP glide, per-ID projections), up from 61.23 KB; slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
+
+# The PR view's canvas (#182), on the tiled analyses (tiled-1x: #2627's shape; tiled-3x), 50k
+# stack. Calibrated on the dev host (32 cores) at a load of 25 to 35 from other work: three runs of
+# the PR view's probes, each timing the median of 10, each limit the median of the three +15% (the
+# runs' medians are in each reason). CI's runner has measured this host's timings 4 to 5x faster
+# (the layout gates' calibration), so CI should sit well under these; recalibrate from its first
+# perf-* artifacts before relying on them as tight limits. The block-open gates were recalibrated
+# the same way at a load of 15 to 25 after the review's fixes (the glide transform-only, a new
+# start view); the cold and open gates kept their limits, which those runs stayed under.
+
+[gates."browser.pr-cold.ms"]
+max = 640.1
+measured = 556.6
+reason = "A cold navigation to the PR view of tiled-1x (an empty context) to the frame with the top-level drawing (the canvas's data-drawn with blocks on it): shell, then the view's chunk and the graph in parallel (preloaded by the shell), the layout, the drawing. When the claims arrive isn't gated. Runs at load 25-35: 598.2, 538.6, 556.6 ms."
+
+[gates."browser.pr-cold.depth"]
+max = 2
+measured = 2
+reason = "Round trips chained before the drawing, exact: the shell, then the view's chunk and the graph in parallel (shell → chunk ∥ graph, #182). Counted on the chains the drawing waits on (the graph's and the view's chunks'); the claims follow the graph but the drawing never waits for them."
+
+[gates."browser.pr-cold-3x.ms"]
+max = 929.5
+measured = 808.3
+reason = "The same cold navigation on tiled-3x (228 top-level parts), to its top-level drawing: the 3x tile draws within this. Runs at load 25-35: 849.8, 783.2, 808.3 ms."
+
+[gates."browser.pr-open.ms"]
+max = 376.2
+measured = 327.1
+reason = "From a click on the PR panel's PR view link (tiled-1x's PR, a warm app: shell and assets cached) to the frame with the top-level drawing: the view's chunk, the graph and the layout. Runs at load 25-35: 333.8, 327.1, 304.5 ms."
+
+[gates."browser.pr-warm.kb"]
+max = 0
+measured = 0
+reason = "A revisit's bytes for the analysis, exact: the graph's body (revalidated against its ETag, no body sent) and the claims' (immutable, from the cache), as bodies on the wire. Each is listed with how it came."
+
+[gates."browser.pr-block-open.ms"]
+max = 153.9
+measured = 133.8
+reason = "A double-click on tiled-1x's crates-analysis-wasm (pinned by ID in the probe, so a change to the start view can't change which block is measured; the probe fails if it isn't in view) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transforms and opacity only: plain FLIP for items that only move, a skin for each item that changes size, a dashed one's edges in halves that only move). The median of three runs +15%, remeasured when dashed edges got their halves (#182), at load 13-24: 140.7, 133.8, 130.1 ms (before: 119.6, 154.2, 133.1, 131.7, 134.5 at load 11-15)."
+
+[gates."browser.pr-block-open.long-tasks"]
+max = 2
+measured = 2
+spec = 0
+reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples: 2 in each of five runs at load 11-15, set to that local median (2 in each of three more at load 13-24, with dashed edges in halves). CI measured 0 here on d8f4902. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The rest locally are the pointer's arrival and the first click's selection before it. The spec asks for none; CI's run is to confirm 0, then set max from it."
+
+[gates."browser.pr-block-open-3x.ms"]
+max = 272.4
+measured = 236.9
+reason = "The same double-click on tiled-3x's crates-analysis-wasm (pinned by ID) to the frame its glide starts in: the 3x tile opens within this. The median of three runs +15%, remeasured when dashed edges got their halves (#182), at load 13-24: 247.6, 236.9, 233.3 ms (before: 200.5, 225.9, 237.6, 228.5, 246.7 at load 11-15)."
+
+[gates."browser.pr-block-open-3x.long-tasks"]
+max = 3
+measured = 3
+spec = 0
+reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples: 3, 3 and 2 in three runs at load 11-15 (two more: 2 and 3; three more with dashed edges in halves, at load 13-24: 3, 2 and 3), set to the local median, up from 2 (2, 3 and 2 when it was set, so a 3 was there before the skins). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. On the dev stack, timed against the glide in three opens of tiled-3x, the open is the only long task (213-294 ms, from the double-click to the glide's first frame) and none falls during the glide or at its end; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
 
 [gates."browser.load.list-fetches"]
 max = 2
@@ -419,9 +475,9 @@ measured = 44
 reason = "The top level at #2627's shape: its crossings (the prototype's street routing drew 77 on #2627 itself, with ELK's at 2,114). 46 at d5ac9bc: every column of a group now starts at the top, and a part with many lines is drawn taller."
 
 [gates."layout.top.area"]
-max = 7222677
-measured = 7222677
-reason = "The top level at #2627's shape: its area (4,399 x 1,641.9 px; a part with more lines than fit 4 px apart is drawn taller)."
+max = 7288352
+measured = 7288352
+reason = "The top level at #2627's shape: its area (4,439 x 1,641.9 px; a part with more lines than fit 4 px apart is drawn taller). 40 px wider than 4,399 since #182: people and outside systems are framed columns too, and the two gutters where they meet the groups give their frames room (20 px each)."
 
 [gates."layout.open.ms"]
 max = 66.9
@@ -434,9 +490,9 @@ measured = 65
 reason = "Every block open at #2627's shape: its crossings. 77 at 215c22f, 74 at d5ac9bc: from its anchors every line now keeps its folded drawing's route, its levels moved with its columns' parts, where it used to be routed again round the open frames."
 
 [gates."layout.open.area"]
-max = 28998814
-measured = 28998814
-reason = "Every block open at #2627's shape: its area (8,879 x 3,266 px; 8,896 x 3,214.6 at 215c22f, taller now because one line, dot-github to ext-github-actions, passed under a column folded and still does, below that column's open frames)."
+max = 29129454
+measured = 29129454
+reason = "Every block open at #2627's shape: its area (8,919 x 3,266 px, 40 px wider since #182 for the people and outside columns' frames; 8,896 x 3,214.6 at 215c22f, taller now because one line, dot-github to ext-github-actions, passed under a column folded and still does, below that column's open frames)."
 
 [gates."layout.top-3x.ms"]
 max = 153.2
@@ -449,9 +505,9 @@ measured = 180
 reason = "The top level at 3x: its crossings (174 at d5ac9bc, 252 at the suite's first calibration). Up from 174: a part with more lines than fit 4 px apart is drawn taller."
 
 [gates."layout.top-3x.area"]
-max = 19874113
-measured = 19874113
-reason = "The top level at 3x: its area (6,513.5 x 3,051.2 px; wider than at 154bfa4 for the gutters' tracks, see above)."
+max = 19996162
+measured = 19996162
+reason = "The top level at 3x: its area (6,553.5 x 3,051.2 px, 40 px wider since #182 for the people and outside columns' frames; wider than at 154bfa4 for the gutters' tracks, see above)."
 
 [gates."layout.open-3x.ms"]
 max = 306.6
@@ -464,6 +520,6 @@ measured = 223
 reason = "Every block open at 3x: its crossings (225 at 215c22f, 200 at d5ac9bc, 289 at the suite's first calibration). Down from 225: from its anchors every line keeps its folded drawing's route; up from 200 at d5ac9bc because every column of a group starts at the top, and from anchors no gap widens for the routes."
 
 [gates."layout.open-3x.area"]
-max = 104935362
-measured = 104935362
-reason = "Every block open at 3x: its area (10,993.5 x 9,545.2 px: tall, because the recorded PR's crates column holds most of the open frames; 11,004.5 x 9,284 at 215c22f, taller now because one line, x2-crates-server to x2-web, passed under a column folded and still does, below that column's open frames; wider than at 154bfa4 for the gutters' tracks, see above)."
+max = 105317171
+measured = 105317171
+reason = "Every block open at 3x: its area (11,033.5 x 9,545.2 px, 40 px wider since #182 for the people and outside columns' frames: tall, because the recorded PR's crates column holds most of the open frames; 11,004.5 x 9,284 at 215c22f, taller now because one line, x2-crates-server to x2-web, passed under a column folded and still does, below that column's open frames; wider than at 154bfa4 for the gutters' tracks, see above)."

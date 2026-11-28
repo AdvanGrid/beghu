@@ -13,8 +13,9 @@
 // - A newer upload while it's open: an accent pill, "A newer analysis is ready · Show it", never
 //   swapped by itself. Show it refetches the graph and claims and keeps the reader's place where
 //   the selection's ID survives (forward.ts), else the level above.
-// - The canvas (a placeholder until slice 8) beside the panel, which follows the selection and is
-//   resizable as the issue panel is.
+// - The canvas (canvas/, slice 8) beside the panel, which follows the selection and is resizable
+//   as the issue panel is. The canvas's state (its opens and folds, the drawing) belongs to the
+//   body, so the panel reads the same drawing (canvas/store.ts).
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, Errored, Loading, onSettled, refresh, Show, untrack, type Accessor } from "solid-js";
 import { revalidate, useLocation, useNavigate, type RouteSectionProps } from "@solidjs/router";
@@ -26,7 +27,8 @@ import { onAnalysis, onPush } from "../live";
 import { Failure } from "../Root";
 import { ago, fullDate } from "../time";
 import { colors, fonts, media } from "../tokens.stylex";
-import { Canvas } from "./Canvas";
+import { Canvas } from "./canvas/Canvas";
+import { CanvasContext, createCanvasStore } from "./canvas/store";
 import { ClaimsProvider, createClaims } from "./claims";
 import { forward } from "./forward";
 import { outsideBoxFacet } from "./layout/graph";
@@ -334,6 +336,8 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
     set: (key: Replacing, value: string | undefined) => go({ ...st(), [key]: value }, true),
   };
 
+  const canvas = createCanvasStore(nav);
+
   // An `analysis` push naming this PR with another analysis than the one shown: a newer upload.
   onSettled(() =>
     onAnalysis((a) => {
@@ -400,6 +404,7 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
 
   return (
     <NavContext value={nav}>
+      <CanvasContext value={canvas}>
       <ClaimsProvider read={claims}>
         <div ref={row} {...stylex.attrs(s.body)} data-perf="view-body" data-analysis={model().g.id}>
           <Errored fallback={null}>
@@ -440,6 +445,7 @@ function Body(props: { graph: Accessor<Graph>; detail: Accessor<IssueDetail>; wh
           </aside>
         </div>
       </ClaimsProvider>
+      </CanvasContext>
     </NavContext>
   );
 }

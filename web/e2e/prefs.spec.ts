@@ -15,7 +15,9 @@ const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const prefs = (page: Page) => page.locator('[data-perf="prefs"]');
 const order = (page: Page) => page.locator('[data-perf="comment-order"]');
 const firstComment = (page: Page) => page.locator('[data-perf="comments"] [data-perf="comment"]').first();
-const keysOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="keys"]`);
+/** An action's own keys on the setup page (or "unbound"); the keys an area keeps for it are `fixedOf`'s. */
+const keysOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="own-keys"]`);
+const fixedOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="fixed-keys"]`);
 const rowId = async (page: Page, i: number) => Number(await rows(page).nth(i).getAttribute("data-id"));
 const rowOf = (page: Page, id: number) => page.locator(`[data-perf="row"][data-id="${id}"]`);
 
@@ -147,6 +149,70 @@ test("a key rebound on the setup page works at once, and in another tab through 
   // The `?` overlay shows it too.
   await other.keyboard.press("?");
   await expect(other.getByRole("dialog", { name: "Keyboard shortcuts" }).locator("tr", { hasText: "Next issue" })).toContainText("n");
+});
+
+test("a canvas key rebound on the setup page works on the PR view's canvas, and its preset keys give way", async ({ context }) => {
+  const setup = await tab(context, "/prefs");
+  await expect(keysOf(setup, "zoomIn")).toHaveText("+=");
+  await record(setup, "Zoom in", "i");
+  await expect(keysOf(setup, "zoomIn")).toHaveText("i");
+
+  const view = await context.newPage();
+  await view.setViewportSize({ width: 1400, height: 900 });
+  await view.goto("/AdvanGrid/beghu/pull/191/view");
+  const canvas = view.locator('[data-perf="canvas-viewport"]');
+  await expect(canvas).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+  const zoom = view.locator('[data-perf="zoom-level"]');
+  const level = async () => Number((await zoom.textContent())!.replace("%", ""));
+  await canvas.focus();
+  const start = await level();
+  await view.keyboard.press("+");
+  await view.waitForTimeout(200);
+  expect(await level()).toBe(start);
+  await view.keyboard.press("i");
+  await expect.poll(level).toBeGreaterThan(start);
+  // The hint bar and the ? overlay say so too.
+  await expect(view.locator('[data-perf="hints"]')).toContainText("i Zoom in");
+});
+
+test("the canvas keeps its arrow keys, and Open or fold the selection rebinds from Enter", async ({ context }) => {
+  const setup = await tab(context, "/prefs");
+  // The arrows move the canvas's selection there: no canvas action can have one.
+  await record(setup, "Zoom in", "ArrowUp");
+  await expect(prefs(setup).locator('[data-perf="key-refused"]')).toHaveText(/can't be bound: The canvas keeps the arrow keys\.$/);
+  // The part keys show their arrows, fixed, not "unbound"; an arrow for its own action is already there.
+  await expect(keysOf(setup, "partLeft")).toHaveText("");
+  await expect(fixedOf(setup, "partLeft")).toHaveText(/^←\s*fixed$/);
+  await expect(fixedOf(setup, "partDown")).toHaveText(/^↓\s*fixed$/);
+  await record(setup, "Select the part to the left", "ArrowLeft");
+  await expect(prefs(setup).locator('[data-perf="key-refused"]')).toHaveText("← can't be bound: This is already on the arrow keys on the canvas, fixed.");
+  // So do the list's: Next issue has j of its own and ↓ in the list.
+  await expect(fixedOf(setup, "next")).toHaveText(/^↓\s*fixed$/);
+  await expect(fixedOf(setup, "zoomIn")).toHaveCount(0);
+  await expect(keysOf(setup, "zoomIn")).toHaveText("+=");
+  await expect(keysOf(setup, "openFold")).toHaveText("Enter");
+  await record(setup, "Open or fold the selection", "o");
+  await expect(keysOf(setup, "openFold")).toHaveText("o");
+
+  const view = await context.newPage();
+  await view.setViewportSize({ width: 1400, height: 900 });
+  await view.goto("/AdvanGrid/beghu/pull/191/view");
+  const canvas = view.locator('[data-perf="canvas-viewport"]');
+  await expect(canvas).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+  const block = view.locator('[data-perf="block"][data-id="crates-server"]');
+  const frame = view.locator('[data-perf="frame"][data-id="crates-server"]:not([hidden] *)');
+  await block.click();
+  await expect.poll(() => new URL(view.url()).searchParams.get("sel")).toBe("part:crates-server");
+  // What a screen reader says of the block and the drawing names the key in effect.
+  await expect(block).toHaveAttribute("aria-label", /, has parts inside, o opens$/);
+  await expect(canvas).toHaveAttribute("aria-label", /: arrow keys move the selection, o opens or folds it, \] and \[ step through its lines$/);
+  // Enter gave way; o opens the selected block.
+  await view.keyboard.press("Enter");
+  await view.waitForTimeout(200);
+  await expect(frame).toHaveCount(0);
+  await view.keyboard.press("o");
+  await expect(frame).toBeVisible();
+  await expect(view.locator('[data-perf="hints"]')).toContainText("o Open or fold the selection");
 });
 
 test("a sequence under way finishes on the keymap it started on, then the new one takes effect", async ({ context }) => {
@@ -319,9 +385,9 @@ test("an Alt binding is matched by the key's place, and Reset and Unbind work", 
   await prefs(setup).getByRole("button", { name: "Reset Next issue to GitHub's" }).click();
   await expect(keysOf(setup, "next")).toHaveText("j");
   await prefs(setup).getByRole("button", { name: "Unbind Next issue" }).click();
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
   await setup.reload();
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
 });
 
 test("a default an account already gave another action starts unbound, and the account keeps its key", async ({ context }) => {
@@ -338,7 +404,7 @@ test("a default an account already gave another action starts unbound, and the a
   });
   await setup.reload();
   await expect(keysOf(setup, "focusFilter")).toHaveText("j");
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
   await setup.keyboard.press("j");
   await expect(setup.getByRole("combobox", { name: "Filter issues" })).toBeFocused();
 });

@@ -37,13 +37,28 @@ interface PinnedFile {
   deletions: number;
 }
 
-/** Uploads both tiles as `s`'s account; their PRs and analyses. */
-export async function uploadTiles(stack: Stack, s: Session): Promise<Tile[]> {
+/**
+ * Both tiles as `s`'s account: each one's PR and analysis, uploaded if the account has none of
+ * that PR yet (the server suite may have uploaded them on this stack already).
+ */
+export async function ensureTiles(stack: Stack, s: Session): Promise<Tile[]> {
+  return uploadTiles(stack, s, true);
+}
+
+/** Uploads both tiles as `s`'s account (`keep`: not one the account has already); their PRs and analyses. */
+export async function uploadTiles(stack: Stack, s: Session, keep = false): Promise<Tile[]> {
   const run = spawnSync(join(stack.build.bin, "pr-fixtures"), ["versions", "--out", FIXTURES], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   if (run.status !== 0) throw new Error("pr-fixtures versions failed (does this build have it?)");
   const tiles = (JSON.parse(run.stdout) as Listed[]).filter((v) => v.name.startsWith("tiled-"));
   const out: Tile[] = [];
   for (const t of tiles) {
+    if (keep) {
+      const have = await s.get(`/api/${t.repo}/pulls/${t.number}/analysis`);
+      if (have.status === 200) {
+        out.push({ name: t.name, repo: t.repo, number: t.number, analysis: (JSON.parse(have.body.toString()) as { id: string }).id });
+        continue;
+      }
+    }
     const pr = JSON.parse(readFileSync(t.pr, "utf8")) as { files: PinnedFile[]; base: { sha: string } };
     await control(stack, "POST", "/push", {
       repo: t.repo,
