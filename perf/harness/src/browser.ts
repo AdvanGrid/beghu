@@ -590,10 +590,38 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
 const DRAWING_MS = 120_000;
 /** The canvas's glide (web/src/pr-view/canvas/Canvas.tsx `GLIDE_MS`), and a frame's margin. */
 const GLIDE_MS = 420;
-/** The block browser.pr-block-open(-3x) opens: beghu#191's analysis-wasm crate, in each tile's start view. */
-const OPENED = "crates-analysis-wasm";
+/**
+ * The block browser.pr-block-open(-3x) opens: beghu#191's fake GitHub's `src`, drawn as a block
+ * that opens, in view, in each tile's start view: the PR's fold plan (#183), inside the fake
+ * GitHub crate the plan opens. (Before the plan opened again after grouping it opened the server
+ * crate, which the plan now opens itself; before the fold, the analysis-wasm crate, which the
+ * fold puts in the tiles' group of libraries.)
+ */
+const OPENED = "crates-fake-github.src";
+/** The part browser.pr-codeview-3x goes to the code view at, from the fold: the same block. */
+const CODE_VIEW_AT = OPENED;
 /** A long task, as the Long Tasks API reports one. */
 const LONG_TASK_MS = 50;
+
+/**
+ * Where block `id` is on the canvas, by its ID: drawn as a block (one that opens, with `opens`),
+ * wholly in view above the bottom bar. Or why not, for the probe to fail on: a change to the start
+ * view can't change what's measured.
+ */
+async function blockInView(page: Page, id: string, opens: boolean): Promise<{ x: number; y: number } | string> {
+  return page.evaluate(
+    ([id, opens]) => {
+      const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
+      const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
+      if (!el) return `${id} isn't drawn as a block`;
+      if (opens && !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    },
+    [id, opens] as const,
+  );
+}
 
 /** The PR view's gates (#182), on the tiled analyses. */
 function prViewProbes(c: BrowserCtx): Probe[] {
@@ -710,9 +738,40 @@ function prViewProbes(c: BrowserCtx): Probe[] {
     },
   });
 
+  // "Code view at ‹part›" on the 3x tile, from the fold's start view (#183): from the click to the
+  // frame layout A's glide starts in, opened down to the part (the old start view's drawing, and
+  // more). The part is picked first, as a reader does: its click selects it and keeps the fold.
+  probes.push({
+    name: "browser.pr-codeview-3x",
+    gates: ["browser.pr-codeview-3x.ms"],
+    async sample(): Promise<Sample> {
+      const t = await tile("tiled-3x");
+      const page = await c.warm.newPage();
+      try {
+        await page.goto(viewOf(t));
+        await page.evaluate((x) => window.__perf.arm(x), { kind: "drawing", analysis: t.analysis } as Check);
+        await outcome(page, DRAWING_MS);
+        // The same block each sample and each run, in view: if it isn't, the probe fails.
+        const at = await blockInView(page, CODE_VIEW_AT, false);
+        if (typeof at === "string") throw new Error(`browser.pr-codeview-3x: ${at}`);
+        await page.mouse.click(at.x, at.y);
+        const go = page.locator('[data-perf="code-view-at"]');
+        await go.waitFor({ timeout: DRAWING_MS });
+        await sleep(QUIET_MS);
+        const n = Number((await page.locator('[data-perf="canvas-viewport"]').getAttribute("data-glide")) ?? 0) + 1;
+        const r = await act(page, { kind: "glide", n }, () => go.click());
+        if (!(await page.locator('[data-perf="back-to-fold"]').count())) throw new Error("browser.pr-codeview-3x: the code view didn't open");
+        return { values: { "browser.pr-codeview-3x.ms": r.ms } };
+      } finally {
+        await page.close();
+      }
+    },
+  });
+
   // A double-click on a block to the frame its glide starts in (the clicked block's first click
   // selects it), and the long tasks from the click to the glide's end. The block is OPENED, a
-  // top-level part of beghu#191's recording that every tile draws in the start view.
+  // part of beghu#191's recording that every tile draws in the start view (the PR's fold plan,
+  // #183).
   for (const [name, which] of [
     ["browser.pr-block-open", "tiled-1x"],
     ["browser.pr-block-open-3x", "tiled-3x"],
@@ -729,14 +788,7 @@ function prViewProbes(c: BrowserCtx): Probe[] {
           await outcome(page, DRAWING_MS);
           // The same block each sample and each run, by its ID: a change to the start view can't
           // change what's measured. It must be in view and open: if it isn't, the probe fails.
-          const target = await page.evaluate((id) => {
-            const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
-            const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
-            if (!el || !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
-            const r = el.getBoundingClientRect();
-            if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
-            return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-          }, OPENED);
+          const target = await blockInView(page, OPENED, true);
           if (typeof target === "string") throw new Error(`${name}: ${target}`);
           await sleep(QUIET_MS);
           const n = Number((await page.locator('[data-perf="canvas-viewport"]').getAttribute("data-glide")) ?? 0) + 1;
@@ -748,7 +800,7 @@ function prViewProbes(c: BrowserCtx): Probe[] {
           const over = long.filter((d) => d > LONG_TASK_MS);
           return {
             values: { [`${name}.ms`]: r.ms, [`${name}.long-tasks`]: over.length },
-            evidence: { [`${name}.long-tasks`]: [`opening ${target.id}`, ...over.map((d) => `${Math.round(d)} ms`)] },
+            evidence: { [`${name}.long-tasks`]: [`opening ${OPENED}`, ...over.map((d) => `${Math.round(d)} ms`)] },
           };
         } finally {
           await page.close();

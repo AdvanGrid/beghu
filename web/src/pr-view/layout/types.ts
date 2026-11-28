@@ -17,10 +17,11 @@ export interface Rect {
 
 /**
  * Where a part stands, left to right in the locked order: people, the changed group, the
- * unchanged group, outside systems. Only the drawing's top scope has four columns: inside a
- * frame (an open block or a box) every part is one group, between its edges' ports.
+ * unchanged group, outside systems, and under the fold (#183) code outside the diff that only a
+ * conflict reaches. Only the drawing's top scope has these columns: inside a frame (an open block
+ * or a box) every part is one group, between its edges' ports.
  */
-export type Column = "people" | "changed" | "unchanged" | "outside";
+export type Column = "people" | "changed" | "unchanged" | "outside" | "conflict";
 
 /** One part of a scope: a closed block, or an open one (a frame, with its own inside). */
 export interface Part {
@@ -120,7 +121,7 @@ export interface Trunk {
 export interface ScopeLayout {
   rect: Rect;
   /**
-   * Each column's frame (the top scope only): people, the changed and unchanged groups, outside,
+   * Each column's frame (the top scope only): people, the changed and unchanged groups, outside, conflict,
    * each round its column's parts with room above the first for its title. A gutter where a
    * column ends gives its frame room, so no two frames touch.
    */

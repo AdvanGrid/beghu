@@ -349,9 +349,9 @@ measured = 0
 reason = "Modules of the PR view (web/src/pr-view/, and src/Analyse.tsx, which it shares with the lazy PR panel) in any chunk the list's cold load fetches, the entry chunk included, from the build's module list (.vite/modules.json, web/vite.config.ts moduleList): none, exact (#152, #181). Counting modules, not chunks, catches view code a static import inlines into the entry, which has no chunk of its own. The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
 
 [gates."browser.pr-view.kb"]
-max = 66.3
-measured = 63.14
-reason = "The PR view's chunks, gzip as served: the view's own (56.9 KB: route, top bar, panel, and since #182 the canvas with our layout engine, its toolbar, cards and legend) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 8's review fixes (#182: the keyboard's selection, FLIP glide, per-ID projections), up from 61.23 KB; slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
+max = 88.3
+measured = 84.07
+reason = "The PR view's chunks, gzip as served: the view's own (77.6 KB: route, top bar, the panel with its walkthrough and conflict cards since #183, and since #182 the canvas with our layout engine, its fold plan since #183, toolbar, cards and legend), the Analyse chunk it shares with the PR panel (6.2 KB) and the key names (0.3 KB). Calibrated +5% from slice 9's review fixes (#183: the fold opening down to a pick and pulling parts out of rest blocks, Show it rebasing the fold, the Outside column's budget and its engine column, the fallback's order; 1.3 KB of the view's own), up from 82.81 KB (slice 9's first, 76.3 KB of its own, from 63.14 KB at slice 8's, 56.9 KB of its own); slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
 
 # The PR view's canvas (#182), on the tiled analyses (tiled-1x: #2627's shape; tiled-3x), 50k
 # stack. Calibrated on the dev host (32 cores) at a load of 25 to 35 from other work: three runs of
@@ -360,12 +360,18 @@ reason = "The PR view's chunks, gzip as served: the view's own (56.9 KB: route, 
 # (the layout gates' calibration), so CI should sit well under these; recalibrate from its first
 # perf-* artifacts before relying on them as tight limits. The block-open gates were recalibrated
 # the same way at a load of 15 to 25 after the review's fixes (the glide transform-only, a new
-# start view); the cold and open gates kept their limits, which those runs stayed under.
+# start view); the cold and open gates kept their limits, which those runs stayed under. Since the
+# fold plan (#183) the start view is the PR's fold, and the block-open gates open the server crate
+# (the analysis-wasm crate folds into the tiles' group of libraries): their timings were
+# recalibrated the same way at a load of 24 to 32; their long tasks stayed within their limits.
+# The fold's review fixes (#183) recalibrated the cold and open gates for the fold's start view,
+# and the block-open gates for the block they now open (the plan opens crates-server itself),
+# at a load of 22 to 32, and added browser.pr-codeview-3x for layout A.
 
 [gates."browser.pr-cold.ms"]
-max = 640.1
-measured = 556.6
-reason = "A cold navigation to the PR view of tiled-1x (an empty context) to the frame with the top-level drawing (the canvas's data-drawn with blocks on it): shell, then the view's chunk and the graph in parallel (preloaded by the shell), the layout, the drawing. When the claims arrive isn't gated. Runs at load 25-35: 598.2, 538.6, 556.6 ms."
+max = 598.5
+measured = 520.4
+reason = "A cold navigation to the PR view of tiled-1x (an empty context) to the frame with the top-level drawing (the canvas's data-drawn with blocks on it): shell, then the view's chunk and the graph in parallel (preloaded by the shell), the purpose model, the PR's fold plan and its layout (since #183 the start view is the fold: the members' blocks opened within 16, groups, rest blocks), the drawing. When the claims arrive isn't gated. The median of three runs +15%, recalibrated for the fold's start view (#183, its review fixes: the plan opens again after grouping) at load 22-32: 511.1, 548.2, 520.4 ms (layout A's at load 25-35: 598.2, 538.6, 556.6 ms)."
 
 [gates."browser.pr-cold.depth"]
 max = 2
@@ -373,14 +379,19 @@ measured = 2
 reason = "Round trips chained before the drawing, exact: the shell, then the view's chunk and the graph in parallel (shell → chunk ∥ graph, #182). Counted on the chains the drawing waits on (the graph's and the view's chunks'); the claims follow the graph but the drawing never waits for them."
 
 [gates."browser.pr-cold-3x.ms"]
-max = 929.5
-measured = 808.3
-reason = "The same cold navigation on tiled-3x (228 top-level parts), to its top-level drawing: the 3x tile draws within this. Runs at load 25-35: 849.8, 783.2, 808.3 ms."
+max = 770.0
+measured = 669.6
+reason = "The same cold navigation on tiled-3x (228 top-level parts), to its top-level drawing: the PR's fold plan since #183 (its blocks within 16), which draws within this. The median of three runs +15%, recalibrated for the fold's start view (#183, its review fixes) at load 22-32: 716.5, 669.6, 658.6 ms (layout A's at load 25-35: 849.8, 783.2, 808.3 ms)."
 
 [gates."browser.pr-open.ms"]
-max = 376.2
-measured = 327.1
-reason = "From a click on the PR panel's PR view link (tiled-1x's PR, a warm app: shell and assets cached) to the frame with the top-level drawing: the view's chunk, the graph and the layout. Runs at load 25-35: 333.8, 327.1, 304.5 ms."
+max = 387.2
+measured = 336.7
+reason = "From a click on the PR panel's PR view link (tiled-1x's PR, a warm app: shell and assets cached) to the frame with the top-level drawing: the view's chunk, the graph, the purpose model, and the PR's fold plan laid out (the start view since #183). The median of three runs +15%, the first calibration on the fold's start view (#183, its review fixes) at load 22-32: 336.7, 283.8, 343.3 ms, up from a max of 376.2 set on layout A's start (at load 25-35: 333.8, 327.1, 304.5 ms). The two sets of runs overlap: the difference is within the run-to-run spread, not a measured cost of the fold."
+
+[gates."browser.pr-codeview-3x.ms"]
+max = 323.2
+measured = 281.0
+reason = "Layout A's coverage since the fold became the start view (#183): on tiled-3x, a click on the PR's fold's crates-fake-github.src (picked first, as a reader does; it keeps the fold) and then on \"Code view at ‹part› ›\", to the frame layout A's glide starts in (the viewport's data-glide): layout A for the whole 3x tile laid out, opened down to the part, and rendered, from the fold's drawing. The median of three runs +15%, at load 22-32: 281.0, 331.7, 271.8 ms."
 
 [gates."browser.pr-warm.kb"]
 max = 0
@@ -388,26 +399,26 @@ measured = 0
 reason = "A revisit's bytes for the analysis, exact: the graph's body (revalidated against its ETag, no body sent) and the claims' (immutable, from the cache), as bodies on the wire. Each is listed with how it came."
 
 [gates."browser.pr-block-open.ms"]
-max = 153.9
-measured = 133.8
-reason = "A double-click on tiled-1x's crates-analysis-wasm (pinned by ID in the probe, so a change to the start view can't change which block is measured; the probe fails if it isn't in view) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transforms and opacity only: plain FLIP for items that only move, a skin for each item that changes size, a dashed one's edges in halves that only move). The median of three runs +15%, remeasured when dashed edges got their halves (#182), at load 13-24: 140.7, 133.8, 130.1 ms (before: 119.6, 154.2, 133.1, 131.7, 134.5 at load 11-15)."
+max = 143.4
+measured = 124.7
+reason = "A double-click on tiled-1x's crates-fake-github.src (pinned by ID in the probe, so a change to the start view can't change which block is measured; the probe fails if it isn't in view and drawn as a block that opens; since #183 the start view is the PR's fold plan, which opens the fake GitHub crate into its member-holding parts) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transforms and opacity only: plain FLIP for items that only move, a skin for each item that changes size, a dashed one's edges in halves that only move). The median of three runs +15%, recalibrated when the plan opened again after grouping and took crates-server, the block before, open itself (#183's review fixes), at load 22-32: 117.6, 158.2, 124.7 ms (crates-server at load 24-32: 106.9, 114.4, 132.8 ms; crates-analysis-wasm in layout A, at load 13-24: 140.7, 133.8, 130.1 ms)."
 
 [gates."browser.pr-block-open.long-tasks"]
+max = 1
+measured = 1
+spec = 0
+reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples, set to the local median of three runs: 1, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 2 (1 in each of three runs on the fold's crates-server; 2 in each of eight in layout A, at load 11-24). CI measured 0 here on d8f4902. Local runs vary between 1 and 2, and CI measured 0 on 5170513 too. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The spec asks for none; CI's run is to confirm 0, then set max from it."
+
+[gates."browser.pr-block-open-3x.ms"]
+max = 188.9
+measured = 164.3
+reason = "The same double-click on tiled-3x's crates-fake-github.src (pinned by ID; in the fold's start view since #183) to the frame its glide starts in: the 3x tile opens within this. The median of three runs +15%, recalibrated when the plan took crates-server, the block before, open itself (#183's review fixes), at load 22-32: 164.3, 192.3, 146.4 ms (crates-server at load 24-32: 147.8, 147.7, 143.8 ms; crates-analysis-wasm in layout A, at load 13-24: 247.6, 236.9, 233.3 ms)."
+
+[gates."browser.pr-block-open-3x.long-tasks"]
 max = 2
 measured = 2
 spec = 0
-reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples: 2 in each of five runs at load 11-15, set to that local median (2 in each of three more at load 13-24, with dashed edges in halves). CI measured 0 here on d8f4902. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The rest locally are the pointer's arrival and the first click's selection before it. The spec asks for none; CI's run is to confirm 0, then set max from it."
-
-[gates."browser.pr-block-open-3x.ms"]
-max = 272.4
-measured = 236.9
-reason = "The same double-click on tiled-3x's crates-analysis-wasm (pinned by ID) to the frame its glide starts in: the 3x tile opens within this. The median of three runs +15%, remeasured when dashed edges got their halves (#182), at load 13-24: 247.6, 236.9, 233.3 ms (before: 200.5, 225.9, 237.6, 228.5, 246.7 at load 11-15)."
-
-[gates."browser.pr-block-open-3x.long-tasks"]
-max = 3
-measured = 3
-spec = 0
-reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples: 3, 3 and 2 in three runs at load 11-15 (two more: 2 and 3; three more with dashed edges in halves, at load 13-24: 3, 2 and 3), set to the local median, up from 2 (2, 3 and 2 when it was set, so a 3 was there before the skins). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. On the dev stack, timed against the glide in three opens of tiled-3x, the open is the only long task (213-294 ms, from the double-click to the glide's first frame) and none falls during the glide or at its end; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
+reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples, set to the local median of three runs: 2, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 3 (2, 1 and 2 on the fold's crates-server; 3, 2 and 3 in layout A, at load 13-24). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. Local runs vary between 1 and 2, and CI measured 1 again on 5170513. On the dev stack the open is the only long task during the glide; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
 
 [gates."browser.load.list-fetches"]
 max = 2

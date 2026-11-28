@@ -25,8 +25,8 @@ import type { Anchors, Column, Layout, LayoutInput, Line, P, Part, Placed, Scope
 /** Room in each gap between columns for a line's count (px). */
 export const COUNT_ROOM = 30;
 
-const SIDE: Record<Column, Side> = { people: 0, changed: 1, unchanged: 2, outside: 3 };
-const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside"];
+const SIDE: Record<Column, Side> = { people: 0, changed: 1, unchanged: 2, outside: 3, conflict: 4 };
+const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside", "conflict"];
 
 // Made IDs are JSON arrays, so no ID's own characters can make two of them one.
 const portId = (scope: string, line: string) => JSON.stringify(["port", scope, line]);

@@ -13,26 +13,35 @@
 //   only when asked for.
 // - Each drawn line: the analysis lines it carries, its route, and its style's facts (changed,
 //   crosses a boundary, not confirmed, how many, its arrowheads).
+// - Under the fold (fold.ts, #183), the drawing is the fold plan's instead: the place's
+//   member-holding parts, its groups and rest blocks in layout A's columns, and the parts only a
+//   conflict reaches in a column of their own, "Outside the diff: only through a conflict", with
+//   no boxes and every top-level block drawn (none goes to the no-lines grid). Each block carries
+//   how many of its parts serve the place and the top-level purposes it, or a part inside it,
+//   serves (its dots: a rest block's are its parts'), and each line whether the place carries it.
 import type { Edge, Node } from "../../bindings/analysis";
 import { columnGroup, layoutInput, PART_H, PART_W, type DrawableEdge, type DrawableGraph, type DrawableNode } from "../layout/graph";
 import { layout } from "../layout/layout";
 import type { Column, Layout, Line, P, Rect, Scope } from "../layout/types";
 import type { Model } from "../model";
 import { isCode, lensDraws, shownEdges, type Settings } from "./settings";
+import { foldDrawing, isFoldOut, type FoldInput, type FoldMeta, type FoldPlan } from "./fold";
+import type { Place, Purposes } from "../purposes";
 
-export const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside"];
+export const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside", "conflict"];
 
 export const COLUMN_NAME: Record<Column, string> = {
   people: "People and callers",
   changed: "Changed",
   unchanged: "Unchanged",
   outside: "Outside: external systems and stores",
+  conflict: "Outside the diff: only through a conflict",
 };
 
-/** A group: a block on the canvas that isn't a part (a column, a box, the Shared box). */
+/** A group: a block on the canvas that isn't a part (a column, a box, the Shared box, a fold of siblings). */
 export interface Group {
   id: string;
-  kind: "column" | "box" | "shared";
+  kind: "column" | "box" | "shared" | "fold";
   column: Column;
   /** Its name on the canvas ("Changed", "crates", "Shared: 2 Product area"). */
   title: string;
@@ -160,6 +169,16 @@ export interface Item {
   group?: Group;
   /** A rest block: the part it stands in, and how many folders it stands for. */
   rest?: { of: string; folders: number };
+  /** Under the fold: a block that isn't one of the analysis's parts (a group, rest block, outside block or frame). */
+  fold?: FoldMeta;
+  /** Under the fold: how many of its parts serve the place, of how many. */
+  serve?: { n: number; total: number };
+  /** Under the fold: the top-level purposes it serves, or a part inside it does, in reading order. */
+  dots?: string[];
+  /** The analysis nodes it stands for, when not its node's or group's (a rest block's, under the fold). */
+  stands?: string[];
+  /** Under the fold: whether it opens (it has blocks inside it in the fold's tree). */
+  opens?: boolean;
 }
 
 /** A drawn line: one per pair of drawn things, carrying all its analysis lines. */
@@ -180,6 +199,8 @@ export interface DLine {
   to?: string;
   /** The trunks it rides. */
   trunks: string[];
+  /** Under the fold: the place carries one of its lines (drawn strong, in the purpose's colour). */
+  carried: boolean;
 }
 
 export interface DTrunk {
@@ -210,6 +231,11 @@ export interface Scene {
   faded: Set<string>;
   /** The no-lines grid, when shown. */
   grid?: Rect;
+  /**
+   * Under the fold: the place it stands on, the stood-on purpose's top-level purpose (its dot is
+   * larger, its lines its colour), and the block in the fold's tree standing for each node.
+   */
+  fold?: { place: Place; purpose?: string; rep(node: string): string | undefined };
   /** The drawn item holding a node: itself, the block it's folded into, or nothing (not drawn). */
   holder(node: string): string | undefined;
   /**
@@ -222,14 +248,29 @@ export interface Scene {
 export interface CanvasState {
   open: ReadonlySet<string>;
   folded: ReadonlySet<string>;
+  /** Under the fold: the parts a pick pulled out of a rest block, each drawn as a block of its own. */
+  pulled?: ReadonlySet<string>;
 }
 
 /** The rest block's ID inside partly drawn part `id`. */
 export const restId = (id: string) => `rest:${id}`;
 
-/** The canvas's drawing of `m` under `s` at `state`, keeping `previous`'s places. */
-export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: boolean, previous?: Layout, drawnFolders?: (n: Node) => number): Scene {
+/** What the fold draws from: the place, its plan, and what the plan was made from. */
+export interface FoldArgs {
+  place: Place;
+  purposes: Purposes;
+  input: FoldInput;
+  plan: FoldPlan;
+}
+
+/** The canvas's drawing of `m` under `s` at `state`, keeping `previous`'s places; under the fold, the fold plan's. */
+export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: boolean, previous?: Layout, drawnFolders?: (n: Node) => number, fold?: FoldArgs): Scene {
   const edges = shownEdges(m, s);
+  // Under the fold: no boxes, Show ignored (the rest blocks stand for what isn't drawn), nothing in the grid.
+  if (fold) {
+    s = { ...s, own: undefined, outside: undefined, show: "all" };
+    showLonely = true;
+  }
   const tops = topParts(m, s, edges);
   const { groups, boxOf } = groupsOf(m, s, tops);
   const sys = m.system;
@@ -252,16 +293,18 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
   for (const n of tops) if (keepTop.has(n.id)) walk(n, n.id);
   const drawable: DrawableEdge[] = edges.filter((e) => kept.has(e.from) && kept.has(e.to)).map((e) => ({ id: e.id, from: e.from, to: e.to, kind: e.kind, when: e.when, change: e.change, data: e.data }));
   const g: DrawableGraph = { nodes, edges: drawable, facets: m.a.facets };
-  const drawn = layoutInput(
-    g,
-    {
-      open: state.open,
-      boxes: (n) => boxOf.get(n.id),
-      folded: state.folded,
-      direction: s.lens === "data" ? (e) => e.data?.direction ?? "forward" : undefined,
-    },
-    previous,
-  );
+  const direction = s.lens === "data" ? (e: DrawableEdge) => e.data?.direction ?? "forward" : undefined;
+  const fd = fold && foldDrawing(fold.input, fold.plan, state, edges.map((e) => ({ id: e.id, from: e.from, to: e.to, kind: e.kind, when: e.when, change: e.change, data: e.data })));
+  if (fd) {
+    for (const gr of fd.groups) groups.set(gr.id, gr);
+    if (fold.input.outside.length) {
+      const id = columnGroup("conflict");
+      groups.set(id, { id, kind: "column", column: "conflict", title: COLUMN_NAME.conflict, by: "Column", members: fold.input.outside.map((o) => o.node) });
+    }
+  }
+  const drawn = fd
+    ? layoutInput(fd.graph, { open: fd.open, folded: new Set([...state.folded].filter((x) => x.startsWith("column:"))), showLonely: true, direction, column: (n) => fd.columns.get(n.id) }, previous)
+    : layoutInput(g, { open: state.open, boxes: (n) => boxOf.get(n.id), folded: state.folded, direction }, previous);
   const L = layout(drawn.input);
 
   // Items: every placed part, frame and box, and the column frames.
@@ -298,6 +341,14 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     const parent = parentOf(id);
     const rect = { x: pl.x, y: pl.y, w: pl.w, h: pl.h };
     const depth = depthOf(id);
+    const md = fd?.meta.get(id);
+    if (fd && md) {
+      const base = { id, rect, depth, grid: false, parent, fold: md, serve: fd.serve(id), opens: fd.opens(id) };
+      if (md.kind === "group") items.set(id, { ...base, kind: pl.frame ? "frame" : "box", folded: !pl.frame, group: md.group });
+      else if (md.kind === "rest") items.set(id, { ...base, kind: "rest", folded: false, stands: md.ids });
+      else items.set(id, { ...base, kind: "part", folded: false, node: m.nodes.get(md.node), stands: [md.node] });
+      continue;
+    }
     const gr = groups.get(id);
     if (pl.box || gr) {
       items.set(id, { id, kind: gr?.kind === "column" ? "column" : "box", rect, depth, folded: !pl.box, grid: false, parent, group: gr });
@@ -313,7 +364,25 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     }
     const node = m.nodes.get(id);
     if (!node) continue;
-    items.set(id, { id, kind: pl.frame ? "frame" : "part", rect, depth, folded: false, grid: false, parent, node });
+    items.set(id, { id, kind: pl.frame ? "frame" : "part", rect, depth, folded: false, grid: false, parent, node, serve: fd?.serve(id), opens: fd?.opens(id) });
+  }
+  // Under the fold, each block's dots: the top-level purposes it, or a part inside it, serves.
+  if (fold) {
+    const p = fold.purposes;
+    const dotsOf = (ids: readonly string[]) => {
+      const on = new Set(ids.flatMap((id) => p.servedBy(id)));
+      return p.tops.filter((t) => on.has(t.id)).map((t) => t.id);
+    };
+    for (const it of items.values()) {
+      if (it.kind === "frame" || (it.kind === "column" && !it.folded)) continue;
+      const ids = it.stands ?? (it.group ? it.group.members : it.node ? [it.node.id] : []);
+      it.dots = dotsOf(ids);
+      if (it.kind === "column" && it.group) {
+        // A folded column: what its drawn blocks hold.
+        const sv = it.group.members.map((t) => fd!.serve(t)).filter((x): x is { n: number; total: number } => x !== undefined);
+        it.serve = sv.reduce((a, b) => ({ n: a.n + b.n, total: a.total + b.total }), { n: 0, total: 0 });
+      }
+    }
   }
 
   // The no-lines grid, under the drawing.
@@ -343,6 +412,7 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
   };
   walkLines(drawn.input.root);
   const byEdge = new Map(edges.map((e) => [e.id, e]));
+  const carries = fold?.purposes.carries(fold.place);
   const unconfirmed = (e: Edge) => e.claims.length > 0 && e.claims.every((c) => m.stubs.get(c)?.status === "undetermined");
   const rides = new Map<string, string[]>();
   const trunks: DTrunk[] = L.trunks.map((t) => {
@@ -368,16 +438,32 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
       from: endItem(at?.line.from),
       to: endItem(at?.line.to),
       trunks: rides.get(id) ?? [],
+      carried: !!carries && members.some((x) => carries.has(x)),
     });
   }
 
   // The drawn item holding each node.
   const holderMemo = new Map<string, string | undefined>();
+  const isOpenItem = (it: Item) => it.kind === "frame" || ((it.kind === "box" || it.kind === "column") && !it.folded);
   const holder = (node: string): string | undefined => {
     if (holderMemo.has(node)) return holderMemo.get(node);
     let out: string | undefined;
     const top = topOf.get(node);
-    if (top !== undefined) {
+    if (fd) {
+      const r = fd.rep(node);
+      const realTop = [node, ...m.ancestors(node)].filter((x) => x !== sysId).at(-1);
+      // Its column: the Outside column for a part only a conflict reaches, else its top-level part's.
+      const col = r !== undefined && isFoldOut(r) ? groups.get(columnGroup("conflict")) : realTop === undefined ? undefined : [...groups.values()].find((gr) => gr.kind === "column" && gr.column !== "conflict" && gr.members.includes(realTop));
+      if (r === undefined) out = undefined;
+      else if (col && items.get(col.id)?.folded) out = col.id;
+      else
+        for (const x of fd.chain(r)) {
+          const it = items.get(x);
+          if (!it) break;
+          out = x;
+          if (!isOpenItem(it)) break;
+        }
+    } else if (top !== undefined) {
       const col = [...groups.values()].find((gr) => gr.kind === "column" && gr.members.includes(top));
       const box = boxOf.get(top);
       if (col && items.get(col.id)?.folded) out = col.id;
@@ -421,5 +507,7 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     return lonely.has(top) ? top : undefined;
   };
 
-  return { items, lines, trunks, width, height, layout: L, drawnAs: drawn.drawnAs, edges, lonely: drawn.lonely, groups, faded, grid, holder, wouldHold };
+  const at = fold?.place;
+  const sceneFold = at && { place: at, purpose: at.kind === "purpose" ? fold!.purposes.top(at.id) : undefined, rep: fd!.rep };
+  return { items, lines, trunks, width, height, layout: L, drawnAs: drawn.drawnAs, edges, lonely: drawn.lonely, groups, faded, grid, holder, wouldHold, fold: sceneFold };
 }

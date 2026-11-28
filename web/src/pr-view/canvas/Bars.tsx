@@ -3,11 +3,17 @@
 // setting in the URL, replacing its history entry (slice 7). The bar under it: ← Back (saying
 // what it undoes) and Start over. The zoom bar, floating over the canvas's bottom right: − / + /
 // Fit and Fold to groups.
+//
+// The fold bar (#183), above the steps: under the fold, the trail (All purposes › ● purpose) and
+// "Code view at ‹part› ›" for the selected part; in the code view left from the fold, "← Back to
+// ‹place›", which returns to the fold as it was.
 import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, For, onSettled, Show, type Element } from "solid-js";
 import type { Edge } from "../../bindings/analysis";
 import { colors, fonts } from "../../tokens.stylex";
 import { useNav } from "../nav";
+import { purposesOf, type Place } from "../purposes";
+import { PurposeDot } from "../PurposeDot";
 import { WHENS } from "../state";
 import { ui } from "../ui";
 import { facetsFor, lensHas, LENSES, SHOWS } from "./settings";
@@ -23,6 +29,8 @@ export function Toolbar() {
   const m = () => nav.model();
   const st = () => c.settings();
   const boxes = (own: string, outside: string) => nav.set("boxes", `${own},${outside}`);
+  /** Under the fold, Show and Boxes don't apply: greyed, saying why. */
+  const folded = () => c.mode().kind === "fold";
   return (
     <div {...stylex.attrs(s.bar)} role="toolbar" aria-label="What the canvas draws" data-perf="canvas-toolbar">
       <Picker label="Lens" perf="lens" value={nav.state().lens === "order" ? "modules" : st().lens} onChange={(v) => nav.set("lens", v === "modules" ? undefined : v)}>
@@ -35,7 +43,7 @@ export function Toolbar() {
           )}
         </For>
       </Picker>
-      <Picker label="Show" perf="show" value={st().show} onChange={(v) => nav.set("show", v === "all" ? undefined : v)}>
+      <Picker label="Show" perf="show" value={st().show} disabled={folded() ? "The fold shows what serves the purpose, the rest in rest blocks" : undefined} onChange={(v) => nav.set("show", v === "all" ? undefined : v)}>
         <For each={SHOWS}>{(x) => <option value={x.id}>{x.name}</option>}</For>
       </Picker>
       <Picker label="Colour by" perf="colour" value={st().colour ?? "change"} onChange={(v) => nav.set("colour", v === "change" ? undefined : v)}>
@@ -44,12 +52,12 @@ export function Toolbar() {
       </Picker>
       <span {...stylex.attrs(s.group)} role="group" aria-label="Boxes">
         <span {...stylex.attrs(s.label)}>Boxes</span>
-        <Picker label="Own parts" perf="boxes-own" small value={st().own ?? "none"} onChange={(v) => boxes(v, st().outside ?? "none")}>
+        <Picker label="Own parts" perf="boxes-own" small value={st().own ?? "none"} disabled={folded() ? BOXES_IGNORED : undefined} onChange={(v) => boxes(v, st().outside ?? "none")}>
           <option value="folder">Folder</option>
           <For each={facetsFor(m(), "inside-")}>{(f) => <option value={f.id}>{f.name}</option>}</For>
           <option value="none">None</option>
         </Picker>
-        <Picker label="Outside" perf="boxes-outside" small value={st().outside ?? "none"} onChange={(v) => boxes(st().own ?? "none", v)}>
+        <Picker label="Outside" perf="boxes-outside" small value={st().outside ?? "none"} disabled={folded() ? BOXES_IGNORED : undefined} onChange={(v) => boxes(st().own ?? "none", v)}>
           <For each={facetsFor(m(), "outside-")}>{(f) => <option value={f.id}>{f.name}</option>}</For>
           <option value="none">None</option>
         </Picker>
@@ -68,11 +76,14 @@ export function Toolbar() {
   );
 }
 
-function Picker(props: { label: string; perf: string; value: string; small?: boolean; onChange: (v: string) => void; children: Element }) {
+const BOXES_IGNORED = "Boxes are ignored under the purpose's fold; they return when you leave it";
+
+/** A picker; `disabled` greys it, saying why. */
+function Picker(props: { label: string; perf: string; value: string; small?: boolean; disabled?: string; onChange: (v: string) => void; children: Element }) {
   return (
-    <label {...stylex.attrs(s.picker)}>
+    <label {...stylex.attrs(s.picker, props.disabled !== undefined && s.greyed)} title={props.disabled}>
       <span {...stylex.attrs(props.small ? s.subLabel : s.label)}>{props.label}</span>
-      <select {...stylex.attrs(s.select)} data-perf={`picker-${props.perf}`} value={props.value} onChange={(e) => props.onChange(e.currentTarget.value)}>
+      <select {...stylex.attrs(s.select)} data-perf={`picker-${props.perf}`} value={props.value} disabled={props.disabled !== undefined} onChange={(e) => props.onChange(e.currentTarget.value)}>
         {props.children}
       </select>
     </label>
@@ -160,20 +171,101 @@ function LinesMenu() {
   );
 }
 
+/** A place's name: "All purposes", a purpose's, or the unclaimed parts'. */
+function placeName(place: Place, name: (id: string) => string, unclaimed: number): string {
+  return place.kind === "pr" ? "All purposes" : place.kind === "purpose" ? name(place.id) : `${unclaimed} changed ${unclaimed === 1 ? "part serves" : "parts serve"} no purpose`;
+}
+
+/** The fold's trail and the way into the code view, or the way back to the fold from it. */
+export function FoldBar() {
+  const nav = useNav();
+  const c = useCanvas();
+  const m = () => nav.model();
+  const p = () => purposesOf(m());
+  const name = (id: string) => p().byId.get(id)?.name ?? id;
+  const unclaimed = () => m().a.unclaimed.length;
+  /** The selected part, for "Code view at ‹part› ›". */
+  const picked = () => {
+    const s = nav.sel();
+    return s?.kind === "part" && s.ids.length === 1 && m().nodes.has(s.ids[0]!) && m().nodes.get(s.ids[0]!)!.kind !== "system" ? s.ids[0]! : undefined;
+  };
+  const md = () => c.mode();
+  return (
+    <Show when={md().kind === "fold" || (md().kind === "code" && (md() as { from?: Place }).from)}>
+      <div {...stylex.attrs(s.steps, s.fold)} data-perf="fold-bar">
+        <Show
+          when={md().kind === "fold" && (md() as { place: Place }).place}
+          fallback={
+            <>
+              <button type="button" {...stylex.attrs(ui.button)} data-perf="back-to-fold" onClick={() => c.backToFold()}>
+                ← Back to{" "}
+                <Show when={(md() as { from?: Place }).from?.kind === "purpose" && ((md() as { from: { id: string } }).from.id)}>{(id) => <PurposeDot id={id()} />}</Show>
+                {placeName((md() as { from: Place }).from, name, unclaimed())}
+              </button>
+              <span {...stylex.attrs(ui.muted, ui.small)}>The code view, opened down to the part</span>
+            </>
+          }
+        >
+          {(place) => (
+            <>
+              <nav {...stylex.attrs(s.trail)} aria-label="Where the fold stands" data-perf="fold-trail">
+                <Show when={place().kind !== "pr"} fallback={<span {...stylex.attrs(s.here)}>All purposes</span>}>
+                  <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent)} onClick={() => nav.select(undefined)}>
+                    All purposes
+                  </button>
+                </Show>
+                <Show when={place().kind === "purpose" && (place() as { id: string }).id}>
+                  {(id) => (
+                    <For each={[...p().ancestors(id()), id()]}>
+                      {(x, i) => (
+                        <>
+                          <span {...stylex.attrs(ui.muted)}> › </span>
+                          <Show when={i() < p().ancestors(id()).length} fallback={<span {...stylex.attrs(s.here)}><PurposeDot id={x} />{name(x)}</span>}>
+                            <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent)} onClick={() => nav.select({ kind: "purpose", ids: [x] })}>
+                              <PurposeDot id={x} />
+                              {name(x)}
+                            </button>
+                          </Show>
+                        </>
+                      )}
+                    </For>
+                  )}
+                </Show>
+                <Show when={place().kind === "unclaimed"}>
+                  <span {...stylex.attrs(ui.muted)}> › </span>
+                  <span {...stylex.attrs(s.here)}>{placeName(place(), name, unclaimed())}</span>
+                </Show>
+              </nav>
+              <span {...stylex.attrs(s.grow)} />
+              <Show when={picked()}>
+                {(id) => (
+                  <button type="button" {...stylex.attrs(ui.button)} data-perf="code-view-at" onClick={() => c.codeView(id())}>
+                    Code view at {m().nodes.get(id())!.name} ›
+                  </button>
+                )}
+              </Show>
+            </>
+          )}
+        </Show>
+      </div>
+    </Show>
+  );
+}
+
 /** ← Back and Start over, above the canvas. */
 export function StepBar() {
   const c = useCanvas();
   const last = () => c.history().at(-1);
   return (
     <div {...stylex.attrs(s.steps)} data-perf="canvas-steps">
-      <button type="button" {...stylex.attrs(ui.button)} disabled={!last()} data-perf="canvas-back" onClick={() => c.back()}>
+      <button type="button" {...stylex.attrs(ui.button, s.keep)} disabled={!last()} data-perf="canvas-back" onClick={() => c.back()}>
         ← Back
       </button>
       <span {...stylex.attrs(ui.muted, ui.small, s.undoes)} data-perf="canvas-undoes">
-        {last() ? `undoes: ${last()!.what}` : "Opens and folds you make can be undone here"}
+        {last() ? `undoes: ${last()!.what}` : c.mode().kind === "fold" ? "Click selects; double-click opens, or goes to the code view" : "Opens and folds you make can be undone here"}
       </span>
       <span {...stylex.attrs(s.grow)} />
-      <button type="button" {...stylex.attrs(ui.button)} disabled={c.history().length === 0 && c.state().open.size === 0 && c.state().folded.size === 0} data-perf="canvas-start-over" onClick={() => c.startOver()}>
+      <button type="button" {...stylex.attrs(ui.button, s.keep)} disabled={c.atStart()} data-perf="canvas-start-over" onClick={() => c.startOver()}>
         Start over
       </button>
     </div>
@@ -275,6 +367,10 @@ const s = stylex.create({
     borderBottomWidth: 1,
   },
   undoes: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  fold: { fontSize: 12.5, minHeight: 32 },
+  keep: { flexShrink: 0, whiteSpace: "nowrap" },
+  trail: { overflow: "hidden", alignItems: "baseline", columnGap: 2, display: "flex", flexWrap: "wrap", minWidth: 0, },
+  here: { fontWeight: 650 },
   zoom: {
     padding: 4,
     borderColor: colors.line,

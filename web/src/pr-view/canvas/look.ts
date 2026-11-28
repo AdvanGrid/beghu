@@ -4,6 +4,7 @@
 // and the legend.
 import type { Node } from "../../bindings/analysis";
 import type { Model } from "../model";
+import type { Place } from "../purposes";
 import { MAX_SHOWN, valueColours } from "./colour";
 import type { Item } from "./scene";
 import { isOutside, type Settings } from "./settings";
@@ -126,8 +127,30 @@ export interface Face {
   partial: boolean;
 }
 
-/** A closed part's or folded group's face. */
-export function faceOf(m: Model, it: Item, s: Settings): Face {
+/** "4 of 9 parts serve it": how much of a block serves the place the fold stands on. */
+export function serveLine(at: Place, v: { n: number; total: number }): string {
+  const one = v.n === 1;
+  const verb = at.kind === "purpose" ? (one ? "serves it" : "serve it") : at.kind === "pr" ? (one ? "serves a purpose" : "serve a purpose") : one ? "serves no purpose" : "serve no purpose";
+  return `${v.n} of ${v.total} ${v.total === 1 ? "part" : "parts"} ${verb}`;
+}
+
+/** What a rest block's parts don't do, at the place the fold stands on. */
+export const restLine = (at: Place) => (at.kind === "purpose" ? "don't serve it" : at.kind === "pr" ? "serve no purpose" : "aren't among them");
+
+/** A closed part's or folded group's face; under the fold (`at`), with how much of it serves the place. */
+export function faceOf(m: Model, it: Item, s: Settings, at?: Place): Face {
+  const fold = it.fold;
+  // The fold's own blocks (`at` may be gone: a block gliding out as the canvas leaves the fold).
+  if (fold?.kind === "rest") return { kind: "", change: "none", name: fold.label, bottom: fold.line ?? (at ? restLine(at) : ""), opens: false, partial: false };
+  // A group: its breakdown on top (its dots may cut it short; its card has it whole), how much of it serves the place below.
+  if (fold?.kind === "group") {
+    return { kind: fold.breakdown || "group", change: "none", name: fold.group.title, bottom: at && it.serve ? serveLine(at, it.serve) : "", opens: true, partial: false };
+  }
+  if (fold?.kind === "out") {
+    const n = it.node!;
+    const change = changeKey(m, n);
+    return { kind: kindWord(n), change, name: n.name, bottom: `${change === "none" ? "outside the code" : CHANGE_WORD[change]} · ⚠ ${fold.question}`, opens: false, partial: false };
+  }
   if (it.group) {
     const g = it.group;
     const changed = g.members.filter((id) => touched(m, id) && !isOutside(m.nodes.get(id)!)).length;
@@ -135,7 +158,7 @@ export function faceOf(m: Model, it: Item, s: Settings): Face {
       kind: g.kind === "column" ? "column" : g.kind === "shared" ? "shared box" : `box · ${g.by}`,
       change: "none",
       name: g.title,
-      bottom: `${g.members.length} ${g.members.length === 1 ? "part" : "parts"} · ${changed} changed`,
+      bottom: at && it.serve ? serveLine(at, it.serve) : `${g.members.length} ${g.members.length === 1 ? "part" : "parts"} · ${changed} changed`,
       opens: !it.grid,
       partial: false,
     };
@@ -150,8 +173,10 @@ export function faceOf(m: Model, it: Item, s: Settings): Face {
   if (s.colour !== undefined) {
     const vs = valuesOf(n, s.colour);
     bottom = vs.length ? vs.map((v) => valueLabel(m, s.colour!, v)).join(", ") : "no value found";
-  } else bottom = isOutside(n) ? connectionsLine(m, n.id) : (sizeLine(m, n.id) ?? "no files changed");
-  return { kind: kindWord(n), change, name: n.name, bottom, opens: !it.grid && (m.children.get(n.id) ?? []).length > 0, partial: !!n.drawn };
+  } else if (at && it.serve) bottom = serveLine(at, it.serve);
+  else bottom = isOutside(n) ? connectionsLine(m, n.id) : (sizeLine(m, n.id) ?? "no files changed");
+  const opens = it.opens ?? (m.children.get(n.id) ?? []).length > 0;
+  return { kind: kindWord(n), change, name: n.name, bottom, opens: !it.grid && opens, partial: !!n.drawn };
 }
 
 /** A frame's title: "▾ advagent-v3 › runtime", "▾ sandbox · 3 of 9 folders drawn", "▾ Folder: crates". */

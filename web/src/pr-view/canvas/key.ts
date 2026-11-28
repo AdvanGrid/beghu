@@ -5,15 +5,20 @@
 //
 // Sections, in order: Colour (by the change, or by the facet: a row per value drawn, then
 // stripes and grey), Parts, Lines, Areas, and Outlines (a row per value drawn, in its colour).
+// Under the fold (#183), Parts adds the dots ("● Dots: the purposes it serves (the panel names
+// them)"), groups and the parts reached only through a conflict, and Lines says strong (the
+// place's own lines, in the purpose's colour) and faint (the rest) in place of the change's
+// strong and quiet.
 import type { Model } from "../model";
 import { CHANGE_KEYS, changeKey, colourOf, ringsOf, valuesOf, valueLabel, type ChangeKey } from "./look";
 import type { Item, Scene } from "./scene";
 import type { Settings } from "./settings";
 
 export type Sample =
-  | { kind: "part"; change?: ChangeKey; colour?: number; stripes?: boolean; none?: boolean; dashed?: boolean; faded?: boolean }
+  | { kind: "part"; change?: ChangeKey; colour?: number; stripes?: boolean; none?: boolean; dashed?: boolean; faded?: boolean; group?: boolean; outside?: boolean }
+  | { kind: "dots"; purpose?: number }
   | { kind: "text"; text: string }
-  | { kind: "line"; changed?: boolean; dashed?: boolean; dotted?: boolean; thick?: boolean; both?: boolean }
+  | { kind: "line"; changed?: boolean; dashed?: boolean; dotted?: boolean; thick?: boolean; both?: boolean; tone?: number }
   | { kind: "trunk" }
   | { kind: "area"; area: "column" | "changed" | "frame" | "box" | "shared" | "grid" }
   | { kind: "ring"; colour?: number; more?: boolean };
@@ -38,8 +43,8 @@ const CHANGE_ROW: Record<ChangeKey, string> = {
   none: "No change word: people and outside systems",
 };
 
-/** The legend's rows for `sc`, drawn under `s`. */
-export function keyRows(m: Model, s: Settings, sc: Scene): KeyRow[] {
+/** The legend's rows for `sc`, drawn under `s`; `purpose`, the colour of the purpose the fold stands on. */
+export function keyRows(m: Model, s: Settings, sc: Scene, purpose?: number): KeyRow[] {
   const rows: KeyRow[] = [];
   const add = (r: Omit<KeyRow, "count" | "items" | "lines" | "trunks"> & { items?: Set<string>; lines?: Set<string>; trunks?: Set<string>; count?: number }) => {
     const items = r.items ?? new Set<string>(), lines = r.lines ?? new Set<string>(), trunks = r.trunks ?? new Set<string>();
@@ -74,6 +79,12 @@ export function keyRows(m: Model, s: Settings, sc: Scene): KeyRow[] {
     add({ id: "partial", section, words: "Partly drawn: some folders not drawn", sample: { kind: "text", text: "partly drawn" }, items: where((it) => !!it.node?.drawn, [...sc.items.values()]) });
     add({ id: "rest", section, words: "Dashed, muted: stands for parts left out", sample: { kind: "part", dashed: true }, items: where((it) => it.kind === "rest", [...sc.items.values()]) });
     add({ id: "faded", section, words: "Faded: not on a line that crosses a boundary", sample: { kind: "part", faded: true }, items: new Set(sc.faded) });
+    if (sc.fold) {
+      const all = [...sc.items.values()];
+      add({ id: "dots", section, words: "● Dots: the purposes it serves (the panel names them)", sample: { kind: "dots" }, items: where((it) => (it.dots?.length ?? 0) > 0, all) });
+      add({ id: "fold-group", section, words: "Group: parts of one kind, folded together", sample: { kind: "part", group: true }, items: where((it) => it.fold?.kind === "group" && it.folded, all) });
+      add({ id: "fold-outside", section, words: "Dashed amber: reached only through a conflict", sample: { kind: "part", outside: true }, items: where((it) => it.fold?.kind === "out", all) });
+    }
   }
 
   // Lines.
@@ -81,8 +92,16 @@ export function keyRows(m: Model, s: Settings, sc: Scene): KeyRow[] {
     const section = "Lines";
     const ls = [...sc.lines.values()];
     const lw = (pred: (l: (typeof ls)[number]) => boolean) => new Set(ls.filter(pred).map((l) => l.id));
-    add({ id: "line:quiet", section, words: "Quiet purple: unchanged", sample: { kind: "line" }, lines: lw((l) => !l.changed) });
-    add({ id: "line:strong", section, words: "Strong purple: added, changed or removed", sample: { kind: "line", changed: true }, lines: lw((l) => l.changed) });
+    if (sc.fold) {
+      const at = sc.fold.place;
+      const tone = at.kind === "purpose" && purpose !== undefined ? 2 + purpose : 1;
+      add({ id: "line:carried", section, words: at.kind === "purpose" ? "Strong, in its colour: the purpose's own lines" : "Strong: a purpose's own lines", sample: { kind: "line", tone }, lines: lw((l) => l.carried) });
+      const faint = at.kind === "purpose" ? "Faint: lines it doesn't follow" : at.kind === "pr" ? "Faint: lines no purpose follows" : "Faint: every line, as no purpose names these parts";
+      add({ id: "line:faint", section, words: faint, sample: { kind: "line", tone: 0 }, lines: lw((l) => !l.carried) });
+    } else {
+      add({ id: "line:quiet", section, words: "Quiet purple: unchanged", sample: { kind: "line" }, lines: lw((l) => !l.changed) });
+      add({ id: "line:strong", section, words: "Strong purple: added, changed or removed", sample: { kind: "line", changed: true }, lines: lw((l) => l.changed) });
+    }
     add({ id: "line:dashed", section, words: "Dashed: crosses a boundary", sample: { kind: "line", dashed: true }, lines: lw((l) => l.dashed && !l.dotted) });
     add({ id: "line:dotted", section, words: "Dotted: not confirmed", sample: { kind: "line", dotted: true }, lines: lw((l) => l.dotted) });
     add({ id: "line:thick", section, words: "Thicker, with a number: several connections", sample: { kind: "line", thick: true }, lines: lw((l) => l.count > 1) });

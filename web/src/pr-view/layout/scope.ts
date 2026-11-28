@@ -2,10 +2,10 @@
 // level, or the inside of one frame (an open block or a box), whose ports are zero-size parts on
 // its edges. layout.ts runs it once per scope and nests the answers.
 //
-// 1. Columns in the locked order (people, the changed group, the unchanged group, outside), each
-//    group packed into as few columns as about 1.5 × √parts a column allows. Parts joined by a
-//    line never share a column, and a line then pointing backwards is laid the other way round,
-//    so every line runs left to right.
+// 1. Columns in the locked order (people, the changed group, the unchanged group, outside, code
+//    only a conflict reaches), each group packed into as few columns as about 1.5 × √parts a
+//    column allows. Parts joined by a line never share a column, and a line then pointing
+//    backwards is laid the other way round, so every line runs left to right.
 // 2. Rows: barycentre sweeps order each column, keeping the order with the fewest crossings.
 // 3. Parts placed on their own: each column packed from the top and pulled toward what it
 //    connects to by isotonic regression, so nothing overlaps; or, given the scope's anchors (its
@@ -79,8 +79,9 @@ const ROUNDS = 8;
 /** A trunk's drawn width, from how many lines it carries. */
 export const trunkWidth = (n: number) => Math.min(3 + 1.5 * n, 12);
 
-/** 0 people, 1 the changed group (inside a frame: every part), 2 the unchanged group, 3 outside. */
-export type Side = 0 | 1 | 2 | 3;
+/** 0 people, 1 the changed group (inside a frame: every part), 2 the unchanged group, 3 outside, 4 code only a conflict reaches. */
+export type Side = 0 | 1 | 2 | 3 | 4;
+const SIDES: readonly Side[] = [0, 1, 2, 3, 4];
 
 export interface SPart {
   id: string;
@@ -137,7 +138,7 @@ export interface SOut {
   routes: Map<string, P[]>;
   flipped: Set<string>;
   trunks: STrunk[];
-  /** Each column's frame: people, the changed and unchanged groups, outside (not inside a frame). */
+  /** Each column's frame: people, the changed and unchanged groups, outside, conflict (not inside a frame). */
   groups: { side: Side; x: number; y: number; w: number; h: number }[];
   /** Closed parts drawn taller than given, to fit their lines' stubs. */
   grown: Map<string, number>;
@@ -157,8 +158,8 @@ export function columnsOf(parts: readonly SPart[], lines: readonly SLine[], insi
   const W = Math.ceil(1.5 * Math.sqrt(parts.length));
   const sideOf = new Map(parts.map((p) => [p.id, p.side]));
   const layer = new Map<string, number>();
-  const sideCols = [0, 0, 0, 0];
-  for (const side of [0, 1, 2, 3] as const) {
+  const sideCols = [0, 0, 0, 0, 0];
+  for (const side of SIDES) {
     const ids = parts.filter((p) => p.side === side).map((p) => p.id);
     if (ids.length === 0) continue;
     const intra = lines.filter((l) => l.from !== l.to && sideOf.get(l.from) === side && sideOf.get(l.to) === side);
@@ -166,8 +167,8 @@ export function columnsOf(parts: readonly SPart[], lines: readonly SLine[], insi
     for (const l of intra) (joined.get(l.from)!.push(l.to), joined.get(l.to)!.push(l.from));
     const count: number[] = [];
     const ok = (id: string, c: number, cap: number) => (count[c] ?? 0) < cap && !joined.get(id)!.some((j) => layer.get(j) === c);
-    if (side === 0 || side === 3) {
-      // People and outside systems fill columns in the order given; a part joined to one
+    if (side === 0 || side === 3 || side === 4) {
+      // People, outside systems and code only a conflict reaches fill columns in the order given; a part joined to one
       // already in a column goes to the next.
       const per = inside ? ids.length : Math.max(W, Math.ceil(ids.length / 2));
       for (const id of ids) {
@@ -215,10 +216,11 @@ export function columnsOf(parts: readonly SPart[], lines: readonly SLine[], insi
     for (const id of ids) layer.set(id, at.get(layer.get(id)!)!);
     sideCols[side] = used.length;
   }
-  const offset = [0, sideCols[0]!, sideCols[0]! + sideCols[1]!, sideCols[0]! + sideCols[1]! + sideCols[2]!];
-  const nCols = offset[3]! + sideCols[3]!;
+  const offset = [0];
+  for (const side of SIDES) offset.push(offset[side]! + sideCols[side]!);
+  const nCols = offset[SIDES.length]!;
   const colOf = new Map(parts.map((p) => [p.id, offset[p.side]! + layer.get(p.id)!]));
-  const sideOfCol = (c: number): Side => (c < offset[1]! ? 0 : c < offset[2]! ? 1 : c < offset[3]! ? 2 : 3);
+  const sideOfCol = (c: number): Side => SIDES.findLast((side) => c >= offset[side]!) ?? 0;
   return { colOf, nCols, offset, sideCols, sideOfCol };
 }
 
@@ -1111,7 +1113,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   // them. Its width is then a function of its anchor and its tracks alone, so coming back to an
   // earlier open set gives it back exactly.
   const colX: number[] = [];
-  // Every column of the top scope is framed (people, both groups, outside), so a gutter where
+  // Every column of the top scope is framed (people, both groups, outside, conflict), so a gutter where
   // one ends gives its frame room.
   const framed = (_c: number) => !o.inside;
   // A gutter's name for the anchors: the least part ID in the columns either side.
@@ -1234,7 +1236,7 @@ export function layoutScope(parts: readonly SPart[], lines: readonly SLine[], o:
   });
   const groups: SOut["groups"] = [];
   if (!o.inside)
-    for (const side of [0, 1, 2, 3] as const) {
+    for (const side of SIDES) {
       if (!sideCols[side]) continue;
       const c0 = offset[side]!, c1 = offset[side]! + sideCols[side]! - 1;
       let bottom = TOP;

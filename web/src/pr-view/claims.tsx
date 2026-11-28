@@ -143,6 +143,69 @@ function ClaimItem(props: { m: Model; c: Claim }) {
   );
 }
 
+/**
+ * What a walk's source chip opens (#183), under the paragraph: for `description` or one issue
+ * (`issue`, `owner/repo#N`), each quote with the claim it backs; for `code`, each claim with code
+ * evidence and its lines, shown. In its own boundary, as `ClaimList`.
+ */
+export function SourceBox(props: { m: Model; ids: readonly string[]; kind: "description" | "issue" | "code"; issue?: string }) {
+  return (
+    <div {...stylex.attrs(s.place, s.box)} data-perf="source-box" data-kind={props.kind}>
+      <Errored fallback={(err, reset) => <EvidenceFailure error={err()} reset={reset} />}>
+        <Loading fallback={<Skeleton n={Math.min(props.ids.length, 3)} />}>
+          <Sourced {...props} />
+        </Loading>
+      </Errored>
+    </div>
+  );
+}
+
+function Sourced(props: { m: Model; ids: readonly string[]; kind: "description" | "issue" | "code"; issue?: string }) {
+  const read = useClaims();
+  const claims = () => {
+    const map = read.byId();
+    return props.ids.map((id) => map.get(id)).filter((c): c is Claim => c !== undefined);
+  };
+  const matches = (e: Evidence) => e.kind === props.kind && (e.kind !== "issue" || props.issue === undefined || `${e.repo}#${e.number}`.toLowerCase() === props.issue.toLowerCase());
+  const items = () => claims().flatMap((c) => c.evidence.filter(matches).map((e) => ({ c, e })));
+  return (
+    <Show
+      when={props.kind === "code"}
+      fallback={
+        <ul {...stylex.attrs(ui.list)}>
+          <For each={items()}>
+            {(x) => (
+              <li data-perf="source-quote" data-claim={x.c.id}>
+                <EvidenceItem m={props.m} e={x.e} />
+                <p {...stylex.attrs(ui.p, ui.small)}>
+                  <span {...stylex.attrs(ui.muted)}>It backs: </span>
+                  {x.c.text}
+                </p>
+              </li>
+            )}
+          </For>
+        </ul>
+      }
+    >
+      <ul {...stylex.attrs(ui.list)}>
+        <For each={claims().filter((c) => c.evidence.some(matches))}>
+          {(c) => (
+            <li {...stylex.attrs(ui.stack)} data-perf="source-claim" data-claim={c.id}>
+              <p {...stylex.attrs(ui.p)}>
+                <Show when={c.status === "undetermined"}>
+                  <span {...stylex.attrs(s.undetermined)}>couldn't determine: </span>
+                </Show>
+                {c.text}
+              </p>
+              <For each={c.evidence.filter(matches)}>{(e) => <EvidenceItem m={props.m} e={e} />}</For>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Show>
+  );
+}
+
 /** One piece of evidence: code at its exact SHA, or a quote with its source. */
 function EvidenceItem(props: { m: Model; e: Evidence }) {
   const g = props.m.g;
@@ -252,6 +315,15 @@ function EvidenceFailure(props: { error: unknown; reset: () => void }) {
 
 const s = stylex.create({
   place: { marginTop: 2 },
+  box: {
+    padding: 8,
+    borderColor: colors.line,
+    borderRadius: 6,
+    borderStyle: "solid",
+    borderWidth: 1,
+    backgroundColor: colors.bgRaised,
+    marginTop: 6,
+  },
   undetermined: { color: colors.warn, fontWeight: 600 },
   evidence: { gap: 4, display: "flex", flexDirection: "column", marginBottom: 6 },
   side: {

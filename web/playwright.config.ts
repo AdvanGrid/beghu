@@ -20,7 +20,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|analyse|pr-view|canvas|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|analyse|pr-view|canvas|purposes|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts with held.spec.ts, held-restore.spec.ts and held-detail.spec.ts,
     // relationships.spec.ts with relationship-writes.spec.ts, tree.spec.ts and focus.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
@@ -59,7 +59,10 @@ export default defineConfig({
     // canvas.spec.ts reads tomsj's analysis of #191, which pr-view.spec.ts's uploads move to the
     // top of every tab's list; it changes nothing of the stack's.
     { name: "canvas", testMatch: /canvas\.spec\.ts$/, dependencies: ["pr-view"], timeout: 60_000, workers: 1 },
-    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["canvas"], timeout: 60_000 },
+    // purposes.spec.ts reads tomsj's analysis of #191 (cases served on the way in) and uploads the
+    // 3× tile for tomsj (#9003), which moves that PR to the top of every tab's list.
+    { name: "purposes", testMatch: /purposes\.spec\.ts$/, dependencies: ["canvas"], timeout: 60_000, workers: 1 },
+    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["purposes"], timeout: 60_000 },
     // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
     // label every tab shows: alone, after the rest but create and prefs.
     { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["lost-access"], timeout: 60_000, workers: 1 },

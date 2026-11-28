@@ -199,10 +199,15 @@ test("the canvas keeps its arrow keys, and Open or fold the selection rebinds fr
   await view.goto("/AdvanGrid/beghu/pull/191/view");
   const canvas = view.locator('[data-perf="canvas-viewport"]');
   await expect(canvas).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
-  const block = view.locator('[data-perf="block"][data-id="crates-server"]');
-  const frame = view.locator('[data-perf="frame"][data-id="crates-server"]:not([hidden] *)');
+  // A block the PR's fold (#183) draws closed, with parts inside, by its ID: v2's plan opens the
+  // server crate and leaves its `src` closed (and `web`'s).
+  const id = "crates-server.src";
+  const block = view.locator(`[data-perf="block"][data-id="${id}"]:not([hidden] *)`);
+  const frame = view.locator(`[data-perf="frame"][data-id="${id}"]:not([hidden] *)`);
+  await expect(block).toHaveAttribute("aria-expanded", "false");
+  await expect(frame).toHaveCount(0);
   await block.click();
-  await expect.poll(() => new URL(view.url()).searchParams.get("sel")).toBe("part:crates-server");
+  await expect.poll(() => new URL(view.url()).searchParams.get("sel")).toBe(`part:${id}`);
   // What a screen reader says of the block and the drawing names the key in effect.
   await expect(block).toHaveAttribute("aria-label", /, has parts inside, o opens$/);
   await expect(canvas).toHaveAttribute("aria-label", /: arrow keys move the selection, o opens or folds it, \] and \[ step through its lines$/);

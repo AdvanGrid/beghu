@@ -9,6 +9,10 @@
 // legend (rows matching what's drawn, hover and pin, folding remembered); the keys; the Group
 // panel; and both themes. Rebinding a canvas key is prefs.spec.ts's (the setup page).
 //
+// v2 has purposes, so the canvas would start on the PR's fold plan (#183, purposes.spec.ts): these
+// tests read layout A, which an analysis with no backed purpose starts in, so v2 comes without
+// its purposes (and with `unbacked`) on the way in (`layoutA`).
+//
 // It only reads tomsj's analysis, and runs after pr-view.spec.ts in a project of its own
 // (playwright.config.ts).
 import { readFileSync } from "node:fs";
@@ -31,8 +35,22 @@ const selOf = (page: Page) => new URL(page.url()).searchParams.get("sel");
 const param = (page: Page, k: string) => new URL(page.url()).searchParams.get(k);
 const undoes = (page: Page) => page.locator('[data-perf="canvas-undoes"]');
 
+/** v2 as an analysis with no backed purpose: the canvas starts in layout A. */
+function layoutA(g: Json): void {
+  g.analysis.purposes = [];
+  g.analysis.conflicts = [];
+  g.analysis.causes = [];
+  g.analysis.unbacked = "Served without its purposes, so the canvas starts in layout A.";
+}
+
 async function signIn(context: BrowserContext, login = "tomsj"): Promise<Page> {
   const page = await context.newPage();
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    layoutA(g);
+    await route.fulfill({ response: res, json: g });
+  });
   await page.setViewportSize({ width: 1500, height: 900 });
   await page.goto(`/auth/login?login=${login}`);
   await page.waitForURL((u) => u.pathname === "/issues");
@@ -581,20 +599,46 @@ test("A reversed Data flow line's double-click glides to the end it reaches, ope
 test("A line's flight cut short by a drag leaves nothing lit or faded", async ({ context }) => {
   const page = await signIn(context);
   await open(page);
-  // Zoomed in to 200%, a flight runs its longest (1.1 s): time to cut it short.
+  // Zoomed in to 200%, a flight to a far end runs its longest (1.1 s): time to cut it short.
   await viewport(page).focus();
   for (let i = 0; i < 4; i++) await page.keyboard.press("+");
   await expect(page.locator('[data-perf="zoom-level"]')).toHaveText("200%");
-  let p: { x: number; y: number } | undefined;
+  // The line of one connection in view whose far end is farthest from the middle of the view, so
+  // the flight is long whatever the start view is (it runs 360 ms and 0.35 ms per px it pans,
+  // Canvas.tsx): a short one can land before the drag.
+  let best: { p: { x: number; y: number }; far: number } | undefined;
+  const mid = await viewport(page).evaluate((vp) => {
+    const r = vp.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
   for (const line of await page.locator('[data-perf="canvas-line"][data-count="1"]').all()) {
-    p = await pointOn(line).catch(() => undefined);
-    if (p) break;
+    const p = await pointOn(line).catch(() => undefined);
+    if (!p) continue;
+    const ends = JSON.parse((await line.getAttribute("data-line"))!) as string[];
+    const centres = await Promise.all(
+      ends.map((id) =>
+        viewport(page)
+          .locator(`[data-item="${id.replace(/"/g, '\\"')}"]`)
+          .first()
+          .evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }),
+      ),
+    );
+    // The far end is the one farther from the click; the flight pans it to the middle.
+    const [a, b] = centres.map((c) => Math.hypot(c.x - p.x, c.y - p.y));
+    const end = centres[a! > b! ? 0 : 1]!;
+    const far = Math.hypot(end.x - mid.x, end.y - mid.y);
+    if (!best || far > best.far) best = { p, far };
   }
-  if (!p) throw new Error("no line of one connection in view");
-  const bg = await backgroundPoint(page);
-  await page.mouse.dblclick(p.x, p.y);
-  // Mid-flight (once any open down to its far end has landed), a drag on the background takes over.
+  if (!best) throw new Error("no line of one connection in view");
+  expect(360 + best.far * 0.35, "the flight's length (ms)").toBeGreaterThan(700);
+  await page.mouse.dblclick(best.p.x, best.p.y);
+  // Mid-flight (once any open down to its far end has landed), a drag takes over: from where the
+  // background is now, though the drawing moves under it, a press anywhere stops the flight.
   await expect(viewport(page)).toHaveAttribute("data-flying", "", { timeout: 2_000 });
+  const bg = await backgroundPoint(page);
   await page.mouse.move(bg.x, bg.y);
   await page.mouse.down();
   await page.mouse.move(bg.x + 40, bg.y + 30, { steps: 2 });
@@ -760,6 +804,7 @@ test("A partly drawn part: marked folded, its frame says how many folders are dr
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
+    layoutA(g);
     g.analysis.nodes.find((x: Json) => x.id === "crates-fake-github").drawn = { partial: true, folders: 9 };
     await route.fulfill({ response: res, json: g });
   });
@@ -791,6 +836,7 @@ test("A line only an undetermined claim backs is dotted, in the legend and its c
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
+    layoutA(g);
     for (const c of g.analysis.claims) if (e.claims.includes(c.id)) c.status = "undetermined";
     await route.fulfill({ response: res, json: g });
   });
@@ -960,12 +1006,12 @@ test("Keys: zoom in, out, reset and fit; Backspace goes out one level; Escape cl
   await expect.poll(() => selOf(page)).toBeNull();
 });
 
-test("Clicks: one selects, the background clears, a drag on the background pans", async ({ context }) => {
+test("Clicks: one selects, the background clears, a drag on the background pans, a drag from a block selects nothing", async ({ context }) => {
   const page = await signIn(context);
   await open(page);
   await block(page, "crates-analysis").click();
   await expect.poll(() => selOf(page)).toBe("part:crates-analysis");
-  await expect(panel(page).locator('[data-perf="part-panel"]')).toHaveAttribute("data-id", "crates-analysis");
+  await expect(panel(page).locator('[data-perf="walk-part"]')).toHaveAttribute("data-id", "crates-analysis");
   // A drag on the background pans, selecting nothing.
   const vp = (await viewport(page).boundingBox())!;
   const before = (await block(page, "crates-analysis").boundingBox())!;
@@ -975,6 +1021,14 @@ test("Clicks: one selects, the background clears, a drag on the background pans"
   await page.mouse.up();
   const after = (await block(page, "crates-analysis").boundingBox())!;
   expect(before.x - after.x).toBeGreaterThan(80);
+  expect(selOf(page)).toBe("part:crates-analysis");
+  // A drag from a closed block doesn't pan, and selects nothing either, though it ends on it.
+  const other = (await block(page, "crates-server").boundingBox())!;
+  await page.mouse.move(other.x + 20, other.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(other.x + 40, other.y + 34, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
   expect(selOf(page)).toBe("part:crates-analysis");
   // A click on the background clears it.
   await page.mouse.click(vp.x + vp.width - 40, vp.y + vp.height - 120);

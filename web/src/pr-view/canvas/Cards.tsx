@@ -5,7 +5,10 @@
 // ("a line, riding N trunks", "through the edge of ‹block›", and its key rows). A trunk: "N lines
 // share this stretch" and the list. A click on a trunk pins its card: it drags by its head,
 // closes with × or Escape, and hovering a row lights that line's whole route. A card stays while
-// the pointer moves onto it, so a line's boundaries can be picked from it.
+// the pointer moves onto it, so a line's boundaries can be picked from it. Under the fold (#183), a
+// block's card also says how much of it serves the place and which purposes it serves, a group's
+// its breakdown, a rest block's how many it stands for, a part reached only through a conflict
+// its question, and at the unclaimed parts, each part's reason.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack, type Element } from "solid-js";
 import type { Edge } from "../../bindings/analysis";
@@ -15,7 +18,9 @@ import { useNav } from "../nav";
 import { CHANGE } from "../ui";
 import { drawnAs, type KeyRow } from "./key";
 import { SampleView } from "./Legend";
-import { changeKey, CHANGE_WORD, colourOf, kindWord, sizeLine, valueLabel, valuesOf } from "./look";
+import { changeKey, CHANGE_WORD, colourOf, kindWord, restLine, serveLine, sizeLine, valueLabel, valuesOf } from "./look";
+import { purposesOf } from "../purposes";
+import { PurposeDot } from "../PurposeDot";
 import { FACET_FILL } from "./Canvas";
 import type { DLine, Item, Scene } from "./scene";
 import { useCanvas } from "./store";
@@ -197,6 +202,62 @@ function ItemCard(props: { it: Item }) {
   const rows = createMemo(() => drawnAs(c.rows(), { item: props.it.id }));
   // Keyed on the item (Cards): its words are read once.
   const it = untrack(() => props.it);
+  const at = untrack(() => c.scene().fold?.place);
+  const served = () => {
+    const sv = it.serve;
+    return at && sv ? <div {...stylex.attrs(s.small)} data-perf="card-serve">{serveLine(at, sv)}</div> : null;
+  };
+  const dots = () => (
+    <Show when={(it.dots?.length ?? 0) > 0}>
+      <div {...stylex.attrs(s.small)} data-perf="card-purposes">
+        Serves:{" "}
+        <For each={it.dots}>
+          {(id, i) => (
+            <>
+              {i() > 0 ? ", " : ""}
+              <PurposeDot id={id} />
+              {purposesOf(m()).byId.get(id)?.name ?? id}
+            </>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+  if (at && it.fold?.kind === "rest") {
+    const ids = it.fold.ids;
+    return (
+      <div data-perf="rest-card">
+        <div {...stylex.attrs(s.name)}>{it.fold.label}</div>
+        <div {...stylex.attrs(s.small)}>
+          {it.fold.line ? "Parts no purpose names, which a conflict here touches, past the column's room" : `They ${restLine(at)}`}, so they're folded into one block, which can't be opened: {ids.slice(0, 4).map((x) => m().nodes.get(x)?.name ?? x).join(", ")}
+          {ids.length > 4 ? `, and ${ids.length - 4} more` : ""}.
+        </div>
+        <DrawnAs rows={rows()} />
+      </div>
+    );
+  }
+  if (it.group?.column === "conflict" && it.kind === "column") {
+    return (
+      <div data-perf="outside-card">
+        <div {...stylex.attrs(s.name)}>Outside the diff: only through a conflict</div>
+        <div {...stylex.attrs(s.small)}>Parts no purpose names, which a conflict here touches: their lines to the purpose's blocks are drawn.</div>
+      </div>
+    );
+  }
+  if (it.group?.kind === "fold" && it.fold?.kind === "group") {
+    return (
+      <div data-perf="group-card">
+        <div {...stylex.attrs(s.kind)}>Group · {it.group.members.length} {it.group.by}, folded together</div>
+        <div {...stylex.attrs(s.name)}>{it.group.title}</div>
+        {served()}
+        <Show when={it.fold.breakdown}>
+          <div {...stylex.attrs(s.small)}>Inside them: {it.fold.breakdown}</div>
+        </Show>
+        {dots()}
+        <DrawnAs rows={rows()} />
+      </div>
+    );
+  }
   if (it.group) {
     const g = it.group;
     const changed = g.members.filter((id) => changeKey(m(), m().nodes.get(id)!) !== "unchanged" && changeKey(m(), m().nodes.get(id)!) !== "none").length;
@@ -207,6 +268,8 @@ function ItemCard(props: { it: Item }) {
         <div {...stylex.attrs(s.small)}>
           {g.members.length} {g.members.length === 1 ? "part" : "parts"} · {changed} changed
         </div>
+        {served()}
+        {dots()}
         <DrawnAs rows={rows()} />
       </div>
     );
@@ -225,6 +288,8 @@ function ItemCard(props: { it: Item }) {
   const n = it.node!;
   const key = changeKey(m(), n);
   const inside = (m().children.get(n.id) ?? []).length;
+  // At the unclaimed parts: each one's reason, its own or the parts inside it.
+  const reasons = at?.kind === "unclaimed" ? m().a.unclaimed.filter((u) => m().within(u.node, n.id)) : [];
   return (
     <div data-perf="part-card">
       <div {...stylex.attrs(s.kind)}>
@@ -244,6 +309,23 @@ function ItemCard(props: { it: Item }) {
       <div {...stylex.attrs(s.small)}>
         {[sizeLine(m(), n.id), inside ? `${inside} inside` : undefined].filter(Boolean).join(" · ")}
       </div>
+      <Show when={it.fold?.kind === "out" && it.fold}>
+        {(f) => (
+          <p {...stylex.attrs(s.p)} data-perf="card-conflict">
+            Only through a conflict: ⚠ {f().question}
+          </p>
+        )}
+      </Show>
+      {served()}
+      {dots()}
+      <For each={reasons}>
+        {(u) => (
+          <p {...stylex.attrs(s.p)} data-perf="card-reason">
+            {u.node === n.id ? "" : `${m().nodes.get(u.node)?.name ?? u.node}: `}
+            {u.reason}
+          </p>
+        )}
+      </For>
       <SharedChips it={it} />
       <DrawnAs rows={rows()} />
     </div>

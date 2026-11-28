@@ -1,6 +1,7 @@
-// The PR view's panel: its reference content for each place the selection can be (#181). The
-// walkthrough (slice 9) goes above it and folds this under "Questions, facets, files and
-// evidence" ("All changes, by kind" at the PR).
+// The PR view's panel: the walkthrough (Walk.tsx, #183) at the PR, a purpose, a part, a line and
+// the unclaimed parts, with each place's reference content (#181) folded at its end under
+// "Questions, facets, files and evidence" ("All changes, by kind" at the PR); a step, a group and
+// a boundary keep their reference panels. The reference content, by place:
 //
 // - The PR (nothing selected): the stated-rule list "All changes, by kind", the description
 //   (verbatim, folded), coverage, the facets found, and "Since the last analysis" (folded).
@@ -28,6 +29,7 @@ import { ChangeWord, changeText, Fold, githubBlob, githubTree, Mark, ui } from "
 import { colors } from "../tokens.stylex";
 import { touched } from "./canvas/look";
 import { useCanvas } from "./canvas/store";
+import { ConflictWalk, LineWalk, PartWalk, PrWalk, PurposeWalk, UnclaimedWalk } from "./Walk";
 
 export function Panel(props: { note?: string; dismiss: () => void }) {
   const nav = useNav();
@@ -47,7 +49,7 @@ export function Panel(props: { note?: string; dismiss: () => void }) {
           survived shows the newer analysis's words, with its claims' boundaries afresh. */}
       <Show when={nav.model()} keyed>
         {(_model) => (
-          <Show when={nav.sel()} keyed fallback={<PrPanel />}>
+          <Show when={nav.sel()} keyed fallback={<PrWalk changes={<PrChanges />} rest={<PrRest />} />}>
             {(sel) => <Place sel={sel} />}
           </Show>
         )}
@@ -63,20 +65,22 @@ function Place(props: { sel: Sel }) {
   switch (sel.kind) {
     case "part": {
       const nodes = sel.ids.map((id) => m().nodes.get(id)).filter((n): n is Node => n !== undefined);
-      return nodes.length === 1 ? <PartPanel n={nodes[0]!} /> : <PartsPanel nodes={nodes} />;
+      return nodes.length === 1 ? <PartWalk n={nodes[0]!} reference={<PartPanel n={nodes[0]!} />} /> : <PartsPanel nodes={nodes} />;
     }
-    case "line":
-      return <LinePanel edges={sel.ids.map((id) => m().edges.get(id)).filter((e): e is Edge => e !== undefined)} />;
+    case "line": {
+      const edges = sel.ids.map((id) => m().edges.get(id)).filter((e): e is Edge => e !== undefined);
+      return edges.length ? <LineWalk edges={edges} reference={<LinePanel edges={edges} />} /> : <LinePanel edges={edges} />;
+    }
     case "step":
       return <StepPanel scenario={sel.scenario} n={sel.n} />;
     case "purpose": {
       const ids = sel.ids.filter((id) => m().purposes.has(id));
-      return ids.length === 1 ? <PurposePanel id={ids[0]!} /> : <PurposesPanel ids={ids} />;
+      return ids.length === 1 ? <PurposeWalk id={ids[0]!} reference={<PurposePanel id={ids[0]!} />} /> : <PurposesPanel ids={ids} />;
     }
     case "conflict":
-      return <ConflictPanel id={sel.id} />;
+      return <ConflictWalk id={sel.id} />;
     case "unclaimed":
-      return <UnclaimedPanel />;
+      return <UnclaimedWalk />;
     case "group":
       return <GroupPanel id={sel.id} />;
     case "boundary":
@@ -100,18 +104,17 @@ function H3(props: { children: Element }) {
 
 // ---- The PR ------------------------------------------------------------------------------------
 
-function PrPanel() {
+/** "All changes, by kind": the PR's size, then the stated order's four groups. */
+function PrChanges() {
   const nav = useNav();
   const m = () => nav.model();
   const a = () => m().a;
-  const partlyDrawn = () => a().nodes.filter((n) => n.drawn);
   return (
     <div data-perf="pr-panel">
       <p {...stylex.attrs(ui.p, ui.muted)}>
         {a().pr.repo}#{a().pr.number} · {a().pr.stats.files} files · <span {...stylex.attrs(changeText.added)}>+{a().pr.stats.additions.toLocaleString("en")}</span>{" "}
         <span {...stylex.attrs(changeText.removed)}>−{a().pr.stats.deletions.toLocaleString("en")}</span>
       </p>
-      <h2 {...stylex.attrs(ui.h2)}>All changes, by kind</h2>
       <For each={m().ranked()}>
         {(g) => (
           <section data-perf="rank-group">
@@ -134,7 +137,18 @@ function PrPanel() {
           </section>
         )}
       </For>
+    </div>
+  );
+}
 
+/** The rest of the PR's reference, after "All changes, by kind": the PR's description, coverage, the facets found, Since the last analysis. */
+function PrRest() {
+  const nav = useNav();
+  const m = () => nav.model();
+  const a = () => m().a;
+  const partlyDrawn = () => a().nodes.filter((n) => n.drawn);
+  return (
+    <div data-perf="pr-rest">
       <H3>The PR</H3>
       <Fold summary="The PR's description" perf="description">
         <Show when={a().pr.description.trim()} fallback={<p {...stylex.attrs(ui.p, ui.muted)}>The PR has no description.</p>}>
@@ -854,7 +868,7 @@ function StepPanel(props: { scenario: string; n: number }) {
   );
 }
 
-// ---- What slice 9 builds on: a purpose, a conflict, the unclaimed parts ------------------------
+// ---- A purpose's reference: its parts and lines, with their claims -----------------------------
 
 function PurposePanel(props: { id: string }) {
   const nav = useNav();
@@ -862,8 +876,7 @@ function PurposePanel(props: { id: string }) {
   const p = () => m().purposes.get(props.id)!;
   return (
     <div data-perf="purpose-panel">
-      <p {...stylex.attrs(ui.p, ui.muted)}>Purpose · {p().kind}</p>
-      <h2 {...stylex.attrs(ui.h2)}>{p().name}</h2>
+      <ClaimList m={m()} ids={p().walk.claims} />
       <H3>Parts that serve it ({p().serves.length})</H3>
       <ul {...stylex.attrs(ui.list)}>
         <For each={p().serves}>
@@ -929,30 +942,6 @@ function PurposesPanel(props: { ids: string[] }) {
           )}
         </For>
       </ul>
-    </div>
-  );
-}
-
-function ConflictPanel(props: { id: string }) {
-  const nav = useNav();
-  const m = () => nav.model();
-  const c = () => m().conflicts.get(props.id)!;
-  return (
-    <div data-perf="conflict-panel">
-      <p {...stylex.attrs(ui.p, ui.muted)}>Conflict · {c().kind}</p>
-      <h2 {...stylex.attrs(ui.h2)}>{c().question}</h2>
-      <For each={[c().a, c().b]}>
-        {(side) => (
-          <section {...stylex.attrs(s.side)}>
-            <p {...stylex.attrs(ui.p)}>
-              <span {...stylex.attrs(ui.muted)}>{side.who === "purpose" && side.purpose ? m().purposes.get(side.purpose)?.name ?? side.purpose : side.who}: </span>
-              <b>{side.says}</b>
-            </p>
-            <p {...stylex.attrs(ui.p, ui.small)}>{side.text}</p>
-            <ClaimList m={m()} ids={side.claims} />
-          </section>
-        )}
-      </For>
     </div>
   );
 }
@@ -1099,30 +1088,6 @@ function BoundaryPanel(props: { id: string }) {
   );
 }
 
-function UnclaimedPanel() {
-  const nav = useNav();
-  const m = () => nav.model();
-  return (
-    <div data-perf="unclaimed-panel">
-      <h2 {...stylex.attrs(ui.h2)}>
-        {m().a.unclaimed.length} changed {m().a.unclaimed.length === 1 ? "part serves" : "parts serve"} no purpose
-      </h2>
-      <ul {...stylex.attrs(ui.list, s.gap)}>
-        <For each={m().a.unclaimed}>
-          {(u) => (
-            <li>
-              <Pick to={part(u.node)} accent>
-                {m().name(u.node)}
-              </Pick>
-              : <span {...stylex.attrs(ui.muted)}>{u.reason}</span>
-            </li>
-          )}
-        </For>
-      </ul>
-    </div>
-  );
-}
-
 const s = stylex.create({
   panel: { padding: 16, fontSize: 13 },
   forward: { gap: 8, alignItems: "flex-start", display: "flex", justifyContent: "space-between", marginBottom: 12 },
@@ -1156,15 +1121,4 @@ const s = stylex.create({
   chapter: { color: colors.muted, fontSize: 11, fontWeight: 650, marginTop: 6 },
   stepNo: { fontVariantNumeric: "tabular-nums", textAlign: "end", minWidth: 20 },
   current: { fontWeight: 650 },
-  side: {
-    padding: 10,
-    borderColor: colors.line,
-    borderRadius: 6,
-    borderStyle: "solid",
-    borderWidth: 1,
-    gap: 6,
-    display: "flex",
-    flexDirection: "column",
-    marginTop: 10,
-  },
 });

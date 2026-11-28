@@ -77,6 +77,15 @@ export const media = stylex.defineConsts({
  * ΔE2000 10 apart in either theme (the closest: facet2 and facet9, 10.5 light and 10.1 dark;
  * facet1 and facet4, 11.6 light): slate (facet8), brown (facet10) and navy (facet11) keep clear
  * of the lines' purple and of each other's neighbours.
+ *
+ * `purpose0`–`purpose7` are the purposes' colours (#183): a top-level purpose's place in reading
+ * order picks one (they repeat after 8), drawn as its dots on the canvas's blocks and in the panel,
+ * and as its own lines under the fold. Each is at least 3:1 on a block's fill (`part`) and on the
+ * canvas, and none is under ΔE2000 11 from another, from a facet colour (a block's dots sit on its
+ * stripes), from a line's colour, or from a change colour (`open`, `warn`, `danger`) in either
+ * theme: the closest are 12.0 light (purpose3 and facet10; purpose4 and purpose6) and 11.2 dark
+ * (purpose4 and facet11). Light: fuchsia, forest, crimson, rust, indigo, teal, ink, tan; dark:
+ * orchid, mint, rose, rust, periwinkle, aqua, paper, yellow.
  */
 export const graph = stylex.defineVars({
   line: "light-dark(#7c3aed, #a78bfa)",
@@ -125,4 +134,12 @@ export const graph = stylex.defineVars({
   facet9Fill: "light-dark(rgb(13 148 136 / 0.16), rgb(45 212 191 / 0.24))",
   facet10Fill: "light-dark(rgb(133 77 14 / 0.16), rgb(214 167 122 / 0.24))",
   facet11Fill: "light-dark(rgb(30 64 175 / 0.16), rgb(191 219 254 / 0.24))",
+  purpose0: "light-dark(#c026d3, #e879f9)",
+  purpose1: "light-dark(#14532d, #96f8b1)",
+  purpose2: "light-dark(#9f1239, #fda4af)",
+  purpose3: "light-dark(#b54a07, #c2410c)",
+  purpose4: "light-dark(#282d65, #b6b4fc)",
+  purpose5: "light-dark(#0c736b, #92ffe9)",
+  purpose6: "light-dark(#1e2836, #e5e7eb)",
+  purpose7: "light-dark(#be7c5b, #ffe44a)",
 });

@@ -19,6 +19,12 @@
 // Then the canvas pans as little as it can to bring the frame's title and as much of the frame as
 // fits into view, eased, with no zoom change. `prefers-reduced-motion` snaps.
 //
+// Under the fold (#183, fold.ts) the drawing is the place's fold plan: each block says how much of
+// it serves the place and carries a dot per top-level purpose it serves (the stood-on one's
+// larger), groups and rest blocks stand for what's left out, the place's own lines are strong in
+// its purpose's colour and the rest faint. A click on the background goes back to the place, not
+// to nothing; a double-click on a part with nothing inside to open goes to the code view at it.
+//
 // Gestures: a click selects (a block, a frame's body, a line), and on the selected block, if it
 // has parts inside, opens it; a click on a frame's title folds it; a double-click opens a block
 // with parts inside, or glides to a line's far end and selects it; a click on the background
@@ -45,7 +51,9 @@ import { changeKey, faceOf, fillOf, ringsOf, titleOf, CHANGE_WORD, type ChangeKe
 import { arrow, countAt, rounded, tipOf } from "./paths";
 import type { DLine, Item, Scene } from "./scene";
 import { useCanvas } from "./store";
-import { StepBar, Toolbar, ZoomBar } from "./Bars";
+import { FoldBar, StepBar, Toolbar, ZoomBar } from "./Bars";
+import { purposesOf, selOfPlace } from "../purposes";
+import { PURPOSE_DOT } from "../PurposeDot";
 import { drawnFolders } from "../Panel";
 import { columnGroup } from "../layout/graph";
 
@@ -193,6 +201,7 @@ export function Canvas() {
     const out = new Set<string>();
     if (it?.node) for (const x of m().subtree(it.node.id)) out.add(x);
     if (it?.group) for (const top of it.group.members) for (const x of m().subtree(top)) out.add(x);
+    for (const top of it?.stands ?? []) for (const x of m().subtree(top)) out.add(x);
     return out;
   };
   /** What's related to some analysis lines: their drawn lines and the items at their ends. */
@@ -250,10 +259,10 @@ export function Canvas() {
       if (t) return relatedLines(sc, t.lines);
     }
     const lit = c.lit();
-    if (lit?.length) {
+    if (lit && (lit.nodes.length || lit.edges.length)) {
       const items = new Set<string>();
-      withParents(sc, lit.map((n) => sc.holder(n)).filter((x): x is string => x !== undefined), items);
-      return { items, lines: new Set(), trunks: new Set() };
+      withParents(sc, lit.nodes.map((n) => sc.holder(n)).filter((x): x is string => x !== undefined), items);
+      return lit.edges.length ? relatedEdges(sc, lit.edges, items) : { items, lines: new Set(), trunks: new Set() };
     }
     if (selLines().size) return relatedLines(sc, selLines());
     const [first] = selItems();
@@ -589,7 +598,7 @@ export function Canvas() {
       a = { ...a, k: 1 };
       b = { ...b, k: 1 };
       const l = lookOf(it);
-      wearSkin(el, RADIUS[l], l === "column" || l === "shared" || l === "rest", r, a, b, opts);
+      wearSkin(el, RADIUS[l], l === "column" || l === "shared" || l === "rest" || l === "outBlock" || l === "outFrame", r, a, b, opts);
     }
     running.push(anim);
     if (a.o !== b.o && el.parentElement) running.push(el.parentElement.animate([{ opacity: a.o }, { opacity: b.o }], opts));
@@ -722,6 +731,16 @@ export function Canvas() {
     if (it.node) nav.select(part(it.node.id));
     else if (it.group) nav.select({ kind: "group", id: it.group.id });
     else if (it.rest) nav.select(part(it.rest.of));
+    else if (it.fold?.kind === "rest") {
+      // A rest block under the fold: the part whose frame it's in.
+      const frame = it.parent === undefined ? undefined : scene().items.get(it.parent);
+      if (frame?.node) nav.select(part(frame.node.id));
+    }
+  };
+  /** Back to the place the fold stands on (the PR, a purpose, the unclaimed parts); in layout A, to nothing. */
+  const clearSel = () => {
+    const f = untrack(scene).fold;
+    nav.select(f ? selOfPlace(f.place) : undefined);
   };
   const local = (e: { clientX: number; clientY: number }) => {
     const r = viewport.getBoundingClientRect();
@@ -734,11 +753,14 @@ export function Canvas() {
 
   const onTitle = (e: Event) => e.target instanceof window.Element && !!e.target.closest("[data-title]");
   let press: { x: number; y: number; pan: boolean; moved: boolean; v: View; id: number } | undefined;
-  /** A press that panned: its click selects nothing. */
+  /** A press that moved past the slop, panning or not: its click selects nothing. */
   let dragged = false;
   const onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0) return;
     viewport.focus({ preventScroll: true, focusVisible: false } as FocusOptions);
+    // Mid-flight the drawing moves under the pointer: a press anywhere takes over, so the flight
+    // stops where it is and picks nothing, whatever it lands on.
+    if (untrack(flying) !== undefined) takeOver();
     // A drag pans from the background or an open frame's body; Space + drag from anywhere.
     const el = itemAt(e.target);
     const onThing = (el && !isOpen(scene().items.get(el.dataset.item!))) || lineAt(e.target) || (e.target instanceof window.Element && e.target.closest("[data-chrome]"));
@@ -762,7 +784,7 @@ export function Canvas() {
   };
   const onPointerUp = (e: PointerEvent) => {
     if (!press || press.id !== e.pointerId) return;
-    dragged = press.moved && press.pan;
+    dragged = press.moved;
     press = undefined;
     setPanning(false);
     if (viewport.hasPointerCapture(e.pointerId)) viewport.releasePointerCapture(e.pointerId);
@@ -794,7 +816,7 @@ export function Canvas() {
     // The background, or a column's own room, clears the selection.
     if (!it || (it.kind === "column" && !it.folded && !onTitle(e))) {
       if (chrome) return;
-      nav.select(undefined);
+      clearSel();
       return;
     }
     // A click on an open frame's title folds it.
@@ -822,6 +844,8 @@ export function Canvas() {
     if (e.target instanceof window.Element && e.target.closest("[data-title]")) return;
     const it = scene().items.get(el.dataset.item!);
     if (it && opensIn(m(), it)) c.open(it.id);
+    // Under the fold, a part with nothing inside to open: the code view at it.
+    else if (it?.node && scene().fold && !isOpen(it) && !it.grid) c.codeView(it.node.id);
   };
   const onWheel = (e: WheelEvent) => {
     // Over the legend or a card, the wheel scrolls it (Ctrl/Cmd + scroll still zooms the drawing,
@@ -951,6 +975,7 @@ export function Canvas() {
     if (it.grid) return;
     if (isOpen(it)) c.fold(it.id);
     else if (opensIn(m(), it)) c.open(it.id);
+    else if (it.node && untrack(scene).fold) c.codeView(it.node.id);
   };
   touch("openFold", () => {
     // Opens a block with parts inside, folds an open one; a line glides to its far end.
@@ -1059,7 +1084,7 @@ export function Canvas() {
   touch("canvasEscape", () => {
     if (untrack(keyPin) !== undefined) return setKeyPin(undefined);
     if (untrack(pinned)) return setPinned(undefined);
-    nav.select(undefined);
+    clearSel();
   });
 
   onSettled(() => {
@@ -1096,6 +1121,7 @@ export function Canvas() {
   return (
     <div {...stylex.attrs(s.canvas)} data-perf="canvas" style={{ "--fade": focus() ? 0.2 : 1 }}>
       <Toolbar />
+      <FoldBar />
       <StepBar />
       <div
         ref={viewport}
@@ -1144,15 +1170,20 @@ export function Canvas() {
 
 /** Whether an item is drawn open: a frame, or a box or column not folded. */
 const isOpen = (it: Item | undefined) => !!it && (it.kind === "frame" || ((it.kind === "box" || it.kind === "column") && !it.folded));
-/** Whether a closed block opens: a folded group, box or column, or a part with parts inside (none in the no-lines grid). */
-const opensIn = (m: Model, it: Item) => !it.grid && !isOpen(it) && (it.folded || (it.kind === "part" && !!it.node && (m.children.get(it.node.id) ?? []).length > 0));
+/**
+ * Whether a closed block opens: a folded group, box or column, or a part with parts inside (none
+ * in the no-lines grid); under the fold, a part with blocks inside it in the fold's tree.
+ */
+const opensIn = (m: Model, it: Item) => !it.grid && !isOpen(it) && (it.folded || (it.kind === "part" && !!it.node && (it.opens ?? (m.children.get(it.node.id) ?? []).length > 0)));
 /** The keys that run `action` on the canvas now, as people read them: for the words a screen reader says. */
 const keysFor = (action: Action): string => keysIn(action, "canvas").map(showBinding).join(" or ");
 
-const KINDS = ["part", "frame", "box", "column", "rest", "shared", "changedColumn", "groupBlock"] as const;
+const KINDS = ["part", "frame", "box", "column", "rest", "shared", "changedColumn", "groupBlock", "outBlock", "outFrame"] as const;
 type Look = (typeof KINDS)[number];
 /** How an item is drawn. */
 function lookOf(x: Item): Look {
+  if (x.fold?.kind === "out") return "outBlock";
+  if (x.kind === "column" && x.group?.column === "conflict" && !x.folded) return "outFrame";
   if (x.kind === "rest") return "rest";
   if (x.group && x.folded) return "groupBlock";
   if (x.kind === "column") return x.group?.column === "changed" ? "changedColumn" : "column";
@@ -1160,7 +1191,7 @@ function lookOf(x: Item): Look {
   return x.kind;
 }
 /** Each look's corner radius (px): its style's `--r`, and the size of its skin's corners mid-glide. */
-const RADIUS: Readonly<Record<Look, number>> = { part: 8, frame: 10, box: 10, shared: 10, column: 14, changedColumn: 14, rest: 8, groupBlock: 10 };
+const RADIUS: Readonly<Record<Look, number>> = { part: 8, frame: 10, box: 10, shared: 10, column: 14, changedColumn: 14, rest: 8, groupBlock: 10, outBlock: 8, outFrame: 10 };
 const CHANGES: readonly ChangeKey[] = ["added", "modified", "inside", "removed", "unchanged", "none"];
 /** An item's four flags: selected, lit, faded by the lens, hovered. */
 const FLAGS = 16;
@@ -1185,7 +1216,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
   });
   const closed = () => {
     const l = look();
-    return l === "part" || l === "groupBlock" || l === "rest";
+    return l === "part" || l === "groupBlock" || l === "rest" || l === "outBlock";
   };
   const change = createMemo((): ChangeKey => {
     const x = it();
@@ -1201,7 +1232,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
   // A closed block's face, an open one's title: what it shows, and what a screen reader says it is.
   const face = createMemo(() => {
     const x = it();
-    return x && closed() ? faceOf(m(), x, c.settings()) : undefined;
+    return x && closed() ? faceOf(m(), x, c.settings(), c.scene().fold?.place) : undefined;
   });
   const title = createMemo(() => {
     const x = it();
@@ -1225,7 +1256,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
   };
   const perf = () => {
     const l = look();
-    return l === "part" ? "block" : l === "groupBlock" ? "group-block" : l === "changedColumn" ? "column" : l === "shared" ? "box" : l;
+    return l === "part" ? "block" : l === "groupBlock" ? "group-block" : l === "changedColumn" ? "column" : l === "shared" ? "box" : l === "outBlock" ? "outside-block" : l === "outFrame" ? "outside-frame" : l;
   };
   // A zero-size layer per item, at its stacking level (by depth: a frame under what it holds); the
   // item inside it is what moves.
@@ -1238,6 +1269,9 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
         tabindex={L.stop[id] ? 0 : -1}
         data-id={it()?.node?.id ?? it()?.group?.id ?? id}
         data-perf={perf()}
+        data-fold={it()?.fold?.kind}
+        data-dots={it()?.dots?.join(" ") || undefined}
+        data-serve={it()?.serve ? `${it()!.serve!.n}/${it()!.serve!.total}` : undefined}
         data-grid={it()?.grid ? "" : undefined}
         data-change={closed() ? change() : undefined}
         data-faded={c.scene().faded.has(id) ? "" : undefined}
@@ -1247,7 +1281,14 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
         aria-label={label()}
         aria-expanded={open() ? "true" : opens() ? "false" : undefined}
         aria-current={L.sel[id] ? "true" : undefined}
-        style={{ "--x": `${it()?.rect.x ?? 0}px`, "--y": `${it()?.rect.y ?? 0}px`, "--w": `${it()?.rect.w ?? 0}px`, "--h": `${it()?.rect.h ?? 0}px` }}
+        style={{
+          "--x": `${it()?.rect.x ?? 0}px`,
+          "--y": `${it()?.rect.y ?? 0}px`,
+          "--w": `${it()?.rect.w ?? 0}px`,
+          "--h": `${it()?.rect.h ?? 0}px`,
+          // Room for its dots at its top right, which its face's top line keeps clear of.
+          "--dots": `${dotsRoom(it()?.dots?.length ?? 0)}px`,
+        }}
       >
         <Show when={it()}>{(x) => <Show when={face()} fallback={<FrameTitle it={x()} title={title() ?? ""} />}>{(f) => <Block it={x()} face={f()} />}</Show>}</Show>
       </div>
@@ -1257,7 +1298,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
 
 function FrameTitle(props: { it: Item; title: string }) {
   return (
-    <div class={props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title">
+    <div class={props.it.group?.column === "conflict" && props.it.kind === "column" ? OUT_TITLE : props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title">
       {props.title}
     </div>
   );
@@ -1292,7 +1333,7 @@ function Block(props: { it: Item; face: Face }) {
       </Show>
       <div class={FACE}>
         {/* Kind · change: the kind gives way first, the change word is never cut. */}
-        <div class={FACE_TOP}>
+        <div class={FACE_TOP} data-perf="face-top">
           <span class={FACE_KIND}>{face().kind}</span>
           <Show when={face().change !== "none" && face().kind}>
             <span class={CHANGE_TEXT[face().change]}>
@@ -1304,7 +1345,9 @@ function Block(props: { it: Item; face: Face }) {
         <div class={FACE_NAME} data-perf="face-name">
           {face().name}
         </div>
-        <div class={FACE_BOTTOM}>{face().bottom}</div>
+        <div class={FACE_BOTTOM} data-perf="face-bottom">
+          {face().bottom}
+        </div>
         <Show when={face().opens || face().partial}>
           <div class={FACE_MARKS} data-perf="face-marks">
             {face().partial ? "partly drawn" : ""}
@@ -1313,6 +1356,9 @@ function Block(props: { it: Item; face: Face }) {
           </div>
         </Show>
       </div>
+      <Show when={props.it.dots?.length}>
+        <Dots ids={props.it.dots!} />
+      </Show>
       <Show when={rings()}>
         {(r) => (
           <>
@@ -1328,6 +1374,27 @@ function Block(props: { it: Item; face: Face }) {
     </>
   );
 }
+
+/** A block's dots: one per top-level purpose it serves, in its colour; the stood-on purpose's larger. */
+function Dots(props: { ids: readonly string[] }) {
+  const nav = useNav();
+  const c = useCanvas();
+  const p = () => purposesOf(nav.model());
+  const big = () => c.scene().fold?.purpose;
+  return (
+    <div class={DOTS} aria-hidden="true" data-perf="dots">
+      <For each={props.ids.slice(0, MAX_DOTS)}>{(id) => <span class={id === big() ? DOT_BIG[p().colour(id)]! : DOT[p().colour(id)]!} data-perf="dot" data-purpose={id} data-big={id === big() ? "" : undefined} />}</For>
+      <Show when={props.ids.length > MAX_DOTS}>
+        <span class={DOTS_MORE}>+{props.ids.length - MAX_DOTS}</span>
+      </Show>
+    </div>
+  );
+}
+
+/** How many dots a block shows before "+N". */
+const MAX_DOTS = 6;
+/** The room a block's dots take at its top right (px): 8 px each and 3 between, the larger one's 4 more, "+N". */
+const dotsRoom = (n: number) => (n === 0 ? 0 : Math.min(n, MAX_DOTS) * 11 + 4 + (n > MAX_DOTS ? 16 : 0));
 
 // ---- Lines -------------------------------------------------------------------------------------
 
@@ -1347,8 +1414,20 @@ function LineLayer(props: {
   trunkLit: Readonly<Record<string, true | undefined>>;
 }) {
   const c = useCanvas();
+  const nav = useNav();
   // Keyed by ID: a line drawn before and after an open or a pick keeps its elements.
   const ids = createMemo(() => [...c.scene().lines.keys()]);
+  /**
+   * Under the fold, a line's tone: faint (0), or carried by the place: strong purple at the PR or
+   * the unclaimed parts (1), the stood-on purpose's colour (2–9). Undefined in layout A.
+   */
+  const toneOf = (carried: boolean): number | undefined => {
+    const f = c.scene().fold;
+    if (!f) return undefined;
+    if (!carried) return 0;
+    return f.purpose === undefined ? 1 : 2 + purposesOf(nav.model()).colour(f.purpose);
+  };
+  const trunkTone = (t: { lines: string[] }) => toneOf(t.lines.some((l) => c.scene().lines.get(l)?.carried));
   /** A line's words for a screen reader, its focus being how the keyboard reaches it. */
   const lineLabel = (l: DLine) => {
     const sc = c.scene(), m = c.model();
@@ -1360,10 +1439,13 @@ function LineLayer(props: {
     <svg class={props.gliding ? LINES_HIDDEN : LINES} width={c.scene().width} height={c.scene().height} data-perf="canvas-lines" data-gliding={props.gliding ? "" : undefined}>
       <g aria-hidden="true">
         <For each={c.scene().trunks}>
-          {(t) => <path d={rounded(t.points)} class={TRUNK[Number(t.changed) | (Number(!!props.trunkLit[t.id]) << 1) | (Number(props.focusing() && !props.trunkInFocus[t.id]) << 2)]!} stroke-width={t.width} />}
+          {(t) => {
+            const flags = () => Number(!!props.trunkLit[t.id]) | (Number(props.focusing() && !props.trunkInFocus[t.id]) << 1);
+            return <path d={rounded(t.points)} class={trunkTone(t) === undefined ? TRUNK[Number(t.changed) | (flags() << 1)]! : FOLD_TRUNK[trunkTone(t)! * 4 + flags()]!} stroke-width={t.width} />;
+          }}
         </For>
         <For each={ids()}>
-          {(id) => <Show when={c.scene().lines.get(id)}>{(l) => <LinePath l={l()} lit={!!props.lit[id]} dim={props.focusing() && !props.inFocus[id]} />}</Show>}
+          {(id) => <Show when={c.scene().lines.get(id)}>{(l) => <LinePath l={l()} lit={!!props.lit[id]} dim={props.focusing() && !props.inFocus[id]} tone={toneOf(l().carried)} />}</Show>}
         </For>
       </g>
       <For each={ids()}>
@@ -1385,6 +1467,7 @@ function LineLayer(props: {
                 data-members={l().members.join(" ")}
                 data-heads={l().heads.to && l().heads.from ? "both" : l().heads.from ? "from" : "to"}
                 data-style={[l().changed ? "strong" : "quiet", l().dotted ? "dotted" : l().dashed ? "dashed" : "solid"].join(" ")}
+                data-carried={c.scene().fold ? (l().carried ? "strong" : "faint") : undefined}
               />
             )}
           </Show>
@@ -1398,7 +1481,7 @@ function LineLayer(props: {
   );
 }
 
-function LinePath(props: { l: DLine; lit: boolean; dim: boolean }) {
+function LinePath(props: { l: DLine; lit: boolean; dim: boolean; tone?: number }) {
   const d = createMemo(() => rounded(props.l.route));
   const to = createMemo(() => (props.l.heads.to && props.l.to !== undefined ? tipOf(props.l.route, false) : undefined));
   const from = createMemo(() => (props.l.heads.from && props.l.from !== undefined ? tipOf(props.l.route, true) : undefined));
@@ -1413,11 +1496,14 @@ function LinePath(props: { l: DLine; lit: boolean; dim: boolean }) {
   });
   const bits = () => Number(props.l.changed) | (Number(props.l.dashed && !props.l.dotted) << 1) | (Number(props.l.dotted) << 2) | (Number(props.lit) << 3) | (Number(props.dim && !props.lit) << 4);
   const head = () => Number(props.l.changed) | (Number(props.lit) << 1) | (Number(props.dim && !props.lit) << 2);
+  // Under the fold: its tone, its dashes, lit, dimmed.
+  const foldBits = () => (props.tone ?? 0) * 12 + (props.l.dotted ? 2 : props.l.dashed ? 1 : 0) * 4 + Number(props.lit) * 2 + Number(props.dim && !props.lit);
+  const foldHead = () => (props.tone ?? 0) * 4 + Number(props.lit) * 2 + Number(props.dim && !props.lit);
   return (
     <g data-line-drawn={props.l.id} data-lit={props.lit ? "" : undefined}>
-      <path d={d()} class={LINE[bits()]!} stroke-width={lineWidth(props.l.count) + (props.lit ? 1 : 0)} />
-      <Show when={to()}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
-      <Show when={from()}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
+      <path d={d()} class={props.tone === undefined ? LINE[bits()]! : FOLD_LINE[foldBits()]!} stroke-width={lineWidth(props.l.count) + (props.lit ? 1 : 0) + (props.tone !== undefined && props.tone > 0 ? 0.75 : 0)} />
+      <Show when={to()}>{(t) => <path d={arrow(t())} class={props.tone === undefined ? HEAD[head()]! : FOLD_HEAD[foldHead()]!} />}</Show>
+      <Show when={from()}>{(t) => <path d={arrow(t())} class={props.tone === undefined ? HEAD[head()]! : FOLD_HEAD[foldHead()]!} />}</Show>
       <Show when={at()}>
         {(p) => (
           <text x={p().x} y={p().y} class={COUNT[Number(props.dim && !props.lit)]!}>
@@ -1490,6 +1576,9 @@ const st = stylex.create({
   changedColumn: { "--edge": colors.warn, "--fill": graph.changedGroup, "--r": `${RADIUS.changedColumn}px`, borderStyle: "solid", },
   rest: { "--edge": graph.partEdge, "--fill": graph.outsideFill, "--r": `${RADIUS.rest}px`, borderStyle: "dashed", color: colors.muted, cursor: "default", },
   groupBlock: { "--edge": graph.partEdge, "--edge-w": "2.5px", "--fill": graph.outsideFill, "--r": `${RADIUS.groupBlock}px`, cursor: "pointer" },
+  // Under the fold: a part reached only through a conflict, and the column holding them.
+  outBlock: { "--edge": colors.warn, "--fill": graph.part, "--r": `${RADIUS.outBlock}px`, borderStyle: "dashed", cursor: "pointer" },
+  outFrame: { "--edge": colors.warn, "--edge-w": "1px", "--fill": "transparent", "--r": `${RADIUS.outFrame}px`, borderStyle: "dashed" },
   added: { "--edge": colors.open, "--fill": graph.addedFill },
   modified: { "--edge": colors.warn, "--fill": graph.modifiedFill },
   inside: { "--edge": colors.warn, "--fill": graph.insideFill },
@@ -1565,13 +1654,32 @@ const st = stylex.create({
     position: "relative",
     height: "100%",
   },
-  faceTop: { alignItems: "baseline", display: "flex", fontSize: 10.5, lineHeight: 1.25, whiteSpace: "pre", },
+  faceTop: { alignItems: "baseline", display: "flex", fontSize: 10.5, lineHeight: 1.25, paddingInlineEnd: "var(--dots, 0px)", whiteSpace: "pre", },
   faceKind: { overflow: "hidden", color: colors.muted, flexShrink: 1, textOverflow: "ellipsis", minWidth: 0, },
   faceMarks: { overflow: "hidden", color: colors.accent, fontSize: 10.5, fontWeight: 600, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
   changeWord: { flexShrink: 0 },
   faceName: { overflow: "hidden", color: colors.fg, fontSize: 13, fontWeight: 650, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
   faceBottom: { overflow: "hidden", color: colors.muted, fontSize: 11, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
   ring: { borderRadius: 10, borderStyle: "solid", borderWidth: 2, pointerEvents: "none", position: "absolute" },
+  // A block's purpose dots, at its top right, over its face.
+  dots: { gap: 3, alignItems: "center", display: "flex", pointerEvents: "none", position: "absolute", right: 7, top: 6 },
+  dot: { borderRadius: 999, flexShrink: 0, height: 8, width: 8 },
+  dotBig: { borderRadius: 999, boxShadow: `0 0 0 1.5px ${graph.part}`, flexShrink: 0, height: 12, width: 12 },
+  dotsMore: { color: colors.muted, fontSize: 9.5, fontWeight: 700 },
+  // The Outside column's title: two lines in its title's room, never cut.
+  outTitle: {
+    overflow: "hidden",
+    paddingInline: 12,
+    boxSizing: "border-box",
+    color: colors.warn,
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 650,
+    lineHeight: "15px",
+    paddingBlockStart: 7,
+    textWrap: "balance",
+    height: 44,
+  },
   ringMore: {
     borderColor: graph.partEdge,
     borderRadius: 999,
@@ -1630,6 +1738,33 @@ const st = stylex.create({
   lines: { overflow: "visible", pointerEvents: "none", position: "absolute", transitionDuration: "180ms", transitionProperty: "opacity", zIndex: 1000, left: 0, top: 0, },
   linesHidden: { opacity: 0, transitionDuration: "0s" },
 });
+
+/** Under the fold, a line's tone (`toneOf`): faint, strong purple, then each purpose colour. */
+const toneStroke = stylex.create({
+  faint: { stroke: graph.lineQuiet },
+  strong: { stroke: graph.line },
+  p0: { stroke: graph.purpose0 },
+  p1: { stroke: graph.purpose1 },
+  p2: { stroke: graph.purpose2 },
+  p3: { stroke: graph.purpose3 },
+  p4: { stroke: graph.purpose4 },
+  p5: { stroke: graph.purpose5 },
+  p6: { stroke: graph.purpose6 },
+  p7: { stroke: graph.purpose7 },
+});
+const toneFill = stylex.create({
+  faint: { fill: graph.lineQuiet },
+  strong: { fill: graph.line },
+  p0: { fill: graph.purpose0 },
+  p1: { fill: graph.purpose1 },
+  p2: { fill: graph.purpose2 },
+  p3: { fill: graph.purpose3 },
+  p4: { fill: graph.purpose4 },
+  p5: { fill: graph.purpose5 },
+  p6: { fill: graph.purpose6 },
+  p7: { fill: graph.purpose7 },
+});
+const TONES = ["faint", "strong", "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"] as const;
 
 const ringAt = stylex.create({
   r0: { inset: -5 },
@@ -1708,6 +1843,10 @@ const ln = stylex.create({
   trunkHit: { fill: "none", stroke: "transparent", strokeLinecap: "butt", cursor: "pointer", pointerEvents: "stroke", },
   // Mid-glide the lines are away: they take no pointer.
   away: { pointerEvents: "none" },
+  // Under the fold: a line the place doesn't carry, faint; a lit one the place carries keeps its colour.
+  faint: { opacity: "calc(var(--fade, 1) * 0.5)" },
+  litKeep: { opacity: 1 },
+  trunkFaint: { opacity: 0.22 },
 });
 
 const LOOK_STYLE: Record<Look, stylex.StyleXStyles> = {
@@ -1719,6 +1858,8 @@ const LOOK_STYLE: Record<Look, stylex.StyleXStyles> = {
   shared: st.shared,
   changedColumn: st.changedColumn,
   groupBlock: st.groupBlock,
+  outBlock: st.outBlock,
+  outFrame: st.outFrame,
 };
 /** Stacking levels: two per depth (a frame, then the closed blocks it holds), 32 in all. */
 const LAYERS = 32;
@@ -1811,6 +1952,24 @@ const LINE = cxTable(32, (i) => [ln.line, !!(i & 1) && ln.changed, !!(i & 2) && 
 const HEAD = cxTable(8, (i) => [ln.head, !!(i & 1) && ln.headChanged, !!(i & 2) && ln.headLit, !!(i & 4) && ln.dim]);
 const TRUNK = cxTable(8, (i) => [ln.trunk, !!(i & 1) && ln.trunkChanged, !!(i & 2) && ln.trunkLit, !!(i & 4) && ln.dimTrunk]);
 const COUNT = cxTable(2, (i) => [ln.count, !!i && ln.dim]);
+/** Under the fold, a line's class: its tone (10), dashes (solid, dashed, dotted), lit, dimmed. */
+const FOLD_LINE = cxTable(TONES.length * 12, (i) => {
+  const t = Math.floor(i / 12), dash = Math.floor((i % 12) / 4), lit = !!(i & 2), dim = !!(i & 1);
+  return [ln.line, toneStroke[TONES[t]!], t === 0 && ln.faint, dash === 1 && ln.dashed, dash === 2 && ln.dotted, lit && (t === 0 ? ln.lit : ln.litKeep), dim && ln.dim];
+});
+const FOLD_HEAD = cxTable(TONES.length * 4, (i) => {
+  const t = Math.floor(i / 4), lit = !!(i & 2), dim = !!(i & 1);
+  return [ln.head, toneFill[TONES[t]!], t === 0 && ln.faint, lit && (t === 0 ? ln.headLit : ln.litKeep), dim && ln.dim];
+});
+const FOLD_TRUNK = cxTable(TONES.length * 4, (i) => {
+  const t = Math.floor(i / 4), lit = !!(i & 1), dim = !!(i & 2);
+  return [ln.trunk, toneStroke[TONES[t]!], t === 0 && ln.trunkFaint, lit && (t === 0 ? ln.trunkLit : ln.litKeep), dim && ln.dimTrunk];
+});
+const DOTS = cx(st.dots);
+const DOT = cxTable(8, (i) => [st.dot, PURPOSE_DOT[i]]);
+const DOT_BIG = cxTable(8, (i) => [st.dotBig, PURPOSE_DOT[i]]);
+const DOTS_MORE = cx(st.dotsMore);
+const OUT_TITLE = cx(st.outTitle);
 const HIT = cx(ln.hit);
 const HIT_AWAY = cx(ln.hit, ln.away);
 const TRUNK_HIT = cx(ln.trunkHit);
