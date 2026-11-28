@@ -6,7 +6,8 @@
 // panel shows (the PR, a part, a line, a step, a claim and its evidence), back and forward through
 // picks, the graph failing and its Retry (and a migration's own message), the claims failing in
 // every place with one Retry, the skeleton while they're on their way, v1's IDs forwarding on v2
-// (merged, dropped, unknown), and both themes.
+// (merged, dropped, unknown), and both themes. Since the walkthrough (#183, purposes.spec.ts),
+// each place's panel here is its reference, folded at the walk's end (`reference` opens it).
 //
 // NoAnalysis on a PR of acme/web with no run or analysis: as tomsj, the PR's details failing
 // (the start can't show) and Retry; as ilze-k, the start, whose upload's push fills the page in.
@@ -71,6 +72,16 @@ async function open(page: Page, search = ""): Promise<void> {
   await expect(panel(page)).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * Opens the place's reference, folded at the end of the walkthrough (#183): "All changes, by
+ * kind" at the PR, "Questions, facets, files and evidence" elsewhere (this spec's panels, #181).
+ */
+async function reference(page: Page): Promise<void> {
+  const d = panel(page).locator('[data-perf="walk-reference"] details').first();
+  await expect(d).toBeVisible({ timeout: 30_000 });
+  if ((await d.getAttribute("open")) === null) await d.locator("> summary").click();
+}
+
 test("A cold open reads the graph once, then the claims, and no list; the top bar names the PR and the analysis", async ({ context }) => {
   await signIn(context, "tomsj");
   // A tab of its own: the list the sign-in landed on refetches on its stream's opening reset.
@@ -89,7 +100,8 @@ test("A cold open reads the graph once, then the claims, and no list; the top ba
   await expect(page.locator('[data-perf="list-pane"]')).toHaveCount(0);
   // The canvas and the PR's panel.
   await expect(page.locator('[data-perf="block"]').first()).toBeVisible();
-  await expect(panel(page).locator("h2").first()).toHaveText("All changes, by kind");
+  await expect(panel(page).locator('[data-perf="walk-title"]')).toHaveText(V2.pr.title);
+  await expect(panel(page).locator('[data-perf="walk-reference"] summary').first()).toHaveText("All changes, by kind");
 
   // The claims are read in the background as soon as the graph is in: one of each, and no list.
   await expect.poll(() => api.filter((u) => u.endsWith("/claims")).length).toBe(1);
@@ -124,6 +136,7 @@ test("The PR panel's PR view opens the view, and its ← goes back to the panel 
 test("The PR's panel: All changes by kind, the description, coverage, the facets found, and Since the last analysis", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   await open(page);
+  await reference(page);
   const groups = panel(page).locator('[data-perf="rank-group"] h3');
   await expect(groups).toHaveText([/^Boundary crossings \(\d+\)$/, /^New and removed parts \(\d+\)$/, /^Changed responsibilities or facets \(\d+\)$/, /^Edits inside parts \(\d+\)$/]);
 
@@ -171,6 +184,7 @@ test("All changes by kind lists a line's changed facet with the parts' changed r
     await route.fulfill({ response: res, json: g });
   });
   await open(page);
+  await reference(page);
   const facets = panel(page).locator('[data-perf="rank-group"]').nth(2);
   await expect(facets.locator(`[data-perf="rank-item"][data-kind="line"][data-id="${e.id}"]`)).toContainText(`${def.name} ${other.label} →`);
 });
@@ -179,6 +193,7 @@ test("A part's panel: questions to evidence, what it does and who uses it, how i
   const page = await signIn(context, "tomsj");
   const node = V2.nodes.find((n: Json) => n.id === "crates-fake-github");
   await open(page, `?sel=part:${node.id}`);
+  await reference(page);
   const p = panel(page).locator('[data-perf="part-panel"]');
   await expect(p.locator("h2")).toHaveText(node.name);
   await expect(p).toContainText(node.summary);
@@ -211,6 +226,7 @@ test("A part's panel: questions to evidence, what it does and who uses it, how i
   const used = V2.nodes.flatMap((n: Json) => n.responsibilities.map((r: Json) => ({ n, r })));
   const withUsers = used.find(({ n, r }: Json) => V2.edges.some((e: Json) => e.to === n.id && e.uses === r.id && e.from !== n.id));
   await open(page, `?sel=part:${withUsers.n.id}`);
+  await reference(page);
   const row = panel(page).locator('[data-perf="responsibility"]', { hasText: withUsers.r.text });
   await expect(row.locator('[data-perf="used-by"]')).toHaveText(/used by \d+ parts?/);
 });
@@ -262,10 +278,12 @@ test("A part's panel says which folders are partly drawn, at any depth, and the 
     await route.fulfill({ response: res, json: f });
   });
   await open(page, "?sel=part:crates-server");
+  await reference(page);
   const drawn = ["conf.d", "docker", "src", "src/analyses", "src/import", "src/reconcile", "src/reconcile/sweep", "tests"];
   const line = `${drawn.length} of 20 folders drawn (${drawn.join(", ")}): no line, step, purpose or conflict in this PR reaches the other ${20 - drawn.length}.`;
   await expect(panel(page).locator('[data-perf="partly-drawn"]')).toHaveText(`Partly drawn: ${line}`);
   await open(page);
+  await reference(page);
   const coverage = panel(page).locator('[data-perf="coverage"]');
   await expect(coverage).toContainText("Partly drawn parts (1)");
   await coverage.locator("summary", { hasText: "Partly drawn parts (1)" }).click();
@@ -276,6 +294,7 @@ test("A line's panel: what it carries, when, mode, what it crosses, and its evid
   const page = await signIn(context, "tomsj");
   const e = V2.edges.find((x: Json) => x.data && x.boundaries.length > 0);
   await open(page, `?sel=line:${encodeURIComponent(e.id)}`);
+  await reference(page);
   const l = panel(page).locator('[data-perf="line"]');
   await expect(l).toHaveAttribute("data-id", e.id);
   await expect(l).toContainText(e.label);
@@ -308,10 +327,12 @@ test("A step's panel: previous and next, and the whole flow", async ({ context }
 test("Back and forward walk the picks; a setting replaces its entry and stays through picks", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   await open(page, "?lens=data");
-  const top = V2.nodes.filter((n: Json) => n.parent === "system").map((n: Json) => n.id);
-  // Pick a block, then a connection of it from the panel.
-  await page.locator(`[data-perf="block"][data-id="${top[0]}"]`).click();
+  // Pick a block (the first the PR's fold draws, #183), then a connection of it from the panel.
+  const first = page.locator('[data-perf="block"]:not([hidden] *)').first();
+  const top = [(await first.getAttribute("data-id"))!];
+  await first.click();
   await expect.poll(() => selOf(page)).toBe(`part:${top[0]}`);
+  await reference(page);
   await panel(page).locator('[data-perf="connection"] button').first().click();
   await expect.poll(() => selOf(page)).toMatch(/^line:/);
   const lineSel = selOf(page);
@@ -320,20 +341,21 @@ test("Back and forward walk the picks; a setting replaces its entry and stays th
 
   await page.goBack();
   await expect.poll(() => selOf(page)).toBe(`part:${top[0]}`);
-  await expect(panel(page).locator('[data-perf="part-panel"]')).toHaveAttribute("data-id", top[0]);
+  await expect(panel(page).locator('[data-perf="walk-part"]')).toHaveAttribute("data-id", top[0]);
   await page.goBack();
   await expect.poll(() => selOf(page)).toBeNull();
-  await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
+  await expect(panel(page).locator('[data-perf="walk-pr"]')).toBeVisible();
   await page.goForward();
-  await expect(panel(page).locator('[data-perf="part-panel"]')).toHaveAttribute("data-id", top[0]);
+  await expect(panel(page).locator('[data-perf="walk-part"]')).toHaveAttribute("data-id", top[0]);
   await page.goForward();
   await expect.poll(() => selOf(page)).toBe(lineSel);
-  await expect(panel(page).locator('[data-perf="line-panel"]')).toBeVisible();
+  await expect(panel(page).locator('[data-perf="walk-line"]')).toBeVisible();
 });
 
 test("A setting replaces its history entry, normalised, and the panel follows it", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   await open(page, "?sel=part:crates-fake-github");
+  await reference(page);
   const entries = await page.evaluate(() => history.length);
   const hidden = panel(page).locator('[data-perf="connection"][data-hidden]');
   await expect(hidden.first()).toContainText("(hidden: test)");
@@ -383,7 +405,7 @@ test("The graph failing replaces the canvas with Retry, the chrome stays; a fail
   failing = undefined;
   await failed.getByRole("button", { name: "Retry" }).click();
   await expect(page.locator('[data-perf="canvas"]')).toBeVisible();
-  await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
+  await expect(panel(page).locator('[data-perf="walk-pr"]')).toBeVisible();
 });
 
 test("The claims failing: every place says so and the counts stay; one Retry reads the one file again", async ({ context }) => {
@@ -396,6 +418,7 @@ test("The claims failing: every place says so and the counts stay; one Retry rea
   });
   const node = V2.nodes.find((n: Json) => n.id === "crates-fake-github");
   await open(page, `?sel=part:${node.id}`);
+  await reference(page);
   const p = panel(page).locator('[data-perf="part-panel"]');
   // Two places: a question's claims and a responsibility's.
   await p.locator('[data-perf="question"] summary').first().click();
@@ -427,6 +450,7 @@ test("A drill-down that beats the claims shows a skeleton until they arrive", as
     await route.continue();
   });
   await open(page, "?sel=part:crates-fake-github");
+  await reference(page);
   await panel(page).locator('[data-perf="question"] summary').first().click();
   await expect(panel(page).locator('[data-perf="claims-loading"]')).toBeVisible();
   release();
@@ -441,7 +465,7 @@ test("v1's IDs forward on v2: merged to the new part, dropped and unknown to the
   await expect.poll(() => selOf(page)).toBe(`part:${merged.now[0]}`);
   await expect(note(page)).toContainText(`${merged.was} was merged into`);
   await expect(note(page)).toContainText(merged.reason);
-  await expect(panel(page).locator('[data-perf="part-panel"]')).toHaveAttribute("data-id", merged.now[0]);
+  await expect(panel(page).locator('[data-perf="walk-part"]')).toHaveAttribute("data-id", merged.now[0]);
   // The forward replaced its entry: Back leaves the view's first entry behind it.
   expect(new URL(page.url()).searchParams.get("lens")).toBe("data");
 
@@ -449,7 +473,7 @@ test("v1's IDs forward on v2: merged to the new part, dropped and unknown to the
   await open(page, `?sel=part:${dropped.was}`);
   await expect.poll(() => selOf(page)).toBeNull();
   await expect(note(page)).toContainText(`${dropped.was} was dropped: ${dropped.reason}; showing the PR`);
-  await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
+  await expect(panel(page).locator('[data-perf="walk-pr"]')).toBeVisible();
 
   await open(page, "?sel=part:no-such-part");
   await expect.poll(() => selOf(page)).toBeNull();
@@ -512,7 +536,7 @@ test("Typed IDs are written once: a conflict, a purpose and a step without their
 
   const purpose = V2.purposes[0];
   await open(page, `?sel=purpose:${purpose.id.slice("purpose:".length)}`);
-  await expect(panel(page).locator('[data-perf="purpose-panel"] h2')).toHaveText(purpose.name);
+  await expect(panel(page).locator('[data-perf="walk-purpose"] [data-perf="walk-title"]')).toHaveText(purpose.name);
   expect(selOf(page)).toBe(purpose.id);
   const sc = V2.scenarios[0];
   expect(sc.id.startsWith("scenario:")).toBe(true);
@@ -526,6 +550,7 @@ test("Typed IDs are written once: a conflict, a purpose and a step without their
 test("Both themes: the view's chrome and change colours take their tokens", async ({ context }) => {
   const page = await signIn(context, "tomsj");
   await open(page, "?sel=part:crates-fake-github");
+  await reference(page);
   const back = page.locator('[data-perf="view-back"]');
   const added = panel(page).locator('[data-perf="connection"] span[aria-label="added"]').first();
   await page.emulateMedia({ colorScheme: "light" });
@@ -638,7 +663,7 @@ test("NoAnalysis: the empty state starts a run, shows it in the button's place, 
   // The agent fetches and uploads: the `analysis` push loads the view.
   await agentUploads(token, analysis);
   await expect(page.locator('[data-perf="canvas"]')).toBeVisible({ timeout: 20_000 });
-  await expect(panel(page).locator('[data-perf="pr-panel"]')).toBeVisible();
+  await expect(panel(page).locator('[data-perf="walk-pr"]')).toBeVisible();
   await expect(page.locator('[data-perf="view-analysed"]')).toContainText(`analysed at ${head.slice(0, 7)}`);
   // The PR's first analysis: nothing came before it.
   await expect(panel(page).locator('[data-perf="since-last"]')).toHaveCount(0);
@@ -674,6 +699,7 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   const parent = SPLIT.purposes.find((p: Json) => p.id === sub.was.slice(0, sub.was.lastIndexOf("/")));
   const survives = await context.newPage();
   await open(survives, `?sel=part:${kept.id}`);
+  await reference(survives);
   const p1 = panel(survives).locator('[data-perf="part-panel"]');
   await expect(p1).toContainText(kept.summary);
   // A claims place opened, so Show it must put the newer analysis's claims there.
@@ -681,23 +707,30 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await expect(p1.locator('[data-perf="responsibility"] [data-perf="claim"]').first()).toBeVisible();
   const above = await context.newPage();
   await open(above, `?sel=purpose:${sub.was.slice("purpose:".length)}`);
-  await expect(panel(above).locator('[data-perf="purpose-panel"] h2')).toHaveText(V1.purposes.find((p: Json) => p.id === sub.was).name);
+  await expect(panel(above).locator('[data-perf="walk-purpose"] [data-perf="walk-title"]')).toHaveText(V1.purposes.find((p: Json) => p.id === sub.was).name);
 
   // External connections, where the canvas draws the outside system picked below.
   await open(page, `?sel=line:${encodeURIComponent(split.was)}&lens=external`);
+  await reference(page);
   const body = page.locator('[data-perf="view-body"]');
   const v1 = await body.getAttribute("data-analysis");
   await expect(panel(page).locator('[data-perf="line"]')).toHaveAttribute("data-id", split.was);
 
   // v1's reference places that v2 lacks: an undetermined claim, with where it looked.
-  // (On the same page: a pick away, and back.)
-  await page.locator('[data-perf="block"][data-id="ext-image-hosts"]').dispatchEvent("click");
+  // (On the same page: a pick away, by a link followed in the tab, and back.)
+  await page.evaluate(() => {
+    history.pushState(history.state, "", "?sel=part:ext-image-hosts&lens=external");
+    dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+  });
+  await expect.poll(() => selOf(page)).toBe("part:ext-image-hosts");
+  await reference(page);
   const r = panel(page).locator('[data-perf="responsibility"]').first();
   await r.locator("summary").first().click();
   const und = r.locator('[data-perf="claim"]', { hasText: "couldn't determine" }).first();
   await und.locator("summary").click();
   await expect(und).toContainText("Looked at:");
   await page.goBack();
+  await reference(page);
   await expect(panel(page).locator('[data-perf="line"]')).toHaveAttribute("data-id", split.was);
 
   // The case goes up over v1 while the view is open: the pill, and nothing swapped.
@@ -713,6 +746,7 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await expect(body).not.toHaveAttribute("data-analysis", v1!);
   await expect(pill).toHaveCount(0);
   await expect.poll(() => selOf(page)).toBe(`line:${split.now.join(",")}`);
+  await reference(page);
   await expect(panel(page).locator('[data-perf="line"]')).toHaveCount(2);
   await expect(note(page)).toContainText("was split into");
   await expect(note(page)).toContainText(split.reason);
@@ -720,6 +754,7 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   // The part whose ID survived: still selected, in the newer analysis's words.
   await survives.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
   await expect(survives.locator('[data-perf="newer"]')).toHaveCount(0);
+  await reference(survives);
   await expect(p1).toContainText(keptNow.summary);
   await expect(p1).not.toContainText(kept.summary);
   expect(selOf(survives)).toBe(`part:${kept.id}`);
@@ -732,7 +767,7 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   // The dropped sub-purpose: the level above, its parent, with the reason.
   await above.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
   await expect.poll(() => selOf(above)).toBe(parent.id);
-  await expect(panel(above).locator('[data-perf="purpose-panel"] h2')).toHaveText(parent.name);
+  await expect(panel(above).locator('[data-perf="walk-purpose"] [data-perf="walk-title"]')).toHaveText(parent.name);
   await expect(note(above)).toContainText(`was dropped: ${sub.reason}; showing ${parent.name}`);
 
   // An old link to the v1 line forwards the same way.

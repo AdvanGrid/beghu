@@ -9,6 +9,10 @@
 // legend (rows matching what's drawn, hover and pin, folding remembered); the keys; the Group
 // panel; and both themes. Rebinding a canvas key is prefs.spec.ts's (the setup page).
 //
+// v2 has purposes, so the canvas would start on the PR's fold plan (#183, purposes.spec.ts): these
+// tests read layout A, which an analysis with no backed purpose starts in, so v2 comes without
+// its purposes (and with `unbacked`) on the way in (`layoutA`).
+//
 // It only reads tomsj's analysis, and runs after pr-view.spec.ts in a project of its own
 // (playwright.config.ts).
 import { readFileSync } from "node:fs";
@@ -31,8 +35,22 @@ const selOf = (page: Page) => new URL(page.url()).searchParams.get("sel");
 const param = (page: Page, k: string) => new URL(page.url()).searchParams.get(k);
 const undoes = (page: Page) => page.locator('[data-perf="canvas-undoes"]');
 
+/** v2 as an analysis with no backed purpose: the canvas starts in layout A. */
+function layoutA(g: Json): void {
+  g.analysis.purposes = [];
+  g.analysis.conflicts = [];
+  g.analysis.causes = [];
+  g.analysis.unbacked = "Served without its purposes, so the canvas starts in layout A.";
+}
+
 async function signIn(context: BrowserContext, login = "tomsj"): Promise<Page> {
   const page = await context.newPage();
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    layoutA(g);
+    await route.fulfill({ response: res, json: g });
+  });
   await page.setViewportSize({ width: 1500, height: 900 });
   await page.goto(`/auth/login?login=${login}`);
   await page.waitForURL((u) => u.pathname === "/issues");
@@ -760,6 +778,7 @@ test("A partly drawn part: marked folded, its frame says how many folders are dr
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
+    layoutA(g);
     g.analysis.nodes.find((x: Json) => x.id === "crates-fake-github").drawn = { partial: true, folders: 9 };
     await route.fulfill({ response: res, json: g });
   });
@@ -791,6 +810,7 @@ test("A line only an undetermined claim backs is dotted, in the legend and its c
   await page.route(GRAPH, async (route: Route) => {
     const res = await route.fetch();
     const g = (await res.json()) as Json;
+    layoutA(g);
     for (const c of g.analysis.claims) if (e.claims.includes(c.id)) c.status = "undetermined";
     await route.fulfill({ response: res, json: g });
   });
@@ -965,7 +985,7 @@ test("Clicks: one selects, the background clears, a drag on the background pans"
   await open(page);
   await block(page, "crates-analysis").click();
   await expect.poll(() => selOf(page)).toBe("part:crates-analysis");
-  await expect(panel(page).locator('[data-perf="part-panel"]')).toHaveAttribute("data-id", "crates-analysis");
+  await expect(panel(page).locator('[data-perf="walk-part"]')).toHaveAttribute("data-id", "crates-analysis");
   // A drag on the background pans, selecting nothing.
   const vp = (await viewport(page).boundingBox())!;
   const before = (await block(page, "crates-analysis").boundingBox())!;
