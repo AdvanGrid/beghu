@@ -125,6 +125,15 @@ const wholeAt = (l: Locator) =>
     return ok ? "whole" : `animations ${el.getAnimations().length}, opacity ${cs.opacity}, transform ${cs.transform} (at ${x}, ${y})`;
   });
 
+/** Nothing of a glide is left once it lands: no skin, and no item's own border, fill or stripes still hidden for one. */
+async function noSkins(page: Page): Promise<void> {
+  expect(await page.locator("[data-skin]").count()).toBe(0);
+  const bare = await page.locator("[data-item]").evaluateAll((els) =>
+    els.filter((e) => /--bare|--worn/.test((e as HTMLElement).getAttribute("style") ?? "")).map((e) => (e as HTMLElement).dataset.item),
+  );
+  expect(bare).toEqual([]);
+}
+
 /** Whether `inner`'s box lies inside `outer`'s. */
 async function inside(inner: Locator, outer: Locator): Promise<boolean> {
   const [a, b] = [await inner.boundingBox(), await outer.boundingBox()];
@@ -395,6 +404,7 @@ test("The glide: contents grow out of the block and the lines come back once it 
     expect(Math.abs(b.y - at.y)).toBeLessThan(2);
   }
   await settled(page);
+  await noSkins(page);
   const titleAt = (await page.locator(title).boundingBox())!;
   expect(Math.abs(opening.half[1]!.height - titleAt.height)).toBeLessThan(1);
   expect(Math.abs(opening.half[1]!.width - titleAt.width)).toBeLessThan(1);
@@ -407,6 +417,7 @@ test("The glide: contents grow out of the block and the lines come back once it 
   const folded = await folding;
   expect(folded.t).toBeLessThan(GLIDE_MS);
   await settled(page);
+  await noSkins(page);
   const nameAt = (await page.locator(name).boundingBox())!;
   expect(Math.abs(folded.half[0]!.height - nameAt.height)).toBeLessThan(1);
   const after = await page.locator("[data-item]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item));
@@ -416,6 +427,7 @@ test("The glide: contents grow out of the block and the lines come back once it 
   await block(page, "crates-server").dblclick();
   await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
   await expect(page.locator('[data-perf="canvas-lines"]')).not.toHaveAttribute("data-gliding", "", { timeout: 200 });
+  await noSkins(page);
 });
 
 test("An open cut short by another continues from where everything is drawn: nothing jumps", async ({ context }) => {
@@ -477,6 +489,7 @@ test("An open cut short by another continues from where everything is drawn: not
   }
   expect(jumps).toEqual([]);
   await settled(page);
+  await noSkins(page);
   await expect(page.locator('[data-perf="frame"][data-id="crates-analysis"]')).toBeVisible();
   await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
 });
@@ -515,6 +528,8 @@ test("Parts come back whole after fold → Back and fold → open, and the click
   await title.click();
   await page.locator('[data-perf="canvas-back"]').click();
   await allWhole();
+  await settled(page);
+  await noSkins(page);
 });
 
 test("A selection inside a folded block opens down to it, as one Back step", async ({ context }) => {
