@@ -23,8 +23,8 @@
 //
 // Show it (a newer analysis) rebases the canvas onto it, with a fresh Back history: under the
 // fold, the new analysis's plan for the place (the PR's if the place went), with the reader's own
-// opens and closes of the old plan that still name a part kept; in layout A, the opens that still
-// name a part. If the new analysis can't fold (`unbacked`), the canvas goes to layout A. Only the
+// opens and closes of the old plan, and the parts a pick pulled out, that still name a part kept;
+// in layout A, the opens that still name a part. If the new analysis can't fold (`unbacked`), the canvas goes to layout A. Only the
 // shown analysis's plans are kept. What the panel lights goes with every change of the selection.
 import { createContext, createEffect, createMemo, createSignal, onCleanup, untrack, useContext, type Accessor } from "solid-js";
 import type { Node } from "../../bindings/analysis";
@@ -250,13 +250,19 @@ export function createCanvasStore(nav: Nav): CanvasStore {
         for (const k of [...plans.keys()]) if (!k.startsWith(`${id}\u0000`)) plans.delete(k);
         if (modeSet() === undefined) return; // still the start's: it follows the new analysis by itself
         const exists = (pl: Place) => pl.kind !== "purpose" || purposes().byId.has(pl.id);
-        /** A fold's state on the new plan for `pl`: the reader's own opens and closes of `before` over `was`'s plan kept, where they still name a part. */
+        /**
+         * A fold's state on the new plan for `pl`: the reader's own opens and closes of `before`
+         * over `was`'s plan, and the parts a pick pulled out of a rest block, kept where they
+         * still name a part.
+         */
         const rebase = (pl: Place, from: Place, before: CanvasState): CanvasState => {
           const plan = planFor(pl).plan;
           const prev = samePlace(pl, from) ? old(from) : undefined;
           const opened = prev ? [...before.open].filter((x) => !prev.open.has(x) && m.nodes.has(x)) : [];
           const closed = prev ? new Set([...prev.open].filter((x) => !before.open.has(x))) : new Set<string>();
-          return { open: new Set([...[...plan.open].filter((x) => !closed.has(x)), ...opened]), folded: new Set(plan.fold) };
+          const pulled = prev ? [...(before.pulled ?? [])].filter((x) => m.nodes.has(x)) : [];
+          const next: CanvasState = { open: new Set([...[...plan.open].filter((x) => !closed.has(x)), ...opened]), folded: new Set(plan.fold) };
+          return pulled.length ? { ...next, pulled: new Set(pulled) } : next;
         };
         /** Where a fold of `pl` goes: the same place, the PR's if it went, or none (the new analysis can't fold). */
         const where = (pl: Place): Place | undefined => (exists(pl) && folds(pl) ? pl : folds({ kind: "pr" }) ? { kind: "pr" } : undefined);
@@ -357,7 +363,7 @@ export function createCanvasStore(nav: Nav): CanvasStore {
       const g = untrack(scene).groups.get(id);
       if (g) {
         const next = without(s, id);
-        step({ open: next.open, folded: new Set([...next.folded, id]) }, `folded ${g.title}`, id);
+        step({ ...next, folded: new Set([...next.folded, id]) }, `folded ${g.title}`, id);
         return;
       }
       if (!s.open.has(id)) return;
@@ -365,7 +371,9 @@ export function createCanvasStore(nav: Nav): CanvasStore {
     },
     foldToGroups() {
       const groups = untrack(scene).groups;
-      // The four columns folded; their boxes come out folded when a column opens.
+      // The four columns folded; their boxes come out folded when a column opens. Like the
+      // reader's opens, the parts a pick pulled out go: each back in its rest block, so a column
+      // or frame opened after it draws what the plan does (a pick pulls it out again).
       const folded = new Set<string>([...COLUMNS.map(columnGroup), ...[...groups.values()].filter((g) => g.kind !== "column").map((g) => g.id)]);
       step({ open: new Set(), folded }, "folded to groups");
     },
