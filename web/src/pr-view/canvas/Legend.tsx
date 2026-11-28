@@ -11,6 +11,7 @@ import { colors, fonts, graph } from "../../tokens.stylex";
 import type { KeyRow, Sample } from "./key";
 import { useCanvas } from "./store";
 import { FACET_EDGE, FACET_FILL } from "./Canvas";
+import { PURPOSE_DOT } from "../PurposeDot";
 
 const KEY_OPEN = "beghu.pr-view-key";
 
@@ -127,6 +128,8 @@ export function SampleView(props: { sample: Sample }) {
             x.none && sm.noValue,
             x.dashed && sm.rest,
             x.faded && sm.faded,
+            x.group && sm.group,
+            x.outside && sm.outsideBlock,
           )}
           aria-hidden="true"
         >
@@ -146,8 +149,8 @@ export function SampleView(props: { sample: Sample }) {
     case "line":
       return (
         <svg width="36" height="16" viewBox="0 0 36 16" {...stylex.attrs(sm.svg)} aria-hidden="true">
-          <path d={`M${x.both ? 9 : 2},8 L27,8`} {...stylex.attrs(sm.line, x.changed && sm.lineStrong, x.dashed && sm.dashed, x.dotted && sm.dotted)} stroke-width={x.thick ? 4 : 1.5} />
-          <path d="M34,8 L25,3.5 L25,12.5 Z" {...stylex.attrs(sm.head, x.changed && sm.headStrong)} />
+          <path d={`M${x.both ? 9 : 2},8 L27,8`} {...stylex.attrs(sm.line, x.changed && sm.lineStrong, x.dashed && sm.dashed, x.dotted && sm.dotted, x.tone !== undefined && TONE_LINE[x.tone])} stroke-width={x.thick ? 4 : x.tone ? 2.25 : 1.5} />
+          <path d="M34,8 L25,3.5 L25,12.5 Z" {...stylex.attrs(sm.head, x.changed && sm.headStrong, x.tone !== undefined && TONE_HEAD[x.tone])} />
           <Show when={x.both}>
             <path d="M2,8 L11,3.5 L11,12.5 Z" {...stylex.attrs(sm.head, x.changed && sm.headStrong)} />
           </Show>
@@ -157,6 +160,14 @@ export function SampleView(props: { sample: Sample }) {
             </text>
           </Show>
         </svg>
+      );
+    case "dots":
+      return (
+        <span {...stylex.attrs(sm.dots)} aria-hidden="true">
+          <span {...stylex.attrs(sm.dot, PURPOSE_DOT[0])} />
+          <span {...stylex.attrs(sm.dot, PURPOSE_DOT[1])} />
+          <span {...stylex.attrs(sm.dot, sm.dotBig, PURPOSE_DOT[2])} />
+        </span>
       );
     case "trunk":
       return (
@@ -230,6 +241,32 @@ const s = stylex.create({
   count: { color: colors.muted, fontSize: 11.5, fontVariantNumeric: "tabular-nums" },
 });
 
+const tone = stylex.create({
+  l0: { stroke: graph.lineQuiet, opacity: 0.5, },
+  l1: { stroke: graph.line },
+  l2: { stroke: graph.purpose0 },
+  l3: { stroke: graph.purpose1 },
+  l4: { stroke: graph.purpose2 },
+  l5: { stroke: graph.purpose3 },
+  l6: { stroke: graph.purpose4 },
+  l7: { stroke: graph.purpose5 },
+  l8: { stroke: graph.purpose6 },
+  l9: { stroke: graph.purpose7 },
+  h0: { fill: graph.lineQuiet, opacity: 0.5, },
+  h1: { fill: graph.line },
+  h2: { fill: graph.purpose0 },
+  h3: { fill: graph.purpose1 },
+  h4: { fill: graph.purpose2 },
+  h5: { fill: graph.purpose3 },
+  h6: { fill: graph.purpose4 },
+  h7: { fill: graph.purpose5 },
+  h8: { fill: graph.purpose6 },
+  h9: { fill: graph.purpose7 },
+});
+/** A line sample's tone under the fold (Canvas.tsx `toneOf`): faint, strong purple, each purpose colour. */
+const TONE_LINE = [tone.l0, tone.l1, tone.l2, tone.l3, tone.l4, tone.l5, tone.l6, tone.l7, tone.l8, tone.l9];
+const TONE_HEAD = [tone.h0, tone.h1, tone.h2, tone.h3, tone.h4, tone.h5, tone.h6, tone.h7, tone.h8, tone.h9];
+
 export const sm = stylex.create({
   part: { borderColor: graph.partEdge, borderRadius: 3, borderStyle: "solid", borderWidth: 1.5, overflow: "hidden", backgroundColor: graph.part, boxSizing: "border-box", display: "inline-flex", flexShrink: 0, height: 16, width: 36, },
   added: { borderColor: colors.open, backgroundColor: graph.addedFill, },
@@ -242,6 +279,11 @@ export const sm = stylex.create({
   noValue: { backgroundColor: graph.noValueFill, borderTopColor: graph.noValue },
   rest: { borderStyle: "dashed", backgroundColor: graph.outsideFill, },
   faded: { opacity: 0.4 },
+  group: { borderWidth: 2.5, backgroundColor: graph.outsideFill },
+  outsideBlock: { borderColor: colors.warn, borderStyle: "dashed" },
+  dots: { gap: 3, alignItems: "center", display: "inline-flex", flexShrink: 0, justifyContent: "center", width: 36 },
+  dot: { borderRadius: 999, height: 8, width: 8 },
+  dotBig: { height: 11, width: 11 },
   stripe: { flexGrow: 1, borderTopStyle: "solid", borderTopWidth: 3, },
   text: { color: colors.accent, flexShrink: 0, fontSize: 10, fontWeight: 600, textAlign: "center", whiteSpace: "nowrap", width: 84 },
   svg: { flexShrink: 0 },
