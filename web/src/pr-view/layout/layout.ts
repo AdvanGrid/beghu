@@ -109,6 +109,7 @@ export function layout(input: LayoutInput): Layout {
   const placed = new Map<string, Placed>();
   const routes = new Map<string, P[]>();
   const trunks: Trunk[] = [];
+  const trunkIds = new Set<string>();
   const scopes = new Map<string, ScopeLayout>();
   const anchors = new Map<string, Anchors>();
   const origin = new Map<string, P>([[root.id, { x: 0, y: 0 }]]);
@@ -130,7 +131,7 @@ export function layout(input: LayoutInput): Layout {
     for (const [k, pts] of out.routes) routes.set(k, (out.flipped.has(k) ? [...pts].reverse() : pts).map(mv));
     for (const t of out.trunks) {
       const ls = [...new Set(t.lines.map((l) => pieceOf.get(l) ?? l))];
-      trunks.push({ id: `${w.id}#${trunks.length}`, scope: w.id, points: t.pts.map(mv), lines: ls, width: t.width, changed: t.lines.some((l) => lineOf.get(l)?.changed) });
+      trunks.push({ id: trunkId(w.id, t.pts, ls, trunkIds), scope: w.id, points: t.pts.map(mv), lines: ls, width: t.width, changed: t.lines.some((l) => lineOf.get(l)?.changed) });
     }
     const rect = f ? { x: o0.x, y: o0.y, w: f.w, h: f.h } : { x: 0, y: 0, w: out.width, h: out.height };
     scopes.set(w.id, { rect, groups: out.groups.map((g) => ({ column: COLUMNS[g.side]!, rect: { x: g.x + dx, y: g.y + dy, w: g.w, h: g.h } })) });
@@ -144,6 +145,21 @@ export function layout(input: LayoutInput): Layout {
     routes.set(line, tidy(pts));
   }
   return { parts: placed, routes, trunks, scopes, anchors, width: out0.width, height: out0.height };
+}
+
+/**
+ * A trunk's ID, from what it is rather than where it falls in the list: its scope, which way it
+ * runs, and its lines (sorted), so the same trunk keeps its ID through an open, a fold or a pick
+ * elsewhere (a card pinned to it stays), and a trunk that goes takes its ID with it. Two trunks of
+ * the same lines in one scope and orientation are told apart by their order (`#2`).
+ */
+function trunkId(scope: string, pts: readonly P[], lines: readonly string[], taken: Set<string>): string {
+  const h = pts.length > 1 && Math.abs(pts[0]!.y - pts[1]!.y) < 0.5;
+  const base = JSON.stringify(["trunk", scope, h ? "h" : "v", ...[...lines].sort()]);
+  let id = base;
+  for (let k = 2; taken.has(id); k++) id = `${base}#${k}`;
+  taken.add(id);
+  return id;
 }
 
 /**
