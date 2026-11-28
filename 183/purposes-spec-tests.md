@@ -1,0 +1,20 @@
+- The PR's walkthrough: its top, the walk with its chips and Stated, not found in code, its purposes in order, the unclaimed parts, the reference folded
+- A purpose's fold: its blocks within 16, how much of each serves it, the dots, its lines strong in its colour, rest blocks, Back and Start over over the plan
+- Code view at a part and back: layout A opened down to it, then the fold as it was
+- A part's walkthrough: its purposes by top-level purpose, What it now does, Inside it, the reference folded
+- A line's walkthrough: What flows, When, its purposes; a written walk with Needed by
+- v1's walkthrough: How it's built, the journey's stops, a sub-purpose's trail and kind
+- Rules it sets, a broken rule's conflict, code outside the diff, and Outside the diff on the canvas
+- A shared cause's card comes first, its questions each with two rows; a stated row opens to its quote; hovering a card lights what it touches
+- Purpose vs purpose: both rows name a purpose with its dot
+- A line between two closed blocks that serve the place is drawn, though only parts inside them that serve nothing meet
+- A pick of a part the fold draws only inside a rest block or a closed block opens the fold down to it; one it can't draw goes to the code view
+- Outside the diff stays within the budget: 29 parts only a conflict reaches, its first ones, then and N more, which a pick can't open
+- Show it under the fold: the newer analysis's plan for the place, the reader's own opens and pulled-out parts kept, a fresh Back history
+- Show it onto an analysis with no backed purpose: the canvas goes to layout A
+- A walk whose claims quote an issue: its #N chip, which opens the quotes
+- The plan is made the same way every time: after a reload, the same blocks in the same order and places
+- The claim stubs the cases are served with are the server's own: v2's graph against stub over v2's claims
+- The unclaimed parts: a history step, each with its reason, the canvas folded to them
+- The fallback: unbacked leads the PR's panel with All changes unfolded, and the canvas starts in layout A
+- Both themes: the purpose colours, the walk, conflict cards and rest blocks take their tokens' light and dark halves
