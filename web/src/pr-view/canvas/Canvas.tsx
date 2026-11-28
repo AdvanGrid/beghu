@@ -786,7 +786,8 @@ export const lineWidth = (n: number) => Math.min(1.5 + 0.6 * (n - 1), 5);
 
 function LineLayer(props: { gliding: boolean; focus: () => Focus | undefined; sel: () => ReadonlySet<string>; lit: () => ReadonlySet<string> }) {
   const c = useCanvas();
-  const lines = createMemo(() => [...c.scene().lines.values()]);
+  // Keyed by ID: a line drawn before and after an open or a pick keeps its elements.
+  const ids = createMemo(() => [...c.scene().lines.keys()]);
   const dim = (id: string) => {
     const f = props.focus();
     return !!f && !f.lines.has(id);
@@ -799,19 +800,29 @@ function LineLayer(props: { gliding: boolean; focus: () => Focus | undefined; se
           return <path d={rounded(t.points)} class={TRUNK[Number(t.changed) | (Number(lit()) << 1) | (Number(!!props.focus() && !props.focus()!.trunks.has(t.id)) << 2)]!} stroke-width={t.width} />;
         }}
       </For>
-      <For each={lines()}>{(l) => <LinePath l={l} lit={props.lit().has(l.id)} dim={dim(l.id)} />}</For>
-      <For each={lines()}>
-        {(l) => (
-          <path
-            d={rounded(l.route)}
-            class={HIT}
-            data-line={l.id}
-            data-perf="canvas-line"
-            data-count={l.count}
-            data-members={l.members.join(" ")}
-            data-heads={l.heads.to && l.heads.from ? "both" : l.heads.from ? "from" : "to"}
-            data-style={[l.changed ? "strong" : "quiet", l.dotted ? "dotted" : l.dashed ? "dashed" : "solid"].join(" ")}
-          />
+      <For each={ids()}>
+        {(id) => (
+          <Show when={c.scene().lines.get(id)}>
+            {(l) => <LinePath l={l()} lit={props.lit().has(id)} dim={dim(id)} />}
+          </Show>
+        )}
+      </For>
+      <For each={ids()}>
+        {(id) => (
+          <Show when={c.scene().lines.get(id)}>
+            {(l) => (
+              <path
+                d={rounded(l().route)}
+                class={HIT}
+                data-line={id}
+                data-perf="canvas-line"
+                data-count={l().count}
+                data-members={l().members.join(" ")}
+                data-heads={l().heads.to && l().heads.from ? "both" : l().heads.from ? "from" : "to"}
+                data-style={[l().changed ? "strong" : "quiet", l().dotted ? "dotted" : l().dashed ? "dashed" : "solid"].join(" ")}
+              />
+            )}
+          </Show>
         )}
       </For>
       <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>
@@ -820,29 +831,27 @@ function LineLayer(props: { gliding: boolean; focus: () => Focus | undefined; se
 }
 
 function LinePath(props: { l: DLine; lit: boolean; dim: boolean }) {
-  const l = props.l;
-  const d = rounded(l.route);
-  const to = l.heads.to && l.to !== undefined ? tipOf(l.route, false) : undefined;
-  const from = l.heads.from && l.from !== undefined ? tipOf(l.route, true) : undefined;
-  const at = l.count > 1 && l.from !== undefined ? countAt(l.route) : undefined;
-  const bits = () => Number(l.changed) | (Number(l.dashed && !l.dotted) << 1) | (Number(l.dotted) << 2) | (Number(props.lit) << 3) | (Number(props.dim && !props.lit) << 4);
-  const head = () => Number(l.changed) | (Number(props.lit) << 1) | (Number(props.dim && !props.lit) << 2);
+  const d = createMemo(() => rounded(props.l.route));
+  const to = createMemo(() => (props.l.heads.to && props.l.to !== undefined ? tipOf(props.l.route, false) : undefined));
+  const from = createMemo(() => (props.l.heads.from && props.l.from !== undefined ? tipOf(props.l.route, true) : undefined));
+  const at = createMemo(() => (props.l.count > 1 && props.l.from !== undefined ? countAt(props.l.route) : undefined));
+  const bits = () => Number(props.l.changed) | (Number(props.l.dashed && !props.l.dotted) << 1) | (Number(props.l.dotted) << 2) | (Number(props.lit) << 3) | (Number(props.dim && !props.lit) << 4);
+  const head = () => Number(props.l.changed) | (Number(props.lit) << 1) | (Number(props.dim && !props.lit) << 2);
   return (
-    <g data-line-drawn={l.id} data-lit={props.lit ? "" : undefined}>
-      <path d={d} class={LINE[bits()]!} stroke-width={lineWidth(l.count) + (props.lit ? 1 : 0)} />
-      <Show when={to}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
-      <Show when={from}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
-      <Show when={at}>
+    <g data-line-drawn={props.l.id} data-lit={props.lit ? "" : undefined}>
+      <path d={d()} class={LINE[bits()]!} stroke-width={lineWidth(props.l.count) + (props.lit ? 1 : 0)} />
+      <Show when={to()}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
+      <Show when={from()}>{(t) => <path d={arrow(t())} class={HEAD[head()]!} />}</Show>
+      <Show when={at()}>
         {(p) => (
           <text x={p().x} y={p().y} class={COUNT[Number(props.dim && !props.lit)]!}>
-            {l.count}
+            {props.l.count}
           </text>
         )}
       </Show>
     </g>
   );
 }
-
 
 // ---- Styles ------------------------------------------------------------------------------------
 

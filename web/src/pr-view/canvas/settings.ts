@@ -66,6 +66,21 @@ export function settingsOf(st: ViewState, m: Model): Settings {
   return { lens, show, colour, own, outside, outlines, lines: parseLines(st.lines) };
 }
 
+/** Whether two settings draw the same: a selection's change (the URL's) keeps the drawing. */
+export function sameSettings(a: Settings, b: Settings): boolean {
+  const set = (x: ReadonlySet<string>, y: ReadonlySet<string>) => x.size === y.size && [...x].every((v) => y.has(v));
+  return (
+    a.lens === b.lens &&
+    a.show === b.show &&
+    a.colour === b.colour &&
+    a.own === b.own &&
+    a.outside === b.outside &&
+    a.outlines === b.outlines &&
+    set(a.lines.when, b.lines.when) &&
+    set(a.lines.kind, b.lines.kind)
+  );
+}
+
 /** Facets for nodes whose ID starts with `prefix` (`inside-`, `outside-`), or every node facet. */
 export function facetsFor(m: Model, prefix?: string) {
   return m.a.facets.filter((f) => f.appliesTo === "node" && (prefix === undefined || f.id.startsWith(prefix)));

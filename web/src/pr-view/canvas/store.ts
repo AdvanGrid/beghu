@@ -14,7 +14,7 @@ import { drawnFolders } from "../Panel";
 import type { Sel } from "../state";
 import { keyRows, type KeyRow } from "./key";
 import { COLUMNS, sceneOf, type CanvasState, type Scene } from "./scene";
-import { settingsOf, type Settings } from "./settings";
+import { sameSettings, settingsOf, type Settings } from "./settings";
 
 export const START: CanvasState = { open: new Set(), folded: new Set() };
 
@@ -69,7 +69,8 @@ export function useCanvas(): CanvasStore {
 
 export function createCanvasStore(nav: Nav): CanvasStore {
   const model = () => nav.model();
-  const settings = createMemo(() => settingsOf(nav.state(), nav.model()));
+  // Equal settings are the same: a selection's change of the URL keeps the drawing as it is.
+  const settings = createMemo(() => settingsOf(nav.state(), nav.model()), { equals: sameSettings });
   const [state, setState] = createSignal<CanvasState>(START);
   const [history, setHistory] = createSignal<Step[]>([]);
   const [showLonely, setShowLonely] = createSignal(false);
