@@ -96,7 +96,8 @@ export function keyRows(m: Model, s: Settings, sc: Scene, purpose?: number): Key
       const at = sc.fold.place;
       const tone = at.kind === "purpose" && purpose !== undefined ? 2 + purpose : 1;
       add({ id: "line:carried", section, words: at.kind === "purpose" ? "Strong, in its colour: the purpose's own lines" : "Strong: a purpose's own lines", sample: { kind: "line", tone }, lines: lw((l) => l.carried) });
-      add({ id: "line:faint", section, words: "Faint: lines it doesn't follow", sample: { kind: "line", tone: 0 }, lines: lw((l) => !l.carried) });
+      const faint = at.kind === "purpose" ? "Faint: lines it doesn't follow" : at.kind === "pr" ? "Faint: lines no purpose follows" : "Faint: every line, as no purpose names these parts";
+      add({ id: "line:faint", section, words: faint, sample: { kind: "line", tone: 0 }, lines: lw((l) => !l.carried) });
     } else {
       add({ id: "line:quiet", section, words: "Quiet purple: unchanged", sample: { kind: "line" }, lines: lw((l) => !l.changed) });
       add({ id: "line:strong", section, words: "Strong purple: added, changed or removed", sample: { kind: "line", changed: true }, lines: lw((l) => l.changed) });

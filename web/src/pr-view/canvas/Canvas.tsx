@@ -1180,7 +1180,7 @@ type Look = (typeof KINDS)[number];
 /** How an item is drawn. */
 function lookOf(x: Item): Look {
   if (x.fold?.kind === "out") return "outBlock";
-  if (x.fold?.kind === "outside") return "outFrame";
+  if (x.kind === "column" && x.group?.column === "conflict" && !x.folded) return "outFrame";
   if (x.kind === "rest") return "rest";
   if (x.group && x.folded) return "groupBlock";
   if (x.kind === "column") return x.group?.column === "changed" ? "changedColumn" : "column";
@@ -1295,7 +1295,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
 
 function FrameTitle(props: { it: Item; title: string }) {
   return (
-    <div class={props.it.fold?.kind === "outside" ? OUT_TITLE : props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title">
+    <div class={props.it.group?.column === "conflict" && props.it.kind === "column" ? OUT_TITLE : props.it.kind === "frame" ? FRAME_TITLE : GROUP_TITLE} data-title="" data-perf="frame-title">
       {props.title}
     </div>
   );
@@ -1330,7 +1330,7 @@ function Block(props: { it: Item; face: Face }) {
       </Show>
       <div class={FACE}>
         {/* Kind · change: the kind gives way first, the change word is never cut. */}
-        <div class={FACE_TOP}>
+        <div class={FACE_TOP} data-perf="face-top">
           <span class={FACE_KIND}>{face().kind}</span>
           <Show when={face().change !== "none" && face().kind}>
             <span class={CHANGE_TEXT[face().change]}>
@@ -1342,7 +1342,9 @@ function Block(props: { it: Item; face: Face }) {
         <div class={FACE_NAME} data-perf="face-name">
           {face().name}
         </div>
-        <div class={FACE_BOTTOM}>{face().bottom}</div>
+        <div class={FACE_BOTTOM} data-perf="face-bottom">
+          {face().bottom}
+        </div>
         <Show when={face().opens || face().partial}>
           <div class={FACE_MARKS} data-perf="face-marks">
             {face().partial ? "partly drawn" : ""}
@@ -1571,7 +1573,7 @@ const st = stylex.create({
   changedColumn: { "--edge": colors.warn, "--fill": graph.changedGroup, "--r": `${RADIUS.changedColumn}px`, borderStyle: "solid", },
   rest: { "--edge": graph.partEdge, "--fill": graph.outsideFill, "--r": `${RADIUS.rest}px`, borderStyle: "dashed", color: colors.muted, cursor: "default", },
   groupBlock: { "--edge": graph.partEdge, "--edge-w": "2.5px", "--fill": graph.outsideFill, "--r": `${RADIUS.groupBlock}px`, cursor: "pointer" },
-  // Under the fold: a part reached only through a conflict, and the frame holding them.
+  // Under the fold: a part reached only through a conflict, and the column holding them.
   outBlock: { "--edge": colors.warn, "--fill": graph.part, "--r": `${RADIUS.outBlock}px`, borderStyle: "dashed", cursor: "pointer" },
   outFrame: { "--edge": colors.warn, "--edge-w": "1px", "--fill": "transparent", "--r": `${RADIUS.outFrame}px`, borderStyle: "dashed" },
   added: { "--edge": colors.open, "--fill": graph.addedFill },
@@ -1661,17 +1663,19 @@ const st = stylex.create({
   dot: { borderRadius: 999, flexShrink: 0, height: 8, width: 8 },
   dotBig: { borderRadius: 999, boxShadow: `0 0 0 1.5px ${graph.part}`, flexShrink: 0, height: 12, width: 12 },
   dotsMore: { color: colors.muted, fontSize: 9.5, fontWeight: 700 },
+  // The Outside column's title: two lines in its title's room, never cut.
   outTitle: {
     overflow: "hidden",
     paddingInline: 12,
     boxSizing: "border-box",
     color: colors.warn,
+    cursor: "pointer",
     fontSize: 12,
     fontWeight: 650,
-    lineHeight: "30px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    height: 30,
+    lineHeight: "15px",
+    paddingBlockStart: 7,
+    textWrap: "balance",
+    height: 44,
   },
   ringMore: {
     borderColor: graph.partEdge,

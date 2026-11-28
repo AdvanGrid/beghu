@@ -229,14 +229,14 @@ function ItemCard(props: { it: Item }) {
       <div data-perf="rest-card">
         <div {...stylex.attrs(s.name)}>{it.fold.label}</div>
         <div {...stylex.attrs(s.small)}>
-          They {restLine(at)}, so they're folded into one block, which can't be opened: {ids.slice(0, 4).map((x) => m().nodes.get(x)?.name ?? x).join(", ")}
+          {it.fold.line ? "Parts no purpose names, which a conflict here touches, past the column's room" : `They ${restLine(at)}`}, so they're folded into one block, which can't be opened: {ids.slice(0, 4).map((x) => m().nodes.get(x)?.name ?? x).join(", ")}
           {ids.length > 4 ? `, and ${ids.length - 4} more` : ""}.
         </div>
         <DrawnAs rows={rows()} />
       </div>
     );
   }
-  if (it.fold?.kind === "outside") {
+  if (it.group?.column === "conflict" && it.kind === "column") {
     return (
       <div data-perf="outside-card">
         <div {...stylex.attrs(s.name)}>Outside the diff: only through a conflict</div>

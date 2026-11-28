@@ -140,11 +140,13 @@ export const restLine = (at: Place) => (at.kind === "purpose" ? "don't serve it"
 /** A closed part's or folded group's face; under the fold (`at`), with how much of it serves the place. */
 export function faceOf(m: Model, it: Item, s: Settings, at?: Place): Face {
   const fold = it.fold;
-  if (at && fold?.kind === "rest") return { kind: "", change: "none", name: fold.label, bottom: restLine(at), opens: false, partial: false };
-  if (at && fold?.kind === "group") {
-    return { kind: it.serve ? serveLine(at, it.serve) : "group", change: "none", name: fold.group.title, bottom: fold.breakdown, opens: true, partial: false };
+  // The fold's own blocks (`at` may be gone: a block gliding out as the canvas leaves the fold).
+  if (fold?.kind === "rest") return { kind: "", change: "none", name: fold.label, bottom: fold.line ?? (at ? restLine(at) : ""), opens: false, partial: false };
+  // A group: its breakdown on top (its dots may cut it short; its card has it whole), how much of it serves the place below.
+  if (fold?.kind === "group") {
+    return { kind: fold.breakdown || "group", change: "none", name: fold.group.title, bottom: at && it.serve ? serveLine(at, it.serve) : "", opens: true, partial: false };
   }
-  if (at && fold?.kind === "out") {
+  if (fold?.kind === "out") {
     const n = it.node!;
     const change = changeKey(m, n);
     return { kind: kindWord(n), change, name: n.name, bottom: `${change === "none" ? "outside the code" : CHANGE_WORD[change]} · ⚠ ${fold.question}`, opens: false, partial: false };
@@ -179,7 +181,6 @@ export function faceOf(m: Model, it: Item, s: Settings, at?: Place): Face {
 
 /** A frame's title: "▾ advagent-v3 › runtime", "▾ sandbox · 3 of 9 folders drawn", "▾ Folder: crates". */
 export function titleOf(m: Model, it: Item, drawnFolders: (n: Node) => number): string {
-  if (it.fold?.kind === "outside") return "Outside the diff: only through a conflict";
   if (it.group) return it.group.kind === "box" ? `▾ ${it.group.by}: ${it.group.title}` : `▾ ${it.group.title}`;
   const n = it.node!;
   const sys = m.system?.id;

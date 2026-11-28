@@ -14,26 +14,28 @@
 // - Each drawn line: the analysis lines it carries, its route, and its style's facts (changed,
 //   crosses a boundary, not confirmed, how many, its arrowheads).
 // - Under the fold (fold.ts, #183), the drawing is the fold plan's instead: the place's
-//   member-holding parts, its groups, rest blocks and Outside frame, in layout A's columns with
+//   member-holding parts, its groups and rest blocks in layout A's columns, and the parts only a
+//   conflict reaches in a column of their own, "Outside the diff: only through a conflict", with
 //   no boxes and every top-level block drawn (none goes to the no-lines grid). Each block carries
-//   how many of its parts serve the place and the top-level purposes it serves (its dots), and
-//   each line whether the place carries it.
+//   how many of its parts serve the place and the top-level purposes it, or a part inside it,
+//   serves (its dots: a rest block's are its parts'), and each line whether the place carries it.
 import type { Edge, Node } from "../../bindings/analysis";
 import { columnGroup, layoutInput, PART_H, PART_W, type DrawableEdge, type DrawableGraph, type DrawableNode } from "../layout/graph";
 import { layout } from "../layout/layout";
 import type { Column, Layout, Line, P, Rect, Scope } from "../layout/types";
 import type { Model } from "../model";
 import { isCode, lensDraws, shownEdges, type Settings } from "./settings";
-import { foldDrawing, type FoldInput, type FoldMeta, type FoldPlan } from "./fold";
+import { foldDrawing, isFoldOut, type FoldInput, type FoldMeta, type FoldPlan } from "./fold";
 import type { Place, Purposes } from "../purposes";
 
-export const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside"];
+export const COLUMNS: readonly Column[] = ["people", "changed", "unchanged", "outside", "conflict"];
 
 export const COLUMN_NAME: Record<Column, string> = {
   people: "People and callers",
   changed: "Changed",
   unchanged: "Unchanged",
   outside: "Outside: external systems and stores",
+  conflict: "Outside the diff: only through a conflict",
 };
 
 /** A group: a block on the canvas that isn't a part (a column, a box, the Shared box, a fold of siblings). */
@@ -229,8 +231,11 @@ export interface Scene {
   faded: Set<string>;
   /** The no-lines grid, when shown. */
   grid?: Rect;
-  /** Under the fold: the place it stands on, and the stood-on purpose's top-level purpose (its dot is larger, its lines its colour). */
-  fold?: { place: Place; purpose?: string };
+  /**
+   * Under the fold: the place it stands on, the stood-on purpose's top-level purpose (its dot is
+   * larger, its lines its colour), and the block in the fold's tree standing for each node.
+   */
+  fold?: { place: Place; purpose?: string; rep(node: string): string | undefined };
   /** The drawn item holding a node: itself, the block it's folded into, or nothing (not drawn). */
   holder(node: string): string | undefined;
   /**
@@ -243,6 +248,8 @@ export interface Scene {
 export interface CanvasState {
   open: ReadonlySet<string>;
   folded: ReadonlySet<string>;
+  /** Under the fold: the parts a pick pulled out of a rest block, each drawn as a block of its own. */
+  pulled?: ReadonlySet<string>;
 }
 
 /** The rest block's ID inside partly drawn part `id`. */
@@ -288,9 +295,15 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
   const g: DrawableGraph = { nodes, edges: drawable, facets: m.a.facets };
   const direction = s.lens === "data" ? (e: DrawableEdge) => e.data?.direction ?? "forward" : undefined;
   const fd = fold && foldDrawing(fold.input, fold.plan, state, edges.map((e) => ({ id: e.id, from: e.from, to: e.to, kind: e.kind, when: e.when, change: e.change, data: e.data })));
-  if (fd) for (const gr of fd.groups) groups.set(gr.id, gr);
+  if (fd) {
+    for (const gr of fd.groups) groups.set(gr.id, gr);
+    if (fold.input.outside.length) {
+      const id = columnGroup("conflict");
+      groups.set(id, { id, kind: "column", column: "conflict", title: COLUMN_NAME.conflict, by: "Column", members: fold.input.outside.map((o) => o.node) });
+    }
+  }
   const drawn = fd
-    ? layoutInput(fd.graph, { open: fd.open, folded: new Set([...state.folded].filter((x) => x.startsWith("column:"))), showLonely: true, direction }, previous)
+    ? layoutInput(fd.graph, { open: fd.open, folded: new Set([...state.folded].filter((x) => x.startsWith("column:"))), showLonely: true, direction, column: (n) => fd.columns.get(n.id) }, previous)
     : layoutInput(g, { open: state.open, boxes: (n) => boxOf.get(n.id), folded: state.folded, direction }, previous);
   const L = layout(drawn.input);
 
@@ -333,8 +346,7 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
       const base = { id, rect, depth, grid: false, parent, fold: md, serve: fd.serve(id), opens: fd.opens(id) };
       if (md.kind === "group") items.set(id, { ...base, kind: pl.frame ? "frame" : "box", folded: !pl.frame, group: md.group });
       else if (md.kind === "rest") items.set(id, { ...base, kind: "rest", folded: false, stands: md.ids });
-      else if (md.kind === "out") items.set(id, { ...base, kind: "part", folded: false, node: m.nodes.get(md.node), stands: [md.node] });
-      else items.set(id, { ...base, kind: "frame", folded: false, stands: fd.stands(id) });
+      else items.set(id, { ...base, kind: "part", folded: false, node: m.nodes.get(md.node), stands: [md.node] });
       continue;
     }
     const gr = groups.get(id);
@@ -362,8 +374,8 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
       return p.tops.filter((t) => on.has(t.id)).map((t) => t.id);
     };
     for (const it of items.values()) {
-      if (it.kind === "frame" || (it.kind === "column" && !it.folded) || it.kind === "rest") continue;
-      const ids = it.group ? it.group.members : it.node ? [it.node.id] : [];
+      if (it.kind === "frame" || (it.kind === "column" && !it.folded)) continue;
+      const ids = it.stands ?? (it.group ? it.group.members : it.node ? [it.node.id] : []);
       it.dots = dotsOf(ids);
       if (it.kind === "column" && it.group) {
         // A folded column: what its drawn blocks hold.
@@ -440,9 +452,10 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     if (fd) {
       const r = fd.rep(node);
       const realTop = [node, ...m.ancestors(node)].filter((x) => x !== sysId).at(-1);
-      const col = realTop === undefined ? undefined : [...groups.values()].find((gr) => gr.kind === "column" && gr.members.includes(realTop));
+      // Its column: the Outside column for a part only a conflict reaches, else its top-level part's.
+      const col = r !== undefined && isFoldOut(r) ? groups.get(columnGroup("conflict")) : realTop === undefined ? undefined : [...groups.values()].find((gr) => gr.kind === "column" && gr.column !== "conflict" && gr.members.includes(realTop));
       if (r === undefined) out = undefined;
-      else if (col && items.get(col.id)?.folded && !r.startsWith("fold-out:")) out = col.id;
+      else if (col && items.get(col.id)?.folded) out = col.id;
       else
         for (const x of fd.chain(r)) {
           const it = items.get(x);
@@ -495,6 +508,6 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
   };
 
   const at = fold?.place;
-  const sceneFold = at && { place: at, purpose: at.kind === "purpose" ? fold!.purposes.top(at.id) : undefined };
+  const sceneFold = at && { place: at, purpose: at.kind === "purpose" ? fold!.purposes.top(at.id) : undefined, rep: fd!.rep };
   return { items, lines, trunks, width, height, layout: L, drawnAs: drawn.drawnAs, edges, lonely: drawn.lonely, groups, faded, grid, holder, wouldHold, fold: sceneFold };
 }
