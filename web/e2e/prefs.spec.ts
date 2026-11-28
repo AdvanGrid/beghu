@@ -15,7 +15,9 @@ const detail = (page: Page) => page.locator('[data-perf="detail"]');
 const prefs = (page: Page) => page.locator('[data-perf="prefs"]');
 const order = (page: Page) => page.locator('[data-perf="comment-order"]');
 const firstComment = (page: Page) => page.locator('[data-perf="comments"] [data-perf="comment"]').first();
-const keysOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="keys"]`);
+/** An action's own keys on the setup page (or "unbound"); the keys an area keeps for it are `fixedOf`'s. */
+const keysOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="own-keys"]`);
+const fixedOf = (page: Page, action: string) => prefs(page).locator(`[data-perf="key-row"][data-action="${action}"] [data-perf="fixed-keys"]`);
 const rowId = async (page: Page, i: number) => Number(await rows(page).nth(i).getAttribute("data-id"));
 const rowOf = (page: Page, id: number) => page.locator(`[data-perf="row"][data-id="${id}"]`);
 
@@ -178,6 +180,15 @@ test("the canvas keeps its arrow keys, and Open or fold the selection rebinds fr
   // The arrows move the canvas's selection there: no canvas action can have one.
   await record(setup, "Zoom in", "ArrowUp");
   await expect(prefs(setup).locator('[data-perf="key-refused"]')).toHaveText(/can't be bound: The canvas keeps the arrow keys\.$/);
+  // The part keys show their arrows, fixed, not "unbound"; an arrow for its own action is already there.
+  await expect(keysOf(setup, "partLeft")).toHaveText("");
+  await expect(fixedOf(setup, "partLeft")).toHaveText(/^←\s*fixed$/);
+  await expect(fixedOf(setup, "partDown")).toHaveText(/^↓\s*fixed$/);
+  await record(setup, "Select the part to the left", "ArrowLeft");
+  await expect(prefs(setup).locator('[data-perf="key-refused"]')).toHaveText("← can't be bound: This is already on the arrow keys on the canvas, fixed.");
+  // So do the list's: Next issue has j of its own and ↓ in the list.
+  await expect(fixedOf(setup, "next")).toHaveText(/^↓\s*fixed$/);
+  await expect(fixedOf(setup, "zoomIn")).toHaveCount(0);
   await expect(keysOf(setup, "zoomIn")).toHaveText("+=");
   await expect(keysOf(setup, "openFold")).toHaveText("Enter");
   await record(setup, "Open or fold the selection", "o");
@@ -371,9 +382,9 @@ test("an Alt binding is matched by the key's place, and Reset and Unbind work", 
   await prefs(setup).getByRole("button", { name: "Reset Next issue to GitHub's" }).click();
   await expect(keysOf(setup, "next")).toHaveText("j");
   await prefs(setup).getByRole("button", { name: "Unbind Next issue" }).click();
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
   await setup.reload();
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
 });
 
 test("a default an account already gave another action starts unbound, and the account keeps its key", async ({ context }) => {
@@ -390,7 +401,7 @@ test("a default an account already gave another action starts unbound, and the a
   });
   await setup.reload();
   await expect(keysOf(setup, "focusFilter")).toHaveText("j");
-  await expect(keysOf(setup, "next")).toHaveText("unbound");
+  await expect(keysOf(setup, "next")).toHaveText("");
   await setup.keyboard.press("j");
   await expect(setup.getByRole("combobox", { name: "Filter issues" })).toBeFocused();
 });

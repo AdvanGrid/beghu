@@ -15,7 +15,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createMemo, createSignal, Errored, For, Loading, Match, onCleanup, Show, Switch } from "solid-js";
 import { commentOrder, forgetFailure, getMe, prefsSetHere, SessionEnded, setAccountOrder, setPref, signIn, type CommentOrder } from "./api";
 import { stale } from "./account";
-import { ACTIONS, clash, keymap, keyOf, overlap, overrides, refusal, refusalFor, setKeymap, type Action, type Overrides } from "./keys";
+import { ACTIONS, clash, fixedKeys, keymap, keyOf, overlap, overrides, refusal, refusalFor, setKeymap, type Action, type Overrides } from "./keys";
 import { LABEL, showBinding } from "./Hints";
 import { cantReach } from "./live";
 import { getCliSignIns, installLine, loginLine, revokeSignIn, type CliSignIn } from "./cli";
@@ -251,6 +251,7 @@ function Keys() {
           <For each={ACTIONS}>
             {(a) => {
               const keys = () => keymap()[a];
+              const fixed = fixedKeys(a);
               const mine = () => overrides()[a] !== undefined;
               const rec = () => (recording()?.action === a ? recording() : undefined);
               const rowNote = () => (note()?.action === a ? note()!.note : undefined);
@@ -261,17 +262,26 @@ function Keys() {
                       {LABEL[a]}
                     </th>
                     <td {...stylex.attrs(s.keys)} data-perf="keys" aria-live="polite">
-                      <Show
-                        when={rec()}
-                        fallback={
-                          <Show when={keys().length > 0} fallback={<span {...stylex.attrs(s.muted)}>unbound</span>}>
-                            <span {...stylex.attrs(s.chord)}>
-                              <For each={keys()}>{(k) => <kbd {...stylex.attrs(s.key)}>{showBinding(k)}</kbd>}</For>
-                            </span>
-                          </Show>
-                        }
-                      >
-                        {(r) => <span {...stylex.attrs(s.muted)}>{r().first === undefined ? "Press a key…" : `${showBinding(r().first!)} …`}</span>}
+                      <span data-perf="own-keys">
+                        <Show
+                          when={rec()}
+                          fallback={
+                            <Show when={keys().length > 0} fallback={<Show when={fixed.length === 0}>{<span {...stylex.attrs(s.muted)}>unbound</span>}</Show>}>
+                              <span {...stylex.attrs(s.chord)}>
+                                <For each={keys()}>{(k) => <kbd {...stylex.attrs(s.key)}>{showBinding(k)}</kbd>}</For>
+                              </span>
+                            </Show>
+                          }
+                        >
+                          {(r) => <span {...stylex.attrs(s.muted)}>{r().first === undefined ? "Press a key…" : `${showBinding(r().first!)} …`}</span>}
+                        </Show>
+                      </span>
+                      {/* The keys an area keeps for it (the list's, the canvas's arrows): shown, never rebound. */}
+                      <Show when={fixed.length > 0}>
+                        <span {...stylex.attrs(s.chord, s.fixed)} data-perf="fixed-keys" title="Fixed: these keys can't be changed">
+                          <For each={fixed}>{(k) => <kbd {...stylex.attrs(s.key)}>{showBinding(k)}</kbd>}</For>
+                          <span {...stylex.attrs(s.muted)}>fixed</span>
+                        </span>
                       </Show>
                     </td>
                     <td {...stylex.attrs(s.actions)}>
@@ -640,6 +650,10 @@ const s = stylex.create({
   },
   muted: {
     color: colors.muted,
+  },
+  // After the account's own keys, or alone.
+  fixed: {
+    marginInlineStart: 8,
   },
   actions: {
     gap: 6,

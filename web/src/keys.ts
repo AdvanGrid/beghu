@@ -375,6 +375,18 @@ const FIXED_WHY: Partial<Record<Area, string>> = {
   editor: "Escape cancels an edit",
   canvas: "The canvas keeps the arrow keys",
 };
+/** The same, for the action an area's fixed key already runs. */
+const FIXED_OWN: Partial<Record<Area, string>> = {
+  list: "This is already on the arrow keys, Home and End in the list, fixed",
+  composer: "This is already on Escape in the comment box, fixed",
+  editor: "This is already on Escape while editing, fixed",
+  canvas: "This is already on the arrow keys on the canvas, fixed",
+};
+
+/** The keys an area keeps for `action` (the list's arrows, the canvas's), in the areas it works in: not rebindable. */
+export function fixedKeys(action: Action): string[] {
+  return [...new Set(WHERE[action].flatMap((w) => Object.keys(FIXED[w] ?? {}).filter((k) => FIXED[w]![k] === action)))];
+}
 
 /**
  * Why `binding` can't be bound to `action`, or undefined if it can: a key the browser keeps, a
@@ -388,7 +400,7 @@ export function refusalFor(action: Action, binding: string): string | undefined 
   const p = parse(binding)!;
   if (plain(p[0]!) && !p[0]!.shift) {
     const at = WHERE[action].find((w) => FIXED[w]?.[p[0]!.key] !== undefined);
-    if (at) return FIXED_WHY[at];
+    if (at) return FIXED[at]![p[0]!.key] === action && p.length === 1 ? FIXED_OWN[at] : FIXED_WHY[at];
   }
   if (WHERE[action].every((w) => TYPING.includes(w)) && !firesIn(binding, WHERE[action][0]!)) return "This works while you type: it needs Ctrl or Cmd";
   return undefined;
