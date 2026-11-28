@@ -340,38 +340,75 @@ test("Opening in place, folding by the title, Back, Start over and Fold to group
   await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
 });
 
+/**
+ * What the page draws at the glide's halfway frame (the first frame at or past GLIDE_MS / 2 after
+ * the lines go away), read in the page as it glides (a check from here could land after it):
+ * how long into the glide that frame was, and each selector's box, then and as the glide began.
+ */
+function atHalfway(page: Page, selectors: string[]): Promise<{ t: number; start: (Box | null)[]; half: (Box | null)[] }> {
+  return page.evaluate(
+    ({ half, selectors }) =>
+      new Promise((done) => {
+        const lines = document.querySelector('[data-perf="canvas-lines"]')!;
+        const read = () =>
+          selectors.map((sel) => {
+            const r = document.querySelector(sel)?.getBoundingClientRect();
+            return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null;
+          });
+        const mo = new MutationObserver(() => {
+          if (!lines.hasAttribute("data-gliding")) return;
+          mo.disconnect();
+          const t0 = performance.now();
+          const start = read();
+          const tick = () => {
+            const t = performance.now() - t0;
+            if (t < half) return void requestAnimationFrame(tick);
+            done({ t, start, half: read() });
+          };
+          requestAnimationFrame(tick);
+        });
+        mo.observe(lines, { attributes: true, attributeFilter: ["data-gliding"] });
+      }),
+    { half: GLIDE_MS / 2, selectors },
+  );
+}
+type Box = { x: number; y: number; width: number; height: number };
+/** The canvas's glide (Canvas.tsx's GLIDE_MS). */
+const GLIDE_MS = 420;
+
 test("The glide: contents grow out of the block and the lines come back once it lands; reduced motion snaps", async ({ context }) => {
   const page = await signIn(context);
   await open(page);
   const glides = async () => Number((await viewport(page).getAttribute("data-glide")) ?? 0);
   const n = await glides();
   const at = (await block(page, "crates-server").boundingBox())!;
-  // Mid-glide (read in the page as it starts: a loaded host may end it before a check from here
-  // would land), the lines are away and the clicked block stays where it was.
-  const mid = page.evaluate(
-    () =>
-      new Promise<{ x: number; y: number }>((done) => {
-        const lines = document.querySelector('[data-perf="canvas-lines"]')!;
-        const seen = () => {
-          if (!lines.hasAttribute("data-gliding")) return false;
-          const r = document.querySelector('[data-item="crates-server"]')!.getBoundingClientRect();
-          done({ x: r.x, y: r.y });
-          return true;
-        };
-        const mo = new MutationObserver(() => seen() && mo.disconnect());
-        mo.observe(lines, { attributes: true, attributeFilter: ["data-gliding"] });
-      }),
-  );
+  const title = '[data-item="crates-server"] [data-perf="frame-title"]';
+  // As it starts and halfway through, the lines are away and the clicked block stays where it
+  // was; its title, which it gets as it opens, is drawn at its own size, never scaled.
+  const mid = atHalfway(page, ['[data-item="crates-server"]', title]);
   await block(page, "crates-server").dblclick();
   await expect.poll(glides).toBe(n + 1);
-  const now = await mid;
-  expect(Math.abs(now.x - at.x)).toBeLessThan(2);
-  expect(Math.abs(now.y - at.y)).toBeLessThan(2);
+  const opening = await mid;
+  expect(opening.t).toBeLessThan(GLIDE_MS);
+  for (const b of [opening.start[0]!, opening.half[0]!]) {
+    expect(Math.abs(b.x - at.x)).toBeLessThan(2);
+    expect(Math.abs(b.y - at.y)).toBeLessThan(2);
+  }
   await settled(page);
+  const titleAt = (await page.locator(title).boundingBox())!;
+  expect(Math.abs(opening.half[1]!.height - titleAt.height)).toBeLessThan(1);
+  expect(Math.abs(opening.half[1]!.width - titleAt.width)).toBeLessThan(1);
   // Every moving item stays mounted, in the order it was first drawn.
   const order = await page.locator("[data-item]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item));
-  await page.locator('[data-perf="frame"][data-id="crates-server"] [data-perf="frame-title"]').click();
+  // Folding: the block's face, which it gets back as it folds, is drawn at its own size too.
+  const name = '[data-item="crates-server"] [data-perf="face-name"]';
+  const folding = atHalfway(page, [name]);
+  await page.locator(title).click();
+  const folded = await folding;
+  expect(folded.t).toBeLessThan(GLIDE_MS);
   await settled(page);
+  const nameAt = (await page.locator(name).boundingBox())!;
+  expect(Math.abs(folded.half[0]!.height - nameAt.height)).toBeLessThan(1);
   const after = await page.locator("[data-item]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item));
   expect(after.slice(0, order.length)).toEqual(order);
 
@@ -379,6 +416,69 @@ test("The glide: contents grow out of the block and the lines come back once it 
   await block(page, "crates-server").dblclick();
   await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
   await expect(page.locator('[data-perf="canvas-lines"]')).not.toHaveAttribute("data-gliding", "", { timeout: 200 });
+});
+
+test("An open cut short by another continues from where everything is drawn: nothing jumps", async ({ context }) => {
+  const page = await signIn(context);
+  await open(page);
+  await expect(block(page, "crates-analysis")).toBeVisible();
+  // Each frame from the first open to well after the second lands: every drawn item's box as it
+  // looks (a resizing one's skin, mid-glide, is its box), and which glide is under way.
+  type Frame = { t: number; glide: string; boxes: Record<string, [number, number, number, number]> };
+  const frames = await page.evaluate(
+    ({ glide }) =>
+      new Promise<Frame[]>((done) => {
+        const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!;
+        const out: Frame[] = [];
+        const look = (el: HTMLElement): [number, number, number, number] | null => {
+          const skin = el.querySelector(":scope > [data-skin]");
+          const [a, b] = skin ? [skin.children[0]!.getBoundingClientRect(), skin.children[3]!.getBoundingClientRect()] : [el.getBoundingClientRect(), el.getBoundingClientRect()];
+          return a.width > 0 ? [a.left, a.top, b.right, b.bottom] : null;
+        };
+        const t0 = performance.now();
+        const tick = () => {
+          const boxes: Frame["boxes"] = {};
+          for (const el of document.querySelectorAll<HTMLElement>("[data-item]")) {
+            if (el.closest("[hidden]")) continue;
+            const b = look(el);
+            if (b) boxes[el.dataset.item!] = b;
+          }
+          out.push({ t: performance.now() - t0, glide: vp.dataset.glide ?? "", boxes });
+          if (performance.now() - t0 < 100 + glide + 300) requestAnimationFrame(tick);
+          else done(out);
+        };
+        requestAnimationFrame(tick);
+        const dbl = (id: string) => document.querySelector(`[data-perf="block"][data-id="${id}"]`)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        dbl("crates-server");
+        // The second open, a quarter of the way into the first glide.
+        setTimeout(() => dbl("crates-analysis"), 100);
+      }),
+    { glide: GLIDE_MS },
+  );
+  // The frame the second glide starts in: the first glide was under way for some frames before it.
+  const second = frames.at(-1)!.glide;
+  const k = frames.findIndex((f) => f.glide === second);
+  expect(frames[0]!.glide).not.toBe(second);
+  expect(k).toBeGreaterThanOrEqual(2);
+  expect(frames[k]!.t).toBeLessThan(100 + GLIDE_MS / 2);
+  // At the frame the second glide starts, no item moves further than its own speed either side of
+  // it would take it (a few px of leeway): it carries on from where it was drawn, never from
+  // where the first glide was taking it.
+  const moved = (a: number[], b: number[]) => Math.max(...a.map((v, i) => Math.abs(v - b[i]!)));
+  const jumps: string[] = [];
+  for (const id of Object.keys(frames[k]!.boxes)) {
+    const [p, c, q] = [frames[k - 1]!.boxes[id], frames[k]!.boxes[id], frames[k + 1]?.boxes[id]];
+    if (!p || !c) continue;
+    const dt = frames[k]!.t - frames[k - 1]!.t;
+    const before = frames[k - 2]?.boxes[id] ? moved(p, frames[k - 2]!.boxes[id]!) / (frames[k - 1]!.t - frames[k - 2]!.t) : 0;
+    const after = q ? moved(q, c) / (frames[k + 1]!.t - frames[k]!.t) : 0;
+    const d = moved(c, p);
+    if (d > Math.max(before, after) * dt + 6) jumps.push(`${id}: ${d.toFixed(1)} px in ${dt.toFixed(0)} ms`);
+  }
+  expect(jumps).toEqual([]);
+  await settled(page);
+  await expect(page.locator('[data-perf="frame"][data-id="crates-analysis"]')).toBeVisible();
+  await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
 });
 
 test("Parts come back whole after fold → Back and fold → open, and the clicked block stays still going back", async ({ context }) => {

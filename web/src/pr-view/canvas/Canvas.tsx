@@ -9,11 +9,13 @@
 // order it was first drawn in, only ever appended to): an inserted or moved element can't
 // transition. Items no longer drawn are hidden, not removed.
 //
-// Opening and folding glide over 420 ms (the Web Animations API, from each item's last place to
-// its new one): an opened block's contents grow out of its corner, a folded one's shrink back in,
-// the clicked block stays still, and the lines come back when the glide ends. Then the canvas
-// pans as little as it can to bring the frame's title and as much of the frame as fits into view,
-// eased, with no zoom change. `prefers-reduced-motion` snaps.
+// Opening and folding glide over 420 ms (the Web Animations API, transforms and opacity only, from
+// where each item is drawn to its new place): an opened block's contents grow out of its corner, a
+// folded one's shrink back in, the clicked block stays still, and the lines come back when the
+// glide ends. An item that changes size never scales its text or border: it wears a skin of nine
+// pieces for the glide (glideItem). A glide cut short by another carries on from where it was.
+// Then the canvas pans as little as it can to bring the frame's title and as much of the frame as
+// fits into view, eased, with no zoom change. `prefers-reduced-motion` snaps.
 //
 // Gestures: a click selects (a block, a frame's body, a line); a click on a frame's title folds
 // it; a double-click opens a block with parts inside, or glides to a line's far end and selects
@@ -51,6 +53,16 @@ const CLICK_SLOP = 4;
 const MARGIN = 24;
 
 const reduced = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** An item as the glide draws it: its place, the size it's drawn at, its content's scale and its layer's opacity. */
+interface Vis {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  k: number;
+  o: number;
+}
 
 /** Where the drawing sits in the viewport: its origin's offset (px) and its scale. */
 interface View {
@@ -426,9 +438,28 @@ export function Canvas() {
     const h = g ? sc.holder(g.members[0]!) : sc.holder(node);
     return h === undefined || h === id ? undefined : sc.items.get(h);
   };
-  /** Every item's running animations, cancelled: a leaver's held last frame included. */
+  // What the glide has under way: its animations, the items wearing a skin, and each item's
+  // track (where it glides from and to, and the animation whose progress says where it is now).
+  const running: Animation[] = [];
+  const skinned = new Set<HTMLElement>();
+  const tracks = new Map<string, { a: Vis; b: Vis; anim: Animation }>();
+  /** Where item `id` is drawn now, mid-glide: its track at its animation's eased progress. */
+  const visNow = (id: string): Vis | undefined => {
+    const t = tracks.get(id);
+    if (!t) return undefined;
+    const p = t.anim.effect?.getComputedTiming().progress ?? 1;
+    const at = (a: number, b: number) => a + (b - a) * p;
+    return { x: at(t.a.x, t.b.x), y: at(t.a.y, t.b.y), w: at(t.a.w, t.b.w), h: at(t.a.h, t.b.h), k: at(t.a.k, t.b.k), o: at(t.a.o, t.b.o) };
+  };
+  /** The glide's animations cancelled and its skins gone: every item drawn whole where it is in the layout. */
   const stopAnimations = () => {
-    for (const el of els.values()) for (const a of el.getAnimations()) a.cancel();
+    for (const a of running.splice(0)) a.cancel();
+    for (const el of skinned) {
+      el.querySelector(":scope > [data-skin]")?.remove();
+      el.style.removeProperty("--bare");
+    }
+    skinned.clear();
+    tracks.clear();
   };
   createEffect(
     () => c.glide(),
@@ -438,48 +469,51 @@ export function Canvas() {
       const from = g.from;
       viewport.dataset.glide = String(g.n);
       setHover(undefined);
-      // A glide starts from where the last one put things: nothing of it may linger.
+      // A glide cut short by another continues from where each item is drawn now; nothing of it lingers.
+      const now0 = new Map<string, Vis>();
+      for (const id of tracks.keys()) {
+        const v = visNow(id);
+        if (v) now0.set(id, v);
+      }
       stopAnimations();
       if (reduced()) {
         c.endGlide();
         afterGlide(to, g.at);
         return;
       }
+      const whole = (r: Rect): Vis => ({ x: r.x, y: r.y, w: r.w, h: r.h, k: 1, o: 1 });
       // The clicked block stays still: the view moves by what the layout moved it.
-      const a0 = g.at === undefined ? undefined : from.items.get(g.at);
+      const a0 = g.at === undefined ? undefined : (now0.get(g.at) ?? (from.items.get(g.at) && whole(from.items.get(g.at)!.rect)));
       const a1 = g.at === undefined ? undefined : to.items.get(g.at);
-      const d = a0 && a1 ? { x: a1.rect.x - a0.rect.x, y: a1.rect.y - a0.rect.y } : { x: 0, y: 0 };
+      const d = a0 && a1 ? { x: a1.rect.x - a0.x, y: a1.rect.y - a0.y } : { x: 0, y: 0 };
       if (d.x || d.y) {
         const v = untrack(view);
         setView({ ...v, x: v.x - d.x * v.z, y: v.y - d.y * v.z });
       }
-      // FLIP: each element already has its new place and size (its custom properties); only its
-      // transform glides, from its old box (scaled to it) to the new one, off the main thread.
-      const flip = (r: Rect, size: Rect, o = 1, k = 1): Keyframe => ({
-        transform: `translate(${r.x}px, ${r.y}px) scale(${(k * r.w) / Math.max(1, size.w)}, ${(k * r.h) / Math.max(1, size.h)})`,
-        opacity: o,
-      });
-      const opts: KeyframeAnimationOptions = { duration: GLIDE_MS, easing: EASE };
+      const shift = (v: Vis): Vis => ({ ...v, x: v.x + d.x, y: v.y + d.y });
       const corner = (h: Item | undefined): P | undefined => h && { x: h.rect.x + 12, y: h.rect.y + 30 };
-      const leavers: Element[] = [];
+      const leavers: HTMLElement[] = [];
       for (const id of new Set([...from.items.keys(), ...to.items.keys()])) {
         const el = els.get(id);
         if (!el) continue;
         const was = from.items.get(id), now = to.items.get(id);
-        if (was && now) {
-          const r0 = { ...was.rect, x: was.rect.x + d.x, y: was.rect.y + d.y }, r1 = now.rect;
-          if (r0.x === r1.x && r0.y === r1.y && r0.w === r1.w && r0.h === r1.h) continue;
-          el.animate([flip(r0, r1), flip(r1, r1)], opts);
-        } else if (now) {
-          // Arriving: grows out of the corner of the block that held it.
-          const h = corner(holderIn(from, id));
-          if (!h) continue;
-          el.animate([flip({ ...now.rect, x: h.x + d.x, y: h.y + d.y }, now.rect, 0, 0.4), flip(now.rect, now.rect)], opts);
+        const cur = now0.get(id);
+        if (now) {
+          let a: Vis;
+          if (cur) a = shift(cur);
+          else if (was) a = shift(whole(was.rect));
+          else {
+            // Arriving: grows out of the corner of the block that held it.
+            const h = corner(holderIn(from, id));
+            if (!h) continue;
+            a = shift({ x: h.x, y: h.y, w: now.rect.w * 0.4, h: now.rect.h * 0.4, k: 0.4, o: 0 });
+          }
+          glideItem(id, el, now, a, whole(now.rect), "auto");
         } else if (was) {
           // Leaving: shrinks back into the block that holds it now, and holds there until the glide ends.
           const h = corner(holderIn(to, id));
-          const r0 = { ...was.rect, x: was.rect.x + d.x, y: was.rect.y + d.y };
-          el.animate([flip(r0, was.rect), flip({ ...was.rect, x: h?.x ?? r0.x, y: h?.y ?? r0.y }, was.rect, 0, 0.4)], { ...opts, fill: "forwards" });
+          const a = shift(cur ?? whole(was.rect));
+          glideItem(id, el, was, a, { x: h?.x ?? a.x, y: h?.y ?? a.y, w: was.rect.w * 0.4, h: was.rect.h * 0.4, k: 0.4, o: 0 }, "forwards");
           leavers.push(el);
         }
       }
@@ -487,12 +521,76 @@ export function Canvas() {
       setTimeout(() => {
         if (untrack(c.glide)?.n !== n) return;
         // The leavers are hidden now; their held frames go, so a later glide or Back finds them whole.
-        for (const el of leavers) for (const an of el.getAnimations()) an.cancel();
+        stopAnimations();
         c.endGlide();
         afterGlide(untrack(scene), g.at);
       }, GLIDE_MS);
     },
   );
+  /**
+   * Glides one item from `a` to `b` (its places in the drawing, the size it's drawn at, its
+   * content's scale and its layer's opacity). An item drawn at its own size, or at a uniform scale
+   * of it (an arrival, a leaver), moves by FLIP: a transform from one place to the other. One whose
+   * size changes wears a skin for the glide: its border and fill drawn in nine pieces (corners that
+   * move, edges that stretch only along their length, a middle that stretches), so its border and
+   * corners keep their width and its text and title only move, never scale. Opacity glides on the
+   * item's layer, never the item: a faded item stays faded.
+   */
+  const glideItem = (id: string, el: HTMLElement, it: Item, a: Vis, b: Vis, fill: FillMode) => {
+    const r = it.rect;
+    if (a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h && a.k === b.k && a.o === b.o) return;
+    const opts: KeyframeAnimationOptions = { duration: GLIDE_MS, easing: EASE, fill };
+    const near = (x: number, y: number) => Math.abs(x - y) < 0.5;
+    const uniform = (v: Vis) => near(v.w, v.k * r.w) && near(v.h, v.k * r.h);
+    const place = (v: Vis, k: number) => `translate(${v.x}px, ${v.y}px)${k === 1 ? "" : ` scale(${k})`}`;
+    let anim: Animation;
+    if (uniform(a) && uniform(b)) {
+      anim = el.animate([{ transform: place(a, a.k) }, { transform: place(b, b.k) }], opts);
+    } else {
+      anim = el.animate([{ transform: place(a, 1) }, { transform: place(b, 1) }], opts);
+      a = { ...a, k: 1 };
+      b = { ...b, k: 1 };
+      wearSkin(el, RADIUS[lookOf(it)], r, a, b, opts);
+    }
+    running.push(anim);
+    if (a.o !== b.o && el.parentElement) running.push(el.parentElement.animate([{ opacity: a.o }, { opacity: b.o }], opts));
+    tracks.set(id, { a, b, anim });
+  };
+  /** The nine pieces of an item's skin, glided from `a`'s size to `b`'s: the item's own border and fill hidden meanwhile. */
+  const wearSkin = (el: HTMLElement, R: number, r: Rect, a: Vis, b: Vis, opts: KeyframeAnimationOptions) => {
+    const skin = document.createElement("div");
+    skin.setAttribute("class", SKIN);
+    skin.setAttribute("aria-hidden", "true");
+    skin.dataset.skin = "";
+    // Each piece's transform, in the order of SKIN_PIECES: placed at the item's layout size, moved and stretched to `v`'s.
+    const pieces = (v: Vis): string[] => {
+      const dx = v.w - r.w, dy = v.h - r.h;
+      const sx = Math.max(0, v.w - 2 * R) / Math.max(1, r.w - 2 * R), sy = Math.max(0, v.h - 2 * R) / Math.max(1, r.h - 2 * R);
+      return [
+        "translate(0px, 0px)",
+        `translate(${dx}px, 0px)`,
+        `translate(0px, ${dy}px)`,
+        `translate(${dx}px, ${dy}px)`,
+        `translate(0px, 0px) scale(${sx}, 1)`,
+        `translate(0px, ${dy}px) scale(${sx}, 1)`,
+        `translate(0px, 0px) scale(1, ${sy})`,
+        `translate(${dx}px, 0px) scale(1, ${sy})`,
+        `scale(${sx}, ${sy})`,
+      ];
+    };
+    const [from, to] = [pieces(a), pieces(b)];
+    const made: [HTMLElement, number][] = [];
+    for (let i = 0; i < SKIN_PIECES.length; i++) {
+      const p = document.createElement("div");
+      p.setAttribute("class", SKIN_PIECES[i]!);
+      skin.append(p);
+      made.push([p, i]);
+    }
+    el.prepend(skin);
+    el.style.setProperty("--bare", "transparent");
+    skinned.add(el);
+    for (const [p, i] of made) if (from[i] !== to[i]) running.push(p.animate([{ transform: from[i]! }, { transform: to[i]! }], opts));
+  };
   /** Once a glide lands: the frame (or block) it was about brought into view. */
   const afterGlide = (sc: Scene, at: string | undefined) => {
     const it = at === undefined ? undefined : sc.items.get(at);
@@ -881,6 +979,16 @@ export function Canvas() {
 
 const KINDS = ["part", "frame", "box", "column", "rest", "shared", "changedColumn", "groupBlock"] as const;
 type Look = (typeof KINDS)[number];
+/** How an item is drawn. */
+function lookOf(x: Item): Look {
+  if (x.kind === "rest") return "rest";
+  if (x.group && x.folded) return "groupBlock";
+  if (x.kind === "column") return x.group?.column === "changed" ? "changedColumn" : "column";
+  if (x.kind === "box") return x.group?.kind === "shared" ? "shared" : "box";
+  return x.kind;
+}
+/** Each look's corner radius (px): its style's `--r`, and the size of its skin's corners mid-glide. */
+const RADIUS: Readonly<Record<Look, number>> = { part: 8, frame: 10, box: 10, shared: 10, column: 14, changedColumn: 14, rest: 8, groupBlock: 10 };
 const CHANGES: readonly ChangeKey[] = ["added", "modified", "inside", "removed", "unchanged", "none"];
 /** An item's four flags: selected, lit, faded by the lens, hovered. */
 const FLAGS = 16;
@@ -901,12 +1009,7 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
   const it = createMemo(() => c.scene().items.get(id) ?? c.glide()?.from.items.get(id));
   const look = createMemo((): Look => {
     const x = it();
-    if (!x) return "part";
-    if (x.kind === "rest") return "rest";
-    if (x.group && x.folded) return "groupBlock";
-    if (x.kind === "column") return x.group?.column === "changed" ? "changedColumn" : "column";
-    if (x.kind === "box") return x.group?.kind === "shared" ? "shared" : "box";
-    return x.kind;
+    return x ? lookOf(x) : "part";
   });
   const closed = () => {
     const l = look();
@@ -1000,7 +1103,9 @@ function Block(props: { it: Item }) {
             </span>
           </Show>
         </div>
-        <div class={FACE_NAME}>{face().name}</div>
+        <div class={FACE_NAME} data-perf="face-name">
+          {face().name}
+        </div>
         <div class={FACE_BOTTOM}>{face().bottom}</div>
         <Show when={face().opens || face().partial}>
           <div class={FACE_MARKS} data-perf="face-marks">
@@ -1148,9 +1253,16 @@ const st = stylex.create({
     left: 0,
     top: 0,
   },
+  // An item's border and fill are its look's custom properties (`--edge`, `--edge-w`, `--fill`,
+  // `--r`; its border's style its skin inherits), so its skin's pieces draw the same mid-glide;
+  // `--bare` (set while it wears one) hides its own.
   item: {
+    "--edge-w": "1.5px",
+    borderColor: "var(--bare, var(--edge))",
+    borderRadius: "var(--r)",
     borderStyle: "solid",
-    borderWidth: 1.5,
+    borderWidth: "var(--edge-w)",
+    backgroundColor: "var(--bare, var(--fill))",
     boxSizing: "border-box",
     fontFamily: fonts.ui,
     opacity: "var(--fade, 1)",
@@ -1164,25 +1276,48 @@ const st = stylex.create({
     top: 0,
     width: "var(--w)",
   },
-  part: { borderColor: graph.partEdge, borderRadius: 8, backgroundColor: graph.part, cursor: "pointer", },
-  frame: { borderColor: graph.partEdge, borderRadius: 10, backgroundColor: graph.canvas, },
-  box: { borderColor: graph.boxEdge, borderRadius: 10, borderWidth: 1, backgroundColor: graph.boxFill, },
-  shared: { borderColor: graph.boxEdge, borderRadius: 10, borderStyle: "dashed", borderWidth: 1, backgroundColor: graph.boxFill, },
-  column: { borderColor: graph.groupEdge, borderRadius: 14, borderStyle: "dashed", borderWidth: 1, backgroundColor: "transparent", },
-  changedColumn: { borderColor: colors.warn, borderRadius: 14, borderWidth: 1.5, backgroundColor: graph.changedGroup, },
-  rest: { borderColor: graph.partEdge, borderRadius: 8, borderStyle: "dashed", backgroundColor: graph.outsideFill, color: colors.muted, cursor: "default", },
-  groupBlock: { borderColor: graph.partEdge, borderRadius: 10, borderWidth: 2.5, backgroundColor: graph.outsideFill, cursor: "pointer", },
-  added: { borderColor: colors.open, backgroundColor: graph.addedFill, },
-  modified: { borderColor: colors.warn, backgroundColor: graph.modifiedFill, },
-  inside: { borderColor: colors.warn, backgroundColor: graph.insideFill, },
-  removed: { borderColor: colors.danger, backgroundColor: graph.removedFill, },
+  part: { "--edge": graph.partEdge, "--fill": graph.part, "--r": `${RADIUS.part}px`, cursor: "pointer" },
+  frame: { "--edge": graph.partEdge, "--fill": graph.canvas, "--r": `${RADIUS.frame}px`, borderStyle: "solid", },
+  box: { "--edge": graph.boxEdge, "--edge-w": "1px", "--fill": graph.boxFill, "--r": `${RADIUS.box}px`, borderStyle: "solid", },
+  shared: { "--edge": graph.boxEdge, "--edge-w": "1px", "--fill": graph.boxFill, "--r": `${RADIUS.shared}px`, borderStyle: "dashed", },
+  column: { "--edge": graph.groupEdge, "--edge-w": "1px", "--fill": "transparent", "--r": `${RADIUS.column}px`, borderStyle: "dashed", },
+  changedColumn: { "--edge": colors.warn, "--fill": graph.changedGroup, "--r": `${RADIUS.changedColumn}px`, borderStyle: "solid", },
+  rest: { "--edge": graph.partEdge, "--fill": graph.outsideFill, "--r": `${RADIUS.rest}px`, borderStyle: "dashed", color: colors.muted, cursor: "default", },
+  groupBlock: { "--edge": graph.partEdge, "--edge-w": "2.5px", "--fill": graph.outsideFill, "--r": `${RADIUS.groupBlock}px`, cursor: "pointer" },
+  added: { "--edge": colors.open, "--fill": graph.addedFill },
+  modified: { "--edge": colors.warn, "--fill": graph.modifiedFill },
+  inside: { "--edge": colors.warn, "--fill": graph.insideFill },
+  removed: { "--edge": colors.danger, "--fill": graph.removedFill },
   unchanged: {},
   none: {},
-  outside: { backgroundColor: graph.outsideFill },
-  selected: { outlineColor: colors.accent, outlineOffset: 3, outlineStyle: "solid", outlineWidth: 2.5 },
+  outside: { "--fill": graph.outsideFill },
+  selected: { outlineColor: `var(--bare, ${colors.accent})`, outlineOffset: 3, outlineStyle: "solid", outlineWidth: 2.5 },
   lit: { opacity: 1 },
   faded: { opacity: 0.4 },
   hovered: { boxShadow: `0 2px 10px ${colors.popShadow}` },
+  // A resizing item's skin mid-glide, over its border box, under its content.
+  skin: { inset: "calc(-1 * var(--edge-w))", borderStyle: "inherit", borderWidth: 0, pointerEvents: "none", position: "absolute", zIndex: -1, },
+  piece: {
+    borderColor: "var(--edge)",
+    borderStyle: "inherit",
+    borderWidth: 0,
+    backgroundColor: "var(--fill)",
+    boxSizing: "border-box",
+    position: "absolute",
+    transformOrigin: "0 0",
+  },
+  corner: { height: "var(--r)", width: "var(--r)" },
+  across: { height: "var(--r)", left: "var(--r)", width: "calc(100% - 2 * var(--r))" },
+  down: { height: "calc(100% - 2 * var(--r))", top: "var(--r)", width: "var(--r)" },
+  tl: { borderLeftWidth: "var(--edge-w)", borderTopLeftRadius: "var(--r)", borderTopWidth: "var(--edge-w)", left: 0, top: 0 },
+  tr: { borderRightWidth: "var(--edge-w)", borderTopRightRadius: "var(--r)", borderTopWidth: "var(--edge-w)", right: 0, top: 0 },
+  bl: { borderBottomLeftRadius: "var(--r)", borderBottomWidth: "var(--edge-w)", borderLeftWidth: "var(--edge-w)", bottom: 0, left: 0 },
+  br: { borderBottomRightRadius: "var(--r)", borderBottomWidth: "var(--edge-w)", borderRightWidth: "var(--edge-w)", bottom: 0, right: 0 },
+  top: { borderTopWidth: "var(--edge-w)", top: 0 },
+  bottom: { borderBottomWidth: "var(--edge-w)", bottom: 0 },
+  left: { borderLeftWidth: "var(--edge-w)", left: 0 },
+  right: { borderRightWidth: "var(--edge-w)", right: 0 },
+  middle: { height: "calc(100% - 2 * var(--r))", left: "var(--r)", top: "var(--r)", width: "calc(100% - 2 * var(--r))" },
   stripes: { inset: 0, borderRadius: 7, overflow: "hidden", display: "flex", pointerEvents: "none", position: "absolute", },
   stripe: { flexBasis: 0, flexGrow: 1, borderTopStyle: "solid", borderTopWidth: 4, height: "100%", },
   stripeNone: { backgroundColor: graph.noValueFill, borderTopColor: graph.noValue },
@@ -1407,6 +1542,19 @@ const ITEM = cxTable((CHANGES.length + KINDS.length - 1) * FLAGS, (i) => {
   ];
 });
 const WORLD = cx(st.world);
+const SKIN = cx(st.skin);
+/** A skin's pieces: its four corners, its top, bottom, left and right edges, and its middle. */
+const SKIN_PIECES = [
+  cx(st.piece, st.corner, st.tl),
+  cx(st.piece, st.corner, st.tr),
+  cx(st.piece, st.corner, st.bl),
+  cx(st.piece, st.corner, st.br),
+  cx(st.piece, st.across, st.top),
+  cx(st.piece, st.across, st.bottom),
+  cx(st.piece, st.down, st.left),
+  cx(st.piece, st.down, st.right),
+  cx(st.piece, st.middle),
+];
 const FACE = cx(st.face);
 const FACE_TOP = cx(st.faceTop);
 const FACE_KIND = cx(st.faceKind);
