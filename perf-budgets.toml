@@ -349,16 +349,18 @@ measured = 0
 reason = "Modules of the PR view (web/src/pr-view/, and src/Analyse.tsx, which it shares with the lazy PR panel) in any chunk the list's cold load fetches, the entry chunk included, from the build's module list (.vite/modules.json, web/vite.config.ts moduleList): none, exact (#152, #181). Counting modules, not chunks, catches view code a static import inlines into the entry, which has no chunk of its own. The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
 
 [gates."browser.pr-view.kb"]
-max = 64.3
-measured = 61.23
-reason = "The PR view's chunks, gzip as served: the view's own (55.0 KB: route, top bar, panel, and since #182 the canvas with our layout engine, its toolbar, cards and legend) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 8's last measured run (#182); slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
+max = 66.3
+measured = 63.14
+reason = "The PR view's chunks, gzip as served: the view's own (56.9 KB: route, top bar, panel, and since #182 the canvas with our layout engine, its toolbar, cards and legend) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 8's review fixes (#182: the keyboard's selection, FLIP glide, per-ID projections), up from 61.23 KB; slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
 
 # The PR view's canvas (#182), on the tiled analyses (tiled-1x: #2627's shape; tiled-3x), 50k
 # stack. Calibrated on the dev host (32 cores) at a load of 25 to 35 from other work: three runs of
 # the PR view's probes, each timing the median of 10, each limit the median of the three +15% (the
 # runs' medians are in each reason). CI's runner has measured this host's timings 4 to 5x faster
 # (the layout gates' calibration), so CI should sit well under these; recalibrate from its first
-# perf-* artifacts before relying on them as tight limits.
+# perf-* artifacts before relying on them as tight limits. The block-open gates were recalibrated
+# the same way at a load of 15 to 25 after the review's fixes (the glide transform-only, a new
+# start view); the cold and open gates kept their limits, which those runs stayed under.
 
 [gates."browser.pr-cold.ms"]
 max = 640.1
@@ -386,26 +388,26 @@ measured = 0
 reason = "A revisit's bytes for the analysis, exact: the graph's body (revalidated against its ETag, no body sent) and the claims' (immutable, from the cache), as bodies on the wire. Each is listed with how it came."
 
 [gates."browser.pr-block-open.ms"]
-max = 197.5
-measured = 171.7
-reason = "A double-click on a top-level block of tiled-1x (crates-analysis, the first in view that opens) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun. Runs at load 25-35: 223.8, 163.0, 171.7 ms."
+max = 162.7
+measured = 141.5
+reason = "A double-click on a top-level block of tiled-1x (crates-analysis-wasm since the start view shows the changed column's top left at 85%: the first in view that opens) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transform only, FLIP). Runs at load 15-25: 141.5, 142.9, 141.1 ms."
 
 [gates."browser.pr-block-open.long-tasks"]
 max = 2
 measured = 2
 spec = 0
-reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from that double-click to the glide's end, the median over the samples, exact as measured: 2 in each of three runs on a dev host at load 25-35, where Chromium's main thread is starved (the scroll gate's long tasks show the same). The spec asks for none: on CI's first run, set max from its measurement."
+reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from that double-click to the glide's end, the median over the samples: 2 in each of three runs on a dev host at load 15-25, set to that local median. CI measured 0 here before the glide went transform-only (FLIP: 0 long tasks, 42.4 ms, on 3955865). On the dev stack every long task falls before the glide's first frame (the pointer's arrival and the open's own layout and render, which browser.pr-block-open.ms times), none between the glide's start and its lines coming back: the glide adds none. The spec asks for none; CI's run is to confirm 0, then set max from it."
 
 [gates."browser.pr-block-open-3x.ms"]
-max = 280.9
-measured = 244.3
-reason = "The same double-click on tiled-3x's crates-analysis to the frame its glide starts in: the 3x tile opens within this. Runs at load 25-35: 279.5, 232.4, 244.3 ms."
+max = 308.0
+measured = 267.8
+reason = "The same double-click on tiled-3x's first block in view that opens (crates-analysis-wasm) to the frame its glide starts in: the 3x tile opens within this. Runs at load 15-25: 272.7, 253.6, 267.8 ms."
 
 [gates."browser.pr-block-open-3x.long-tasks"]
 max = 2
 measured = 2
 spec = 0
-reason = "Long tasks over 50 ms from the 3x double-click to the glide's end, the median over the samples: 2 in each of three runs at load 25-35 (see browser.pr-block-open.long-tasks). The spec asks for none."
+reason = "Long tasks over 50 ms from the 3x double-click to the glide's end, the median over the samples: 2, 3 and 2 in three runs at load 15-25, set to the local median. CI measured 1 here before the glide went transform-only (FLIP, on 3955865: its open took 76.6 ms, itself one long task). As for browser.pr-block-open.long-tasks, the local ones fall before the glide's first frame, none during it. The spec asks for none; CI's run is to confirm, then set max from it."
 
 [gates."browser.load.list-fetches"]
 max = 2
