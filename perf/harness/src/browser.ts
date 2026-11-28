@@ -590,8 +590,12 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
 const DRAWING_MS = 120_000;
 /** The canvas's glide (web/src/pr-view/canvas/Canvas.tsx `GLIDE_MS`), and a frame's margin. */
 const GLIDE_MS = 420;
-/** The block browser.pr-block-open(-3x) opens: beghu#191's analysis-wasm crate, in each tile's start view. */
-const OPENED = "crates-analysis-wasm";
+/**
+ * The block browser.pr-block-open(-3x) opens: beghu#191's server crate, drawn as a block that
+ * opens in each tile's start view: the PR's fold plan (#183), as in layout A before it. (The
+ * analysis-wasm crate it opened before the fold folds into the tiles' group of libraries.)
+ */
+const OPENED = "crates-server";
 /** A long task, as the Long Tasks API reports one. */
 const LONG_TASK_MS = 50;
 
@@ -712,7 +716,8 @@ function prViewProbes(c: BrowserCtx): Probe[] {
 
   // A double-click on a block to the frame its glide starts in (the clicked block's first click
   // selects it), and the long tasks from the click to the glide's end. The block is OPENED, a
-  // top-level part of beghu#191's recording that every tile draws in the start view.
+  // top-level part of beghu#191's recording that every tile draws in the start view (the PR's
+  // fold plan, #183).
   for (const [name, which] of [
     ["browser.pr-block-open", "tiled-1x"],
     ["browser.pr-block-open-3x", "tiled-3x"],
