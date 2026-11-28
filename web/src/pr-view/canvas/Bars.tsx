@@ -90,12 +90,13 @@ function LinesMenu() {
   const [open, setOpen] = createSignal(false);
   let root!: HTMLDivElement;
   const st = () => c.settings();
-  /** The connections a value would draw at this level: the lens's lines with it whose ends are drawn apart. */
+  /** The connections a value would draw at this level: the lens's lines with it whose ends are drawn apart (in the no-lines grid too). */
   const counts = createMemo(() => {
     const sc = c.scene();
     const m = nav.model();
+    // Counted as drawn with the no-lines grid shown: a line turned on may join a part in it.
     const drawnApart = (e: Edge) => {
-      const a = sc.holder(e.from), b = sc.holder(e.to);
+      const a = sc.wouldHold(e.from), b = sc.wouldHold(e.to);
       return a !== undefined && b !== undefined && a !== b;
     };
     const es = m.a.edges.filter((e) => lensHas(e, st().lens, m) && drawnApart(e));

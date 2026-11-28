@@ -79,7 +79,7 @@ export function colourOf(m: Model, facet: string, value: string): number {
 export function fillOf(m: Model, n: Node, s: Settings): Fill {
   if (s.colour === undefined) return { by: "change", key: changeKey(m, n) };
   const vs = valuesOf(n, s.colour);
-  const shown = vs.length > MAX_SHOWN ? vs.slice(0, MAX_SHOWN - 1) : vs;
+  const shown = vs.slice(0, MAX_SHOWN);
   return { by: "facet", stripes: shown.map((v) => colourOf(m, s.colour!, v)), more: vs.length - shown.length, none: vs.length === 0 };
 }
 
@@ -88,7 +88,7 @@ export function ringsOf(m: Model, n: Node, s: Settings): { rings: number[]; more
   if (s.outlines === undefined) return undefined;
   const vs = valuesOf(n, s.outlines);
   if (!vs.length) return undefined;
-  const shown = vs.length > MAX_SHOWN ? vs.slice(0, MAX_SHOWN - 1) : vs;
+  const shown = vs.slice(0, MAX_SHOWN);
   return { rings: shown.map((v) => colourOf(m, s.outlines!, v)), more: vs.length - shown.length };
 }
 

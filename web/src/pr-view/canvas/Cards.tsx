@@ -10,6 +10,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack, type Element } from "solid-js";
 import type { Edge } from "../../bindings/analysis";
 import { colors, fonts } from "../../tokens.stylex";
+import type { Model } from "../model";
 import { useNav } from "../nav";
 import { CHANGE } from "../ui";
 import { drawnAs, type KeyRow } from "./key";
@@ -158,7 +159,6 @@ function Placed(props: { x: number; y: number; perf: string; interactive: boolea
       style={{ "--cx": `${at().x}px`, "--cy": `${at().y}px` }}
       data-chrome=""
       data-perf={props.perf}
-      role="tooltip"
       onPointerEnter={props.onEnter}
       onPointerLeave={props.onLeave}
       onPointerOver={stop}
@@ -276,12 +276,23 @@ function SharedChips(props: { it: Item }) {
   );
 }
 
-/** The frames a drawn line crosses the edge of: every frame one of its pieces meets at a port. */
-function edgesCrossed(sc: Scene, l: DLine): string[] {
+/**
+ * The open blocks a drawn line's route crosses the edge of (frames and boxes; every line crosses
+ * its columns'): for each of its connections, the blocks holding one of its ends and not the
+ * other, in the order its route meets them from the `from` end.
+ */
+function edgesCrossed(sc: Scene, m: Model, l: DLine): string[] {
   const out = new Set<string>();
-  for (const id of sc.drawnAs.get(l.members[0] ?? "") ?? []) {
-    const piece = sc.lines.get(id);
-    if (piece && (piece.from === undefined || piece.to === undefined)) out.add(piece.scope);
+  const chain = (n: string) => {
+    const c: string[] = [];
+    for (let x = sc.items.get(sc.holder(n) ?? "")?.parent; x !== undefined; x = sc.items.get(x)?.parent) if (sc.items.get(x)?.kind !== "column") c.unshift(x);
+    return c;
+  };
+  for (const id of l.members) {
+    const e = m.edges.get(id);
+    if (!e) continue;
+    const a = chain(e.from), b = chain(e.to);
+    for (const x of [...a.filter((y) => !b.includes(y)).reverse(), ...b.filter((y) => !a.includes(y))]) out.add(x);
   }
   return [...out];
 }
@@ -297,7 +308,7 @@ function LineCard(props: { l: DLine }) {
   const lead = () => {
     const sc = c.scene();
     const n = l.trunks.length;
-    const crossed = edgesCrossed(sc, l).map((f) => `through the edge of ${m().name(f)}`);
+    const crossed = edgesCrossed(sc, m(), l).map((f) => `through the edge of ${sc.items.get(f)?.group?.title ?? m().name(f)}`);
     return [n ? `a line, riding ${n} ${n === 1 ? "trunk" : "trunks"}` : "a line", ...crossed];
   };
   const unconfirmed = (e: Edge) => e.claims.length > 0 && e.claims.every((x) => m().stubs.get(x)?.status === "undetermined");

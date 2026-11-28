@@ -71,14 +71,16 @@ export const media = stylex.defineConsts({
  * the app's borders.) The change fills tint a part by how the PR changed it; its border takes the
  * change colour itself (`colors.open`, `warn`, `danger`). `facet0`–`facet11` are the categorical
  * colours a facet's values take (canvas/colour.ts), each with the tint its stripe fills with: told
- * apart in both themes, and always paired with words. Their tints are the colour at 16% (light)
- * and 24% (dark).
+ * apart in both themes, and always paired with words, and none of them is a line's colour (`line`,
+ * `lineQuiet`, `lineLit`), so a part's fill never reads as a line. Their tints are the colour at
+ * 16% (light) and 24% (dark).
  */
 export const graph = stylex.defineVars({
   line: "light-dark(#7c3aed, #a78bfa)",
   lineQuiet: "light-dark(#b9a6e8, #5b4a8a)",
-  // Lit: a hovered or selected line, a route lit through its trunks.
-  lineLit: "light-dark(#2563eb, #60a5fa)",
+  // Lit: a hovered or selected line, a route lit through its trunks. Purple still, only stronger:
+  // a lit line never reads as a facet's colour.
+  lineLit: "light-dark(#4c1d95, #ddd6fe)",
   canvas: "light-dark(#fbfbfc, #0c0c0f)",
   part: "light-dark(#ffffff, #17171b)",
   partEdge: "light-dark(#a1a1aa, #52525b)",
@@ -100,7 +102,7 @@ export const graph = stylex.defineVars({
   facet1: "light-dark(#d97706, #fbbf24)",
   facet2: "light-dark(#059669, #34d399)",
   facet3: "light-dark(#db2777, #f472b6)",
-  facet4: "light-dark(#7c3aed, #a78bfa)",
+  facet4: "light-dark(#ea580c, #fb923c)",
   facet5: "light-dark(#0891b2, #22d3ee)",
   facet6: "light-dark(#65a30d, #a3e635)",
   facet7: "light-dark(#dc2626, #f87171)",
@@ -112,7 +114,7 @@ export const graph = stylex.defineVars({
   facet1Fill: "light-dark(rgb(217 119 6 / 0.16), rgb(251 191 36 / 0.24))",
   facet2Fill: "light-dark(rgb(5 150 105 / 0.16), rgb(52 211 153 / 0.24))",
   facet3Fill: "light-dark(rgb(219 39 119 / 0.16), rgb(244 114 182 / 0.24))",
-  facet4Fill: "light-dark(rgb(124 58 237 / 0.16), rgb(167 139 250 / 0.24))",
+  facet4Fill: "light-dark(rgb(234 88 12 / 0.16), rgb(251 146 60 / 0.24))",
   facet5Fill: "light-dark(rgb(8 145 178 / 0.16), rgb(34 211 238 / 0.24))",
   facet6Fill: "light-dark(rgb(101 163 13 / 0.16), rgb(163 230 53 / 0.24))",
   facet7Fill: "light-dark(rgb(220 38 38 / 0.16), rgb(248 113 113 / 0.24))",

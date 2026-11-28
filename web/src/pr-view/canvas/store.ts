@@ -18,10 +18,11 @@ import { sameSettings, settingsOf, type Settings } from "./settings";
 
 export const START: CanvasState = { open: new Set(), folded: new Set() };
 
-/** One step ← Back undoes: the state before it, and what it did. */
+/** One step ← Back undoes: the state before it, what it did, and the block it was about (it stays still going back). */
 export interface Step {
   state: CanvasState;
   what: string;
+  at?: string;
 }
 
 /** A glide under way: the drawing it leaves, the block that stays still, and its number. */
@@ -29,8 +30,6 @@ export interface Glide {
   from: Scene;
   at?: string;
   n: number;
-  /** Fold: the contents shrink back in, rather than growing out. */
-  fold: boolean;
 }
 
 export interface CanvasStore {
@@ -90,11 +89,11 @@ export function createCanvasStore(nav: Nav): CanvasStore {
     const g = untrack(scene).groups.get(id);
     return g ? g.title : model().name(id);
   };
-  const step = (next: CanvasState, what: string, at?: string, fold = false) => {
+  const step = (next: CanvasState, what: string, at?: string) => {
     const before = untrack(state);
     if (same(before, next)) return;
-    setHistory((h) => [...h, { state: before, what }]);
-    setGlide({ from: untrack(scene), at, n: ++glides, fold });
+    setHistory((h) => [...h, { state: before, what, at }]);
+    setGlide({ from: untrack(scene), at, n: ++glides });
     setState(next);
   };
   /** `s` without `id` open, nor any block inside it (in the analysis, or in the group's parts). */
@@ -135,11 +134,11 @@ export function createCanvasStore(nav: Nav): CanvasStore {
       const g = untrack(scene).groups.get(id);
       if (g) {
         const next = without(s, id);
-        step({ open: next.open, folded: new Set([...next.folded, id]) }, `folded ${g.title}`, id, true);
+        step({ open: next.open, folded: new Set([...next.folded, id]) }, `folded ${g.title}`, id);
         return;
       }
       if (!s.open.has(id)) return;
-      step(without(s, id), `folded ${model().name(id)}`, id, true);
+      step(without(s, id), `folded ${model().name(id)}`, id);
     },
     foldToGroups() {
       const groups = untrack(scene).groups;
@@ -152,13 +151,16 @@ export function createCanvasStore(nav: Nav): CanvasStore {
       const last = h.at(-1);
       if (!last) return;
       setHistory(h.slice(0, -1));
-      setGlide({ from: untrack(scene), n: ++glides, fold: true });
+      // The block the step was about stays still, and comes into view once the glide lands.
+      setGlide({ from: untrack(scene), at: last.at, n: ++glides });
       setState(last.state);
     },
     startOver() {
-      if (same(untrack(state), START) && untrack(history).length === 0) return;
+      const h = untrack(history);
+      if (same(untrack(state), START) && h.length === 0) return;
       setHistory([]);
-      setGlide({ from: untrack(scene), n: ++glides, fold: true });
+      // The first step's block stays still: the one the reader started from.
+      setGlide({ from: untrack(scene), at: h[0]?.at, n: ++glides });
       setState(START);
     },
     openTo(sel) {

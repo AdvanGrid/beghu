@@ -49,11 +49,11 @@ export function arrow(t: { x: number; y: number; dx: number; dy: number }): stri
   return `M${x},${y} L${bx - dy * 4.5},${by + dx * 4.5} L${bx + dy * 4.5},${by - dx * 4.5} Z`;
 }
 
-/** Where a line's count goes: just out of its start, above its first stretch. */
-export function countAt(raw: readonly P[]): { x: number; y: number } | undefined {
+/** Where a line's count goes: just out of its start (or its end, for `atEnd`), above its first stretch. */
+export function countAt(raw: readonly P[], atEnd = false): { x: number; y: number } | undefined {
   const pts = clean(raw);
   if (pts.length < 2) return undefined;
-  const [a, b] = [pts[0]!, pts[1]!];
+  const [a, b] = atEnd ? [pts[pts.length - 1]!, pts[pts.length - 2]!] : [pts[0]!, pts[1]!];
   const dx = sgn(b.x - a.x), dy = sgn(b.y - a.y);
   return dx !== 0 ? { x: a.x + dx * 6, y: a.y - 4 } : { x: a.x + 4, y: a.y + dy * 14 };
 }

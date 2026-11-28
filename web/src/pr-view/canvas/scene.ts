@@ -212,6 +212,11 @@ export interface Scene {
   grid?: Rect;
   /** The drawn item holding a node: itself, the block it's folded into, or nothing (not drawn). */
   holder(node: string): string | undefined;
+  /**
+   * The item that would hold a node with the no-lines grid shown: `holder`'s, or for a part in
+   * the hidden grid, its top-level part or folded group there. What the Lines menu counts by.
+   */
+  wouldHold(node: string): string | undefined;
 }
 
 export interface CanvasState {
@@ -240,7 +245,8 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     topOf.set(n.id, top);
     nodes.push({ id: n.id, kind: n.kind, parent: n.parent, name: n.name, change: n.change, paths: n.paths, facets: n.facets });
     for (const c of m.children.get(n.id) ?? []) if (!kept.has(c.id)) walk(c, top);
-    if (n.drawn) nodes.push({ id: restId(n.id), kind: "module", parent: n.id, name: "", change: "unchanged", paths: [], facets: [] });
+    // No rest block when every folder is drawn after all ("0 folders not drawn" says nothing).
+    if (n.drawn && n.drawn.folders - (drawnFolders?.(n) ?? 0) > 0) nodes.push({ id: restId(n.id), kind: "module", parent: n.id, name: "", change: "unchanged", paths: [], facets: [] });
   };
   if (sys) nodes.push({ id: sys.id, kind: "system", name: sys.name, change: sys.change, paths: sys.paths, facets: sys.facets });
   for (const n of tops) if (keepTop.has(n.id)) walk(n, n.id);
@@ -401,5 +407,19 @@ export function sceneOf(m: Model, s: Settings, state: CanvasState, showLonely: b
     for (const it of items.values()) if ((it.kind === "part" || it.folded) && !on.has(it.id)) faded.add(it.id);
   }
 
-  return { items, lines, trunks, width, height, layout: L, drawnAs: drawn.drawnAs, edges, lonely: drawn.lonely, groups, faded, grid, holder };
+  // The hidden grid's parts: each node in one is held by its top-level part, or the folded group it's in.
+  const lonely = new Set(drawn.lonely);
+  const touched = touchedOf(m);
+  const wouldHold = (node: string): string | undefined => {
+    const h = holder(node);
+    if (h !== undefined || showLonely) return h;
+    const top = topOf.get(node);
+    if (top === undefined) return undefined;
+    const box = boxOf.get(top);
+    const col = columnGroup(columnOfNode(m.nodes.get(top)!, touched));
+    for (const g of [col, box]) if (g !== undefined && lonely.has(g)) return g;
+    return lonely.has(top) ? top : undefined;
+  };
+
+  return { items, lines, trunks, width, height, layout: L, drawnAs: drawn.drawnAs, edges, lonely: drawn.lonely, groups, faded, grid, holder, wouldHold };
 }

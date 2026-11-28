@@ -32,5 +32,9 @@ export function valueColours(facet: Pick<Facet, "id" | "values">): Map<string, n
   return out;
 }
 
-/** Up to this many stripes or rings show a value each; past it, the last says "+N". */
+/**
+ * Up to this many stripes or rings show a value each; past it, a "+N" stripe (or badge) counts
+ * the rest: "equal vertical stripes, up to 3, then a '+N' stripe" (#170, #182), so 4 values draw
+ * 3 stripes and "+1".
+ */
 export const MAX_SHOWN = 3;
