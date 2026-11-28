@@ -611,6 +611,20 @@ test("The start view: the content's width fitted, never under 85%, from the chan
   expect(Math.abs(changed.y - vp.y - 24)).toBeLessThan(2);
 });
 
+test("The start view keeps a people column left of the changed one in view when the drawing fits", async ({ context }) => {
+  const page = await signIn(context);
+  // Wide enough for External's whole drawing at 85% or more, the panel open beside it.
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await open(page, "?lens=external");
+  const people = item(page, "column:people");
+  await expect(people).toBeVisible();
+  const [vp, col, changed] = [(await viewport(page).boundingBox())!, (await people.boundingBox())!, (await item(page, "column:changed").boundingBox())!];
+  expect(col.x).toBeLessThan(changed.x);
+  // The drawing's left edge at the margin, the people column in view; the top still the changed column's.
+  expect(col.x).toBeGreaterThanOrEqual(vp.x + 23);
+  expect(Math.abs(changed.y - vp.y - 24)).toBeLessThan(2);
+});
+
 test("The wheel scrolls the legend over it, and pans the drawing elsewhere", async ({ context }) => {
   const page = await signIn(context);
   await page.setViewportSize({ width: 1500, height: 560 });

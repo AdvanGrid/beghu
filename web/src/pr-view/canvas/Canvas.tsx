@@ -413,8 +413,9 @@ export function Canvas() {
   };
 
   // The first drawing, once the viewport has its real size: the drawn content's width fitted,
-  // clamped to [0.85, 1] (Fit is the way to see everything), its top left at the changed column's
-  // frame. Only once: a newer analysis (Show it) keeps the reader's pan and zoom.
+  // clamped to [0.85, 1] (Fit is the way to see everything), its top at the changed column's
+  // frame's, and its left too when the drawing is wider than the viewport. Only once: a newer
+  // analysis (Show it) keeps the reader's pan and zoom.
   let placed = false;
   createEffect(
     () => [scene(), size()] as const,
@@ -422,8 +423,11 @@ export function Canvas() {
       if (placed || s.w < 50 || s.h < 50 || !sc.items.size) return;
       placed = true;
       const z = clampZ(Math.max(START_Z, Math.min(1, (s.w - 2 * MARGIN) / Math.max(1, sc.width))));
+      // Across, the changed column's left only when the drawing is wider than the viewport: when it
+      // fits, the columns left of it (people) stay in view.
       const at = sc.items.get("column:changed")?.rect ?? { x: 0, y: 0 };
-      setView({ x: MARGIN - at.x * z, y: MARGIN - at.y * z, z });
+      const fits = sc.width * z <= s.w - 2 * MARGIN;
+      setView({ x: MARGIN - (fits ? 0 : at.x) * z, y: MARGIN - at.y * z, z });
     },
   );
 
