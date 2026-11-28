@@ -13,8 +13,12 @@ import { getIssue, getIssueAt, request, type IssueDetail } from "./api";
 import { atString, idAt, type At } from "./at";
 import type { Analysis, Claim, ClaimStatus } from "./bindings/analysis";
 
-/** A claim as the graph holds it: enough for its status and chips such as `code ×3`. */
-export type ClaimStub = { id: string; status: ClaimStatus; code: number; description: number; issue: number };
+/**
+ * A claim as the graph holds it: enough for its status and chips such as `code ×3` and `#174`.
+ * `issues` names each issue it quotes (`owner/repo#N`, once each); an analysis stored before the
+ * graph carried it has none.
+ */
+export type ClaimStub = { id: string; status: ClaimStatus; code: number; description: number; issue: number; issues?: string[] };
 
 /** The analysis as the graph holds it: every claim a stub. */
 export type GraphAnalysis = Omit<Analysis, "claims"> & { claims: ClaimStub[] };

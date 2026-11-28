@@ -37,6 +37,41 @@ async fn the_recorded_pr_pins_as_recorded_and_its_analysis_is_accepted_and_kept_
     assert!(got.pr == v1.text);
     assert_eq!(got.number, i64::from(RECORDED));
 
+    // Each claim's stub in the graph names the issues it quotes, once each, for the
+    // walkthrough's `#N` chips; a claim quoting none has no `issues`.
+    let mut tomsj = b;
+    let g: Value = s
+        .get(
+            &mut tomsj,
+            &format!("/api/AdvanGrid/beghu/pulls/{RECORDED}/analysis"),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let recorded: Value = serde_json::from_str(&committed).unwrap();
+    let stubs = g["analysis"]["claims"].as_array().unwrap();
+    let mut quoting = 0;
+    for (stub, claim) in stubs.iter().zip(recorded["claims"].as_array().unwrap()) {
+        assert_eq!(stub["id"], claim["id"]);
+        let mut want: Vec<String> = Vec::new();
+        for e in claim["evidence"].as_array().unwrap() {
+            if e["kind"] == "issue" {
+                let r = format!("{}#{}", e["repo"].as_str().unwrap(), e["number"]);
+                if !want.contains(&r) {
+                    want.push(r);
+                }
+            }
+        }
+        if want.is_empty() {
+            assert_eq!(stub.get("issues"), None, "{stub}");
+        } else {
+            quoting += 1;
+            assert_eq!(stub["issues"], json!(want), "{stub}");
+        }
+    }
+    assert!(quoting > 0, "v1 quotes the issues its run served");
+
     // The graph is tomsj's alone: ilze-k, who sees the repo, has no analysis of it.
     let mut ilze = s.sign_in("ilze-k").await;
     let res = s

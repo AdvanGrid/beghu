@@ -105,21 +105,35 @@ pub(crate) fn split(mut analysis: Value, env: &Envelope) -> Blobs {
         .flatten()
         .map(|c| {
             let (mut code, mut description, mut issue) = (0, 0, 0);
+            // The issues it quotes, once each: the walkthrough's `#N` chips, before the claims.
+            let mut issues: Vec<String> = Vec::new();
             for e in c["evidence"].as_array().into_iter().flatten() {
                 match e["kind"].as_str() {
                     Some("code") => code += 1,
                     Some("description") => description += 1,
-                    Some("issue") => issue += 1,
+                    Some("issue") => {
+                        issue += 1;
+                        if let (Some(repo), Some(n)) = (e["repo"].as_str(), e["number"].as_i64()) {
+                            let r = format!("{repo}#{n}");
+                            if !issues.contains(&r) {
+                                issues.push(r);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
-            json!({
+            let mut stub = json!({
                 "id": c["id"],
                 "status": c["status"],
                 "code": code,
                 "description": description,
                 "issue": issue,
-            })
+            });
+            if !issues.is_empty() {
+                stub["issues"] = json!(issues);
+            }
+            stub
         })
         .collect();
     if let Some(o) = analysis.as_object_mut() {
