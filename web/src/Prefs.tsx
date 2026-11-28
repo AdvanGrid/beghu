@@ -16,7 +16,8 @@ import { createMemo, createSignal, Errored, For, Loading, Match, onCleanup, Show
 import { commentOrder, forgetFailure, getMe, prefsSetHere, SessionEnded, setAccountOrder, setPref, signIn, type CommentOrder } from "./api";
 import { stale } from "./account";
 import { ACTIONS, clash, fixedKeys, keymap, keyOf, overlap, overrides, refusal, refusalFor, setKeymap, type Action, type Overrides } from "./keys";
-import { LABEL, showBinding } from "./Hints";
+import { LABEL } from "./Hints";
+import { showBinding } from "./keyNames";
 import { cantReach } from "./live";
 import { getCliSignIns, installLine, loginLine, revokeSignIn, type CliSignIn } from "./cli";
 import { ago, fullDate } from "./time";

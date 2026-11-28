@@ -32,7 +32,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createProjection, createSignal, For, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { keysIn, touch, type Action } from "../../keys";
-import { showBinding } from "../../Hints";
+import { showBinding } from "../../keyNames";
 import { colors, fonts, graph } from "../../tokens.stylex";
 import { cx, cxMap, cxTable } from "../../cx";
 import type { P, Rect } from "../layout/types";

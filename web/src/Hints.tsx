@@ -1,10 +1,11 @@
 // The words for the keys: the hint bar's quick keys for where the focus is, and the `?` overlay
 // with every binding in effect. Its own chunk, loaded after first paint (Root.tsx); the keys
-// module (keys.ts) does the work. The keymap's setup page (Prefs.tsx) uses `LABEL` and
-// `showBinding` too.
+// module (keys.ts) does the work, and keyNames.ts writes the keys' names. The keymap's setup page
+// (Prefs.tsx) uses `LABEL` too.
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
-import { area, available, deniedWhy, keysIn, MAC, touch, type Action, type Area } from "./keys";
+import { area, available, deniedWhy, keysIn, touch, type Action, type Area } from "./keys";
+import { showBinding } from "./keyNames";
 import { writesPaused } from "./live";
 import { colors, fonts } from "./tokens.stylex";
 
@@ -115,22 +116,6 @@ const SECTIONS: { name: string; areas: Area[]; actions: Action[]; own?: Syntax[]
   { name: "Picker", areas: ["picker"], actions: [], own: PICKER },
   { name: "Anywhere", areas: ["page", "filter", "text"], actions: ["focusFilter", "help"] },
 ];
-
-const ARROWS: Record<string, string> = { ArrowDown: "↓", ArrowUp: "↑", ArrowLeft: "←", ArrowRight: "→", Escape: "Esc" };
-
-/** A binding as people read it: `Alt+KeyL` is Alt+L, `Shift+x` is Shift+X, a sequence `g i`. */
-export function showBinding(binding: string): string {
-  return binding.split(" ").map(showKey).join(" ");
-}
-
-/** One key of a binding as people read it. */
-function showKey(key: string): string {
-  return key
-    .split(/\+(?=.)/)
-    .map((part) => ARROWS[part] ?? part.replace(/^(Key|Digit)(?=.)/, "").replace(/^[a-z]$/, (c) => (key.includes("+") ? c.toUpperCase() : c)))
-    .join("+")
-    .replace(/^Mod\+/, MAC ? "⌘" : "Ctrl+");
-}
 
 /** The keys that run `action` now in `where`, as people read them. */
 function keysOf(action: Action, where: Area): string[] {
