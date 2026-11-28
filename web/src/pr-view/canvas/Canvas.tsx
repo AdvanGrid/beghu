@@ -17,19 +17,24 @@
 // Then the canvas pans as little as it can to bring the frame's title and as much of the frame as
 // fits into view, eased, with no zoom change. `prefers-reduced-motion` snaps.
 //
-// Gestures: a click selects (a block, a frame's body, a line); a click on a frame's title folds
-// it; a double-click opens a block with parts inside, or glides to a line's far end and selects
-// it; a click on the background clears the selection; a drag on the background, or Space + drag
-// anywhere, pans; Ctrl/Cmd + scroll zooms round the pointer, and scroll pans. Keys are touchpoints
-// (keys.ts, the `canvas` area): + − 0 Fit, Backspace out one level, Escape, the arrows to the
-// nearest part, ] and [ through the selected part's lines. Each block is a button named by its
-// face (kind, change, name), pressed while selected; a line is named by its ends.
+// Gestures: a click selects (a block, a frame's body, a line), and on the selected block, if it
+// has parts inside, opens it; a click on a frame's title folds it; a double-click opens a block
+// with parts inside, or glides to a line's far end and selects it; a click on the background
+// clears the selection; a drag on the background, or Space + drag anywhere, pans; Ctrl/Cmd +
+// scroll zooms round the pointer, and scroll pans. Mid-glide nothing in the drawing takes the
+// pointer. Keys are touchpoints (keys.ts, the `canvas` area): + − 0 Fit, Backspace out one level,
+// Escape, the arrows to the nearest part, ] and [ through the selected part's lines. Each block is
+// a button named by its face (kind, change, name) and, if it opens, the key that opens it
+// (`aria-expanded` false; true on an open frame, box or column), `aria-current` while selected; a
+// line is named by its ends.
 import * as stylex from "@stylexjs/stylex";
 import { createEffect, createMemo, createProjection, createSignal, For, onCleanup, onSettled, Show, untrack } from "solid-js";
-import { touch } from "../../keys";
+import { keysIn, touch, type Action } from "../../keys";
+import { showBinding } from "../../Hints";
 import { colors, fonts, graph } from "../../tokens.stylex";
 import { cx, cxMap, cxTable } from "../../cx";
 import type { P, Rect } from "../layout/types";
+import type { Model } from "../model";
 import { part, useNav } from "../nav";
 import type { Sel } from "../state";
 import { Cards, type Hover } from "./Cards";
@@ -104,6 +109,8 @@ interface Looks {
   lit: Readonly<Record<string, true | undefined>>;
   hovered: Readonly<Record<string, true | undefined>>;
   focusing: () => boolean;
+  /** The keys that open or fold a block (openFold's), as its words say them. */
+  openKeys: () => string;
 }
 
 export function Canvas() {
@@ -328,7 +335,8 @@ export function Canvas() {
       if (el && el !== document.activeElement) el.focus({ preventScroll: true });
     });
   });
-  const looks: Looks = { sel: isSel, lit: isLitItem, hovered: isHovered, focusing, stop: isStopItem };
+  const openKeys = createMemo(() => keysFor("openFold"));
+  const looks: Looks = { sel: isSel, lit: isLitItem, hovered: isHovered, focusing, stop: isStopItem, openKeys };
 
   // A pinned trunk's card goes with its trunk.
   createEffect(
@@ -662,7 +670,6 @@ export function Canvas() {
     return { x: (p.x - v.x) / v.z, y: (p.y - v.y) / v.z };
   };
 
-  const isOpen = (it: Item | undefined) => !!it && (it.kind === "frame" || ((it.kind === "box" || it.kind === "column") && !it.folded));
   const onTitle = (e: Event) => e.target instanceof window.Element && !!e.target.closest("[data-title]");
   let press: { x: number; y: number; pan: boolean; moved: boolean; v: View; id: number } | undefined;
   /** A press that panned: its click selects nothing. */
@@ -703,6 +710,10 @@ export function Canvas() {
       dragged = false;
       return;
     }
+    // A double-click's second click is the double-click's. Mid-glide the items take no pointer
+    // (they aren't drawn where they are): a click there lands on nothing, not the background.
+    const chrome = e.target instanceof window.Element && !!e.target.closest("[data-chrome]");
+    if (e.detail > 1 || (untrack(c.glide) && !chrome)) return;
     const l = lineAt(e.target);
     if (l) {
       const id = l.dataset.line;
@@ -720,13 +731,19 @@ export function Canvas() {
     const it = el ? scene().items.get(el.dataset.item!) : undefined;
     // The background, or a column's own room, clears the selection.
     if (!it || (it.kind === "column" && !it.folded && !onTitle(e))) {
-      if (e.target instanceof window.Element && e.target.closest("[data-chrome]")) return;
+      if (chrome) return;
       nav.select(undefined);
       return;
     }
     // A click on an open frame's title folds it.
     if (isOpen(it) && onTitle(e)) {
       c.fold(it.id);
+      return;
+    }
+    // A click on the selected block, when it opens, opens it, as Enter does: so a screen reader's
+    // browse mode, which sends Enter as a click, opens a block (the first click selects it).
+    if (untrack(selItems).has(it.id) && opensIn(m(), it)) {
+      openOrFold(it);
       return;
     }
     selectItem(it.id);
@@ -741,9 +758,7 @@ export function Canvas() {
     if (!el) return;
     if (e.target instanceof window.Element && e.target.closest("[data-title]")) return;
     const it = scene().items.get(el.dataset.item!);
-    if (!it || it.grid) return;
-    if (it.kind === "part" && it.node && (m().children.get(it.node.id) ?? []).length > 0) c.open(it.id);
-    else if (it.folded) c.open(it.id);
+    if (it && opensIn(m(), it)) c.open(it.id);
   };
   const onWheel = (e: WheelEvent) => {
     // Over the legend or a card, the wheel scrolls it (Ctrl/Cmd + scroll still zooms the drawing,
@@ -868,6 +883,12 @@ export function Canvas() {
     if (a instanceof HTMLElement && a.dataset.item !== undefined) return { kind: "item", id: a.dataset.item };
     return undefined;
   };
+  /** Opens a block with parts inside; folds an open frame, box or column. */
+  const openOrFold = (it: Item) => {
+    if (it.grid) return;
+    if (isOpen(it)) c.fold(it.id);
+    else if (opensIn(m(), it)) c.open(it.id);
+  };
   touch("openFold", () => {
     // Opens a block with parts inside, folds an open one; a line glides to its far end.
     const t = target();
@@ -880,9 +901,7 @@ export function Canvas() {
       return;
     }
     const it = t ? sc.items.get(t.id) : undefined;
-    if (!it || it.grid) return;
-    if (isOpen(it)) c.fold(it.id);
-    else if (it.folded || (it.kind === "part" && it.node && (m().children.get(it.node.id) ?? []).length > 0)) c.open(it.id);
+    if (it) openOrFold(it);
   });
   /** Selects the nearest closed block in a direction from the selection (or from the focus's top left). */
   const move = (dx: number, dy: number) => {
@@ -991,6 +1010,12 @@ export function Canvas() {
   );
 
   const gliding = () => c.glide() !== undefined;
+  // The drawing's words: its keys, as the keymap has them now.
+  const drawingLabel = createMemo(() => {
+    const open = openKeys(), next = keysFor("nextLine"), prev = keysFor("previousLine");
+    const lines = next && prev ? `, ${next} and ${prev} step through its lines` : next || prev ? `, ${next || prev} steps through its lines` : "";
+    return `The PR's parts and lines: arrow keys move the selection${open ? `, ${open} opens or folds it` : ""}${lines}`;
+  });
   return (
     <div {...stylex.attrs(s.canvas)} data-perf="canvas" style={{ "--fade": focus() ? 0.2 : 1 }}>
       <Toolbar />
@@ -1001,7 +1026,7 @@ export function Canvas() {
         tabindex={stop() ? -1 : 0}
         role="group"
         aria-roledescription="drawing"
-        aria-label="The PR's parts and lines: arrow keys move the selection, Enter opens or folds it, ] and [ step through its lines"
+        aria-label={drawingLabel()}
         data-keys="canvas"
         data-perf="canvas-viewport"
         data-flying={flying() === undefined ? undefined : ""}
@@ -1039,6 +1064,13 @@ export function Canvas() {
 }
 
 // ---- Items -------------------------------------------------------------------------------------
+
+/** Whether an item is drawn open: a frame, or a box or column not folded. */
+const isOpen = (it: Item | undefined) => !!it && (it.kind === "frame" || ((it.kind === "box" || it.kind === "column") && !it.folded));
+/** Whether a closed block opens: a folded group, box or column, or a part with parts inside (none in the no-lines grid). */
+const opensIn = (m: Model, it: Item) => !it.grid && !isOpen(it) && (it.folded || (it.kind === "part" && !!it.node && (m.children.get(it.node.id) ?? []).length > 0));
+/** The keys that run `action` on the canvas now, as people read them: for the words a screen reader says. */
+const keysFor = (action: Action): string => keysIn(action, "canvas").map(showBinding).join(" or ");
 
 const KINDS = ["part", "frame", "box", "column", "rest", "shared", "changedColumn", "groupBlock"] as const;
 type Look = (typeof KINDS)[number];
@@ -1098,11 +1130,21 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
     const x = it();
     return x && !closed() ? titleOf(m(), x, (n) => drawnFolders(m(), n).length) : undefined;
   });
+  // Whether it opens (a closed block with parts inside), or is open: `aria-expanded`, and how its words say to open or fold it.
+  const opens = createMemo(() => {
+    const x = it();
+    return !!x && opensIn(m(), x);
+  });
+  const open = createMemo(() => isOpen(it()));
   const label = () => {
     const f = face();
-    if (f) return `${f.kind ? `${f.kind}${f.change !== "none" ? ` · ${CHANGE_WORD[f.change]}` : ""}, ` : ""}${f.name}`;
+    const keys = L.openKeys();
+    if (f) {
+      const name = `${f.kind ? `${f.kind}${f.change !== "none" ? ` · ${CHANGE_WORD[f.change]}` : ""}, ` : ""}${f.name}`;
+      return opens() ? `${name}, has parts inside${keys ? `, ${keys} opens` : ""}` : name;
+    }
     const t = title();
-    return t === undefined ? undefined : `${t.replace(/^▾ /, "")}, open`;
+    return t === undefined ? undefined : `${t.replace(/^▾ /, "")}${keys ? `, ${keys} folds` : ""}`;
   };
   const perf = () => {
     const l = look();
@@ -1126,7 +1168,8 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Loo
         data-focus={L.focusing() ? (L.lit[id] ? "lit" : "dim") : undefined}
         role="button"
         aria-label={label()}
-        aria-pressed={L.sel[id] ? "true" : "false"}
+        aria-expanded={open() ? "true" : opens() ? "false" : undefined}
+        aria-current={L.sel[id] ? "true" : undefined}
         style={{ "--x": `${it()?.rect.x ?? 0}px`, "--y": `${it()?.rect.y ?? 0}px`, "--w": `${it()?.rect.w ?? 0}px`, "--h": `${it()?.rect.h ?? 0}px` }}
       >
         <Show when={it()}>{(x) => <Show when={face()} fallback={<FrameTitle it={x()} title={title() ?? ""} />}>{(f) => <Block it={x()} face={f()} />}</Show>}</Show>

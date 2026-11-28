@@ -666,7 +666,10 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   const b = (await block(page, next).boundingBox())!;
   expect(b.x + b.width / 2).toBeGreaterThan(a.x + a.width / 2);
   await expect.poll(active).toBe(next);
-  // Enter opens the selected block in place, and folds it again.
+  // Enter opens the selected block in place, and folds it again. (Escape first: a click on the
+  // selected block would open it.)
+  await page.keyboard.press("Escape");
+  await expect.poll(() => selOf(page)).toBeNull();
   await block(page, "crates-server").click();
   await expect.poll(active).toBe("crates-server");
   await page.keyboard.press("Enter");
@@ -676,13 +679,39 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   await page.keyboard.press("Enter");
   await expect(block(page, "crates-server")).toBeVisible();
   await expect(undoes(page)).toHaveText(`undoes: folded ${nodeOf("crates-server").name}`);
-  // ] and [ step through the selected part's lines, the focus on each: a line is reached without a pointer.
-  await block(page, "crates-server").click();
+  // What a screen reader hears of a block: a button named by its face and how to open it, not
+  // expanded, current while selected. A click on it while it's selected opens it (a screen
+  // reader's browse mode sends Enter as a click), and the open frame is expanded.
   await expect.poll(active).toBe("crates-server");
   const server = page.locator('[data-perf="block"][data-id="crates-server"]');
+  const attr = (l: Locator, name: string) => l.evaluate((el, name) => el.getAttribute(name), name);
   await expect(server).toHaveAttribute("role", "button");
-  await expect(server).toHaveAttribute("aria-pressed", "true");
-  await expect(server).toHaveAttribute("aria-label", `service · changed, ${nodeOf("crates-server").name}`);
+  await expect(server).toHaveAttribute("aria-current", "true");
+  await expect(server).toHaveAttribute("aria-expanded", "false");
+  await expect(server).toHaveAttribute("aria-label", `service · changed, ${nodeOf("crates-server").name}, has parts inside, Enter opens`);
+  expect(await attr(server, "aria-pressed")).toBeNull();
+  await expect(viewport(page)).toHaveAttribute("aria-label", "The PR's parts and lines: arrow keys move the selection, Enter opens or folds it, ] and [ step through its lines");
+  await server.click();
+  const serverFrame = page.locator('[data-perf="frame"][data-id="crates-server"]');
+  await expect(serverFrame).toBeVisible();
+  await expect(undoes(page)).toHaveText(`undoes: opened ${nodeOf("crates-server").name}`);
+  await expect(serverFrame).toHaveAttribute("aria-expanded", "true");
+  await expect(serverFrame).toHaveAttribute("aria-current", "true");
+  await expect(serverFrame).toHaveAttribute("aria-label", /, Enter folds$/);
+  await settled(page);
+  // A part with nothing inside: neither expanded nor not, and says nothing of opening.
+  const leaf = V2.nodes.find((n: Json) => n.parent === "crates-server" && !V2.nodes.some((k: Json) => k.parent === n.id))!;
+  const plain = block(page, leaf.id);
+  await expect(plain).toBeVisible();
+  expect(await attr(plain, "aria-expanded")).toBeNull();
+  expect(await attr(plain, "aria-current")).toBeNull();
+  await expect(plain).not.toHaveAttribute("aria-label", /parts inside|opens/);
+  await expect.poll(active).toBe("crates-server");
+  await page.keyboard.press("Enter");
+  await expect(server).toBeVisible();
+  await settled(page);
+  // ] and [ step through the selected part's lines, the focus on each: a line is reached without a pointer.
+  await expect.poll(active).toBe("crates-server");
   const focusedLine = () => page.evaluate(() => (document.activeElement as SVGElement | null)?.dataset?.line ?? null);
   /** The focused line's words: its two ends and how many connections it carries. */
   const said = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
@@ -696,7 +725,7 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   expect(await said()).toContain(nodeOf("crates-server").name);
   await page.keyboard.press("[");
   await expect.poll(focusedLine).toBe(line1);
-  await expect(server).toHaveAttribute("aria-pressed", "false");
+  expect(await attr(server, "aria-current")).toBeNull();
   await page.keyboard.press("Escape");
   await expect.poll(() => selOf(page)).toBeNull();
   // Space on a card's or the legend's button is the button's.

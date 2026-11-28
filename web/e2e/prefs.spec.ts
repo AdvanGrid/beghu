@@ -203,6 +203,9 @@ test("the canvas keeps its arrow keys, and Open or fold the selection rebinds fr
   const frame = view.locator('[data-perf="frame"][data-id="crates-server"]:not([hidden] *)');
   await block.click();
   await expect.poll(() => new URL(view.url()).searchParams.get("sel")).toBe("part:crates-server");
+  // What a screen reader says of the block and the drawing names the key in effect.
+  await expect(block).toHaveAttribute("aria-label", /, has parts inside, o opens$/);
+  await expect(canvas).toHaveAttribute("aria-label", /: arrow keys move the selection, o opens or folds it, \] and \[ step through its lines$/);
   // Enter gave way; o opens the selected block.
   await view.keyboard.press("Enter");
   await view.waitForTimeout(200);
