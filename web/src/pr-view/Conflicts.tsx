@@ -16,7 +16,7 @@ import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show } from "solid-js";
 import type { Conflict, ConflictKind, Side } from "../bindings/analysis";
 import { colors, fonts } from "../tokens.stylex";
-import { useCanvas } from "./canvas/store";
+import { useLight } from "./canvas/store";
 import { ClaimList, claimCount, SourceBox } from "./claims";
 import type { Model } from "./model";
 import { useNav } from "./nav";
@@ -49,12 +49,12 @@ export function Conflicts(props: { list: readonly Conflict[] }) {
 /** One card: a lone conflict, or a cause's conflicts. */
 export function ConflictCard(props: { card: Card }) {
   const nav = useNav();
-  const c = useCanvas();
+  const lit = useLight();
   const m = () => nav.model();
   const conflicts = () => (props.card.kind === "one" ? [props.card.conflict] : props.card.conflicts);
   const light = () => {
     const cs = conflicts();
-    c.light({ nodes: cs.flatMap((x) => x.touches.nodes), edges: cs.flatMap((x) => x.touches.edges) });
+    lit.on({ nodes: cs.flatMap((x) => x.touches.nodes), edges: cs.flatMap((x) => x.touches.edges) });
   };
   const cause = () => (props.card.kind === "cause" ? m().a.causes.find((x) => x.id === (props.card as { cause: string }).cause) : undefined);
   return (
@@ -63,9 +63,9 @@ export function ConflictCard(props: { card: Card }) {
       data-perf={props.card.kind === "cause" ? "cause-card" : "conflict-card"}
       data-id={props.card.kind === "cause" ? props.card.cause : props.card.conflict.id}
       onPointerEnter={light}
-      onPointerLeave={() => c.light(undefined)}
+      onPointerLeave={() => lit.off()}
       onFocusIn={light}
-      onFocusOut={() => c.light(undefined)}
+      onFocusOut={() => lit.off()}
     >
       <Show when={cause()}>
         {(x) => (
@@ -159,8 +159,8 @@ function Row(props: { k: Conflict; side: Side; open: boolean; toggle: () => void
           <Show when={side().sites}>
             {(sites) => (
               <div {...stylex.attrs(ui.stack)} data-perf="conflict-sites">
-                <span {...stylex.attrs(ui.muted, ui.small)}>
-                  {sites().claims.length} {sites().claims.length === 1 ? "site" : "sites"} where it breaks
+                <span {...stylex.attrs(ui.muted, ui.small)} data-perf="conflict-sites-count">
+                  {sites().claims.length + sites().more} {sites().claims.length + sites().more === 1 ? "site" : "sites"} where it breaks{sites().more > 0 ? `: the first ${sites().claims.length}` : ""}
                 </span>
                 <ClaimList m={m()} ids={sites().claims} />
                 <Show when={sites().more > 0}>

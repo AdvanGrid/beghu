@@ -19,13 +19,13 @@
 //   while hovered and standing on it when clicked; at the PR, "N changed parts serve no purpose
 //   ›"; Conflicts (n); and the reference folded at the end ("All changes, by kind" at the PR,
 //   "Questions, facets, files and evidence" elsewhere).
-// - The fallback: with `unbacked`, its sentence leads the PR's panel, "All changes, by kind"
-//   unfolded under it.
+// - The fallback: with `unbacked`, its sentence leads the PR's panel in the walk's place, "All
+//   changes, by kind" unfolded under it, then Conflicts (n), then the rest of the reference.
 import * as stylex from "@stylexjs/stylex";
 import { createSignal, For, Show, type Element } from "solid-js";
 import type { BuiltKind, Edge, Node, Purpose, Rule, Walk } from "../bindings/analysis";
 import { colors } from "../tokens.stylex";
-import { useCanvas } from "./canvas/store";
+import { useLight } from "./canvas/store";
 import { ClaimList, SourceBox } from "./claims";
 import { Conflicts } from "./Conflicts";
 import type { Model } from "./model";
@@ -167,48 +167,51 @@ export interface Next {
 }
 
 function NextList(props: { title: string; rows: Next[]; note?: string }) {
-  const nav = useNav();
-  const c = useCanvas();
   return (
     <Show when={props.rows.length > 0}>
       <section data-perf="walk-next">
         <H3>{props.title}</H3>
         <Show when={props.note}>{(n) => <p {...stylex.attrs(ui.p, ui.small, ui.muted, s.note)}>{n()}</p>}</Show>
         <ol {...stylex.attrs(s.next)}>
-          <For each={props.rows}>
-            {(r, i) => (
-              <li>
-                <button
-                  type="button"
-                  {...stylex.attrs(s.stop)}
-                  data-perf="next-row"
-                  onClick={() => {
-                    c.light(undefined);
-                    nav.select(r.to);
-                  }}
-                  onPointerEnter={() => c.light(r.light)}
-                  onPointerLeave={() => c.light(undefined)}
-                  onFocus={() => c.light(r.light)}
-                  onBlur={() => c.light(undefined)}
-                >
-                  <span {...stylex.attrs(s.num)}>{i() + 1}</span>
-                  <span {...stylex.attrs(s.stopBody)}>
-                    <span {...stylex.attrs(s.stopName)}>
-                      <Show when={r.purpose}>{(id) => <PurposeDot id={id()} />}</Show>
-                      {r.name}
-                    </span>
-                    <span {...stylex.attrs(ui.muted, ui.small)}>{r.line}</span>
-                  </span>
-                  <span {...stylex.attrs(ui.muted)} aria-hidden="true">
-                    ›
-                  </span>
-                </button>
-              </li>
-            )}
-          </For>
+          <For each={props.rows}>{(r, i) => <NextRow r={r} n={i() + 1} />}</For>
         </ol>
       </section>
     </Show>
+  );
+}
+
+function NextRow(props: { r: Next; n: number }) {
+  const nav = useNav();
+  const lit = useLight();
+  const r = props.r;
+  return (
+    <li>
+      <button
+        type="button"
+        {...stylex.attrs(s.stop)}
+        data-perf="next-row"
+        onClick={() => {
+          lit.off();
+          nav.select(r.to);
+        }}
+        onPointerEnter={() => lit.on(r.light)}
+        onPointerLeave={() => lit.off()}
+        onFocus={() => lit.on(r.light)}
+        onBlur={() => lit.off()}
+      >
+        <span {...stylex.attrs(s.num)}>{props.n}</span>
+        <span {...stylex.attrs(s.stopBody)}>
+          <span {...stylex.attrs(s.stopName)}>
+            <Show when={r.purpose}>{(id) => <PurposeDot id={id()} />}</Show>
+            {r.name}
+          </span>
+          <span {...stylex.attrs(ui.muted, ui.small)}>{r.line}</span>
+        </span>
+        <span {...stylex.attrs(ui.muted)} aria-hidden="true">
+          ›
+        </span>
+      </button>
+    </li>
   );
 }
 
@@ -237,7 +240,13 @@ function Reference(props: { title: string; children: Element; open?: boolean }) 
 
 // ---- The PR ------------------------------------------------------------------------------------
 
-export function PrWalk(props: { reference: Element }) {
+/**
+ * The PR's place. `changes` is the reference's "All changes, by kind", `rest` the rest of it (the
+ * PR's description, coverage, the facets found, Since the last analysis): both folded at the end,
+ * after Conflicts. In the fallback (`unbacked`), its sentence leads instead of the walk, "All
+ * changes, by kind" unfolded under it, then Conflicts, then the rest of the reference, folded.
+ */
+export function PrWalk(props: { changes: Element; rest: Element }) {
   const nav = useNav();
   const m = () => nav.model();
   const p = () => purposesOf(m());
@@ -260,7 +269,10 @@ export function PrWalk(props: { reference: Element }) {
               </p>
             </Show>
             <Conflicts list={p().conflictsAt({ kind: "pr" })} />
-            <Reference title="All changes, by kind">{props.reference}</Reference>
+            <Reference title="All changes, by kind">
+              {props.changes}
+              {props.rest}
+            </Reference>
           </>
         }
       >
@@ -270,9 +282,10 @@ export function PrWalk(props: { reference: Element }) {
               {why()}
             </p>
             <Reference title="All changes, by kind" open>
-              {props.reference}
+              {props.changes}
             </Reference>
             <Conflicts list={p().conflictsAt({ kind: "pr" })} />
+            <Reference title="The PR, coverage and the facets found">{props.rest}</Reference>
           </>
         )}
       </Show>
@@ -377,7 +390,6 @@ function RuleRow(props: { r: Rule }) {
 /** Roles grouped by top-level purpose: one dot and its name, its own role, its sub-purposes' under it. */
 function InPurposes(props: { roles: Role[] }) {
   const nav = useNav();
-  const c = useCanvas();
   const m = () => nav.model();
   const p = () => purposesOf(m());
   const groups = () => {
@@ -397,47 +409,50 @@ function InPurposes(props: { roles: Role[] }) {
       <Show when={props.roles.length > 0} fallback={<p {...stylex.attrs(ui.p, ui.muted)} data-perf="in-none">None: the PR's purposes don't pass through it.</p>}>
         <ul {...stylex.attrs(ui.list, s.roles)}>
           <For each={groups()}>
-            {(g) => (
-              <li
-                {...stylex.attrs(s.role)}
-                data-perf="in-purpose"
-                data-id={g.top}
-                onPointerEnter={() => c.light(purposeLight(p(), g.top))}
-                onPointerLeave={() => c.light(undefined)}
-              >
-                <div {...stylex.attrs(s.roleHead)}>
-                  <PurposeDot id={g.top} />
-                  <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent, s.strong)} onClick={() => nav.select({ kind: "purpose", ids: [g.top] })}>
-                    {p().byId.get(g.top)?.name ?? g.top}
-                  </button>
-                </div>
-                <For each={g.roles.filter((r) => r.purpose === g.top)}>
-                  {(r) => (
-                    <p {...stylex.attrs(ui.p, s.roleLine)} data-perf="role">
-                      {r.role}
-                      {via(r)}
-                    </p>
-                  )}
-                </For>
-                <Show when={g.roles.some((r) => r.purpose !== g.top)}>
-                  <ul {...stylex.attrs(ui.list, s.subRoles)}>
-                    <For each={g.roles.filter((r) => r.purpose !== g.top)}>
-                      {(r) => (
-                        <li data-perf="sub-role" data-id={r.purpose}>
-                          <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent)} onClick={() => nav.select({ kind: "purpose", ids: [r.purpose] })}>
-                            {p().byId.get(r.purpose)?.name ?? r.purpose}
-                          </button>
-                          <p {...stylex.attrs(ui.p, s.roleLine)} data-perf="role">
-                            {r.role}
-                            {via(r)}
-                          </p>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </Show>
-              </li>
-            )}
+            {(g) => {
+              const lit = useLight();
+              return (
+                <li
+                  {...stylex.attrs(s.role)}
+                  data-perf="in-purpose"
+                  data-id={g.top}
+                  onPointerEnter={() => lit.on(purposeLight(p(), g.top))}
+                  onPointerLeave={() => lit.off()}
+                >
+                  <div {...stylex.attrs(s.roleHead)}>
+                    <PurposeDot id={g.top} />
+                    <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent, s.strong)} onClick={() => nav.select({ kind: "purpose", ids: [g.top] })}>
+                      {p().byId.get(g.top)?.name ?? g.top}
+                    </button>
+                  </div>
+                  <For each={g.roles.filter((r) => r.purpose === g.top)}>
+                    {(r) => (
+                      <p {...stylex.attrs(ui.p, s.roleLine)} data-perf="role">
+                        {r.role}
+                        {via(r)}
+                      </p>
+                    )}
+                  </For>
+                  <Show when={g.roles.some((r) => r.purpose !== g.top)}>
+                    <ul {...stylex.attrs(ui.list, s.subRoles)}>
+                      <For each={g.roles.filter((r) => r.purpose !== g.top)}>
+                        {(r) => (
+                          <li data-perf="sub-role" data-id={r.purpose}>
+                            <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent)} onClick={() => nav.select({ kind: "purpose", ids: [r.purpose] })}>
+                              {p().byId.get(r.purpose)?.name ?? r.purpose}
+                            </button>
+                            <p {...stylex.attrs(ui.p, s.roleLine)} data-perf="role">
+                              {r.role}
+                              {via(r)}
+                            </p>
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </Show>
+                </li>
+              );
+            }}
           </For>
         </ul>
       </Show>
@@ -577,7 +592,6 @@ export function LineWalk(props: { edges: Edge[]; reference: Element }) {
 
 export function UnclaimedWalk() {
   const nav = useNav();
-  const c = useCanvas();
   const m = () => nav.model();
   const p = () => purposesOf(m());
   const n = () => m().a.unclaimed.length;
@@ -588,32 +602,38 @@ export function UnclaimedWalk() {
       <p {...stylex.attrs(ui.p, s.gap)}>Each changed part no purpose passes through, with why.</p>
       <ol {...stylex.attrs(s.next, s.gap)}>
         <For each={m().a.unclaimed.filter((u) => m().nodes.has(u.node))}>
-          {(u, i) => (
-            <li>
-              <button
-                type="button"
-                {...stylex.attrs(s.stop)}
-                data-perf="unclaimed-row"
-                data-id={u.node}
-                onClick={() => nav.select(part(u.node))}
-                onPointerEnter={() => c.light({ nodes: [u.node], edges: [] })}
-                onPointerLeave={() => c.light(undefined)}
-              >
-                <span {...stylex.attrs(s.num)}>{i() + 1}</span>
-                <span {...stylex.attrs(s.stopBody)}>
-                  <span {...stylex.attrs(s.stopName)}>
-                    <Mark change={m().nodes.get(u.node)!.change} /> {m().name(u.node)}
+          {(u, i) => {
+            const lit = useLight();
+            return (
+              <li>
+                <button
+                  type="button"
+                  {...stylex.attrs(s.stop)}
+                  data-perf="unclaimed-row"
+                  data-id={u.node}
+                  onClick={() => {
+                    lit.off();
+                    nav.select(part(u.node));
+                  }}
+                  onPointerEnter={() => lit.on({ nodes: [u.node], edges: [] })}
+                  onPointerLeave={() => lit.off()}
+                >
+                  <span {...stylex.attrs(s.num)}>{i() + 1}</span>
+                  <span {...stylex.attrs(s.stopBody)}>
+                    <span {...stylex.attrs(s.stopName)}>
+                      <Mark change={m().nodes.get(u.node)!.change} /> {m().name(u.node)}
+                    </span>
+                    <span {...stylex.attrs(ui.muted, ui.small)} data-perf="unclaimed-reason">
+                      {u.reason}
+                    </span>
                   </span>
-                  <span {...stylex.attrs(ui.muted, ui.small)} data-perf="unclaimed-reason">
-                    {u.reason}
+                  <span {...stylex.attrs(ui.muted)} aria-hidden="true">
+                    ›
                   </span>
-                </span>
-                <span {...stylex.attrs(ui.muted)} aria-hidden="true">
-                  ›
-                </span>
-              </button>
-            </li>
-          )}
+                </button>
+              </li>
+            );
+          }}
         </For>
       </ol>
       <Conflicts list={p().conflictsAt({ kind: "unclaimed" })} />
@@ -669,7 +689,7 @@ const s = stylex.create({
   },
   chipOn: { borderColor: colors.accent, backgroundColor: { default: colors.selected, ":hover": colors.selected }, color: colors.accent },
   stated: { color: colors.warn, cursor: "help", fontSize: 12.5, fontStyle: "italic", whiteSpace: "nowrap" },
-  hidden: { visibility: "hidden" },
+  hidden: { display: "none" },
   gap: { marginTop: 10 },
   note: { marginBottom: 6 },
   next: { margin: 0, padding: 0, gap: 2, listStyle: "none", display: "flex", flexDirection: "column" },

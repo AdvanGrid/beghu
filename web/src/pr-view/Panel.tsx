@@ -49,7 +49,7 @@ export function Panel(props: { note?: string; dismiss: () => void }) {
           survived shows the newer analysis's words, with its claims' boundaries afresh. */}
       <Show when={nav.model()} keyed>
         {(_model) => (
-          <Show when={nav.sel()} keyed fallback={<PrWalk reference={<PrPanel />} />}>
+          <Show when={nav.sel()} keyed fallback={<PrWalk changes={<PrChanges />} rest={<PrRest />} />}>
             {(sel) => <Place sel={sel} />}
           </Show>
         )}
@@ -104,11 +104,11 @@ function H3(props: { children: Element }) {
 
 // ---- The PR ------------------------------------------------------------------------------------
 
-function PrPanel() {
+/** "All changes, by kind": the PR's size, then the stated order's four groups. */
+function PrChanges() {
   const nav = useNav();
   const m = () => nav.model();
   const a = () => m().a;
-  const partlyDrawn = () => a().nodes.filter((n) => n.drawn);
   return (
     <div data-perf="pr-panel">
       <p {...stylex.attrs(ui.p, ui.muted)}>
@@ -137,7 +137,18 @@ function PrPanel() {
           </section>
         )}
       </For>
+    </div>
+  );
+}
 
+/** The rest of the PR's reference, after "All changes, by kind": the PR's description, coverage, the facets found, Since the last analysis. */
+function PrRest() {
+  const nav = useNav();
+  const m = () => nav.model();
+  const a = () => m().a;
+  const partlyDrawn = () => a().nodes.filter((n) => n.drawn);
+  return (
+    <div data-perf="pr-rest">
       <H3>The PR</H3>
       <Fold summary="The PR's description" perf="description">
         <Show when={a().pr.description.trim()} fallback={<p {...stylex.attrs(ui.p, ui.muted)}>The PR has no description.</p>}>
