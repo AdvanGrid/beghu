@@ -57,8 +57,9 @@ RUN cargo build --release --locked -p beghu \
 # named volume starts out writable. Debian 13 while the build stages are 12: the binary, linked
 # against bookworm's glibc 2.36, runs on trixie's 2.41. cc-debian12 was still shipping libssl3
 # 3.0.20 after Debian's 3.0.22 fixed CVE-2026-84782; beghu never loads libssl (it uses rustls),
-# but deployers' image scans fail on it.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2
+# but deployers' image scans fail on it. Refreshed for libzstd1 1.5.7+dfsg-1+deb13u1
+# (CVE-2026-124851).
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2
 ARG BEGHU_BUILD_ID
 # The source label links the ghcr.io package to this repo; the revision names the commit.
 LABEL org.opencontainers.image.source=https://github.com/AdvanGrid/beghu \
