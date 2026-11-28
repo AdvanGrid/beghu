@@ -12,8 +12,10 @@
 // Opening and folding glide over 420 ms (the Web Animations API, transforms and opacity only, from
 // where each item is drawn to its new place): an opened block's contents grow out of its corner, a
 // folded one's shrink back in, the clicked block stays still, and the lines come back when the
-// glide ends. An item that changes size never scales its text or border: it wears a skin of nine
-// pieces for the glide (glideItem). A glide cut short by another carries on from where it was.
+// glide ends. An item that changes size never scales its text, and its border keeps its width:
+// it wears a skin for the glide (glideItem, wearSkin), whose solid edges stretch only along their
+// length and whose dashed ones only move, so no dash stretches. A glide cut short by another
+// carries on from where it was.
 // Then the canvas pans as little as it can to bring the frame's title and as much of the frame as
 // fits into view, eased, with no zoom change. `prefers-reduced-motion` snaps.
 //
@@ -558,10 +560,11 @@ export function Canvas() {
    * Glides one item from `a` to `b` (its places in the drawing, the size it's drawn at, its
    * content's scale and its layer's opacity). An item drawn at its own size, or at a uniform scale
    * of it (an arrival, a leaver), moves by FLIP: a transform from one place to the other. One whose
-   * size changes wears a skin for the glide: its border and fill drawn in nine pieces (corners that
-   * move, edges that stretch only along their length, a middle that stretches), so its border and
-   * corners keep their width and its text and title only move, never scale. Opacity glides on the
-   * item's layer, never the item: a faded item stays faded.
+   * size changes wears a skin for the glide (wearSkin): its border and fill drawn in pieces
+   * (corners that move, a middle that stretches, solid edges that stretch only along their length,
+   * dashed ones in halves that only move), so its border and corners keep their width, no dash
+   * stretches, and its text and title only move, never scale. Opacity glides on the item's layer,
+   * never the item: a faded item stays faded.
    */
   const glideItem = (id: string, el: HTMLElement, it: Item, a: Vis, b: Vis, fill: FillMode) => {
     const r = it.rect;
@@ -577,46 +580,97 @@ export function Canvas() {
       anim = el.animate([{ transform: place(a, 1) }, { transform: place(b, 1) }], opts);
       a = { ...a, k: 1 };
       b = { ...b, k: 1 };
-      wearSkin(el, RADIUS[lookOf(it)], r, a, b, opts);
+      const l = lookOf(it);
+      wearSkin(el, RADIUS[l], l === "column" || l === "shared" || l === "rest", r, a, b, opts);
     }
     running.push(anim);
     if (a.o !== b.o && el.parentElement) running.push(el.parentElement.animate([{ opacity: a.o }, { opacity: b.o }], opts));
     tracks.set(id, { a, b, anim });
   };
-  /** The nine pieces of an item's skin, glided from `a`'s size to `b`'s: the item's own border and fill hidden meanwhile. */
-  const wearSkin = (el: HTMLElement, R: number, r: Rect, a: Vis, b: Vis, opts: KeyframeAnimationOptions) => {
+  /**
+   * An item's skin, glided from `a`'s size to `b`'s: the item's own border and fill hidden
+   * meanwhile. Its corners move; its middle (fill only) stretches; a solid edge stretches along
+   * its length, which a solid line doesn't show. A dashed edge (a column's, a Shared box's, a rest
+   * block's) is its fill stretched, under two halves of its dashes, each the longer of its old and
+   * new length, anchored to its own corner and cut off at the edge's middle: they only move, so
+   * the dashes never stretch.
+   */
+  const wearSkin = (el: HTMLElement, R: number, dashed: boolean, r: Rect, a: Vis, b: Vis, opts: KeyframeAnimationOptions) => {
     const skin = document.createElement("div");
     skin.setAttribute("class", SKIN);
     skin.setAttribute("aria-hidden", "true");
     skin.dataset.skin = "";
-    // Each piece's transform, in the order of SKIN_PIECES: placed at the item's layout size, moved and stretched to `v`'s.
-    const pieces = (v: Vis): string[] => {
-      const dx = v.w - r.w, dy = v.h - r.h;
-      const sx = Math.max(0, v.w - 2 * R) / Math.max(1, r.w - 2 * R), sy = Math.max(0, v.h - 2 * R) / Math.max(1, r.h - 2 * R);
-      return [
-        "translate(0px, 0px)",
-        `translate(${dx}px, 0px)`,
-        `translate(0px, ${dy}px)`,
-        `translate(${dx}px, ${dy}px)`,
-        `translate(0px, 0px) scale(${sx}, 1)`,
-        `translate(0px, ${dy}px) scale(${sx}, 1)`,
-        `translate(0px, 0px) scale(1, ${sy})`,
-        `translate(${dx}px, 0px) scale(1, ${sy})`,
-        `scale(${sx}, ${sy})`,
-      ];
-    };
-    const [from, to] = [pieces(a), pieces(b)];
-    const made: [HTMLElement, number][] = [];
-    for (let i = 0; i < SKIN_PIECES.length; i++) {
-      const p = document.createElement("div");
-      p.setAttribute("class", SKIN_PIECES[i]!);
-      skin.append(p);
-      made.push([p, i]);
+    // A dashed edge's halves' lengths, across and down.
+    const hx = Math.max(0, Math.max(a.w, b.w) / 2 - R), hy = Math.max(0, Math.max(a.h, b.h) / 2 - R);
+    skin.style.setProperty("--hx", `${hx}px`);
+    skin.style.setProperty("--hy", `${hy}px`);
+    const t = (x: number, y: number) => `translate(${x}px, ${y}px)`;
+    // Each piece's transform at `v`, its class, and for a half its inner piece's: placed at the
+    // item's layout size, moved (and a solid edge or the middle stretched) to `v`'s.
+    type Geo = { dx: number; dy: number; sx: number; sy: number; mx: number; my: number };
+    type Piece = { cls: string; at: (g: Geo) => string; inner?: string; innerAt?: (g: Geo) => string };
+    const geo = (v: Vis): Geo => ({
+      dx: v.w - r.w,
+      dy: v.h - r.h,
+      sx: Math.max(0, v.w - 2 * R) / Math.max(1, r.w - 2 * R),
+      sy: Math.max(0, v.h - 2 * R) / Math.max(1, r.h - 2 * R),
+      mx: v.w / 2,
+      my: v.h / 2,
+    });
+    const pieces: Piece[] = [
+      { cls: SKIN_CORNERS[0]!, at: () => t(0, 0) },
+      { cls: SKIN_CORNERS[1]!, at: (g) => t(g.dx, 0) },
+      { cls: SKIN_CORNERS[2]!, at: (g) => t(0, g.dy) },
+      { cls: SKIN_CORNERS[3]!, at: (g) => t(g.dx, g.dy) },
+      ...(dashed
+        ? [
+            // The edges' fill, one stretched strip each (no seam where the halves meet), under their halves' dashes.
+            { cls: SKIN_EDGE_FILLS[0]!, at: (g: Geo) => `${t(0, 0)} scale(${g.sx}, 1)` },
+            { cls: SKIN_EDGE_FILLS[1]!, at: (g: Geo) => `${t(0, g.dy)} scale(${g.sx}, 1)` },
+            { cls: SKIN_EDGE_FILLS[2]!, at: (g: Geo) => `${t(0, 0)} scale(1, ${g.sy})` },
+            { cls: SKIN_EDGE_FILLS[3]!, at: (g: Geo) => `${t(g.dx, 0)} scale(1, ${g.sy})` },
+            // Top and bottom: the left half's clip ends at the middle, its dashes start at the left corner's end; the right half's mirror it.
+            { cls: SKIN_HALVES[0]!, inner: SKIN_HALF_EDGES[0]!, at: (g: Geo) => t(g.mx - hx, 0), innerAt: (g: Geo) => t(R + hx - g.mx, 0) },
+            { cls: SKIN_HALVES[0]!, inner: SKIN_HALF_EDGES[0]!, at: (g: Geo) => t(g.mx, 0), innerAt: (g: Geo) => t(g.mx - R - hx, 0) },
+            { cls: SKIN_HALVES[1]!, inner: SKIN_HALF_EDGES[1]!, at: (g: Geo) => t(g.mx - hx, g.dy), innerAt: (g: Geo) => t(R + hx - g.mx, 0) },
+            { cls: SKIN_HALVES[1]!, inner: SKIN_HALF_EDGES[1]!, at: (g: Geo) => t(g.mx, g.dy), innerAt: (g: Geo) => t(g.mx - R - hx, 0) },
+            // Left and right, the same down.
+            { cls: SKIN_HALVES[2]!, inner: SKIN_HALF_EDGES[2]!, at: (g: Geo) => t(0, g.my - hy), innerAt: (g: Geo) => t(0, R + hy - g.my) },
+            { cls: SKIN_HALVES[2]!, inner: SKIN_HALF_EDGES[2]!, at: (g: Geo) => t(0, g.my), innerAt: (g: Geo) => t(0, g.my - R - hy) },
+            { cls: SKIN_HALVES[3]!, inner: SKIN_HALF_EDGES[3]!, at: (g: Geo) => t(g.dx, g.my - hy), innerAt: (g: Geo) => t(0, R + hy - g.my) },
+            { cls: SKIN_HALVES[3]!, inner: SKIN_HALF_EDGES[3]!, at: (g: Geo) => t(g.dx, g.my), innerAt: (g: Geo) => t(0, g.my - R - hy) },
+          ]
+        : [
+            { cls: SKIN_EDGES[0]!, at: (g: Geo) => `${t(0, 0)} scale(${g.sx}, 1)` },
+            { cls: SKIN_EDGES[1]!, at: (g: Geo) => `${t(0, g.dy)} scale(${g.sx}, 1)` },
+            { cls: SKIN_EDGES[2]!, at: (g: Geo) => `${t(0, 0)} scale(1, ${g.sy})` },
+            { cls: SKIN_EDGES[3]!, at: (g: Geo) => `${t(g.dx, 0)} scale(1, ${g.sy})` },
+          ]),
+      { cls: SKIN_MIDDLE, at: (g) => `scale(${g.sx}, ${g.sy})` },
+    ];
+    const [ga, gb] = [geo(a), geo(b)];
+    const moves: [HTMLElement, string, string][] = [];
+    for (const p of pieces) {
+      const d = document.createElement("div");
+      d.setAttribute("class", p.cls);
+      moves.push([d, p.at(ga), p.at(gb)]);
+      if (p.inner && p.innerAt) {
+        const inner = document.createElement("div");
+        inner.setAttribute("class", p.inner);
+        d.append(inner);
+        moves.push([inner, p.innerAt(ga), p.innerAt(gb)]);
+      }
+      skin.append(d);
     }
     el.prepend(skin);
     el.style.setProperty("--bare", "transparent");
+    el.style.setProperty("--worn", "0");
     skinned.add(el);
-    for (const [p, i] of made) if (from[i] !== to[i]) running.push(p.animate([{ transform: from[i]! }, { transform: to[i]! }], opts));
+    for (const [d, from, to] of moves) {
+      // Its place once the glide is over (its animation's, while it runs): a piece that doesn't move is placed too.
+      d.style.setProperty("--at", to);
+      if (from !== to) running.push(d.animate([{ transform: from }, { transform: to }], opts));
+    }
   };
   /** Once a glide lands: the frame (or block) it was about brought into view. */
   const afterGlide = (sc: Scene, at: string | undefined) => {
@@ -1423,6 +1477,7 @@ const st = stylex.create({
   hovered: { boxShadow: `0 2px 10px ${colors.popShadow}` },
   // A resizing item's skin mid-glide, over its border box, under its content.
   skin: { inset: "calc(-1 * var(--edge-w))", borderStyle: "inherit", borderWidth: 0, pointerEvents: "none", position: "absolute", zIndex: -1, },
+  // `--at`: its transform once the glide is over (wearSkin).
   piece: {
     borderColor: "var(--edge)",
     borderStyle: "inherit",
@@ -1430,8 +1485,19 @@ const st = stylex.create({
     backgroundColor: "var(--fill)",
     boxSizing: "border-box",
     position: "absolute",
+    transform: "var(--at)",
     transformOrigin: "0 0",
   },
+  // A dashed edge's half: a clip (`--hx` or `--hy` long, from wearSkin) round its piece.
+  half: { borderStyle: "inherit", borderWidth: 0, overflow: "hidden", position: "absolute", transform: "var(--at)", transformOrigin: "0 0", },
+  halfAcross: { height: "var(--r)", left: 0, width: "var(--hx)" },
+  halfDown: { height: "var(--hy)", top: 0, width: "var(--r)" },
+  atTop: { top: 0 },
+  atBottom: { bottom: 0 },
+  atLeft: { left: 0 },
+  atRight: { right: 0 },
+  halfEdge: { inset: 0, backgroundColor: "transparent" },
+  fillOnly: { borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 0, borderTopWidth: 0 },
   corner: { height: "var(--r)", width: "var(--r)" },
   across: { height: "var(--r)", left: "var(--r)", width: "calc(100% - 2 * var(--r))" },
   down: { height: "calc(100% - 2 * var(--r))", top: "var(--r)", width: "var(--r)" },
@@ -1668,19 +1734,20 @@ const ITEM = cxTable((CHANGES.length + KINDS.length - 1) * FLAGS, (i) => {
   ];
 });
 const WORLD = cx(st.world);
+const WORLD_GLIDING = cx(st.world, st.worldGliding);
 const SKIN = cx(st.skin);
-/** A skin's pieces: its four corners, its top, bottom, left and right edges, and its middle. */
-const SKIN_PIECES = [
-  cx(st.piece, st.corner, st.tl),
-  cx(st.piece, st.corner, st.tr),
-  cx(st.piece, st.corner, st.bl),
-  cx(st.piece, st.corner, st.br),
-  cx(st.piece, st.across, st.top),
-  cx(st.piece, st.across, st.bottom),
-  cx(st.piece, st.down, st.left),
-  cx(st.piece, st.down, st.right),
-  cx(st.piece, st.middle),
+/** A skin's pieces: its four corners (top left, top right, bottom left, bottom right); its top, bottom, left and right edges, solid; a dashed one's halves' clips and edges; its middle. */
+const SKIN_CORNERS = [cx(st.piece, st.corner, st.tl), cx(st.piece, st.corner, st.tr), cx(st.piece, st.corner, st.bl), cx(st.piece, st.corner, st.br)];
+const SKIN_EDGES = [cx(st.piece, st.across, st.top), cx(st.piece, st.across, st.bottom), cx(st.piece, st.down, st.left), cx(st.piece, st.down, st.right)];
+const SKIN_EDGE_FILLS = [
+  cx(st.piece, st.across, st.top, st.fillOnly),
+  cx(st.piece, st.across, st.bottom, st.fillOnly),
+  cx(st.piece, st.down, st.left, st.fillOnly),
+  cx(st.piece, st.down, st.right, st.fillOnly),
 ];
+const SKIN_HALVES = [cx(st.half, st.halfAcross, st.atTop), cx(st.half, st.halfAcross, st.atBottom), cx(st.half, st.halfDown, st.atLeft), cx(st.half, st.halfDown, st.atRight)];
+const SKIN_HALF_EDGES = [cx(st.piece, st.halfEdge, st.top), cx(st.piece, st.halfEdge, st.bottom), cx(st.piece, st.halfEdge, st.left), cx(st.piece, st.halfEdge, st.right)];
+const SKIN_MIDDLE = cx(st.piece, st.middle);
 const FACE = cx(st.face);
 const FACE_TOP = cx(st.faceTop);
 const FACE_KIND = cx(st.faceKind);
