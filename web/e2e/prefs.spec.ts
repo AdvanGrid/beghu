@@ -149,6 +149,30 @@ test("a key rebound on the setup page works at once, and in another tab through 
   await expect(other.getByRole("dialog", { name: "Keyboard shortcuts" }).locator("tr", { hasText: "Next issue" })).toContainText("n");
 });
 
+test("a canvas key rebound on the setup page works on the PR view's canvas, and its preset keys give way", async ({ context }) => {
+  const setup = await tab(context, "/prefs");
+  await expect(keysOf(setup, "zoomIn")).toHaveText("+=");
+  await record(setup, "Zoom in", "i");
+  await expect(keysOf(setup, "zoomIn")).toHaveText("i");
+
+  const view = await context.newPage();
+  await view.setViewportSize({ width: 1400, height: 900 });
+  await view.goto("/AdvanGrid/beghu/pull/191/view");
+  const canvas = view.locator('[data-perf="canvas-viewport"]');
+  await expect(canvas).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+  const zoom = view.locator('[data-perf="zoom-level"]');
+  const level = async () => Number((await zoom.textContent())!.replace("%", ""));
+  await canvas.focus();
+  const start = await level();
+  await view.keyboard.press("+");
+  await view.waitForTimeout(200);
+  expect(await level()).toBe(start);
+  await view.keyboard.press("i");
+  await expect.poll(level).toBeGreaterThan(start);
+  // The hint bar and the ? overlay say so too.
+  await expect(view.locator('[data-perf="hints"]')).toContainText("i Zoom in");
+});
+
 test("a sequence under way finishes on the keymap it started on, then the new one takes effect", async ({ context }) => {
   const setup = await tab(context, "/prefs");
   const other = await tab(context);

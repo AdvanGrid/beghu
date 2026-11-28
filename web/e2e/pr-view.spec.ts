@@ -1,6 +1,6 @@
 // The PR view (#181) in a real browser, on the recorded analysis of AdvanGrid/beghu#191: v2, which
-// `./dev-ctl start` and `reset` upload for tomsj (after v1, so its `carried` has v1's IDs). Its
-// canvas is a placeholder until slice 8 (pr-view/Canvas.tsx); everything else is the view's:
+// `./dev-ctl start` and `reset` upload for tomsj (after v1, so its `carried` has v1's IDs). The
+// canvas is canvas.spec.ts's (slice 8); everything else is the view's here:
 // a cold open (one read of the graph, the claims after it, no list), the top bar, the PR panel's
 // PR view into the view and its ← back with the list's view kept, every place the
 // panel shows (the PR, a part, a line, a step, a claim and its evidence), back and forward through
@@ -87,7 +87,7 @@ test("A cold open reads the graph once, then the claims, and no list; the top ba
   // The app's chrome stays; the list doesn't show.
   await expect(page.locator("header").getByText("beghu", { exact: true })).toBeVisible();
   await expect(page.locator('[data-perf="list-pane"]')).toHaveCount(0);
-  // The canvas (a placeholder) and the PR's panel.
+  // The canvas and the PR's panel.
   await expect(page.locator('[data-perf="block"]').first()).toBeVisible();
   await expect(panel(page).locator("h2").first()).toHaveText("All changes, by kind");
 
@@ -337,7 +337,9 @@ test("A setting replaces its history entry, normalised, and the panel follows it
   const entries = await page.evaluate(() => history.length);
   const hidden = panel(page).locator('[data-perf="connection"][data-hidden]');
   await expect(hidden.first()).toContainText("(hidden: test)");
-  const tests = page.locator('[data-perf="lines-when"]').getByRole("checkbox", { name: "tests" });
+  // The canvas's Lines menu (canvas.spec.ts has its counts and the lens greying it).
+  const tests = page.locator('[data-perf="lines-option"][data-value="test"] input');
+  await page.locator('[data-perf="lines-menu"]').click();
 
   // Test lines on: the URL says so in place of its entry, and the panel's test lines aren't faded.
   await tests.check();
@@ -356,6 +358,7 @@ test("A setting replaces its history entry, normalised, and the panel follows it
   // `boxes=folder,outside-role` is both slots' defaults: own parts by folder, outside systems by
   // the analysis's first `outside-*` facet.
   await open(page, "?sel=part:crates-fake-github&lines=call,runtime,data,event&boxes=folder,outside-role&lens=modules");
+  await page.locator('[data-perf="lines-menu"]').click();
   await tests.check();
   await expect.poll(() => new URL(page.url()).search).toBe("?sel=part:crates-fake-github&lines=runtime,test,call,data,event");
 });
@@ -680,14 +683,15 @@ test("A newer analysis shows a pill, never swaps by itself, and Show it keeps th
   await open(above, `?sel=purpose:${sub.was.slice("purpose:".length)}`);
   await expect(panel(above).locator('[data-perf="purpose-panel"] h2')).toHaveText(V1.purposes.find((p: Json) => p.id === sub.was).name);
 
-  await open(page, `?sel=line:${encodeURIComponent(split.was)}`);
+  // External connections, where the canvas draws the outside system picked below.
+  await open(page, `?sel=line:${encodeURIComponent(split.was)}&lens=external`);
   const body = page.locator('[data-perf="view-body"]');
   const v1 = await body.getAttribute("data-analysis");
   await expect(panel(page).locator('[data-perf="line"]')).toHaveAttribute("data-id", split.was);
 
   // v1's reference places that v2 lacks: an undetermined claim, with where it looked.
   // (On the same page: a pick away, and back.)
-  await page.locator('[data-perf="block"][data-id="ext-image-hosts"]').click();
+  await page.locator('[data-perf="block"][data-id="ext-image-hosts"]').dispatchEvent("click");
   const r = panel(page).locator('[data-perf="responsibility"]').first();
   await r.locator("summary").first().click();
   const und = r.locator('[data-perf="claim"]', { hasText: "couldn't determine" }).first();
