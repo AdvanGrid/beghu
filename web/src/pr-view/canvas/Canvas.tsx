@@ -541,8 +541,10 @@ export function Canvas() {
           glideItem(id, el, now, a, whole(now.rect), "auto");
         } else if (was) {
           // Leaving: shrinks back into the block that holds it now, and holds there until the glide ends.
+          // One cut short mid-resize starts at a uniform scale of its own size, so it shrinks by
+          // FLIP, its contents with it: a skin would leave its text sticking out as it shrinks.
           const h = corner(holderIn(to, id));
-          const a = shift(cur ?? whole(was.rect));
+          const a = shift(cur ? uniformAt(cur, was.rect) : whole(was.rect));
           glideItem(id, el, was, a, { x: h?.x ?? a.x, y: h?.y ?? a.y, w: was.rect.w * 0.4, h: was.rect.h * 0.4, k: 0.4, o: 0 }, "forwards");
           leavers.push(el);
         }
@@ -557,6 +559,11 @@ export function Canvas() {
       }, GLIDE_MS);
     },
   );
+  /** `v` at a uniform scale of `r` (the smaller of its two), where it is: as is if it's one already. */
+  const uniformAt = (v: Vis, r: Rect): Vis => {
+    const k = Math.min(v.w / Math.max(1, r.w), v.h / Math.max(1, r.h));
+    return Math.abs(v.w - v.k * r.w) < 0.5 && Math.abs(v.h - v.k * r.h) < 0.5 ? v : { ...v, w: k * r.w, h: k * r.h, k };
+  };
   /**
    * Glides one item from `a` to `b` (its places in the drawing, the size it's drawn at, its
    * content's scale and its layer's opacity). An item drawn at its own size, or at a uniform scale
