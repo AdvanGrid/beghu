@@ -2,9 +2,10 @@
 // coordinates out) on the layout suite's committed synthetic graph (fixtures/pr-view/layout/:
 // #2627's shape at 1×, and 3×), on a dense scope, and on random graphs; through runs of opens and
 // folds as the view lays them out (each from the last answer: at 1×, and on random graphs with
-// boxes on and off), boxes and lonely parts turned on and off, drawings laid out from their own
-// answers, and a later analysis laid out from this one's answer. An exception to "tests
-// go through public seams" (AGENTS.md): the rules are geometry no HTTP answer or page shows.
+// boxes on and off), boxes and lonely parts turned on and off, the fold's column for code only a
+// conflict reaches, drawings laid out from their own answers, and a later analysis laid out from
+// this one's answer. An exception to "tests go through public seams" (AGENTS.md): the rules are
+// geometry no HTTP answer or page shows.
 // Whether the drawing reads well is the browser suite's and the owner's; how big, crossed and fast
 // it is, the `layout` perf suite's. `npm run test:lint`.
 import assert from "node:assert/strict";
@@ -669,6 +670,29 @@ describe("our layout on random graphs", () => {
           s.toggle(drawn[Math.floor(r() * drawn.length)]!);
         }
         assert.equal(s.moved.against, 0, `${JSON.stringify(view)}: ${s.moved.against} steps moved columns against the change, up to ${s.moved.most} px`);
+      }
+    });
+  }
+});
+
+describe("our layout with a column for code only a conflict reaches (the fold's, #183)", () => {
+  // Every fourth top-level part in the fifth column: it gets its own frame, right of the others,
+  // and every rule holds, fresh and laid out again from its own answer.
+  for (const seed of [1, 2, 3]) {
+    it(`keeps the rules at seed ${seed}`, () => {
+      const g = randomGraph(seed, 60);
+      const tops = g.nodes.filter((n) => n.parent === "sys");
+      const conflict = new Set(tops.filter((_, i) => i % 4 === 3).map((n) => n.id));
+      const column = (n: DrawableNode) => (conflict.has(n.id) ? ("conflict" as const) : undefined);
+      for (const open of [new Set<string>(), blocksOf(g)]) {
+        const { input } = layoutInput(g, { open, showLonely: true, column });
+        const L = layout(input);
+        checkRules(L, input);
+        const frames = L.scopes.get(input.root.id)!.groups;
+        const own = frames.find((f) => f.column === "conflict")!;
+        assert.ok(own, "the conflict column has its frame");
+        for (const f of frames) if (f !== own) assert.ok(f.rect.x + f.rect.w < own.rect.x, `the ${f.column} frame isn't left of the conflict column's`);
+        same(L, layout(layoutInput(g, { open, showLonely: true, column }, L).input), "from itself");
       }
     });
   }

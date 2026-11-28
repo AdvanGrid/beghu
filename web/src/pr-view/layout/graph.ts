@@ -65,6 +65,12 @@ export interface View {
   /** Top-level parts with no line, which are hidden by default (#144, rule 6). */
   showLonely?: boolean;
   /**
+   * A top-level part's column, in place of the one its kind and change give (undefined: those).
+   * The fold (#183) sets every top-level block's, and puts code only a conflict reaches in a
+   * column of its own.
+   */
+  column?: (n: DrawableNode) => Column | undefined;
+  /**
    * Groups drawn folded, each as one closed block standing for its parts, in their column: a
    * column (`columnGroup(column)`) or a box (its ID). Lines roll up to it as to a folded part.
    * A folded column's boxes fold with it.
@@ -148,7 +154,7 @@ export function layoutInput(g: DrawableGraph, view: View, previous?: Layout): Dr
     return t;
   };
   const columnOf = (n: DrawableNode): Column =>
-    n.kind === "actor" ? "people" : n.kind === "external" || n.kind === "store" ? "outside" : isTouched(n.id) ? "changed" : "unchanged";
+    view.column?.(n) ?? (n.kind === "actor" ? "people" : n.kind === "external" || n.kind === "store" ? "outside" : isTouched(n.id) ? "changed" : "unchanged");
 
   // Each top-level part's box, and the folded group standing for it, if any.
   const boxFn: BoxOf | undefined = typeof view.boxes === "function" ? view.boxes : view.boxes ? defaultBoxes(g.facets) : undefined;
