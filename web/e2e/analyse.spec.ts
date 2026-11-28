@@ -211,7 +211,9 @@ async function analysedPr(context: BrowserContext): Promise<{ page: Page; pr: Pr
   const { token } = tokenOf(await clipboard(page));
   expect(await agent(token, "pr.json")).toBe(200);
   expect((await upload(token, sample(pr.head!))).status).toBe(201);
-  await main(page).click();
+  // PR view links to the full-screen view: the popover is ▾'s.
+  await expect(main(page)).toHaveText("PR view · Working");
+  await page.locator('[data-perf="analyse-more"]').click();
   await pop(page).getByRole("button", { name: "End run" }).click();
   await expect(main(page)).toHaveText("PR view");
   await page.keyboard.press("Escape");

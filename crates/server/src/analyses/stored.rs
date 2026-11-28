@@ -4,7 +4,7 @@
 //! - **The graph** is the analysis with each claim cut down to its ID, its status and how many
 //!   evidence items of each kind it holds (enough for chips such as `code ×3`), in an envelope
 //!   naming the analysis (`id`, `version`, the PR, the head, the merge base, `snippets`), its
-//!   claims URL and `migratedIds`. Every item keeps the claim IDs it lists.
+//!   claims URL, `migratedIds` and `previous` (the ID of the analysis it replaced, or null). Every item keeps the claim IDs it lists.
 //! - **The claims** are the analysis's claims, whole, with their evidence.
 //!
 //! The two blobs join back into the whole analysis (the graph's claims replaced by the claims'),
@@ -69,6 +69,8 @@ pub(crate) struct Envelope {
     pub snippets: String,
     /// `[{old, new, step}]`.
     pub migrated_ids: Value,
+    /// The analysis this one replaced, if it replaced one.
+    pub previous: Option<String>,
 }
 
 impl Envelope {
@@ -134,6 +136,7 @@ pub(crate) fn split(mut analysis: Value, env: &Envelope) -> Blobs {
         "snippets": env.snippets,
         "claimsUrl": env.claims_url(),
         "migratedIds": env.migrated_ids,
+        "previous": env.previous,
         "analysis": analysis,
     });
     let claims = json!({ "id": env.id, "version": env.version, "claims": claims });
@@ -290,6 +293,7 @@ pub(crate) async fn migrate_if_behind(app: &App, pr: &PrKey) -> Result<(), ReadE
             created_at: row.created_at,
             snippets: row.snippets,
             migrated_ids: Value::Array(ids.clone()),
+            previous: row.previous_id,
         };
         Ok((split(m.value, &env), Value::Array(ids).to_string()))
     })
@@ -335,9 +339,9 @@ pub(crate) async fn migrate_if_behind(app: &App, pr: &PrKey) -> Result<(), ReadE
     Ok(())
 }
 
-/// The PR's whole analysis at this build's schema, for a check or the run's skeleton files. The
-/// caller holds the PR's analysis lock, and has migrated it ([`migrate_if_behind`]).
-pub(crate) async fn whole(app: &App, pr: &PrKey) -> Result<Option<Analysis>, ReadError> {
+/// The PR's whole analysis at this build's schema, with its ID, for a check or the run's skeleton
+/// files. The caller holds the PR's analysis lock, and has migrated it ([`migrate_if_behind`]).
+pub(crate) async fn whole(app: &App, pr: &PrKey) -> Result<Option<(String, Analysis)>, ReadError> {
     let (repo, number) = (pr.repo_id, pr.number);
     let Some(row) = app
         .analyses()
@@ -349,13 +353,14 @@ pub(crate) async fn whole(app: &App, pr: &PrKey) -> Result<Option<Analysis>, Rea
     else {
         return Ok(None);
     };
+    let id = row.id.clone();
     let parsed = tokio::task::spawn_blocking(move || -> Result<Analysis, String> {
         let v = join(&row.graph_gz, &row.claims_gz)?;
         serde_json::from_value(v).map_err(|e| e.to_string())
     })
     .await;
     match parsed {
-        Ok(Ok(a)) => Ok(Some(a)),
+        Ok(Ok(a)) => Ok(Some((id, a))),
         Ok(Err(why)) => {
             eprintln!(
                 "account {}: the stored analysis of repo {} #{} doesn't read: {why}",
@@ -372,5 +377,5 @@ pub(crate) async fn whole(app: &App, pr: &PrKey) -> Result<Option<Analysis>, Rea
 pub(crate) async fn previous(app: &App, pr: &PrKey) -> Result<Option<Analysis>, ReadError> {
     let _held = app.analyses().lock(pr).await;
     migrate_if_behind(app, pr).await?;
-    whole(app, pr).await
+    Ok(whole(app, pr).await?.map(|(_, a)| a))
 }

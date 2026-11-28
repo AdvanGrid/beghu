@@ -224,7 +224,8 @@ Commands:
                               or tiled-3x (the perf sizes, #9001 and #9003), or a case
                               (a file in fixtures/pr-view/cases/, at v1; a case named
                               <feature>.after-v1.json is at v2's head and goes up after
-                              v1, as a later analysis). Moves the PR on the fake to the
+                              v1, as a later analysis; v1 goes up first unless USER's
+                              analysis is v1 already). Moves the PR on the fake to the
                               head the version was analysed at first.
                               USER defaults to tomsj. start and reset upload v1, then v2
                               (when recorded) as tomsj only; every other account has none.

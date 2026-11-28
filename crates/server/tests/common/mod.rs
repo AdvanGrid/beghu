@@ -138,6 +138,10 @@ pub const SHELL_TEMPLATE: &str = "<!doctype html><html><head><!--beghu:preload--
 pub const PANEL_CHUNK: &str = "assets/IssuePanel-test.js";
 /// Where its Tree mode chunk is.
 pub const TREE_CHUNK: &str = "assets/IssueTree-test.js";
+/// Where its PR view chunk is.
+pub const VIEW_CHUNK: &str = "assets/View-test.js";
+/// The chunk the PR view shares with the PR panel's, which the view imports.
+pub const SHARED_CHUNK: &str = "assets/Analyse-test.js";
 
 /// The minimal build's Vite manifest (`.vite/manifest.json`), in the shape `vite build` writes.
 pub fn manifest() -> String {
@@ -146,7 +150,17 @@ pub fn manifest() -> String {
             "file": "assets/index-test.js",
             "src": "index.html",
             "isEntry": true,
-            "dynamicImports": ["src/IssuePanel.tsx", "src/IssueTree.tsx"],
+            "dynamicImports": ["src/IssuePanel.tsx", "src/IssueTree.tsx", "src/pr-view/View.tsx"],
+        },
+        "src/pr-view/View.tsx": {
+            "file": VIEW_CHUNK,
+            "src": "src/pr-view/View.tsx",
+            "isDynamicEntry": true,
+            "imports": ["index.html", "_Analyse-test.js"],
+        },
+        "_Analyse-test.js": {
+            "file": SHARED_CHUNK,
+            "imports": ["index.html"],
         },
         "src/IssueTree.tsx": {
             "file": TREE_CHUNK,

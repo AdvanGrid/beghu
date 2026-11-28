@@ -1,9 +1,10 @@
 //! The PR view's analysis runs (#176), through HTTP: starting a run and its prompt, pinning on
 //! the first fetch, every run file, each upload answer, the quote and `carried` checks, a
-//! migrated upload and a migration on read, supersede, expiry and every revocation, the 3,000-file
-//! refusal, the graph and claims answers, and the `analysis` event. GitHub's side (the PR's head,
-//! files and description) is set up on Fake GitHub; the analyses are the analysis crate's
-//! hand-written sample, each refused one built by editing it next to its assertion.
+//! migrated upload and a migration on read (keeping the analysis it replaced), supersede, expiry
+//! and every revocation, the 3,000-file refusal, the graph and claims answers, and the `analysis`
+//! event. GitHub's side (the PR's head, files and description) is set up on Fake GitHub; the
+//! analyses are the analysis crate's hand-written sample, each refused one built by editing it
+//! next to its assertion.
 
 mod common;
 
@@ -767,6 +768,8 @@ async fn the_graph_and_its_claims_are_served_as_stored_with_their_etag() {
     assert_eq!(g["mergeBase"], sample()["pr"]["baseSha"]);
     assert_eq!(g["snippets"], "checked");
     assert_eq!(g["migratedIds"], json!([]));
+    // The PR's first analysis replaced none.
+    assert_eq!(g["previous"], Value::Null);
     let claims_url = format!(
         "/api/acme/web/pulls/{number}/analysis/{id}/v{}/claims",
         analysis::VERSION
@@ -918,6 +921,11 @@ async fn an_older_upload_is_migrated_and_so_is_a_stored_analysis_on_read() {
         json!([{ "old": "api.orders", "new": "api.order-flow", "step": 1 }])
     );
     assert!(g.to_string().contains("api.order-flow"));
+    assert_eq!(
+        g["previous"],
+        Value::Null,
+        "a migration keeps what it replaced: none"
+    );
     let claims = |v: u32| format!("/api/acme/web/pulls/{number}/analysis/{id}/v{v}/claims");
     assert_eq!(s.get(&mut b.clone(), &claims(1)).await.status(), 404);
     assert_eq!(s.get(&mut b.clone(), &claims(2)).await.status(), 200);
@@ -949,10 +957,43 @@ async fn an_older_upload_is_migrated_and_so_is_a_stored_analysis_on_read() {
     let res = graph(&s, &b, number, "br", None).await;
     let g = decoded(res).await;
     assert_eq!(g["version"], 2);
+    // It names the analysis it replaced: the view's "Since the last analysis".
+    assert_eq!(g["previous"], id);
     assert_eq!(
         g["migratedIds"],
         json!([{ "old": "api.orders", "new": "api.order-flow", "step": 1 }])
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_migration_on_read_keeps_the_analysis_it_replaced() {
+    let mut s = start().await;
+    let (b, number) = setup(&s).await;
+    let token = run(&s, &b, number).await;
+    let (status, accepted) = upload(&s, &token, &sample()).await;
+    assert_eq!(status, 201, "{accepted}");
+    let first = accepted["analysis"].as_str().unwrap().to_owned();
+    let token = run(&s, &b, number).await;
+    let (status, accepted) = upload(&s, &token, &sample()).await;
+    assert_eq!(status, 201, "{accepted}");
+    let second = accepted["analysis"].as_str().unwrap().to_owned();
+    let g = decoded(graph(&s, &b, number, "br", None).await).await;
+    assert_eq!(g["previous"], first.as_str());
+
+    // A deploy a schema version ahead migrates the stored second analysis on its first read and
+    // writes it back: it still names the first as the one it replaced.
+    s.restart_with(|c| c.analysis_chain = &AHEAD).await;
+    let b = s.sign_in("tomsj").await;
+    let res = graph(&s, &b, number, "br", None).await;
+    assert_eq!(res.status(), 200);
+    let g = decoded(res).await;
+    assert_eq!(g["version"], 2);
+    assert_eq!(g["id"], second.as_str());
+    assert_eq!(g["previous"], first.as_str());
+    // And so does the next read, of the version written back.
+    let g = decoded(graph(&s, &b, number, "br", None).await).await;
+    assert_eq!(g["version"], 2);
+    assert_eq!(g["previous"], first.as_str());
 }
 
 #[tokio::test(flavor = "multi_thread")]

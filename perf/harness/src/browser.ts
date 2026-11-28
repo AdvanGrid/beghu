@@ -1,10 +1,13 @@
 // The browser suite: full Chromium against the production build, each action timed from its
 // input event to the frame that shows the right outcome (probe.ts), with the right rows taken
 // from the API beforehand. Beside the timings it counts what a page load and each action cost:
-// the request depth of the first load (cold and warm), its bytes (gzip), the list fetches a load
-// makes (the stream open's reset refetches it: measured, with no exemption), the round trips of
-// a filter and of opening an issue, the refetch batches of a push, the rows rendered while
+// the request depth of the first load (cold and warm), its bytes (gzip), the PR view's modules it
+// mustn't fetch (in any chunk, the entry's included) and the view's chunks' own bytes (gzip), the list fetches a load makes (the stream open's
+// reset refetches it: measured, with no exemption), the round trips of a filter and of opening
+// an issue, the refetch batches of a push, the rows rendered while
 // scrolling and the long tasks meanwhile.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type Browser, type BrowserContext, type CDPSession, type Page, chromium } from "playwright-core";
 import { expected, fetchRaw, Session, settle } from "./http.ts";
 import { probe, type Check, type Outcome } from "./probe.ts";
@@ -15,6 +18,64 @@ import { sleep } from "./stats.ts";
 const VIEWPORT = { width: 1280, height: 800 };
 /** How long a page goes without an API request before its load or action counts as done. */
 const QUIET_MS = 1000;
+
+/** The PR view's source module, as the Vite manifest keys it (web/src/router.tsx imports it lazily). */
+const VIEW_MODULE = "src/pr-view/View.tsx";
+
+/**
+ * The PR view's chunks (`/assets/…`) in a web build: its module's and those it imports
+ * statically, at any depth, the entry's aside (first-load JS). None in a build from before the
+ * view (main, when this tree is compared with it): its gates go unmeasured there.
+ */
+export function viewChunks(web: string): string[] {
+  const path = join(web, ".vite", "manifest.json");
+  if (!existsSync(path)) return [];
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as Record<string, { file: string; isEntry?: boolean; imports?: string[] }>;
+  if (!manifest[VIEW_MODULE]) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const todo = [VIEW_MODULE];
+  for (let k = todo.pop(); k !== undefined; k = todo.pop()) {
+    const m = manifest[k];
+    if (!m || m.isEntry || seen.has(k)) continue;
+    seen.add(k);
+    out.push(`/${m.file}`);
+    todo.push(...(m.imports ?? []));
+  }
+  return out;
+}
+
+/** The PR view's own source (`src/pr-view/`) and the Analyse module it shares with the PR panel. */
+const isViewModule = (m: string) => m.startsWith("src/pr-view/") || m === "src/Analyse.tsx";
+
+/**
+ * The PR view's modules (`isViewModule`) in the chunks `fetched` (`/assets/…` paths), the entry
+ * included: from the build's module list (`.vite/modules.json`, web/vite.config.ts `moduleList`),
+ * each chunk's source modules. Undefined for a build without the list (main, when this tree is
+ * compared with it): the gate goes unmeasured there. Throws if the list names no `src/pr-view/`
+ * module in the view's own chunks (`viewChunks`): its module ids no longer match the paths this
+ * looks for (or the view's chunks are gone), and a count of none would pass for nothing.
+ */
+export function viewModulesIn(web: string, fetched: string[]): { found: string[]; chunks: number } | undefined {
+  const path = join(web, ".vite", "modules.json");
+  if (!existsSync(path)) return undefined;
+  const list = JSON.parse(readFileSync(path, "utf8")) as Record<string, string[]>;
+  const own = viewChunks(web);
+  if (!own.some((url) => list[url.replace(/^\//, "")]?.some((m) => m.startsWith("src/pr-view/")))) {
+    throw new Error(
+      `browser.cold.pr-view-modules: ${path} lists no src/pr-view/ module in the PR view's own chunks (${own.join(", ") || "none in the manifest"}), so the gate can't tell view code from the rest: check web/vite.config.ts moduleList's paths`,
+    );
+  }
+  const found: string[] = [];
+  let chunks = 0;
+  for (const url of new Set(fetched)) {
+    const modules = list[url.replace(/^\//, "")];
+    if (!modules) continue;
+    chunks++;
+    for (const m of modules) if (isViewModule(m)) found.push(`${url}: ${m}`);
+  }
+  return { found, chunks };
+}
 
 export function launch(): Promise<Browser> {
   return chromium.launch({ channel: "chromium", headless: true });
@@ -201,7 +262,15 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
 
   probes.push({
     name: "browser.cold",
-    gates: ["browser.cold.ms", "browser.cold.depth", "browser.load.list-fetches", "browser.first-load.kb", "browser.first-load.html.kb"],
+    gates: [
+      "browser.cold.ms",
+      "browser.cold.depth",
+      "browser.load.list-fetches",
+      "browser.first-load.kb",
+      "browser.first-load.html.kb",
+      "browser.cold.pr-view-modules",
+      "browser.pr-view.kb",
+    ],
     async sample(): Promise<Sample> {
       // Live and write samples reorder the list: what it should show is read again each time.
       const top = await expected(c.session);
@@ -241,6 +310,27 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
           values["browser.first-load.kb"] = total / 1024;
           values["browser.first-load.html.kb"] = html / 1024;
           evidence["browser.first-load.kb"] = sizes;
+          // The PR view's code is its own route's: none of its modules loads with the list, in its
+          // chunks or inlined into another (the entry's included).
+          const fetchedPaths = all.filter((r) => r.url.startsWith(c.stack.url)).map((r) => new URL(r.url).pathname);
+          const modules = viewModulesIn(c.stack.build.web, fetchedPaths);
+          if (modules) {
+            values["browser.cold.pr-view-modules"] = modules.found.length;
+            evidence["browser.cold.pr-view-modules"] = modules.found.length ? modules.found : [`none in the ${modules.chunks} chunks fetched`];
+          }
+          const view = viewChunks(c.stack.build.web);
+          if (view.length > 0) {
+            let bytes = 0;
+            const each: string[] = [];
+            for (const chunk of view) {
+              const a = await fetchRaw(`${c.stack.url}${chunk}`);
+              if (a.status !== 200) throw new Error(`${chunk}: ${a.status}`);
+              bytes += a.wire.length;
+              each.push(`${chunk} ${(a.wire.length / 1024).toFixed(1)}`);
+            }
+            values["browser.pr-view.kb"] = bytes / 1024;
+            evidence["browser.pr-view.kb"] = each;
+          }
           coldCounted = true;
         }
         return { values, evidence };

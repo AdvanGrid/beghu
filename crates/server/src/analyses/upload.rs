@@ -234,7 +234,9 @@ async fn take(
     let pr = a.pr();
     let _held = app.analyses().lock(&pr).await;
     stored::migrate_if_behind(app, &pr).await?;
-    let previous = match stored::whole(app, &pr).await? {
+    let replaced = stored::whole(app, &pr).await?;
+    let previous_id = replaced.as_ref().map(|(id, _)| id.clone());
+    let previous = match replaced.map(|(_, p)| p) {
         None => Previous::None,
         Some(p) => Previous::Some {
             ids: PreviousIds::of(&p),
@@ -300,6 +302,7 @@ async fn take(
     let upload = Upload {
         text,
         gz: upload_gz,
+        replaces: previous_id,
     };
     accept(
         app,
@@ -313,10 +316,12 @@ async fn take(
     .await
 }
 
-/// The upload's body, kept with the analysis it made: inflated, and as it came when gzipped.
+/// The upload's body, kept with the analysis it made: inflated, and as it came when gzipped; and
+/// the ID of the PR's analysis it replaces, if it had one (the graph's `previous`).
 struct Upload {
     text: Vec<u8>,
     gz: Option<Vec<u8>>,
+    replaces: Option<String>,
 }
 
 /// Stores the accepted analysis in place of the PR's, and answers 201.
@@ -345,6 +350,7 @@ async fn accept(
         created_at: now(),
         snippets: snippets.to_owned(),
         migrated_ids: serde_json::Value::Array(ids),
+        previous: upload.replaces.clone(),
     };
     let warnings = report.warnings;
     let (id, head) = (env.id.clone(), env.head_sha.clone());
@@ -395,6 +401,7 @@ async fn accept(
                 purposes,
                 conflicts,
                 &env.migrated_ids.to_string(),
+                env.previous.as_deref(),
                 &blobs.graph_br,
                 &blobs.graph_gz,
                 &blobs.claims_br,
