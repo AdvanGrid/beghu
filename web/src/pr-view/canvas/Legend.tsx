@@ -75,7 +75,7 @@ export function Legend(props: { hover: (id: string | undefined) => void; pin: ()
               ×
             </button>
           </header>
-          <div {...stylex.attrs(s.body)}>
+          <div {...stylex.attrs(s.body)} data-perf="legend-body">
             <For each={sections()}>
               {(sec) => (
                 <div data-perf="legend-section" data-section={sec.name}>

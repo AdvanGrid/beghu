@@ -21,11 +21,11 @@
 // anywhere, pans; Ctrl/Cmd + scroll zooms round the pointer, and scroll pans. Keys are touchpoints
 // (keys.ts, the `canvas` area): + − 0 Fit, Backspace out one level, Escape.
 import * as stylex from "@stylexjs/stylex";
-import { createEffect, createMemo, createSignal, For, onCleanup, onSettled, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createProjection, createSignal, For, onCleanup, onSettled, Show, untrack } from "solid-js";
 import { touch } from "../../keys";
 import { colors, fonts, graph } from "../../tokens.stylex";
 import { cx, cxMap, cxTable } from "../../cx";
-import type { Rect } from "../layout/types";
+import type { P, Rect } from "../layout/types";
 import { part, useNav } from "../nav";
 import type { Sel } from "../state";
 import { Cards, type Hover } from "./Cards";
@@ -36,12 +36,15 @@ import type { DLine, Item, Scene } from "./scene";
 import { useCanvas } from "./store";
 import { StepBar, Toolbar, ZoomBar } from "./Bars";
 import { drawnFolders } from "../Panel";
+import { columnGroup } from "../layout/graph";
 
 /** The glide's length (ms), and its curve. */
 export const GLIDE_MS = 420;
 const EASE = "cubic-bezier(0.4, 0, 0.2, 1)";
 const MIN_Z = 0.1;
 const MAX_Z = 2;
+/** The least the start view zooms out to fit the drawing's width: past it, the reader pans or Fits. */
+const START_Z = 0.85;
 /** How far a press may move and still be a click (px). */
 const CLICK_SLOP = 4;
 /** The margin the canvas keeps round what it brings into view (px). */
@@ -63,6 +66,32 @@ export interface Focus {
   trunks: ReadonlySet<string>;
 }
 
+const EMPTY: ReadonlySet<string> = new Set();
+const CHANGED = columnGroup("changed");
+
+/**
+ * A selector: whether each ID is in `set`, read per ID (`sel[id]`), so a change re-runs only the
+ * readers of the IDs it adds or drops, not every item's.
+ */
+function selector(set: () => ReadonlySet<string>): Readonly<Record<string, true | undefined>> {
+  let last: ReadonlySet<string> = EMPTY;
+  return createProjection<Record<string, true | undefined>>((draft) => {
+    const next = set();
+    for (const k of last) if (!next.has(k)) delete draft[k];
+    for (const k of next) if (!last.has(k)) draft[k] = true;
+    last = new Set(next);
+  }, {});
+}
+
+/** What an item's look reads of the canvas's state, each per item. */
+interface Looks {
+  stop: Readonly<Record<string, true | undefined>>;
+  sel: Readonly<Record<string, true | undefined>>;
+  lit: Readonly<Record<string, true | undefined>>;
+  hovered: Readonly<Record<string, true | undefined>>;
+  focusing: () => boolean;
+}
+
 export function Canvas() {
   const nav = useNav();
   const c = useCanvas();
@@ -73,7 +102,8 @@ export function Canvas() {
   let viewport!: HTMLDivElement;
   const els = new Map<string, HTMLElement>();
   const [view, setView] = createSignal<View>({ x: MARGIN, y: MARGIN, z: 1 });
-  const [size, setSize] = createSignal({ w: 800, h: 600 });
+  // Unmeasured (0 × 0) until the viewport is laid out: the start view waits for its real size.
+  const [size, setSize] = createSignal({ w: 0, h: 0 });
   const [hover, setHover] = createSignal<Hover>();
   const [keyHover, setKeyHover] = createSignal<string>();
   const [keyPin, setKeyPin] = createSignal<string>();
@@ -85,15 +115,28 @@ export function Canvas() {
   const [space, setSpace] = createSignal(false);
   const [panning, setPanning] = createSignal(false);
 
-  // Items, in the order first drawn: only ever appended to, so no element is ever moved.
+  // Items, in the order first drawn: only ever appended to, so no element is ever moved. A newer
+  // analysis (Show it) drops the old one's items that it doesn't draw: they'd never show again.
   const [order, setOrder] = createSignal<string[]>([]);
   const known = new Set<string>();
-  createEffect(scene, (sc) => {
-    const added = [...sc.items.values()].filter((it) => !known.has(it.id)).sort((a, b) => a.depth - b.depth);
-    if (!added.length) return;
-    for (const it of added) known.add(it.id);
-    setOrder((o) => [...o, ...added.map((it) => it.id)]);
-  });
+  let drawnFor: string | undefined;
+  createEffect(
+    () => [scene(), m().g.id] as const,
+    ([sc, analysis]) => {
+      if (drawnFor !== undefined && drawnFor !== analysis) {
+        const gone = [...known].filter((id) => !sc.items.has(id));
+        if (gone.length) {
+          for (const id of gone) known.delete(id), els.delete(id);
+          setOrder((o) => o.filter((id) => known.has(id)));
+        }
+      }
+      drawnFor = analysis;
+      const added = [...sc.items.values()].filter((it) => !known.has(it.id)).sort((a, b) => a.depth - b.depth);
+      if (!added.length) return;
+      for (const it of added) known.add(it.id);
+      setOrder((o) => [...o, ...added.map((it) => it.id)]);
+    },
+  );
 
   // ---- Selection and focus ----------------------------------------------------------------------
 
@@ -111,6 +154,11 @@ export function Canvas() {
     return new Set(s.ids.flatMap((id) => sc.drawnAs.get(id) ?? []).filter((l) => sc.lines.has(l)));
   });
 
+  /** Whether item `id` is drawn inside item `outer`. */
+  const within = (sc: Scene, id: string, outer: string) => {
+    for (let p = sc.items.get(id)?.parent; p !== undefined; p = sc.items.get(p)?.parent) if (p === outer) return true;
+    return false;
+  };
   /** Every item `id` is drawn inside, and itself. */
   const withParents = (sc: Scene, ids: Iterable<string>, into: Set<string>) => {
     for (const id of ids) for (let x: string | undefined = id; x !== undefined && !into.has(x); x = sc.items.get(x)?.parent) into.add(x);
@@ -151,6 +199,14 @@ export function Canvas() {
   };
   const relatedLines = (sc: Scene, ids: Iterable<string>): Focus => relatedEdges(sc, [...ids].flatMap((l) => sc.lines.get(l)?.members ?? []), new Set());
 
+  /** What the pointer is over: its kind and ID, unchanged while the pointer moves across it. */
+  const hovered = createMemo(
+    (): { kind: Hover["kind"]; id: string } | undefined => {
+      const h = hover();
+      return h && { kind: h.kind, id: h.id };
+    },
+    { equals: (a, b) => a?.kind === b?.kind && a?.id === b?.id },
+  );
   const focus = createMemo((): Focus | undefined => {
     const sc = scene();
     const row = keyHover() ?? keyPin();
@@ -162,7 +218,7 @@ export function Canvas() {
     if (fl !== undefined) return relatedLines(sc, [fl]);
     const rl = rowLine();
     if (rl !== undefined) return relatedLines(sc, [rl]);
-    const h = hover();
+    const h = hovered();
     if (h?.kind === "item" && sc.items.get(h.id)?.kind !== "column") return relatedItem(sc, h.id);
     if (h?.kind === "line") return relatedLines(sc, [h.id]);
     if (h?.kind === "trunk") {
@@ -180,6 +236,83 @@ export function Canvas() {
     if (first !== undefined && sc.items.get(first)?.kind !== "column") return relatedItem(sc, first);
     return undefined;
   });
+  /** The lines lit: a flight's, a trunk card row's, the hovered line or a hovered part's, else the selected ones. */
+  const litLines = createMemo((): ReadonlySet<string> => {
+    const f = flying() ?? rowLine();
+    if (f !== undefined) return new Set([f]);
+    const h = hovered();
+    if (h?.kind === "line") return new Set([h.id]);
+    // A hovered part's own lines, each lighting its route through the trunks it rides.
+    if (h?.kind === "item") return focus()?.lines ?? new Set();
+    return selLines();
+  });
+  const litTrunks = createMemo((): ReadonlySet<string> => {
+    const lit = litLines();
+    return new Set(scene().trunks.filter((t) => t.lines.some((l) => lit.has(l))).map((t) => t.id));
+  });
+  // Per ID, so a hover or a pick re-runs only the items and lines it changes.
+  const isSel = selector(selItems);
+  const isLitItem = selector(() => focus()?.items ?? EMPTY);
+  const isFocusLine = selector(() => focus()?.lines ?? EMPTY);
+  const isFocusTrunk = selector(() => focus()?.trunks ?? EMPTY);
+  const isLitLine = selector(litLines);
+  const isLitTrunk = selector(litTrunks);
+  const isHovered = selector(() => {
+    const h = hovered();
+    return h?.kind === "item" ? new Set([h.id]) : EMPTY;
+  });
+  const focusing = createMemo(() => focus() !== undefined);
+
+  // ---- The keyboard's place: one tab stop, on the selection ---------------------------------------
+
+  /**
+   * The canvas's one tab stop: the selected line or block, else the changed column (or the first
+   * thing drawn). Tab into the canvas lands on it; the focus follows the selection.
+   */
+  const stop = createMemo(
+    (): { kind: "item" | "line"; id: string } | undefined => {
+      const [l] = selLines();
+      if (l !== undefined) return { kind: "line", id: l };
+      const [i] = selItems();
+      if (i !== undefined) return { kind: "item", id: i };
+      const sc = scene();
+      if (sc.items.has(CHANGED)) return { kind: "item", id: CHANGED };
+      const [first] = sc.items.keys();
+      return first === undefined ? undefined : { kind: "item", id: first };
+    },
+    { equals: (a, b) => a?.kind === b?.kind && a?.id === b?.id },
+  );
+  const isStopItem = selector(() => {
+    const t = stop();
+    return t?.kind === "item" ? new Set([t.id]) : EMPTY;
+  });
+  const isStopLine = selector(() => {
+    const t = stop();
+    return t?.kind === "line" ? new Set([t.id]) : EMPTY;
+  });
+  const lineEls = new Map<string, Element>();
+  const stopEl = (t = untrack(stop)) => (t?.kind === "item" ? els.get(t.id) : t ? lineEls.get(t.id) : undefined) as HTMLElement | SVGElement | undefined;
+  createEffect(stop, () => {
+    // Only while the canvas has the focus, and not from a card's or the legend's button.
+    const active = document.activeElement;
+    if (!active || !viewport.contains(active) || active.closest("[data-chrome]")) return;
+    queueMicrotask(() => {
+      const el = stopEl();
+      if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+    });
+  });
+  const looks: Looks = { sel: isSel, lit: isLitItem, hovered: isHovered, focusing, stop: isStopItem };
+
+  // A pinned trunk's card goes with its trunk.
+  createEffect(
+    () => {
+      const p = pinned();
+      return p !== undefined && !scene().trunks.some((t) => t.id === p.trunk);
+    },
+    (gone) => {
+      if (gone) setPinned(undefined);
+    },
+  );
 
   // ---- The viewport: pan and zoom ---------------------------------------------------------------
 
@@ -202,16 +335,33 @@ export function Canvas() {
     const z = fitZ();
     setView({ x: Math.max(MARGIN, (s.w - sc.width * z) / 2), y: MARGIN, z });
   };
-  /** Pans to `to` over `ms`, eased; `dip` zooms out on the way (a long flight). */
+  /** The pan under way: its frame, and what to undo if it's cut short (a flight's lit line). */
   let tween = 0;
-  const panTo = (to: View, ms: number, dip = 0, done?: () => void) => {
+  let onStop: (() => void) | undefined;
+  /** Stops the pan under way, where it is: a drag, a wheel or another pan took over. */
+  const stopTween = () => {
     cancelAnimationFrame(tween);
+    const f = onStop;
+    onStop = undefined;
+    f?.();
+  };
+  /** A line's flight waiting for the glide that opens down to its far end. */
+  let pendingFlight: ReturnType<typeof setTimeout> | undefined;
+  /** The reader takes over (a drag, the wheel): the pan under way stops, and a flight waiting to start won't. */
+  const takeOver = () => {
+    clearTimeout(pendingFlight);
+    stopTween();
+  };
+  /** Pans to `to` over `ms`, eased; `dip` zooms out on the way (a long flight); `stopped` runs if it's cut short. */
+  const panTo = (to: View, ms: number, dip = 0, done?: () => void, stopped?: () => void) => {
+    stopTween();
     const from = untrack(view);
     if (reduced() || ms <= 0) {
       setView(to);
       done?.();
       return;
     }
+    onStop = stopped;
     const t0 = performance.now();
     const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
     const s = untrack(size);
@@ -226,6 +376,7 @@ export function Canvas() {
       setView({ x: s.w / 2 - px * z, y: s.h / 2 - py * z, z });
       if (t < 1) tween = requestAnimationFrame(stepFn);
       else {
+        onStop = undefined;
         setView(to);
         done?.();
       }
@@ -249,16 +400,18 @@ export function Canvas() {
     panTo({ ...v, x: v.x + dx, y: v.y + dy }, ms);
   };
 
-  // The first drawing of each analysis: fitted when it fits at a readable scale, else at the top left.
-  let placedFor: string | undefined;
+  // The first drawing, once the viewport has its real size: the drawn content's width fitted,
+  // clamped to [0.85, 1] (Fit is the way to see everything), its top left at the changed column's
+  // frame. Only once: a newer analysis (Show it) keeps the reader's pan and zoom.
+  let placed = false;
   createEffect(
     () => [scene(), size()] as const,
     ([sc, s]) => {
-      const id = untrack(m).g.id;
-      if (placedFor === id || s.w < 50) return;
-      placedFor = id;
-      const z = clampZ(Math.max(0.5, Math.min(1, (s.w - 2 * MARGIN) / Math.max(1, sc.width))));
-      setView({ x: MARGIN, y: MARGIN, z });
+      if (placed || s.w < 50 || s.h < 50 || !sc.items.size) return;
+      placed = true;
+      const z = clampZ(Math.max(START_Z, Math.min(1, (s.w - 2 * MARGIN) / Math.max(1, sc.width))));
+      const at = sc.items.get("column:changed")?.rect ?? { x: 0, y: 0 };
+      setView({ x: MARGIN - at.x * z, y: MARGIN - at.y * z, z });
     },
   );
 
@@ -273,6 +426,10 @@ export function Canvas() {
     const h = g ? sc.holder(g.members[0]!) : sc.holder(node);
     return h === undefined || h === id ? undefined : sc.items.get(h);
   };
+  /** Every item's running animations, cancelled: a leaver's held last frame included. */
+  const stopAnimations = () => {
+    for (const el of els.values()) for (const a of el.getAnimations()) a.cancel();
+  };
   createEffect(
     () => c.glide(),
     (g) => {
@@ -281,6 +438,8 @@ export function Canvas() {
       const from = g.from;
       viewport.dataset.glide = String(g.n);
       setHover(undefined);
+      // A glide starts from where the last one put things: nothing of it may linger.
+      stopAnimations();
       if (reduced()) {
         c.endGlide();
         afterGlide(to, g.at);
@@ -294,31 +453,41 @@ export function Canvas() {
         const v = untrack(view);
         setView({ ...v, x: v.x - d.x * v.z, y: v.y - d.y * v.z });
       }
-      const box = (r: Rect, dx = 0, dy = 0, scale = 1, o = 1): Keyframe => ({ transform: `translate(${r.x + dx}px, ${r.y + dy}px) scale(${scale})`, width: `${r.w}px`, height: `${r.h}px`, opacity: o });
+      // FLIP: each element already has its new place and size (its custom properties); only its
+      // transform glides, from its old box (scaled to it) to the new one, off the main thread.
+      const flip = (r: Rect, size: Rect, o = 1, k = 1): Keyframe => ({
+        transform: `translate(${r.x}px, ${r.y}px) scale(${(k * r.w) / Math.max(1, size.w)}, ${(k * r.h) / Math.max(1, size.h)})`,
+        opacity: o,
+      });
       const opts: KeyframeAnimationOptions = { duration: GLIDE_MS, easing: EASE };
-      const corner = (h: Item | undefined): Rect | undefined => h && { x: h.rect.x + 12, y: h.rect.y + 30, w: 0, h: 0 };
+      const corner = (h: Item | undefined): P | undefined => h && { x: h.rect.x + 12, y: h.rect.y + 30 };
+      const leavers: Element[] = [];
       for (const id of new Set([...from.items.keys(), ...to.items.keys()])) {
         const el = els.get(id);
         if (!el) continue;
         const was = from.items.get(id), now = to.items.get(id);
         if (was && now) {
-          const r0 = was.rect, r1 = now.rect;
-          if (r0.x + d.x === r1.x && r0.y + d.y === r1.y && r0.w === r1.w && r0.h === r1.h) continue;
-          el.animate([box(r0, d.x, d.y), box(r1)], opts);
+          const r0 = { ...was.rect, x: was.rect.x + d.x, y: was.rect.y + d.y }, r1 = now.rect;
+          if (r0.x === r1.x && r0.y === r1.y && r0.w === r1.w && r0.h === r1.h) continue;
+          el.animate([flip(r0, r1), flip(r1, r1)], opts);
         } else if (now) {
           // Arriving: grows out of the corner of the block that held it.
           const h = corner(holderIn(from, id));
           if (!h) continue;
-          el.animate([{ ...box({ ...now.rect, x: h.x, y: h.y }, d.x, d.y, 0.4, 0) }, box(now.rect)], opts);
+          el.animate([flip({ ...now.rect, x: h.x + d.x, y: h.y + d.y }, now.rect, 0, 0.4), flip(now.rect, now.rect)], opts);
         } else if (was) {
-          // Leaving: shrinks back into the block that holds it now.
+          // Leaving: shrinks back into the block that holds it now, and holds there until the glide ends.
           const h = corner(holderIn(to, id));
-          el.animate([box(was.rect, d.x, d.y), box({ ...was.rect, x: h?.x ?? was.rect.x, y: h?.y ?? was.rect.y }, 0, 0, 0.4, 0)], { ...opts, fill: "forwards" });
+          const r0 = { ...was.rect, x: was.rect.x + d.x, y: was.rect.y + d.y };
+          el.animate([flip(r0, was.rect), flip({ ...was.rect, x: h?.x ?? r0.x, y: h?.y ?? r0.y }, was.rect, 0, 0.4)], { ...opts, fill: "forwards" });
+          leavers.push(el);
         }
       }
       const n = g.n;
       setTimeout(() => {
         if (untrack(c.glide)?.n !== n) return;
+        // The leavers are hidden now; their held frames go, so a later glide or Back finds them whole.
+        for (const el of leavers) for (const an of el.getAnimations()) an.cancel();
         c.endGlide();
         afterGlide(untrack(scene), g.at);
       }, GLIDE_MS);
@@ -401,7 +570,7 @@ export function Canvas() {
     }
     if (press.pan && press.moved) {
       setPanning(true);
-      cancelAnimationFrame(tween);
+      takeOver();
       setView({ ...press.v, x: press.v.x + p.x - press.x, y: press.v.y + p.y - press.y });
     }
   };
@@ -460,8 +629,11 @@ export function Canvas() {
     else if (it.folded) c.open(it.id);
   };
   const onWheel = (e: WheelEvent) => {
+    // Over the legend or a card, the wheel scrolls it (Ctrl/Cmd + scroll still zooms the drawing,
+    // never the page).
+    if (!e.ctrlKey && !e.metaKey && e.target instanceof window.Element && e.target.closest("[data-chrome]")) return;
     e.preventDefault();
-    cancelAnimationFrame(tween);
+    takeOver();
     if (e.ctrlKey || e.metaKey) {
       const p = local(e);
       zoomAt(p.x, p.y, untrack(view).z * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)));
@@ -471,7 +643,14 @@ export function Canvas() {
     const v = untrack(view);
     setView({ ...v, x: v.x - e.deltaX * k, y: v.y - e.deltaY * k });
   };
+  /** Whether a key is the drawing's: the viewport's own, or a part's or line's (never a button's in a card or the legend). */
+  const onDrawing = (t: EventTarget | null) => t === viewport || (t instanceof window.Element && (t.hasAttribute("data-item") || t.hasAttribute("data-line")));
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!onDrawing(e.target)) {
+      // A card's or the legend's own keys: Enter, Space and the arrows work its buttons and scroll it.
+      if (e.target instanceof window.Element && e.target.closest("[data-chrome]") && ["Enter", " ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) e.stopPropagation();
+      return;
+    }
     if (e.key === " " && !e.repeat) {
       setSpace(true);
       e.preventDefault();
@@ -509,7 +688,10 @@ export function Canvas() {
     if (!end) return;
     // A line of one connection names its real end: opened down to, when it's inside the block.
     const e = line.members.length === 1 ? m().edges.get(line.members[0]!) : undefined;
-    const real = e ? (far === 0 ? (line.heads.to || !line.heads.from ? e.from : e.to) : e.to) : undefined;
+    // Whichever of its ends the far block holds: a line runs from its first connection's `from`,
+    // whatever way its arrows point (a reversed Data flow line's included).
+    const holds = (n: string) => sc.holder(n) === end.id;
+    const real = e ? (holds(e.from) ? e.from : holds(e.to) ? e.to : undefined) : undefined;
     const target = real !== undefined && end.node && real !== end.node.id && m().within(real, end.node.id) ? real : undefined;
     const go = () => {
       const now = untrack(scene);
@@ -520,14 +702,18 @@ export function Canvas() {
       const far2 = Math.hypot(to.x - v.x, to.y - v.y);
       const diag = Math.hypot(s.w, s.h);
       const dip = Math.min(0.6, Math.max(0, far2 / diag - 0.4));
+      stopTween();
       setFlying(id);
-      panTo(to, Math.min(1100, 360 + far2 * 0.35), dip, () => {
+      const land = () => {
         setFlying(undefined);
         if (target !== undefined && now.items.has(target)) nav.select(part(target));
         else selectItem(it.id);
-      });
+      };
+      // Cut short (a drag, the wheel): nothing stays lit, nothing selected.
+      panTo(to, Math.min(1100, 360 + far2 * 0.35), dip, land, () => setFlying(undefined));
     };
-    if (target !== undefined && !sc.items.has(target) && c.openTo(part(target))) setTimeout(go, reduced() ? 0 : GLIDE_MS + 20);
+    clearTimeout(pendingFlight);
+    if (target !== undefined && !sc.items.has(target) && c.openTo(part(target))) pendingFlight = setTimeout(go, reduced() ? 0 : GLIDE_MS + 20);
     else go();
   };
 
@@ -555,6 +741,64 @@ export function Canvas() {
     c.fold(f);
     selectItem(f);
   });
+  /** What the keyboard acts on: the selection, else the block or line with the focus. */
+  const target = (): { kind: "item" | "line"; id: string } | undefined => {
+    const [l] = untrack(selLines);
+    if (l !== undefined) return { kind: "line", id: l };
+    const [i] = untrack(selItems);
+    if (i !== undefined) return { kind: "item", id: i };
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && a.dataset.item !== undefined) return { kind: "item", id: a.dataset.item };
+    return undefined;
+  };
+  touch("openFold", () => {
+    // Opens a block with parts inside, folds an open one; a line glides to its far end.
+    const t = target();
+    const sc = untrack(scene);
+    if (t?.kind === "line") {
+      const l = sc.lines.get(t.id);
+      const from = l?.from === undefined ? undefined : sc.items.get(l.from);
+      const at = from ? { x: from.rect.x + from.rect.w / 2, y: from.rect.y + from.rect.h / 2 } : l?.route[0];
+      if (l && at) fly(l.id, at);
+      return;
+    }
+    const it = t ? sc.items.get(t.id) : undefined;
+    if (!it || it.grid) return;
+    if (isOpen(it)) c.fold(it.id);
+    else if (it.folded || (it.kind === "part" && it.node && (m().children.get(it.node.id) ?? []).length > 0)) c.open(it.id);
+  });
+  /** Selects the nearest closed block in a direction from the selection (or from the focus's top left). */
+  const move = (dx: number, dy: number) => {
+    const sc = untrack(scene);
+    const t = target();
+    let o: P | undefined;
+    if (t?.kind === "line") {
+      const r = sc.lines.get(t.id)?.route ?? [];
+      o = r[Math.floor(r.length / 2)];
+    } else if (t) {
+      const it = sc.items.get(t.id);
+      // From inside an open frame or column: its top left, so its first part is the nearest.
+      if (it) o = isOpen(it) ? { x: it.rect.x, y: it.rect.y } : { x: it.rect.x + it.rect.w / 2, y: it.rect.y + it.rect.h / 2 };
+    }
+    o ??= { x: 0, y: 0 };
+    const open = !t || (t.kind === "item" && isOpen(sc.items.get(t.id)));
+    let best: { id: string; d: number } | undefined;
+    for (const it of sc.items.values()) {
+      if (it.id === t?.id || !(it.kind === "part" || it.kind === "rest" || it.folded)) continue;
+      if (open && t && !within(sc, it.id, t.id)) continue;
+      const cx = it.rect.x + it.rect.w / 2 - o.x, cy = it.rect.y + it.rect.h / 2 - o.y;
+      // Along the direction, then twice the distance across it: the nearest in that direction.
+      const along = cx * dx + cy * dy, across = Math.abs(cx * dy - cy * dx);
+      if (!open && along <= 1) continue;
+      const d = open ? Math.hypot(cx, cy) : along + 2 * across;
+      if (!best || d < best.d) best = { id: it.id, d };
+    }
+    if (best) selectItem(best.id);
+  };
+  touch("partLeft", () => move(-1, 0));
+  touch("partRight", () => move(1, 0));
+  touch("partUp", () => move(0, -1));
+  touch("partDown", () => move(0, 1));
   touch("canvasEscape", () => {
     if (untrack(keyPin) !== undefined) return setKeyPin(undefined);
     if (untrack(pinned)) return setPinned(undefined);
@@ -571,7 +815,10 @@ export function Canvas() {
       viewport.removeEventListener("wheel", onWheel);
     };
   });
-  onCleanup(() => cancelAnimationFrame(tween));
+  onCleanup(() => {
+    cancelAnimationFrame(tween);
+    clearTimeout(pendingFlight);
+  });
 
   // The drawing on screen, for the perf suite and the tests: the analysis it drew, set once the
   // DOM holds it (effects run after the render), so the next frame paints both.
@@ -590,11 +837,13 @@ export function Canvas() {
       <div
         ref={viewport}
         {...stylex.attrs(s.viewport, (space() || panning()) && s.grab)}
-        tabindex="0"
-        role="application"
-        aria-label="The PR's parts and lines"
+        tabindex={stop() ? -1 : 0}
+        role="group"
+        aria-roledescription="drawing"
+        aria-label="The PR's parts and lines: arrow keys move the selection, Enter opens or folds it"
         data-keys="canvas"
         data-perf="canvas-viewport"
+        data-flying={flying() === undefined ? undefined : ""}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -617,16 +866,8 @@ export function Canvas() {
               </div>
             )}
           </Show>
-          <For each={order()}>{(id) => <ItemView id={id} els={els} focus={focus} sel={selItems} hovered={() => (hover()?.kind === "item" ? hover()!.id : undefined)} />}</For>
-          <LineLayer
-            gliding={gliding()}
-            focus={focus}
-            sel={selLines}
-            lit={() => {
-              const f = flying() ?? rowLine();
-              return f === undefined ? (hover()?.kind === "line" ? new Set([hover()!.id]) : selLines()) : new Set([f]);
-            }}
-          />
+          <For each={order()}>{(id) => <ItemView id={id} els={els} looks={looks} />}</For>
+          <LineLayer gliding={gliding()} lineEls={lineEls} stop={isStopLine} focusing={focusing} inFocus={isFocusLine} trunkInFocus={isFocusTrunk} lit={isLitLine} trunkLit={isLitTrunk} />
         </div>
         <ZoomBar zoom={() => view().z} zoomBy={zoomBy} fit={fit} />
         <Legend hover={setKeyHover} pin={keyPin} setPin={setKeyPin} />
@@ -641,11 +882,18 @@ export function Canvas() {
 const KINDS = ["part", "frame", "box", "column", "rest", "shared", "changedColumn", "groupBlock"] as const;
 type Look = (typeof KINDS)[number];
 const CHANGES: readonly ChangeKey[] = ["added", "modified", "inside", "removed", "unchanged", "none"];
-/** An item's class: its look (3 bits), its change (3 bits), selected, lit, faded by the lens, hovered. */
-const bitsOf = (look: Look, change: ChangeKey, selected: boolean, lit: boolean, faded: boolean, hovered: boolean) =>
-  KINDS.indexOf(look) | (CHANGES.indexOf(change) << 3) | (Number(selected) << 6) | (Number(lit) << 7) | (Number(faded) << 8) | (Number(hovered) << 9);
+/** An item's four flags: selected, lit, faded by the lens, hovered. */
+const FLAGS = 16;
+/**
+ * An item's class, in `ITEM`: a closed part's by its change and flags (6 × 16), then every other
+ * look's by its flags alone (7 × 16): only a closed part shows its change.
+ */
+const itemBits = (look: Look, change: ChangeKey, selected: boolean, lit: boolean, faded: boolean, hovered: boolean) => {
+  const flags = Number(selected) | (Number(lit) << 1) | (Number(faded) << 2) | (Number(hovered) << 3);
+  return (look === "part" ? CHANGES.indexOf(change) : CHANGES.length - 1 + KINDS.indexOf(look)) * FLAGS + flags;
+};
 
-function ItemView(props: { id: string; els: Map<string, HTMLElement>; focus: () => Focus | undefined; sel: () => ReadonlySet<string>; hovered: () => string | undefined }) {
+function ItemView(props: { id: string; els: Map<string, HTMLElement>; looks: Looks }) {
   const nav = useNav();
   const c = useCanvas();
   const m = () => nav.model();
@@ -668,10 +916,8 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; focus: () 
     const x = it();
     return x?.node && closed() ? changeKey(m(), x.node) : "none";
   });
-  const bits = createMemo(() => {
-    const f = props.focus();
-    return bitsOf(look(), change(), props.sel().has(id), !!f && f.items.has(id), c.scene().faded.has(id), props.hovered() === id && closed());
-  });
+  const L = props.looks;
+  const bits = createMemo(() => itemBits(look(), change(), !!L.sel[id], L.focusing() && !!L.lit[id], c.scene().faded.has(id), !!L.hovered[id] && closed()));
   const z = () => {
     const x = it();
     return x ? x.depth * 2 + (closed() ? 1 : 0) : 0;
@@ -689,13 +935,14 @@ function ItemView(props: { id: string; els: Map<string, HTMLElement>; focus: () 
         ref={(el) => props.els.set(id, el)}
         class={ITEM[bits()]!}
         data-item={id}
+        tabindex={L.stop[id] ? 0 : -1}
         data-id={it()?.node?.id ?? it()?.group?.id ?? id}
         data-perf={perf()}
         data-grid={it()?.grid ? "" : undefined}
         data-change={closed() ? change() : undefined}
         data-faded={c.scene().faded.has(id) ? "" : undefined}
-        data-selected={props.sel().has(id) ? "" : undefined}
-        data-focus={props.focus() ? (props.focus()!.items.has(id) ? "lit" : "dim") : undefined}
+        data-selected={L.sel[id] ? "" : undefined}
+        data-focus={L.focusing() ? (L.lit[id] ? "lit" : "dim") : undefined}
         style={{ "--x": `${it()?.rect.x ?? 0}px`, "--y": `${it()?.rect.y ?? 0}px`, "--w": `${it()?.rect.w ?? 0}px`, "--h": `${it()?.rect.h ?? 0}px` }}
       >
         <Show when={it()}>{(x) => <Show when={closed()} fallback={<FrameTitle it={x()} />}>{<Block it={x()} />}</Show>}</Show>
@@ -743,24 +990,25 @@ function Block(props: { it: Item }) {
         )}
       </Show>
       <div class={FACE}>
+        {/* Kind · change: the kind gives way first, the change word is never cut. */}
         <div class={FACE_TOP}>
-          <span class={FACE_KIND}>
-            {face().kind}
-            <Show when={face().change !== "none" && face().kind}>
+          <span class={FACE_KIND}>{face().kind}</span>
+          <Show when={face().change !== "none" && face().kind}>
+            <span class={CHANGE_TEXT[face().change]}>
               {" · "}
-              <span class={CHANGE_TEXT[face().change]}>{CHANGE_WORD[face().change]}</span>
-            </Show>
-          </span>
-          <Show when={face().opens || face().partial}>
-            <span class={FACE_MARKS}>
-              {face().partial ? "partly drawn" : ""}
-              {face().partial && face().opens ? " · " : ""}
-              {face().opens ? "double-click ▸" : ""}
+              {CHANGE_WORD[face().change]}
             </span>
           </Show>
         </div>
         <div class={FACE_NAME}>{face().name}</div>
         <div class={FACE_BOTTOM}>{face().bottom}</div>
+        <Show when={face().opens || face().partial}>
+          <div class={FACE_MARKS} data-perf="face-marks">
+            {face().partial ? "partly drawn" : ""}
+            {face().partial && face().opens ? " · " : ""}
+            {face().opens ? "double-click ▸" : ""}
+          </div>
+        </Show>
       </div>
       <Show when={rings()}>
         {(r) => (
@@ -784,36 +1032,46 @@ function Block(props: { it: Item }) {
 /** A line's stroke width, by how many connections it carries. */
 export const lineWidth = (n: number) => Math.min(1.5 + 0.6 * (n - 1), 5);
 
-function LineLayer(props: { gliding: boolean; focus: () => Focus | undefined; sel: () => ReadonlySet<string>; lit: () => ReadonlySet<string> }) {
+function LineLayer(props: {
+  gliding: boolean;
+  lineEls: Map<string, Element>;
+  stop: Readonly<Record<string, true | undefined>>;
+  focusing: () => boolean;
+  inFocus: Readonly<Record<string, true | undefined>>;
+  trunkInFocus: Readonly<Record<string, true | undefined>>;
+  lit: Readonly<Record<string, true | undefined>>;
+  trunkLit: Readonly<Record<string, true | undefined>>;
+}) {
   const c = useCanvas();
   // Keyed by ID: a line drawn before and after an open or a pick keeps its elements.
   const ids = createMemo(() => [...c.scene().lines.keys()]);
-  const dim = (id: string) => {
-    const f = props.focus();
-    return !!f && !f.lines.has(id);
+  /** A line's words for a screen reader, its focus being how the keyboard reaches it. */
+  const lineLabel = (l: DLine) => {
+    const sc = c.scene(), m = c.model();
+    const end = (x: string | undefined) => (x === undefined ? "the frame's edge" : (sc.items.get(x)?.group?.title ?? m.name(x)));
+    const way = l.heads.to && l.heads.from ? "↔" : l.heads.from ? "←" : "→";
+    return `${end(l.from)} ${way} ${end(l.to)}, ${l.count === 1 ? "1 connection" : `${l.count} connections`}`;
   };
   return (
-    <svg class={props.gliding ? LINES_HIDDEN : LINES} width={c.scene().width} height={c.scene().height} data-perf="canvas-lines" data-gliding={props.gliding ? "" : undefined} aria-hidden="true">
-      <For each={c.scene().trunks}>
-        {(t) => {
-          const lit = () => t.lines.some((l) => props.lit().has(l));
-          return <path d={rounded(t.points)} class={TRUNK[Number(t.changed) | (Number(lit()) << 1) | (Number(!!props.focus() && !props.focus()!.trunks.has(t.id)) << 2)]!} stroke-width={t.width} />;
-        }}
-      </For>
-      <For each={ids()}>
-        {(id) => (
-          <Show when={c.scene().lines.get(id)}>
-            {(l) => <LinePath l={l()} lit={props.lit().has(id)} dim={dim(id)} />}
-          </Show>
-        )}
-      </For>
+    <svg class={props.gliding ? LINES_HIDDEN : LINES} width={c.scene().width} height={c.scene().height} data-perf="canvas-lines" data-gliding={props.gliding ? "" : undefined}>
+      <g aria-hidden="true">
+        <For each={c.scene().trunks}>
+          {(t) => <path d={rounded(t.points)} class={TRUNK[Number(t.changed) | (Number(!!props.trunkLit[t.id]) << 1) | (Number(props.focusing() && !props.trunkInFocus[t.id]) << 2)]!} stroke-width={t.width} />}
+        </For>
+        <For each={ids()}>
+          {(id) => <Show when={c.scene().lines.get(id)}>{(l) => <LinePath l={l()} lit={!!props.lit[id]} dim={props.focusing() && !props.inFocus[id]} />}</Show>}
+        </For>
+      </g>
       <For each={ids()}>
         {(id) => (
           <Show when={c.scene().lines.get(id)}>
             {(l) => (
               <path
                 d={rounded(l().route)}
+                ref={(el) => props.lineEls.set(id, el)}
                 class={HIT}
+                tabindex={props.stop[id] ? 0 : -1}
+                aria-label={lineLabel(l())}
                 data-line={id}
                 data-perf="canvas-line"
                 data-count={l().count}
@@ -825,7 +1083,9 @@ function LineLayer(props: { gliding: boolean; focus: () => Focus | undefined; se
           </Show>
         )}
       </For>
-      <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>
+      <g aria-hidden="true">
+        <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>
+      </g>
     </svg>
   );
 }
@@ -834,7 +1094,15 @@ function LinePath(props: { l: DLine; lit: boolean; dim: boolean }) {
   const d = createMemo(() => rounded(props.l.route));
   const to = createMemo(() => (props.l.heads.to && props.l.to !== undefined ? tipOf(props.l.route, false) : undefined));
   const from = createMemo(() => (props.l.heads.from && props.l.from !== undefined ? tipOf(props.l.route, true) : undefined));
-  const at = createMemo(() => (props.l.count > 1 && props.l.from !== undefined ? countAt(props.l.route) : undefined));
+  // The count sits where the line leaves its part: its tail (the end with no arrowhead), unless
+  // that's a frame's edge, then its part end.
+  const at = createMemo(() => {
+    const l = props.l;
+    if (l.count < 2) return undefined;
+    let atEnd = l.heads.from && !l.heads.to;
+    if ((atEnd ? l.to : l.from) === undefined) atEnd = !atEnd;
+    return (atEnd ? l.to : l.from) === undefined ? undefined : countAt(l.route, atEnd);
+  });
   const bits = () => Number(props.l.changed) | (Number(props.l.dashed && !props.l.dotted) << 1) | (Number(props.l.dotted) << 2) | (Number(props.lit) << 3) | (Number(props.dim && !props.lit) << 4);
   const head = () => Number(props.l.changed) | (Number(props.lit) << 1) | (Number(props.dim && !props.lit) << 2);
   return (
@@ -920,9 +1188,9 @@ const st = stylex.create({
   stripeNone: { backgroundColor: graph.noValueFill, borderTopColor: graph.noValue },
   stripeMore: { backgroundColor: graph.noValueFill, color: colors.muted, fontSize: 10, fontWeight: 700, textAlign: "center", borderTopColor: graph.noValue, paddingTop: 50, },
   face: {
-    gap: 2,
+    gap: 1,
     overflow: "hidden",
-    paddingBlock: 6,
+    paddingBlock: 5,
     paddingInline: 10,
     boxSizing: "border-box",
     display: "flex",
@@ -932,9 +1200,10 @@ const st = stylex.create({
     position: "relative",
     height: "100%",
   },
-  faceTop: { gap: 6, alignItems: "baseline", display: "flex", fontSize: 10.5, justifyContent: "space-between", lineHeight: 1.25, whiteSpace: "nowrap", },
-  faceKind: { overflow: "hidden", color: colors.muted, textOverflow: "ellipsis", },
-  faceMarks: { color: colors.accent, flexShrink: 0, fontWeight: 600 },
+  faceTop: { alignItems: "baseline", display: "flex", fontSize: 10.5, lineHeight: 1.25, whiteSpace: "pre", },
+  faceKind: { overflow: "hidden", color: colors.muted, flexShrink: 1, textOverflow: "ellipsis", minWidth: 0, },
+  faceMarks: { overflow: "hidden", color: colors.accent, fontSize: 10.5, fontWeight: 600, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
+  changeWord: { flexShrink: 0 },
   faceName: { overflow: "hidden", color: colors.fg, fontSize: 13, fontWeight: 650, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
   faceBottom: { overflow: "hidden", color: colors.muted, fontSize: 11, lineHeight: 1.25, textOverflow: "ellipsis", whiteSpace: "nowrap", },
   ring: { borderRadius: 10, borderStyle: "solid", borderWidth: 2, pointerEvents: "none", position: "absolute" },
@@ -1121,19 +1390,20 @@ const layers = stylex.create({
   z31: { position: "absolute", zIndex: 31, left: 0, top: 0, },
 });
 const LAYER = cxTable(LAYERS, (i) => [layers[`z${i}` as keyof typeof layers]]);
-const ITEM = cxTable(1024, (i) => {
-  const look = KINDS[i & 7] ?? "part";
-  const change = CHANGES[(i >> 3) & 7] ?? "none";
+const ITEM = cxTable((CHANGES.length + KINDS.length - 1) * FLAGS, (i) => {
+  const at = Math.floor(i / FLAGS);
+  const look = at < CHANGES.length ? "part" : (KINDS[at - CHANGES.length + 1] ?? "part");
+  const change = at < CHANGES.length ? CHANGES[at]! : "none";
   const closedPart = look === "part";
   return [
     st.item,
     LOOK_STYLE[look],
     closedPart && st[change],
     closedPart && change === "none" && st.outside,
-    !!(i & 64) && st.selected,
-    !!(i & 256) && st.faded,
-    !!(i & 128) && st.lit,
-    !!(i & 512) && st.hovered,
+    !!(i & 1) && st.selected,
+    !!(i & 4) && st.faded,
+    !!(i & 2) && st.lit,
+    !!(i & 8) && st.hovered,
   ];
 });
 const WORLD = cx(st.world);
@@ -1150,7 +1420,7 @@ const GRID = cx(st.grid);
 const GRID_TITLE = cx(st.gridTitle);
 const LINES = cx(st.lines);
 const LINES_HIDDEN = cx(st.lines, st.linesHidden);
-const CHANGE_TEXT = cxMap(CHANGES, (k) => [changeText[k]]);
+const CHANGE_TEXT = cxMap(CHANGES, (k) => [changeText[k], st.changeWord]);
 const STRIPE_FILL = cxTable(13, (i) => [st.stripe, i < 12 ? FACET_FILL[i] : st.stripeNone]);
 const STRIPE_MORE = cx(st.stripe, st.stripeMore);
 const RING = cxTable(36, (i) => [st.ring, RING_AT[Math.floor(i / 12)], FACET_EDGE[i % 12]]);

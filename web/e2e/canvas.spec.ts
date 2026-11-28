@@ -39,11 +39,20 @@ async function signIn(context: BrowserContext, login = "tomsj"): Promise<Page> {
   return page;
 }
 
-/** Opens the view at `search`, once the canvas has drawn. */
-async function open(page: Page, search = ""): Promise<void> {
+/**
+ * Opens the view at `search`, once the canvas has drawn; with `fit`, Fit then brings the whole
+ * drawing into view (the start view shows its top left at 85% or more, and the canvas clips).
+ */
+async function open(page: Page, search = "", opts: { fit?: boolean } = {}): Promise<void> {
   await page.goto(VIEW + search);
   // A first open may wait on Vite compiling the view, or the server reading the analysis.
   await expect(viewport(page)).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+  if (opts.fit) {
+    const zoom = page.locator('[data-perf="zoom-level"]');
+    const before = await zoom.textContent();
+    await page.locator('[data-perf="zoom-fit"]').click();
+    await expect.poll(() => zoom.textContent()).not.toBe(before);
+  }
 }
 
 /** The ids of the drawn closed blocks (the no-lines grid aside). */
@@ -69,6 +78,53 @@ async function pointOn(target: Locator): Promise<{ x: number; y: number }> {
   return p;
 }
 
+/** A point on a line's route near its end (or its start), where the pointer reaches it. */
+async function pointNear(target: Locator, atEnd: boolean): Promise<{ x: number; y: number }> {
+  const p = await target.evaluate((el, atEnd) => {
+    const path = el as SVGPathElement;
+    const len = path.getTotalLength();
+    const m = path.getScreenCTM()!;
+    for (let i = 4; i < 60; i++) {
+      const at = path.getPointAtLength(atEnd ? len * (1 - i / 100) : (len * i) / 100);
+      const x = at.x * m.a + at.y * m.c + m.e, y = at.x * m.b + at.y * m.d + m.f;
+      if (document.elementFromPoint(x, y) === el) return { x, y };
+    }
+    return null;
+  }, atEnd);
+  if (!p) throw new Error("no point near its end the pointer reaches");
+  return p;
+}
+
+/** A point on the canvas's background, or an open column's, box's or frame's own room: a drag there pans. */
+async function backgroundPoint(page: Page): Promise<{ x: number; y: number }> {
+  const p = await viewport(page).evaluate((vp) => {
+    const r = vp.getBoundingClientRect();
+    for (let y = r.bottom - 30; y > r.top + 20; y -= 17)
+      for (let x = r.left + 20; x < r.right - 20; x += 23) {
+        const at = document.elementFromPoint(x, y);
+        if (!at || at.closest("[data-chrome]") || at.closest("[data-line],[data-trunk]")) continue;
+        const it = at.closest<HTMLElement>("[data-item]");
+        if (at === vp || at.parentElement === vp || (it && ["column", "box", "frame"].includes(it.dataset.perf!) && !at.closest("[data-title]"))) return { x, y };
+      }
+    return null;
+  });
+  if (!p) throw new Error("no background in view");
+  return p;
+}
+
+/**
+ * Whether an item is drawn whole where it belongs: no animation left on it, fully opaque, and its
+ * computed transform its own place (`--x`, `--y`), no scale or lingering offset.
+ */
+const wholeAt = (l: Locator) =>
+  l.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const m = new DOMMatrixReadOnly(cs.transform === "none" ? undefined : cs.transform);
+    const x = parseFloat(el.style.getPropertyValue("--x")), y = parseFloat(el.style.getPropertyValue("--y"));
+    const ok = el.getAnimations().length === 0 && cs.opacity === "1" && m.a === 1 && m.d === 1 && Math.abs(m.e - x) < 0.5 && Math.abs(m.f - y) < 0.5;
+    return ok ? "whole" : `animations ${el.getAnimations().length}, opacity ${cs.opacity}, transform ${cs.transform} (at ${x}, ${y})`;
+  });
+
 /** Whether `inner`'s box lies inside `outer`'s. */
 async function inside(inner: Locator, outer: Locator): Promise<boolean> {
   const [a, b] = [await inner.boundingBox(), await outer.boundingBox()];
@@ -91,7 +147,7 @@ test("Layout A: the columns as frames, each part's face, lines with no labels bu
   const files = V2.nodes.filter((n: Json) => n.id === server.id || n.id.startsWith("crates-server.")).flatMap((n: Json) => n.files);
   const add = files.reduce((s: number, f: Json) => s + f.added, 0).toLocaleString("en-US");
   const del = files.reduce((s: number, f: Json) => s + f.removed, 0).toLocaleString("en-US");
-  await expect(block(page, "crates-server")).toContainText(`service · changeddouble-click ▸${server.name}${files.length} files · +${add} −${del}`);
+  await expect(block(page, "crates-server")).toContainText(`service · changed${server.name}${files.length} files · +${add} −${del}double-click ▸`);
   await expect(block(page, "crates-dbrt")).toContainText("library · unchanged");
   await expect(block(page, "crates-dbrt")).not.toContainText("double-click");
   // The changed column sits at the top left, with no empty band above.
@@ -176,7 +232,7 @@ test("Colour by a facet: words on the face, a multi-valued part's stripes, the l
 
 test("Boxes: a Shared box for a part with several values, its Group panel with each member's values and claims", async ({ context }) => {
   const page = await signIn(context);
-  await open(page, "?boxes=inside-product");
+  await open(page, "?boxes=inside-product", { fit: true });
   const shared = item(page, "box:changed:inside-product:*shared");
   await expect(shared.locator('[data-perf="frame-title"]')).toHaveText("▾ Shared: 2 Product area");
   expect(await inside(block(page, "crates-server"), shared)).toBe(true);
@@ -246,14 +302,15 @@ test("Opening in place, folding by the title, Back, Start over and Fold to group
   await block(page, "crates-server").dblclick();
   const frame = page.locator('[data-perf="frame"][data-id="crates-server"]');
   await expect(frame.locator('[data-perf="frame-title"]')).toHaveText(`▾ ${server.name}`);
+  await expect(undoes(page)).toHaveText(`undoes: opened ${server.name}`);
+  // Mid-glide the contents are still growing out of the block's corner: their places are read once it lands.
+  await settled(page);
   for (const k of kids) {
     // Inside a frame a part is named on its own; the frame's title says where it is.
     const b = item(page, k.id);
     await expect(b).toContainText(k.name);
     expect(await inside(b, frame)).toBe(true);
   }
-  await expect(undoes(page)).toHaveText(`undoes: opened ${server.name}`);
-  await settled(page);
   // Folding: a click on the frame's title.
   await frame.locator('[data-perf="frame-title"]').click();
   await expect(block(page, "crates-server")).toBeVisible();
@@ -289,11 +346,25 @@ test("The glide: contents grow out of the block and the lines come back once it 
   const glides = async () => Number((await viewport(page).getAttribute("data-glide")) ?? 0);
   const n = await glides();
   const at = (await block(page, "crates-server").boundingBox())!;
+  // Mid-glide (read in the page as it starts: a loaded host may end it before a check from here
+  // would land), the lines are away and the clicked block stays where it was.
+  const mid = page.evaluate(
+    () =>
+      new Promise<{ x: number; y: number }>((done) => {
+        const lines = document.querySelector('[data-perf="canvas-lines"]')!;
+        const seen = () => {
+          if (!lines.hasAttribute("data-gliding")) return false;
+          const r = document.querySelector('[data-item="crates-server"]')!.getBoundingClientRect();
+          done({ x: r.x, y: r.y });
+          return true;
+        };
+        const mo = new MutationObserver(() => seen() && mo.disconnect());
+        mo.observe(lines, { attributes: true, attributeFilter: ["data-gliding"] });
+      }),
+  );
   await block(page, "crates-server").dblclick();
   await expect.poll(glides).toBe(n + 1);
-  // Mid-glide the lines are away; the clicked block stays where it was.
-  await expect(page.locator('[data-perf="canvas-lines"]')).toHaveAttribute("data-gliding", "");
-  const now = (await item(page, "crates-server").boundingBox())!;
+  const now = await mid;
   expect(Math.abs(now.x - at.x)).toBeLessThan(2);
   expect(Math.abs(now.y - at.y)).toBeLessThan(2);
   await settled(page);
@@ -308,6 +379,42 @@ test("The glide: contents grow out of the block and the lines come back once it 
   await block(page, "crates-server").dblclick();
   await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
   await expect(page.locator('[data-perf="canvas-lines"]')).not.toHaveAttribute("data-gliding", "", { timeout: 200 });
+});
+
+test("Parts come back whole after fold → Back and fold → open, and the clicked block stays still going back", async ({ context }) => {
+  const page = await signIn(context);
+  await open(page);
+  const kids = V2.nodes.filter((n: Json) => n.parent === "crates-server");
+  const title = page.locator('[data-perf="frame"][data-id="crates-server"] [data-perf="frame-title"]');
+  const allWhole = async () => {
+    for (const k of kids) await expect.poll(() => wholeAt(page.locator(`[data-item="${k.id}"]`))).toBe("whole");
+  };
+  await block(page, "crates-server").dblclick();
+  await settled(page);
+  await allWhole();
+  // Fold, then Back: the contents that shrank away come back opaque and in place.
+  await title.click();
+  await settled(page);
+  const folded = (await item(page, "crates-server").boundingBox())!;
+  await page.locator('[data-perf="canvas-back"]').click();
+  // Back glides about the block it undoes: it stays where it was.
+  await expect(page.locator('[data-perf="canvas-lines"]')).toHaveAttribute("data-gliding", "");
+  const going = (await item(page, "crates-server").boundingBox())!;
+  expect(Math.abs(going.x - folded.x)).toBeLessThan(2);
+  expect(Math.abs(going.y - folded.y)).toBeLessThan(2);
+  await settled(page);
+  await allWhole();
+  // Fold, then open again by a double-click.
+  await title.click();
+  await settled(page);
+  await block(page, "crates-server").dblclick();
+  await settled(page);
+  await allWhole();
+  // And under reduced motion, which snaps.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await title.click();
+  await page.locator('[data-perf="canvas-back"]').click();
+  await allWhole();
 });
 
 test("A selection inside a folded block opens down to it, as one Back step", async ({ context }) => {
@@ -340,6 +447,128 @@ test("A double-click on a line glides to its far end and selects it", async ({ c
   expect([e.from, e.to].some((end: string) => end === picked || end.startsWith(`${picked}.`))).toBe(true);
 });
 
+test("A reversed Data flow line's double-click glides to the end it reaches, opening down to it", async ({ context }) => {
+  const page = await signIn(context);
+  await open(page, "?lens=data");
+  // crates-server.src.github → ext-github, its data back from GitHub: drawn from crates-server,
+  // its arrowhead there. From near GitHub, the far end is the server's github module.
+  const e = V2.edges.find((x: Json) => x.id === "e.crate-server.src.github.to.github");
+  expect(e.data.direction).toBe("back");
+  await page.locator('[data-perf="zoom-fit"]').click();
+  const line = page.locator(`[data-perf="canvas-line"][data-members="${e.id}"]`);
+  await expect(line).toHaveAttribute("data-heads", "from");
+  const p = await pointNear(line, true);
+  await page.mouse.dblclick(p.x, p.y);
+  await expect.poll(() => selOf(page), { timeout: 5_000 }).toBe(`part:${e.from}`);
+  await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
+});
+
+test("A line's flight cut short by a drag leaves nothing lit or faded", async ({ context }) => {
+  const page = await signIn(context);
+  await open(page);
+  // Zoomed in to 200%, a flight runs its longest (1.1 s): time to cut it short.
+  await viewport(page).focus();
+  for (let i = 0; i < 4; i++) await page.keyboard.press("+");
+  await expect(page.locator('[data-perf="zoom-level"]')).toHaveText("200%");
+  let p: { x: number; y: number } | undefined;
+  for (const line of await page.locator('[data-perf="canvas-line"][data-count="1"]').all()) {
+    p = await pointOn(line).catch(() => undefined);
+    if (p) break;
+  }
+  if (!p) throw new Error("no line of one connection in view");
+  const bg = await backgroundPoint(page);
+  await page.mouse.dblclick(p.x, p.y);
+  // Mid-flight (once any open down to its far end has landed), a drag on the background takes over.
+  await expect(viewport(page)).toHaveAttribute("data-flying", "", { timeout: 2_000 });
+  await page.mouse.move(bg.x, bg.y);
+  await page.mouse.down();
+  await page.mouse.move(bg.x + 40, bg.y + 30, { steps: 2 });
+  await page.mouse.up();
+  await expect(viewport(page)).not.toHaveAttribute("data-flying", "");
+  // The double-click's first click picked the line; cut short, the flight picks nothing more.
+  expect(selOf(page)).toMatch(/^line:/);
+  await page.waitForTimeout(1200);
+  expect(selOf(page)).toMatch(/^line:/);
+  // Cleared, nothing stays lit or faded: the flight's own fade went with it.
+  await viewport(page).focus();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => selOf(page)).toBeNull();
+  await page.mouse.move(2, 2);
+  await expect(page.locator("[data-lit]")).toHaveCount(0);
+  await expect(page.locator('[data-focus="dim"]')).toHaveCount(0);
+  expect(await page.locator('[data-perf="canvas"]').evaluate((el) => getComputedStyle(el).getPropertyValue("--fade").trim())).toBe("1");
+});
+
+test("The start view: the content's width fitted, never under 85%, from the changed column's top left", async ({ context }) => {
+  const page = await signIn(context);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await open(page);
+  const zoom = Number((await page.locator('[data-perf="zoom-level"]').textContent())!.replace("%", ""));
+  expect(zoom).toBeGreaterThanOrEqual(85);
+  expect(zoom).toBeLessThanOrEqual(100);
+  const [vp, changed] = [(await viewport(page).boundingBox())!, (await item(page, "column:changed").boundingBox())!];
+  expect(Math.abs(changed.x - vp.x - 24)).toBeLessThan(2);
+  expect(Math.abs(changed.y - vp.y - 24)).toBeLessThan(2);
+});
+
+test("The wheel scrolls the legend over it, and pans the drawing elsewhere", async ({ context }) => {
+  const page = await signIn(context);
+  await page.setViewportSize({ width: 1500, height: 560 });
+  await open(page, "?outlines=" + encodeURIComponent(V2.facets.find((f: Json) => f.appliesTo === "node").id));
+  const body = page.locator('[data-perf="legend-body"]');
+  expect(await body.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  const at = (await block(page, "crates-server").boundingBox())!;
+  const b = (await body.boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.wheel(0, 120);
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  const still = (await block(page, "crates-server").boundingBox())!;
+  expect(still.y).toBe(at.y);
+  // Off the legend, the wheel pans.
+  const bg = await backgroundPoint(page);
+  await page.mouse.move(bg.x, bg.y);
+  await page.mouse.wheel(0, 120);
+  await expect.poll(async () => (await block(page, "crates-server").boundingBox())!.y).toBeLessThan(at.y - 50);
+});
+
+test("The keyboard: Tab lands on the changed column, arrows select the nearest part, Enter opens and folds", async ({ context }) => {
+  const page = await signIn(context);
+  await open(page);
+  // From the toolbar's last control, Tab reaches the canvas's one tab stop.
+  await page.locator('[data-perf="lines-menu"]').focus();
+  const active = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.item ?? (document.activeElement as HTMLElement | null)?.dataset.perf ?? null);
+  for (let i = 0; i < 6 && (await active()) !== "column:changed"; i++) await page.keyboard.press("Tab");
+  expect(await active()).toBe("column:changed");
+  await expect(page.locator('[data-perf="hints"]')).toContainText("Open or fold the selection");
+  // An arrow selects the nearest part that way, and the focus follows it.
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(() => selOf(page)).toMatch(/^part:/);
+  const first = selOf(page)!.slice("part:".length);
+  await expect.poll(active).toBe(first);
+  const a = (await block(page, first).boundingBox())!;
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(() => selOf(page)).not.toBe(`part:${first}`);
+  const next = selOf(page)!.slice("part:".length);
+  const b = (await block(page, next).boundingBox())!;
+  expect(b.x + b.width / 2).toBeGreaterThan(a.x + a.width / 2);
+  await expect.poll(active).toBe(next);
+  // Enter opens the selected block in place, and folds it again.
+  await block(page, "crates-server").click();
+  await expect.poll(active).toBe("crates-server");
+  await page.keyboard.press("Enter");
+  await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).toBeVisible();
+  await expect(undoes(page)).toHaveText(`undoes: opened ${nodeOf("crates-server").name}`);
+  await settled(page);
+  await page.keyboard.press("Enter");
+  await expect(block(page, "crates-server")).toBeVisible();
+  await expect(undoes(page)).toHaveText(`undoes: folded ${nodeOf("crates-server").name}`);
+  // Space on a card's or the legend's button is the button's.
+  await page.locator('[data-perf="legend-close"]').focus();
+  await page.keyboard.press(" ");
+  await expect(page.locator('[data-perf="legend"]')).toHaveCount(0);
+  await page.locator('[data-perf="legend-open"]').click();
+});
+
 test("A partly drawn part: marked folded, its frame says how many folders are drawn, and a rest block", async ({ context }) => {
   const page = await signIn(context);
   await page.route(GRAPH, async (route: Route) => {
@@ -348,7 +577,7 @@ test("A partly drawn part: marked folded, its frame says how many folders are dr
     g.analysis.nodes.find((x: Json) => x.id === "crates-fake-github").drawn = { partial: true, folders: 9 };
     await route.fulfill({ response: res, json: g });
   });
-  await open(page);
+  await open(page, "", { fit: true });
   const b = block(page, "crates-fake-github");
   await expect(b).toContainText("partly drawn · double-click ▸");
   await b.dblclick();
@@ -400,6 +629,8 @@ test("Hover cards: a part's and a line's, each with Drawn as; a line's boundary 
   // Hovering fades what's unrelated.
   await expect(page.locator('[data-focus="dim"]').first()).toBeAttached();
   await expect(block(page, "crates-server")).toHaveAttribute("data-focus", "lit");
+  // Its lines light, each one's route through its trunks with it.
+  await expect(page.locator("[data-line-drawn][data-lit]").first()).toBeAttached();
 
   // A line crossing a boundary, under External connections.
   await open(page, "?lens=external");
@@ -427,7 +658,7 @@ test("Hover cards: a part's and a line's, each with Drawn as; a line's boundary 
 
 test("A trunk's card: pinned by a click, dragged by its head, closed by × and Escape; a row lights its line", async ({ context }) => {
   const page = await signIn(context);
-  await open(page, "?lens=data");
+  await open(page, "?lens=data", { fit: true });
   const trunk = page.locator('[data-perf="trunk"]').first();
   const p = await pointOn(trunk);
   await page.mouse.move(p.x, p.y);
