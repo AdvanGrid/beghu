@@ -20,7 +20,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|analyse|pr-view|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
+    { name: "browser", testIgnore: /(live|held|held-restore|held-detail|relationships|relationship-writes|tree|focus|writes|edits|markdown-style|media|pickers|repos|sync|prs|analyse|pr-view|canvas|lost-access|moves|create|roles|prefs|deploy)\.spec\.ts$/ },
     // The specs that edit (live.spec.ts with held.spec.ts, held-restore.spec.ts and held-detail.spec.ts,
     // relationships.spec.ts with relationship-writes.spec.ts, tree.spec.ts and focus.spec.ts, writes.spec.ts with
     // markdown-style.spec.ts, edits.spec.ts and media.spec.ts, pickers.spec.ts, repos.spec.ts,
@@ -56,7 +56,10 @@ export default defineConfig({
     // between its recorded heads on Fake GitHub, to the top of every tab's list; and uses up
     // ilze-k's first analysis of it.
     { name: "pr-view", testMatch: /pr-view\.spec\.ts$/, dependencies: ["analyse"], timeout: 90_000, workers: 1 },
-    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["pr-view"], timeout: 60_000 },
+    // canvas.spec.ts reads tomsj's analysis of #191, which pr-view.spec.ts's uploads move to the
+    // top of every tab's list; it changes nothing of the stack's.
+    { name: "canvas", testMatch: /canvas\.spec\.ts$/, dependencies: ["pr-view"], timeout: 60_000, workers: 1 },
+    { name: "lost-access", testMatch: /lost-access\.spec\.ts$/, dependencies: ["canvas"], timeout: 60_000 },
     // Deletes and transfers fixture issues for good (until `./dev-ctl reset`), and renames a
     // label every tab shows: alone, after the rest but create and prefs.
     { name: "moves", testMatch: /moves\.spec\.ts$/, dependencies: ["lost-access"], timeout: 60_000, workers: 1 },

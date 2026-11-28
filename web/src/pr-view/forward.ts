@@ -151,5 +151,7 @@ export function forward(sel: Sel | undefined, m: Model, before?: Model): Forward
       return m.a.unclaimed.length > 0 ? { sel } : { note: "No changed part serves no purpose in this analysis; showing the PR" };
     case "group":
       return { sel };
+    case "boundary":
+      return m.boundaries.has(sel.id) ? { sel } : { note: `The boundary ${sel.id} ${gone}; showing the PR` };
   }
 }
