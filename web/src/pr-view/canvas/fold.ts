@@ -24,10 +24,13 @@
 // its frame, with the blocks it sits in). Boxes are ignored under the fold.
 //
 // A line is drawn between the blocks its ends are drawn in: each end rolled up to its block in the
-// fold's tree, then through the blocks and groups drawn closed. One whose two drawn ends are both
-// rest or Outside-the-diff blocks is dropped (but between two of the latter, it's kept).
+// fold's tree, then through the blocks and groups drawn closed. One whose two ends, so rolled up,
+// are both rest or Outside-the-diff blocks is dropped (but between two of the latter, it's kept).
+// A folded column doesn't count for that: with the columns folded (Fold to groups), a line runs
+// between them only if it would be drawn with them open, so a line from a rest block to an Outside
+// block is dropped either way.
 import type { Node } from "../../bindings/analysis";
-import { columnGroup, type DrawableEdge, type DrawableGraph, type DrawableNode } from "../layout/graph";
+import { type DrawableEdge, type DrawableGraph, type DrawableNode } from "../layout/graph";
 import type { Column } from "../layout/types";
 import type { Model } from "../model";
 import { touched } from "./look";
@@ -336,11 +339,13 @@ export function foldDrawing(x: FoldInput, plan: FoldPlan, state: CanvasState, ed
     for (let a: string | undefined = id; a !== undefined && a !== ROOT; a = parent.get(a)) out.unshift(a);
     return out;
   };
-  /** The block a fold block is drawn in: itself, or the first closed block it sits in (a folded column's group at the top). */
+  /**
+   * The block a fold block is drawn in, for the drop rule: itself, or the first closed block or
+   * group it sits in. A folded column doesn't count: the rule is the same with the columns folded
+   * (Fold to groups) as with them open.
+   */
   const visible = (id: string): string => {
     const c = chain(id);
-    const col = columns.get(c[0]!);
-    if (col !== undefined && state.folded.has(columnGroup(col))) return columnGroup(col);
     const k = c.findIndex((b) => !(open.has(b) && inner.has(b)));
     return k < 0 ? id : c[k]!;
   };
