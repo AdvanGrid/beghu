@@ -386,7 +386,7 @@ reason = "The same cold navigation on tiled-3x (228 top-level parts), to its top
 [gates."browser.pr-open.ms"]
 max = 387.2
 measured = 336.7
-reason = "From a click on the PR panel's PR view link (tiled-1x's PR, a warm app: shell and assets cached) to the frame with the top-level drawing: the view's chunk, the graph, the purpose model, and the PR's fold plan laid out (the start view since #183). The median of three runs +15%, recalibrated for the fold's start view (#183, its review fixes) at load 22-32: 336.7, 283.8, 343.3 ms, up from 376.2 (layout A's at load 25-35: 333.8, 327.1, 304.5 ms): the fold's plan and its drawing cost more than layout A's start on this tile."
+reason = "From a click on the PR panel's PR view link (tiled-1x's PR, a warm app: shell and assets cached) to the frame with the top-level drawing: the view's chunk, the graph, the purpose model, and the PR's fold plan laid out (the start view since #183). The median of three runs +15%, the first calibration on the fold's start view (#183, its review fixes) at load 22-32: 336.7, 283.8, 343.3 ms, up from a max of 376.2 set on layout A's start (at load 25-35: 333.8, 327.1, 304.5 ms). The two sets of runs overlap: the difference is within the run-to-run spread, not a measured cost of the fold."
 
 [gates."browser.pr-codeview-3x.ms"]
 max = 323.2
@@ -407,7 +407,7 @@ reason = "A double-click on tiled-1x's crates-fake-github.src (pinned by ID in t
 max = 1
 measured = 1
 spec = 0
-reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples, set to the local median of three runs: 1, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 2 (1 in each of three runs on the fold's crates-server; 2 in each of eight in layout A, at load 11-24). CI measured 0 here on d8f4902. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The spec asks for none; CI's run is to confirm 0, then set max from it."
+reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples, set to the local median of three runs: 1, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 2 (1 in each of three runs on the fold's crates-server; 2 in each of eight in layout A, at load 11-24). CI measured 0 here on d8f4902. Local runs vary between 1 and 2, and CI measured 0 on 5170513 too. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The spec asks for none; CI's run is to confirm 0, then set max from it."
 
 [gates."browser.pr-block-open-3x.ms"]
 max = 188.9
@@ -418,7 +418,7 @@ reason = "The same double-click on tiled-3x's crates-fake-github.src (pinned by 
 max = 2
 measured = 2
 spec = 0
-reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples, set to the local median of three runs: 2, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 3 (2, 1 and 2 on the fold's crates-server; 3, 2 and 3 in layout A, at load 13-24). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. On the dev stack the open is the only long task during the glide; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
+reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples, set to the local median of three runs: 2, 2 and 1 at load 22-32 on the fold's crates-fake-github.src (#183's review fixes), down from 3 (2, 1 and 2 on the fold's crates-server; 3, 2 and 3 in layout A, at load 13-24). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. Local runs vary between 1 and 2, and CI measured 1 again on 5170513. On the dev stack the open is the only long task during the glide; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
 
 [gates."browser.load.list-fetches"]
 max = 2

@@ -603,6 +603,26 @@ const CODE_VIEW_AT = OPENED;
 /** A long task, as the Long Tasks API reports one. */
 const LONG_TASK_MS = 50;
 
+/**
+ * Where block `id` is on the canvas, by its ID: drawn as a block (one that opens, with `opens`),
+ * wholly in view above the bottom bar. Or why not, for the probe to fail on: a change to the start
+ * view can't change what's measured.
+ */
+async function blockInView(page: Page, id: string, opens: boolean): Promise<{ x: number; y: number } | string> {
+  return page.evaluate(
+    ([id, opens]) => {
+      const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
+      const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
+      if (!el) return `${id} isn't drawn as a block`;
+      if (opens && !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    },
+    [id, opens] as const,
+  );
+}
+
 /** The PR view's gates (#182), on the tiled analyses. */
 function prViewProbes(c: BrowserCtx): Probe[] {
   let tilesP: Promise<Tile[]> | undefined;
@@ -731,9 +751,10 @@ function prViewProbes(c: BrowserCtx): Probe[] {
         await page.goto(viewOf(t));
         await page.evaluate((x) => window.__perf.arm(x), { kind: "drawing", analysis: t.analysis } as Check);
         await outcome(page, DRAWING_MS);
-        const block = page.locator(`[data-perf="block"][data-id="${CODE_VIEW_AT}"]:not([data-grid])`);
-        if (!(await block.count())) throw new Error(`browser.pr-codeview-3x: ${CODE_VIEW_AT} isn't drawn as a block`);
-        await block.click();
+        // The same block each sample and each run, in view: if it isn't, the probe fails.
+        const at = await blockInView(page, CODE_VIEW_AT, false);
+        if (typeof at === "string") throw new Error(`browser.pr-codeview-3x: ${at}`);
+        await page.mouse.click(at.x, at.y);
         const go = page.locator('[data-perf="code-view-at"]');
         await go.waitFor({ timeout: DRAWING_MS });
         await sleep(QUIET_MS);
@@ -767,14 +788,7 @@ function prViewProbes(c: BrowserCtx): Probe[] {
           await outcome(page, DRAWING_MS);
           // The same block each sample and each run, by its ID: a change to the start view can't
           // change what's measured. It must be in view and open: if it isn't, the probe fails.
-          const target = await page.evaluate((id) => {
-            const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
-            const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
-            if (!el || !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
-            const r = el.getBoundingClientRect();
-            if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
-            return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-          }, OPENED);
+          const target = await blockInView(page, OPENED, true);
           if (typeof target === "string") throw new Error(`${name}: ${target}`);
           await sleep(QUIET_MS);
           const n = Number((await page.locator('[data-perf="canvas-viewport"]').getAttribute("data-glide")) ?? 0) + 1;
@@ -786,7 +800,7 @@ function prViewProbes(c: BrowserCtx): Probe[] {
           const over = long.filter((d) => d > LONG_TASK_MS);
           return {
             values: { [`${name}.ms`]: r.ms, [`${name}.long-tasks`]: over.length },
-            evidence: { [`${name}.long-tasks`]: [`opening ${target.id}`, ...over.map((d) => `${Math.round(d)} ms`)] },
+            evidence: { [`${name}.long-tasks`]: [`opening ${OPENED}`, ...over.map((d) => `${Math.round(d)} ms`)] },
           };
         } finally {
           await page.close();
