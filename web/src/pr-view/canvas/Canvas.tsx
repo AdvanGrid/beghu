@@ -1007,10 +1007,24 @@ export function Canvas() {
     // An open frame or column with no line of its own: the lines of what's inside it.
     if (!ls.length) ls = [...relatedItem(sc, id).lines].map((l) => sc.lines.get(l)!).filter(Boolean);
     const cx = it.rect.x + it.rect.w / 2, cy = it.rect.y + it.rect.h / 2;
+    const inHub = (x: string | undefined) => x !== undefined && (x === id || within(sc, x, id));
+    /** Where a line's far end is: the middle of its end that isn't the hub or inside it, else its route's point furthest out. */
+    const farPoint = (l: DLine): P => {
+      const [fromIn, toIn] = [inHub(l.from), inHub(l.to)];
+      if (fromIn !== toIn) {
+        const far = fromIn ? l.to : l.from;
+        const at = far === undefined ? undefined : sc.items.get(far);
+        if (at) return { x: at.rect.x + at.rect.w / 2, y: at.rect.y + at.rect.h / 2 };
+        // A frame's edge: where the route ends there.
+        const end = fromIn ? l.route.at(-1) : l.route[0];
+        if (end) return end;
+      }
+      let best: P = { x: cx, y: cy };
+      for (const p of l.route) if (Math.hypot(p.x - cx, p.y - cy) > Math.hypot(best.x - cx, best.y - cy)) best = p;
+      return best;
+    };
     const angle = (l: DLine) => {
-      const farId = l.from === id ? l.to : l.from;
-      const far = farId === undefined ? undefined : sc.items.get(farId);
-      const p = far ? { x: far.rect.x + far.rect.w / 2, y: far.rect.y + far.rect.h / 2 } : (l.from === id ? l.route.at(-1) : l.route[0]) ?? { x: cx, y: cy };
+      const p = farPoint(l);
       const a = Math.atan2(p.x - cx, cy - p.y);
       return a < 0 ? a + 2 * Math.PI : a;
     };
