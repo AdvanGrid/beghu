@@ -349,9 +349,9 @@ measured = 0
 reason = "Modules of the PR view (web/src/pr-view/, and src/Analyse.tsx, which it shares with the lazy PR panel) in any chunk the list's cold load fetches, the entry chunk included, from the build's module list (.vite/modules.json, web/vite.config.ts moduleList): none, exact (#152, #181). Counting modules, not chunks, catches view code a static import inlines into the entry, which has no chunk of its own. The view is its own route and never a first page; this, not the report-only browser.first-load.kb, is what keeps a stray static import of pr-view/ out of first-load JS."
 
 [gates."browser.pr-view.kb"]
-max = 66.3
-measured = 63.14
-reason = "The PR view's chunks, gzip as served: the view's own (56.9 KB: route, top bar, panel, and since #182 the canvas with our layout engine, its toolbar, cards and legend) and the Analyse chunk it shares with the PR panel (6.2 KB). Calibrated +5% from slice 8's review fixes (#182: the keyboard's selection, FLIP glide, per-ID projections), up from 61.23 KB; slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
+max = 87.0
+measured = 82.81
+reason = "The PR view's chunks, gzip as served: the view's own (76.3 KB: route, top bar, the panel with its walkthrough and conflict cards since #183, and since #182 the canvas with our layout engine, its fold plan since #183, toolbar, cards and legend), the Analyse chunk it shares with the PR panel (6.2 KB) and the key names (0.3 KB). Calibrated +5% from slice 9's (#183: the walkthrough at the PR, a purpose, a part, a line and the unclaimed parts, the conflict cards, the purpose model, the fold plan and its drawing, 19.4 KB of the view's own), up from 63.14 KB (slice 8's, 56.9 KB of its own); slice 7's was 24.7 KB with the placeholder canvas. The view is its own route, never in first-load JS (browser.cold.pr-view-modules)."
 
 # The PR view's canvas (#182), on the tiled analyses (tiled-1x: #2627's shape; tiled-3x), 50k
 # stack. Calibrated on the dev host (32 cores) at a load of 25 to 35 from other work: three runs of
