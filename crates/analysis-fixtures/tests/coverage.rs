@@ -92,6 +92,7 @@ const FEATURES: &[&str] = &[
     "rule-breaks",
     "shared-cause",
     "unclaimed",
+    "unbacked",
     "served-issues",
     "since-last-analysis",
     "chapters",
@@ -163,6 +164,8 @@ fn features(a: &Analysis, pr: &PinnedPr, later: bool) -> BTreeSet<&'static str> 
     }
     add("shared-cause", causes.values().any(|n| *n >= 2));
     add("unclaimed", !a.unclaimed.is_empty());
+    // The fallback: no purpose could be backed, and `unbacked` says why.
+    add("unbacked", a.unbacked.is_some());
     // Served issues: a purpose drawing on an issue the run served (`pr.json`'s `issues`, the
     // ones the PR links), through a claim quoting it in its walk, its parts or lines, or its
     // rules' sources.
