@@ -1,10 +1,14 @@
 // The purpose view (#183) in a real browser: the panel's walkthrough at the PR, a purpose, a
-// sub-purpose, a part and a line, with its source chips and "Stated, not found in code"; Rules it
-// sets; conflict cards, opening a row, a shared cause's card and hovering one; the canvas's fold
-// plan for the PR and a purpose (dots, "N of M parts serve it", the purpose's own lines strong in
-// its colour, rest blocks, groups, Back and Start over over the plan), within 16 blocks on the 3×
-// tiled analysis; Outside the diff; Code view at a part and back; the unclaimed parts; the
-// fallback; and both themes' purpose colours.
+// sub-purpose, a part and a line, with its source chips (an issue's `#N` too) and "Stated, not
+// found in code"; Rules it sets; conflict cards, opening a row, a shared cause's card and hovering
+// one, and nothing left lit once the selection moves; the canvas's fold plan for the PR and a
+// purpose (dots, "N of M parts serve it", the purpose's own lines strong in its colour, rest
+// blocks, groups, Back and Start over over the plan, the same plan after a reload), within 16
+// blocks on the 3× tiled analysis at the PR and every purpose; a line between two closed blocks
+// whose parts that serve nothing meet; picks of parts the fold doesn't draw; Outside the diff,
+// within the budget; Code view at a part and back; Show it under the fold; the unclaimed parts;
+// the fallback; both themes' purpose colours and the panel's and canvas's tokens; and the
+// server's claim stubs against the ones the cases are served with.
 //
 // tomsj's analysis of #191 is the recorded v2 (`./dev-ctl start` and `reset` upload it); v1 and
 // the hand-written cases (fixtures/pr-view/cases/) are served as that graph on the way in
@@ -16,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { committed, serve } from "./analyses";
+import { committed, serve, serveNewer, stub } from "./analyses";
 import { devCtl } from "./stack";
 
 type Json = Record<string, any>;
@@ -77,7 +81,16 @@ async function backgroundPoint(page: Page): Promise<{ x: number; y: number }> {
 }
 
 /** The computed colour of `prop` on `l`. */
-const colourOf = (l: Locator, prop: "backgroundColor" | "stroke") => l.evaluate((el, p) => getComputedStyle(el)[p as "stroke"], prop);
+const colourOf = (l: Locator, prop: "backgroundColor" | "stroke" | "color" | "borderTopColor") => l.evaluate((el, p) => getComputedStyle(el)[p as "stroke"], prop);
+/** The drawn line between two blocks of one scope (its ID is its two ends, in order). */
+const lineBetween = (page: Page, a: string, b: string) => viewport(page).locator(`[data-perf="canvas-line"][data-line="${attr(JSON.stringify([a, b].sort()))}"]`);
+/** Every drawn line's analysis lines. */
+const drawnMembers = (page: Page) => viewport(page).locator('[data-perf="canvas-line"]').evaluateAll((els) => els.flatMap((e) => (e as HTMLElement).dataset.members!.split(" ")));
+/** Each drawn block and frame, with where it's drawn, in the drawing's order. */
+const drawing = (page: Page) =>
+  viewport(page)
+    .locator("[data-item]:not([hidden] *)")
+    .evaluateAll((els) => els.map((e) => `${(e as HTMLElement).dataset.item}@${(e as HTMLElement).style.getPropertyValue("--x")},${(e as HTMLElement).style.getPropertyValue("--y")}`));
 
 /** "N of M parts serve(s) it/a purpose/no purpose", as a block's face says it. */
 const serveWords = (n: number, total: number, verb: string) => `${n} of ${total} ${total === 1 ? "part" : "parts"} ${n === 1 ? verb.replace(/^serve/, "serves") : verb}`;
@@ -97,7 +110,9 @@ test("The PR's walkthrough: its top, the walk with its chips and Stated, not fou
   // A claim behind it rests on the description alone.
   const stated = text.locator('[data-perf="stated"]');
   await expect(stated).toHaveText("Stated, not found in code");
+  // Hidden, it takes no room.
   await expect(p.locator('[data-perf="stated-why"]')).toBeHidden();
+  expect(await p.locator('[data-perf="stated-why"]').boundingBox()).toBeNull();
   await stated.hover();
   await expect(p.locator('[data-perf="stated-why"]')).toHaveText("The description or an issue says so; the analysis found no code that shows it.");
   // The PR chip opens each quote with the claim it backs; the code chip, the claims with their lines.
@@ -129,6 +144,8 @@ test("The PR's walkthrough: its top, the walk with its chips and Stated, not fou
   await page.goBack();
   await expect.poll(() => selOf(page)).toBeNull();
 
+  await expect(page.locator('[data-perf="legend-row"][data-row="line:carried"]')).toContainText("Strong: a purpose's own lines");
+  await expect(page.locator('[data-perf="legend-row"][data-row="line:faint"]')).toContainText("Faint: lines no purpose follows");
   await expect(p.locator('[data-perf="to-unclaimed"]')).toHaveText(`${V2.unclaimed.length} changed parts serve no purpose ›`);
   // v2 has no conflicts.
   await expect(p.locator('[data-perf="conflicts"]')).toHaveCount(0);
@@ -167,6 +184,10 @@ test("A purpose's fold: its blocks within 16, how much of each serves it, the do
   expect(await rest.evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe("dashed");
   await rest.dispatchEvent("dblclick");
   await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
+  // A rest block carries the dots of the purposes its parts serve: other purposes', never this one's.
+  const restDots = await viewport(page).locator('[data-perf="rest"]:not([hidden] *)').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.dots ?? ""));
+  expect(restDots.some((d) => d !== "")).toBe(true);
+  for (const d of restDots) expect(d.split(" ")).not.toContain(at.id);
 
   // Its own lines strong in its colour, the rest faint; no line between two rest blocks.
   const carried = new Set(V2.purposes.filter((q: Json) => q.id === at.id || q.parent === at.id).flatMap((q: Json) => q.carries.map((c: Json) => c.edge)));
@@ -286,6 +307,15 @@ test("A part's walkthrough: its purposes by top-level purpose, What it now does,
     const role = served[i].serves.find((s: Json) => s.node.startsWith(`${n.id}.`));
     await expect(groups.nth(i).locator('[data-perf="role"]').first()).toContainText(`${role.role} (through ${nodeOf(V2, role.node).name})`);
   }
+  // A row lit while hovered, then gone with its place: nothing stays lit.
+  await groups.first().hover();
+  await expect(viewport(page).locator('[data-focus="lit"]').first()).toBeVisible();
+  await groups.first().locator("button").first().click();
+  await expect.poll(() => selOf(page)).toBe(served[0].id);
+  await page.mouse.move(4, 4);
+  await expect(viewport(page).locator("[data-focus]")).toHaveCount(0);
+  await page.goBack();
+  await expect.poll(() => selOf(page)).toBe(`part:${n.id}`);
   await expect(p.locator('[data-perf="now-does"]')).toContainText(n.changeSummary);
   const kids = V2.nodes.filter((x: Json) => x.parent === n.id);
   await expect(p.locator('[data-perf="walk-next"] h3')).toHaveText("Inside it");
@@ -365,7 +395,10 @@ test("v1's walkthrough: How it's built, the journey's stops, a sub-purpose's tra
 
 test("Rules it sets, a broken rule's conflict, code outside the diff, and Outside the diff on the canvas", async ({ context }) => {
   const page = await signIn(context);
-  const a = await serve(page, "conflict-purpose-outside");
+  // 37 more break sites than the card lists.
+  const a = await serve(page, "conflict-purpose-outside", (x) => {
+    for (const k of x.conflicts) for (const side of [k.a, k.b]) if (side.sites) side.sites.more = 37;
+  });
   const sub = a.purposes.find((x: Json) => x.parent && x.rules?.some((r: Json) => r.checked.breaks > 0));
   const rule = sub.rules.find((r: Json) => r.checked.breaks > 0);
   const k = a.conflicts.find((c: Json) => c.rule === rule.id);
@@ -381,10 +414,17 @@ test("Rules it sets, a broken rule's conflict, code outside the diff, and Outsid
   // A rule that holds gets its row too.
   const parent = a.purposes.find((x: Json) => x.id === sub.parent);
   const held = parent.rules.find((r: Json) => r.checked.breaks === 0 && r.checked.holds === r.checked.found);
-  // Outside the diff: the part the conflict reaches that no purpose names, in its own frame.
+  // Outside the diff: the part the conflict reaches that no purpose names, in a column of its own,
+  // its title whole, right of the others.
   const outside = k.touches.nodes.filter((n: Json) => !a.purposes.some((q: Json) => q.serves.some((s: Json) => s.node === n)));
   expect(outside.length).toBeGreaterThan(0);
-  await expect(item(page, "fold-outside").locator('[data-perf="frame-title"]')).toHaveText("Outside the diff: only through a conflict");
+  const column = item(page, "column:conflict");
+  await expect(column).toHaveAttribute("data-perf", "outside-frame");
+  const title = column.locator('[data-perf="frame-title"]').first();
+  await expect(title).toHaveText("▾ Outside the diff: only through a conflict");
+  expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)).toBe(true);
+  const right = async (id: string) => (await item(page, id).boundingBox())!;
+  for (const c of ["column:changed", "column:unchanged"]) if (await item(page, c).count()) expect((await right(c)).x + (await right(c)).width).toBeLessThan((await right("column:conflict")).x);
   for (const n of outside) {
     const b = item(page, `fold-out:${n}`);
     await expect(b).toContainText(`unchanged · ⚠ ${k.question}`);
@@ -406,6 +446,8 @@ test("Rules it sets, a broken rule's conflict, code outside the diff, and Outsid
   await expect(detail.locator('[data-perf="conflict-text"]')).toHaveText(outsideSide.text);
   if (outsideSide.sites) {
     await expect(detail.locator('[data-perf="conflict-sites"] [data-perf="claim"]')).toHaveCount(outsideSide.sites.claims.length);
+    // The header counts every site, not just those listed.
+    await expect(detail.locator('[data-perf="conflict-sites-count"]')).toHaveText(`${outsideSide.sites.claims.length + 37} sites where it breaks: the first ${outsideSide.sites.claims.length}`);
     if (outsideSide.sites.more) await expect(detail.locator('[data-perf="conflict-more"]')).toHaveText(`and ${outsideSide.sites.more} more`);
     await expect(detail.locator('[data-perf="conflict-search"]')).toHaveText(`Found by: ${c.searched}`);
   }
@@ -469,6 +511,199 @@ test("Purpose vs purpose: both rows name a purpose with its dot", async ({ conte
   await expect(card.locator('[data-perf="conflict-who"] [data-perf="purpose-dot"]')).toHaveCount(2);
 });
 
+test("A line between two closed blocks that serve the place is drawn, though only parts inside them that serve nothing meet", async ({ context }) => {
+  const page = await signIn(context);
+  // A purpose served by one part inside each of two top-level parts; the lines between those two
+  // run only between their other parts.
+  const [P, Q] = ["crates-control-db", "crates-server"];
+  const members = [`${P}.migrations`, `${Q}.tests`];
+  const q = tops[0];
+  await serve(page, "v2", (a) => {
+    a.purposes = [{ ...a.purposes.find((x: Json) => x.id === q.id), serves: members.map((node) => ({ node, role: "e2e", claims: [] })), carries: [], stops: [], rules: [] }];
+    a.conflicts = [];
+    a.causes = [];
+  });
+  const inside = (id: string, top: string) => id.startsWith(`${top}.`);
+  const across = V2.edges.filter((e: Json) => [e.from, e.to].some((x) => inside(x, P)) && [e.from, e.to].some((x) => inside(x, Q))).map((e: Json) => e.id as string);
+  expect(across.length).toBeGreaterThan(0);
+  expect(V2.edges.filter((e: Json) => across.includes(e.id)).some((e: Json) => members.includes(e.from) || members.includes(e.to))).toBe(false);
+  await open(page, `?sel=${q.id}`, { fit: true });
+  // The plan opens both: those lines run between their rest blocks, and are dropped.
+  await expect(item(page, P)).toHaveAttribute("data-perf", "frame");
+  await expect(item(page, Q)).toHaveAttribute("data-perf", "frame");
+  expect((await drawnMembers(page)).filter((x) => across.includes(x))).toEqual([]);
+  // P folded: from it to Q's rest block.
+  await item(page, P).locator('[data-perf="frame-title"]').first().click();
+  await settled(page);
+  await expect(item(page, P)).toHaveAttribute("data-perf", "block");
+  expect([...new Set((await drawnMembers(page)).filter((x) => across.includes(x)))].sort()).toEqual([...across].sort());
+  // Both folded: between the two blocks.
+  await item(page, Q).locator('[data-perf="frame-title"]').first().click();
+  await settled(page);
+  await expect(lineBetween(page, P, Q)).toHaveCount(1);
+  expect((await lineBetween(page, P, Q).getAttribute("data-members"))!.split(" ").sort()).toEqual([...across].sort());
+});
+
+test("A pick of a part the fold draws only inside a rest block or a closed block opens the fold down to it; one it can't draw goes to the code view", async ({ context }) => {
+  const page = await signIn(context);
+  // A cold link to a part in the PR's fold's rest block: pulled out of it, a block of its own, one Back step.
+  const none = V2.nodes.find((x: Json) => x.parent === "system" && x.change === "unchanged" && x.kind === "library");
+  await open(page, `?sel=part:${none.id}`);
+  await settled(page);
+  await expect(item(page, none.id)).toHaveAttribute("data-perf", "block");
+  await expect(item(page, none.id)).toHaveAttribute("data-selected", "");
+  await expect(page.locator('[data-perf="canvas-undoes"]')).toContainText(`undoes: opened down to ${none.name}`);
+  await page.locator('[data-perf="canvas-back"]').click();
+  await settled(page);
+  await expect(item(page, none.id)).toHaveCount(0);
+
+  // The next level: a part the fold leaves inside a block it draws.
+  await open(page);
+  await settled(page);
+  const drawn = new Set(await viewport(page).locator("[data-item]:not([hidden] *)").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item!)));
+  const picked = V2.nodes.find((x: Json) => x.parent !== "system" && drawn.has(x.parent) && !drawn.has(x.id));
+  expect(picked).toBeDefined();
+  await open(page, `?sel=part:${picked.parent}`);
+  await settled(page);
+  await expect(item(page, picked.id)).toHaveCount(0);
+  const kids = V2.nodes.filter((x: Json) => x.parent === picked.parent);
+  await panel(page).locator('[data-perf="walk-next"] [data-perf="next-row"]').nth(kids.indexOf(picked)).click();
+  await expect.poll(() => selOf(page)).toBe(`part:${picked.id}`);
+  await settled(page);
+  await expect(item(page, picked.id)).toHaveAttribute("data-selected", "");
+  await expect(page.locator('[data-perf="fold-trail"]')).toHaveText("All purposes");
+});
+
+test("Outside the diff stays within the budget: 29 parts only a conflict reaches, its first ones, then and N more, which a pick can't open", async ({ context }) => {
+  const page = await signIn(context);
+  // 28 more parts like `bench` that the conflict touches, ahead of the case's two.
+  const a = await serve(page, "conflict-purpose-outside", (x) => {
+    const bench = x.nodes.find((nd: Json) => nd.id === "bench");
+    const clones = Array.from({ length: 28 }, (_, i) => ({ ...bench, id: `bench-${i + 2}`, name: `bench ${i + 2}` }));
+    x.nodes.push(...clones);
+    const k = x.conflicts[0];
+    k.touches.nodes = [...clones.map((c) => c.id), ...k.touches.nodes];
+  });
+  // Those no purpose names: the 28, and `bench`.
+  const outside = (a.conflicts[0].touches.nodes as string[]).filter((n) => !a.purposes.some((q: Json) => q.serves.some((s: Json) => s.node === n)));
+  expect(outside).toHaveLength(29);
+  for (const at of ["", `?sel=${a.conflicts[0].touches.purposes[0]}`]) {
+    await open(page, at, { fit: true });
+    expect((await blockIds(page)).length, at).toBeLessThanOrEqual(16);
+    const shown = await viewport(page).locator('[data-perf="outside-block"]:not([hidden] *)').count();
+    expect(shown).toBeGreaterThan(0);
+    const more = item(page, "fold-out-more");
+    await expect(more.locator('[data-perf="face-name"]')).toHaveText(`and ${outside.length - shown} more`);
+    await expect(more).toHaveAttribute("data-perf", "rest");
+    // In reading order: the first ones each a block.
+    for (const id of outside.slice(0, shown)) await expect(item(page, `fold-out:${id}`)).toHaveCount(1);
+  }
+  // `bench`, last, is in "and N more": a pick of it goes to the code view at it (a part with no
+  // lines, in the grid layout A shows when asked).
+  const cut = outside.at(-1)!;
+  expect(cut).toBe("bench");
+  await open(page, `?sel=part:${cut}`);
+  await settled(page);
+  await expect(page.locator('[data-perf="back-to-fold"]')).toBeVisible();
+  await expect(viewport(page).locator("[data-serve]")).toHaveCount(0);
+  await page.locator('[data-perf="show-lonely"]').click();
+  await expect(item(page, cut)).toHaveAttribute("data-selected", "");
+});
+
+test("Show it under the fold: the newer analysis's plan for the place, the reader's own opens kept, a fresh Back history", async ({ context }) => {
+  const page = await signIn(context);
+  const v1 = await serveNewer(page, "v1");
+  const at = "purpose:analysis-run";
+  const q1 = v1.purposes.find((x: Json) => x.id === at);
+  await open(page, `?sel=${at}`, { fit: true });
+  const pill = page.locator('[data-perf="newer"]');
+  await expect(pill).toHaveText(/A newer analysis is ready\s*Show it/);
+  // An open of the reader's own, of a part v1's purpose has members inside.
+  const members1 = V2.purposes.filter((x: Json) => x.id === at || x.parent === at).flatMap((x: Json) => x.serves.map((s: Json) => s.node)) as string[];
+  const v1members = v1.purposes.filter((x: Json) => x.id === at || x.parent === at).flatMap((x: Json) => x.serves.map((s: Json) => s.node)) as string[];
+  const holds = (id: string, ms: string[]) => ms.some((m) => m !== id && m.startsWith(`${id}.`));
+  const candidates = await viewport(page).locator('[data-perf="block"]:not([hidden] *)', { hasText: "double-click ▸" }).evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item!));
+  const opened = candidates.find((id) => holds(id, members1) && holds(id, v1members));
+  expect(opened).toBeDefined();
+  await item(page, opened!).dblclick();
+  await settled(page);
+  await expect(item(page, opened!)).toHaveAttribute("data-perf", "frame");
+  await expect(page.locator('[data-perf="canvas-back"]')).toBeEnabled();
+
+  await pill.getByRole("button", { name: "Show it" }).click();
+  await expect(page.locator('[data-perf="view-body"]')).toHaveAttribute("data-analysis", "e2e-newer-v1");
+  await settled(page);
+  await expect(page.locator('[data-perf="fold-trail"]')).toHaveText(`All purposes › ${q1.name}`);
+  await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
+  await expect(item(page, opened!)).toHaveAttribute("data-perf", "frame");
+  // Every block is v1's, each holding a member of v1's purpose.
+  for (const b of await viewport(page).locator('[data-perf="block"]:not([hidden] *)').all()) {
+    const id = (await b.getAttribute("data-item"))!;
+    expect(v1.nodes.some((x: Json) => x.id === id), id).toBe(true);
+    expect(Number((await b.getAttribute("data-serve"))!.split("/")[0]), id).toBeGreaterThan(0);
+  }
+  // Start over: v1's plan, within 16, with nothing of the reader's.
+  await page.locator('[data-perf="canvas-start-over"]').click();
+  await settled(page);
+  await expect(page.locator('[data-perf="canvas-start-over"]')).toBeDisabled();
+  expect((await blockIds(page)).length).toBeLessThanOrEqual(16);
+});
+
+test("Show it onto an analysis with no backed purpose: the canvas goes to layout A", async ({ context }) => {
+  const page = await signIn(context);
+  await serveNewer(page, "unbacked");
+  await open(page, "", { fit: true });
+  await expect(page.locator('[data-perf="fold-bar"]')).toBeVisible();
+  await expect(viewport(page).locator("[data-serve]").first()).toBeVisible();
+  await page.locator('[data-perf="newer"]').getByRole("button", { name: "Show it" }).click();
+  await expect(page.locator('[data-perf="view-body"]')).toHaveAttribute("data-analysis", "e2e-newer-unbacked");
+  await settled(page);
+  await expect(page.locator('[data-perf="fold-bar"]')).toHaveCount(0);
+  await expect(viewport(page).locator("[data-serve]")).toHaveCount(0);
+  await expect(viewport(page).locator("[data-fold]")).toHaveCount(0);
+  await expect(page.locator('[data-perf="canvas-back"]')).toBeDisabled();
+  await expect(panel(page).locator('[data-perf="unbacked"]')).toBeVisible();
+});
+
+test("A walk whose claims quote an issue: its #N chip, which opens the quotes", async ({ context }) => {
+  const page = await signIn(context);
+  const v1 = await serve(page, "v1");
+  const n = v1.nodes.find((x: Json) => x.id === "top-level-files");
+  await open(page, `?sel=part:${n.id}`);
+  const text = panel(page).locator('[data-perf="walk-text"]');
+  const ev = n.walk.claims.flatMap((id: string) => claimOf(v1, id).evidence) as Json[];
+  const issues = ev.filter((e) => e.kind === "issue");
+  expect(issues.length).toBeGreaterThan(0);
+  const code = ev.filter((e) => e.kind === "code").length;
+  await expect(text.locator('[data-perf="source-chip"]')).toHaveText([`#${issues[0].number}`, `code ×${code}`]);
+  await text.locator(`[data-chip="issue:${issues[0].repo}#${issues[0].number}"]`).click();
+  const quote = panel(page).locator('[data-perf="source-box"][data-kind="issue"] [data-perf="source-quote"]');
+  await expect(quote).toHaveCount(issues.length);
+  await expect(quote.first()).toContainText(issues[0].quote.trim().slice(0, 30));
+});
+
+test("The plan is made the same way every time: after a reload, the same blocks in the same order and places", async ({ context }) => {
+  const page = await signIn(context);
+  for (const at of ["", `?sel=${tops[1].id}`]) {
+    await open(page, at);
+    await settled(page);
+    const before = await drawing(page);
+    expect(before.length).toBeGreaterThan(0);
+    await page.reload();
+    await expect(viewport(page)).toHaveAttribute("data-drawn", /.+/, { timeout: 30_000 });
+    await settled(page);
+    expect(await drawing(page), at).toEqual(before);
+  }
+});
+
+test("The claim stubs the cases are served with are the server's own: v2's graph against stub over v2's claims", async ({ context }) => {
+  const page = await signIn(context);
+  // analyses.ts's `stub` repeats the server's split (crates/server/src/analyses/stored.rs): the
+  // stack's graph of the recorded v2 holds it to the server's answer.
+  const g = (await (await page.request.get("/api/AdvanGrid/beghu/pulls/191/analysis")).json()) as Json;
+  expect(g.analysis.claims).toEqual(V2.claims.map(stub));
+});
+
 test.describe("the 3× tiled analysis", () => {
   const TILE = "/AdvanGrid/beghu/pull/9003/view";
 
@@ -483,8 +718,9 @@ test.describe("the 3× tiled analysis", () => {
     expect(await groups.count()).toBeGreaterThan(0);
     const g = groups.first();
     await expect(g.locator('[data-perf="face-name"]')).toHaveText(/^(\S+ in )?\d+ (services|apps|libraries|modules|stores|outside systems|people)$/);
-    await expect(g).toContainText(/\d+ of \d+ parts serve a purpose/);
-    await expect(g).toContainText(/\S+ \d+( · \S+ \d+)*/);
+    // How much of it serves the place under its name, never on the top line its dots may cut short.
+    await expect(g.locator('[data-perf="face-bottom"]')).toHaveText(/^\d+ of \d+ parts serve a purpose$/);
+    await expect(g.locator('[data-perf="face-top"]')).toHaveText(/^\S+ \d+( · \S+ \d+)*$/);
     // A group is a group: its panel lists its parts.
     const gid = (await g.getAttribute("data-item"))!;
     await g.click();
@@ -508,9 +744,9 @@ test.describe("the 3× tiled analysis", () => {
     await settled(page);
     expect(await blockIds(page)).toEqual(plan);
 
-    // Each top-level purpose's own fold, within 16 too.
+    // Every top-level purpose's own fold, within 16 too.
     const tile = (await (await page.request.get("/api/AdvanGrid/beghu/pulls/9003/analysis")).json()) as Json;
-    for (const q of tile.analysis.purposes.filter((x: Json) => !x.parent).slice(0, 4)) {
+    for (const q of tile.analysis.purposes.filter((x: Json) => !x.parent)) {
       await open(page, `?sel=${q.id}`, { view: TILE });
       expect((await blockIds(page)).length, q.id).toBeLessThanOrEqual(16);
     }
@@ -544,12 +780,34 @@ test("The unclaimed parts: a history step, each with its reason, the canvas fold
 
 test("The fallback: unbacked leads the PR's panel with All changes unfolded, and the canvas starts in layout A", async ({ context }) => {
   const page = await signIn(context);
-  const a = await serve(page, "unbacked");
+  // With a conflict, so the order shows it.
+  const a = await serve(page, "unbacked", (x) => {
+    const at = x.nodes.find((n: Json) => n.kind !== "system").id;
+    x.conflicts = [
+      {
+        id: "conflict:e2e-fallback",
+        kind: "stated-code",
+        question: "Does the PR ship its analysis?",
+        a: { who: "description", says: "yes", text: "The description says the PR ships it.", claims: [] },
+        b: { who: "code", says: "no", text: "No code in the diff ships it.", claims: [] },
+        touches: { nodes: [at], edges: [], purposes: [] },
+      },
+    ];
+  });
   await open(page);
   const p = panel(page);
   await expect(p.locator('[data-perf="walk-kind"]')).toHaveText("The whole PR · no purposes");
+  // In order: the sentence (no walk), All changes unfolded, Conflicts, then the rest of the reference.
   await expect(p.locator('[data-perf="unbacked"]')).toHaveText(a.unbacked);
-  await expect(p.locator('[data-perf="walk-reference"] > details')).toHaveAttribute("open", "");
+  await expect(p.locator('[data-perf="walk-text"]')).toHaveCount(0);
+  const order = await p.locator('[data-perf="walk-pr"] > :is([data-perf="unbacked"], [data-perf="walk-reference"], [data-perf="conflicts"])').evaluateAll((els) =>
+    els.map((e) => ((e as HTMLElement).dataset.perf === "walk-reference" ? e.querySelector("summary")!.textContent : (e as HTMLElement).dataset.perf)),
+  );
+  expect(order).toEqual(["unbacked", "All changes, by kind", "conflicts", "The PR, coverage and the facets found"]);
+  await expect(p.locator('[data-perf="conflicts"] h3')).toHaveText(`Conflicts (${a.conflicts.length})`);
+  const refs = p.locator('[data-perf="walk-reference"] > details');
+  await expect(refs.first()).toHaveAttribute("open", "");
+  await expect(refs.nth(1)).not.toHaveAttribute("open", "");
   await expect(p.locator('[data-perf="rank-group"]')).toHaveCount(4);
   await expect(p.locator('[data-perf="walk-next"]')).toHaveCount(0);
   // Layout A: no fold bar and its hint, its parts with no lines (this case's lines are all build
@@ -562,15 +820,37 @@ test("The fallback: unbacked leads the PR's panel with All changes unfolded, and
   await expect(viewport(page).locator("[data-fold]")).toHaveCount(0);
 });
 
-test("Both themes: the purpose colours are their tokens' light and dark halves", async ({ context }) => {
+test("Both themes: the purpose colours, the walk, conflict cards and rest blocks take their tokens' light and dark halves", async ({ context }) => {
   const page = await signIn(context);
   const tokens = readFileSync(fileURLToPath(new URL("../src/tokens.stylex.ts", import.meta.url)), "utf8");
-  const pair = (i: number) => /light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\)/.exec(new RegExp(`purpose${i}: "([^"]+)"`).exec(tokens)![1]!)!.slice(1);
+  /** A token's light and dark halves, from its group (`colors`, `graph`) in tokens.stylex.ts. */
+  const token = (group: string, name: string) => {
+    const from = tokens.slice(tokens.indexOf(`export const ${group} =`));
+    return new RegExp(`\\n  ${name}: "light-dark\\((#[0-9a-f]{6}), (#[0-9a-f]{6})\\)"`).exec(from)!.slice(1);
+  };
   const rgb = (hex: string) => `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+  await serve(page, "shared-cause");
   for (const scheme of ["light", "dark"] as const) {
+    const half = scheme === "light" ? 0 : 1;
+    const is = async (l: Locator, prop: Parameters<typeof colourOf>[1], group: string, name: string) => expect(await colourOf(l, prop), `${scheme} ${group}.${name}`).toBe(rgb(token(group, name)[half]!));
     await page.emulateMedia({ colorScheme: scheme });
     await open(page);
     const dots = panel(page).locator('[data-perf="walk-next"] [data-perf="purpose-dot"]');
-    for (let i = 0; i < tops.length; i++) expect(await colourOf(dots.nth(i), "backgroundColor"), `${scheme} purpose${i}`).toBe(rgb(pair(i)[scheme === "light" ? 0 : 1]!));
+    const n = await dots.count();
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i++) await is(dots.nth(i), "backgroundColor", "graph", `purpose${i % 8}`);
+    // The walk: its paragraph, its chips, "Stated, not found in code".
+    await is(panel(page).locator('[data-perf="walk-text"]'), "color", "colors", "fg");
+    await is(panel(page).locator('[data-perf="source-chip"]').first(), "color", "colors", "muted");
+    const stated = panel(page).locator('[data-perf="stated"]');
+    if (await stated.count()) await is(stated, "color", "colors", "warn");
+    // A conflict card, and its question.
+    const card = panel(page).locator('[data-perf="conflicts"] article').first();
+    await is(card, "borderTopColor", "colors", "line");
+    await is(card.locator('[data-perf="conflict-question"]').first(), "color", "colors", "fg");
+    // A rest block: muted words on its fill.
+    const rest = viewport(page).locator('[data-perf="rest"]:not([hidden] *)').first();
+    await is(rest, "backgroundColor", "graph", "outsideFill");
+    await is(rest.locator('[data-perf="face-bottom"]'), "color", "colors", "muted");
   }
 });

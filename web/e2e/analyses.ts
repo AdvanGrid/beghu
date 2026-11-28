@@ -7,6 +7,10 @@
 // Each account takes #191's first analysis once per reset (./dev-ctl analyse), and the stack's
 // other accounts can't read the repo or belong to other specs, so the purpose view's cases reach
 // the browser this way (#183).
+//
+// `stub` repeats the server's split rather than calling it (the browser suite reaches the server
+// only over HTTP): purposes.spec.ts holds the two to one answer, the stack's own graph of the
+// recorded v2 against `stub` over v2's claims.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Page, Route } from "@playwright/test";
@@ -22,7 +26,7 @@ export function committed(name: string): Json {
 }
 
 /** A claim as the graph holds it (`split`'s stub). */
-function stub(c: Json): Json {
+export function stub(c: Json): Json {
   let code = 0, description = 0, issue = 0;
   const issues: string[] = [];
   for (const e of c.evidence as Json[]) {
@@ -54,5 +58,42 @@ export async function serve(page: Page, name: string, edit?: (a: Json) => void):
     await route.fulfill({ response: res, json: g });
   });
   await page.route(`**/api/AdvanGrid/beghu/pulls/191/analysis/*/v*/claims-${name}`, (route: Route) => route.fulfill({ json: { id: "case", version: a.version, claims } }));
+  return a;
+}
+
+/**
+ * Offers `name` as a newer analysis of #191 on `page` (from its next load): the PR's detail says
+ * one is ready, so the view shows its pill, and Show it reads the graph again and gets `name`
+ * (with `edit` applied), as the stack's split would serve it. Returns the analysis offered.
+ */
+export async function serveNewer(page: Page, name: string, edit?: (a: Json) => void): Promise<Json> {
+  const a = committed(name);
+  edit?.(a);
+  const claims = a.claims as Json[];
+  const id = `e2e-newer-${name}`;
+  let newer: number | undefined;
+  await page.route("**/api/at/AdvanGrid/beghu/191", async (route: Route) => {
+    const res = await route.fetch();
+    const d = (await res.json()) as Json;
+    if (d.pr?.analysis) {
+      newer ??= d.pr.analysis.createdAt + 1;
+      d.pr.analysis = { ...d.pr.analysis, id, createdAt: newer };
+    }
+    await route.fulfill({ response: res, json: d });
+  });
+  let reads = 0;
+  await page.route(GRAPH, async (route: Route) => {
+    const res = await route.fetch();
+    const g = (await res.json()) as Json;
+    // The first read is the analysis shown; Show it's is the newer one.
+    if (reads++ > 0) {
+      g.analysis = { ...a, claims: claims.map(stub) };
+      g.id = id;
+      g.createdAt = newer ?? g.createdAt + 1;
+      g.claimsUrl = `${g.claimsUrl}-${name}`;
+    }
+    await route.fulfill({ response: res, json: g });
+  });
+  await page.route(`**/api/AdvanGrid/beghu/pulls/191/analysis/*/v*/claims-${name}`, (route: Route) => route.fulfill({ json: { id, version: a.version, claims } }));
   return a;
 }
