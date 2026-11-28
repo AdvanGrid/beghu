@@ -486,6 +486,7 @@ export function Canvas() {
     for (const el of skinned) {
       el.querySelector(":scope > [data-skin]")?.remove();
       el.style.removeProperty("--bare");
+      el.style.removeProperty("--worn");
     }
     skinned.clear();
     tracks.clear();
@@ -1513,7 +1514,19 @@ const st = stylex.create({
   left: { borderLeftWidth: "var(--edge-w)", left: 0 },
   right: { borderRightWidth: "var(--edge-w)", right: 0 },
   middle: { height: "calc(100% - 2 * var(--r))", left: "var(--r)", top: "var(--r)", width: "calc(100% - 2 * var(--r))" },
-  stripes: { inset: 0, borderRadius: 7, overflow: "hidden", display: "flex", pointerEvents: "none", position: "absolute", },
+  // A block's stripes are at its own size: hidden while it wears a skin mid-glide (`--worn`), whose
+  // fill stands in, and faded back in as it lands (at once out, eased in).
+  stripes: {
+    inset: 0,
+    borderRadius: 7,
+    overflow: "hidden",
+    display: "flex",
+    opacity: "var(--worn, 1)",
+    pointerEvents: "none",
+    position: "absolute",
+    transitionDuration: "calc(var(--worn, 1) * 150ms)",
+    transitionProperty: "opacity",
+  },
   stripe: { flexBasis: 0, flexGrow: 1, borderTopStyle: "solid", borderTopWidth: 4, height: "100%", },
   stripeNone: { backgroundColor: graph.noValueFill, borderTopColor: graph.noValue },
   stripeMore: { backgroundColor: graph.noValueFill, color: colors.muted, fontSize: 10, fontWeight: 700, textAlign: "center", borderTopColor: graph.noValue, paddingTop: 50, },
