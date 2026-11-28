@@ -8,12 +8,12 @@
 // The fold (#183): while the panel stands on the whole PR, a purpose or the unclaimed parts, the
 // canvas draws that place's fold plan (fold.ts), made once per place and lens; its opens and
 // folds lay over the plan, Start over returns to it, and standing on another place starts afresh
-// (a fresh Back history). Picking a part, a line or anything else keeps the canvas as it is, and
-// opens nothing down to it. "Code view at ‹part›" (or a double-click on a part with nothing
-// inside) leaves the fold for layout A opened down to that part; "← Back to ‹place›" returns to
-// the fold as it was, as does picking that place in the panel (another place starts afresh).
-// It starts on the PR's fold when the analysis has purposes, else in layout A (the fallback,
-// `unbacked`); the order lens (slice 11) keeps its own drawing.
+// (a fresh Back history), as does another lens. Picking a part, a line or anything else keeps the
+// canvas as it is, and opens nothing down to it. "Code view at ‹part›" (or a double-click on a
+// part with nothing inside) leaves the fold for layout A opened down to that part; "← Back to
+// ‹place›" returns to the fold as it was, as does picking that place in the panel (another place
+// starts afresh). It starts on the PR's fold when the analysis has purposes, else in layout A
+// (the fallback, `unbacked`); the order lens (slice 11) keeps its own drawing.
 import { createContext, createEffect, createMemo, createSignal, untrack, useContext, type Accessor } from "solid-js";
 import type { Node } from "../../bindings/analysis";
 import { columnGroup } from "../layout/graph";
@@ -186,6 +186,18 @@ export function createCanvasStore(nav: Nav): CanvasStore {
         }
         left = undefined;
         switchTo({ kind: "fold", place: pl }, planState(planFor(pl).plan), []);
+      });
+    },
+  );
+
+  // Another lens under the fold: that lens's plan for the place, afresh (plans are per lens).
+  createEffect(
+    () => settings().lens,
+    (lens, was) => {
+      if (was === undefined || lens === was) return;
+      untrack(() => {
+        const md = mode();
+        if (md.kind === "fold") switchTo(md, planState(planFor(md.place).plan), []);
       });
     },
   );
