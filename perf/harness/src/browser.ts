@@ -590,6 +590,8 @@ export async function browserProbes(c: BrowserCtx): Promise<Probe[]> {
 const DRAWING_MS = 120_000;
 /** The canvas's glide (web/src/pr-view/canvas/Canvas.tsx `GLIDE_MS`), and a frame's margin. */
 const GLIDE_MS = 420;
+/** The block browser.pr-block-open(-3x) opens: beghu#191's analysis-wasm crate, in each tile's start view. */
+const OPENED = "crates-analysis-wasm";
 /** A long task, as the Long Tasks API reports one. */
 const LONG_TASK_MS = 50;
 
@@ -709,7 +711,8 @@ function prViewProbes(c: BrowserCtx): Probe[] {
   });
 
   // A double-click on a block to the frame its glide starts in (the clicked block's first click
-  // selects it), and the long tasks from the click to the glide's end.
+  // selects it), and the long tasks from the click to the glide's end. The block is OPENED, a
+  // top-level part of beghu#191's recording that every tile draws in the start view.
   for (const [name, which] of [
     ["browser.pr-block-open", "tiled-1x"],
     ["browser.pr-block-open-3x", "tiled-3x"],
@@ -724,17 +727,17 @@ function prViewProbes(c: BrowserCtx): Probe[] {
           await page.goto(viewOf(t));
           await page.evaluate((x) => window.__perf.arm(x), { kind: "drawing", analysis: t.analysis } as Check);
           await outcome(page, DRAWING_MS);
-          // The first block in view that opens: the same one each sample.
-          const target = await page.evaluate(() => {
+          // The same block each sample and each run, by its ID: a change to the start view can't
+          // change what's measured. It must be in view and open: if it isn't, the probe fails.
+          const target = await page.evaluate((id) => {
             const vp = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')!.getBoundingClientRect();
-            for (const el of document.querySelectorAll<HTMLElement>('[data-perf="block"]:not([data-grid])')) {
-              if (!(el.textContent ?? "").includes("double-click")) continue;
-              const r = el.getBoundingClientRect();
-              if (r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60) return { id: el.dataset.id!, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-            }
-            return undefined;
-          });
-          if (!target) throw new Error(`${name}: no block in view opens`);
+            const el = document.querySelector<HTMLElement>(`[data-perf="block"][data-id="${id}"]:not([data-grid])`);
+            if (!el || !(el.textContent ?? "").includes("double-click")) return `${id} isn't drawn as a block that opens`;
+            const r = el.getBoundingClientRect();
+            if (!(r.width > 0 && r.left >= vp.left && r.top >= vp.top && r.right <= vp.right && r.bottom <= vp.bottom - 60)) return `${id} isn't in view`;
+            return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }, OPENED);
+          if (typeof target === "string") throw new Error(`${name}: ${target}`);
           await sleep(QUIET_MS);
           const n = Number((await page.locator('[data-perf="canvas-viewport"]').getAttribute("data-glide")) ?? 0) + 1;
           const since = await page.evaluate(() => performance.now());

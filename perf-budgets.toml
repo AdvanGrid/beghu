@@ -388,26 +388,26 @@ measured = 0
 reason = "A revisit's bytes for the analysis, exact: the graph's body (revalidated against its ETag, no body sent) and the claims' (immutable, from the cache), as bodies on the wire. Each is listed with how it came."
 
 [gates."browser.pr-block-open.ms"]
-max = 162.7
-measured = 141.5
-reason = "A double-click on a top-level block of tiled-1x (crates-analysis-wasm since the start view shows the changed column's top left at 85%: the first in view that opens) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transform only, FLIP). Runs at load 15-25: 141.5, 142.9, 141.1 ms."
+max = 153.1
+measured = 133.1
+reason = "A double-click on tiled-1x's crates-analysis-wasm (pinned by ID in the probe, so a change to the start view can't change which block is measured; the probe fails if it isn't in view) to the frame its glide starts in (the viewport's data-glide), from the second click: the scene laid out from the last answer's anchors, the new frame's contents rendered, and the 420 ms glide begun (transforms and opacity only: plain FLIP for items that only move, a nine-piece skin for each item that changes size). The median of three runs +15%, at load 11-15: 119.6, 154.2, 133.1 ms (two more runs: 131.7, 134.5)."
 
 [gates."browser.pr-block-open.long-tasks"]
 max = 2
 measured = 2
 spec = 0
-reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from that double-click to the glide's end, the median over the samples: 2 in each of three runs on a dev host at load 15-25, set to that local median. CI measured 0 here before the glide went transform-only (FLIP: 0 long tasks, 42.4 ms, on 3955865). On the dev stack every long task falls before the glide's first frame (the pointer's arrival and the open's own layout and render, which browser.pr-block-open.ms times), none between the glide's start and its lines coming back: the glide adds none. The spec asks for none; CI's run is to confirm 0, then set max from it."
+reason = "Long tasks (over 50 ms, as the Long Tasks API reports them) from the pointer's arrival on that block to the glide's end, the median over the samples: 2 in each of five runs at load 11-15, set to that local median. CI measured 0 here on d8f4902. On the dev stack the open itself is one long task, from the double-click to the glide's first frame (the open's own layout and render, which browser.pr-block-open.ms times, the skins made in it); none falls between the glide's first frame and its lines coming back, so the glide adds none. The rest locally are the pointer's arrival and the first click's selection before it. The spec asks for none; CI's run is to confirm 0, then set max from it."
 
 [gates."browser.pr-block-open-3x.ms"]
-max = 308.0
-measured = 267.8
-reason = "The same double-click on tiled-3x's first block in view that opens (crates-analysis-wasm) to the frame its glide starts in: the 3x tile opens within this. Runs at load 15-25: 272.7, 253.6, 267.8 ms."
+max = 259.8
+measured = 225.9
+reason = "The same double-click on tiled-3x's crates-analysis-wasm (pinned by ID) to the frame its glide starts in: the 3x tile opens within this. The median of three runs +15%, at load 11-15: 200.5, 225.9, 237.6 ms (two more runs: 228.5, 246.7)."
 
 [gates."browser.pr-block-open-3x.long-tasks"]
-max = 2
-measured = 2
+max = 3
+measured = 3
 spec = 0
-reason = "Long tasks over 50 ms from the 3x double-click to the glide's end, the median over the samples: 2, 3 and 2 in three runs at load 15-25, set to the local median. CI measured 1 here before the glide went transform-only (FLIP, on 3955865: its open took 76.6 ms, itself one long task). As for browser.pr-block-open.long-tasks, the local ones fall before the glide's first frame, none during it. The spec asks for none; CI's run is to confirm, then set max from it."
+reason = "Long tasks over 50 ms from the pointer's arrival on the 3x block to the glide's end, the median over the samples: 3, 3 and 2 in three runs at load 11-15 (two more: 2 and 3), set to the local median, up from 2 (2, 3 and 2 when it was set, so a 3 was there before the skins). CI measured 1 here on d8f4902: the open's own layout and render before the glide, one long task. On the dev stack, timed against the glide in three opens of tiled-3x, the open is the only long task (213-294 ms, from the double-click to the glide's first frame) and none falls during the glide or at its end; the rest locally are the pointer's arrival (its hover card) and the first click's selection. The spec asks for none; CI's run is to confirm, then set max from it."
 
 [gates."browser.load.list-fetches"]
 max = 2
