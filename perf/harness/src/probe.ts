@@ -17,7 +17,11 @@ export type Check =
   | { kind: "more"; than: number }
   | { kind: "title"; id: number; text: string }
   | { kind: "detail"; id: number; comments: number }
-  | { kind: "comment"; text: string };
+  | { kind: "comment"; text: string }
+  /** The PR view's canvas has drawn the analysis (`data-drawn`), with blocks on it. */
+  | { kind: "drawing"; analysis?: string }
+  /** The canvas's glide `n` has started: the frame it starts in. */
+  | { kind: "glide"; n: number };
 
 declare global {
   interface Window {
@@ -79,6 +83,14 @@ export function probe(initial: Check | null): void {
     },
     comment(c: { text: string }) {
       return [...document.querySelectorAll('[data-perf="comment"]')].some((el) => (el.textContent ?? "").includes(c.text));
+    },
+    drawing(c: { analysis?: string }) {
+      const v = document.querySelector<HTMLElement>('[data-perf="canvas-viewport"][data-drawn]');
+      if (!v || (c.analysis !== undefined && v.dataset.drawn !== c.analysis)) return false;
+      return v.querySelector('[data-perf="block"]:not([hidden] *)') !== null;
+    },
+    glide(c: { n: number }) {
+      return document.querySelector<HTMLElement>('[data-perf="canvas-viewport"]')?.dataset.glide === String(c.n);
     },
   } as const;
 
