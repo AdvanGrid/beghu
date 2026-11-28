@@ -1096,7 +1096,7 @@ export function Canvas() {
         onKeyUp={onKeyUp}
         onBlur={() => setSpace(false)}
       >
-        <div class={WORLD} style={{ "--tx": `${view().x}px`, "--ty": `${view().y}px`, "--z": view().z }}>
+        <div class={gliding() ? WORLD_GLIDING : WORLD} style={{ "--tx": `${view().x}px`, "--ty": `${view().y}px`, "--z": view().z }}>
           <Show when={scene().grid}>
             {(g) => (
               <div class={GRID} style={{ "--x": `${g().x}px`, "--y": `${g().y}px`, "--w": `${g().w}px`, "--h": `${g().h}px` }} data-perf="no-lines-grid">
@@ -1353,7 +1353,7 @@ function LineLayer(props: {
               <path
                 d={rounded(l().route)}
                 ref={(x) => props.lineEls.set(id, (el = x))}
-                class={HIT}
+                class={props.gliding ? HIT_AWAY : HIT}
                 tabindex={props.stop[id] ? 0 : -1}
                 aria-label={lineLabel(l())}
                 data-line={id}
@@ -1369,7 +1369,7 @@ function LineLayer(props: {
         }}
       </For>
       <g aria-hidden="true">
-        <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>
+        <For each={c.scene().trunks}>{(t) => <path d={rounded(t.points)} class={props.gliding ? TRUNK_HIT_AWAY : TRUNK_HIT} stroke-width={t.width + 4} data-trunk={t.id} data-perf="trunk" />}</For>
       </g>
     </svg>
   );
@@ -1433,6 +1433,9 @@ const st = stylex.create({
     left: 0,
     top: 0,
   },
+  // Mid-glide nothing in the drawing takes the pointer: its items aren't drawn where they are, and
+  // its lines are away. A press there pans; a click lands on nothing.
+  worldGliding: { pointerEvents: "none" },
   // An item's border and fill are its look's custom properties (`--edge`, `--edge-w`, `--fill`,
   // `--r`; its border's style its skin inherits), so its skin's pieces draw the same mid-glide;
   // `--bare` (set while it wears one) hides its own.
@@ -1668,6 +1671,8 @@ const ln = stylex.create({
   },
   hit: { fill: "none", stroke: "transparent", strokeWidth: 10, cursor: "pointer", pointerEvents: "stroke", },
   trunkHit: { fill: "none", stroke: "transparent", strokeLinecap: "butt", cursor: "pointer", pointerEvents: "stroke", },
+  // Mid-glide the lines are away: they take no pointer.
+  away: { pointerEvents: "none" },
 });
 
 const LOOK_STYLE: Record<Look, stylex.StyleXStyles> = {
@@ -1772,4 +1777,6 @@ const HEAD = cxTable(8, (i) => [ln.head, !!(i & 1) && ln.headChanged, !!(i & 2) 
 const TRUNK = cxTable(8, (i) => [ln.trunk, !!(i & 1) && ln.trunkChanged, !!(i & 2) && ln.trunkLit, !!(i & 4) && ln.dimTrunk]);
 const COUNT = cxTable(2, (i) => [ln.count, !!i && ln.dim]);
 const HIT = cx(ln.hit);
+const HIT_AWAY = cx(ln.hit, ln.away);
 const TRUNK_HIT = cx(ln.trunkHit);
+const TRUNK_HIT_AWAY = cx(ln.trunkHit, ln.away);
