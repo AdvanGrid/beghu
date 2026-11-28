@@ -405,7 +405,7 @@ function InPurposes(props: { roles: Role[] }) {
                 onPointerEnter={() => c.light(purposeLight(p(), g.top))}
                 onPointerLeave={() => c.light(undefined)}
               >
-                <div>
+                <div {...stylex.attrs(s.roleHead)}>
                   <PurposeDot id={g.top} />
                   <button type="button" {...stylex.attrs(ui.pick, ui.pickAccent, s.strong)} onClick={() => nav.select({ kind: "purpose", ids: [g.top] })}>
                     {p().byId.get(g.top)?.name ?? g.top}
@@ -697,6 +697,7 @@ const s = stylex.create({
   breaks: { color: colors.danger, fontWeight: 600 },
   roles: { gap: 10 },
   role: { lineHeight: 1.45 },
+  roleHead: { alignItems: "baseline", display: "flex" },
   roleLine: { marginInlineStart: 14 },
   strong: { fontWeight: 650 },
   subRoles: { gap: 6, paddingInlineStart: 14, marginTop: 4, },
