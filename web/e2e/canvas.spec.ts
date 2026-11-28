@@ -681,8 +681,7 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   const b = (await block(page, next).boundingBox())!;
   expect(b.x + b.width / 2).toBeGreaterThan(a.x + a.width / 2);
   await expect.poll(active).toBe(next);
-  // Enter opens the selected block in place, and folds it again. (Escape first: a click on the
-  // selected block would open it.)
+  // Enter opens the selected block in place, and folds it again.
   await page.keyboard.press("Escape");
   await expect.poll(() => selOf(page)).toBeNull();
   await block(page, "crates-server").click();
@@ -695,8 +694,8 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   await expect(block(page, "crates-server")).toBeVisible();
   await expect(undoes(page)).toHaveText(`undoes: folded ${nodeOf("crates-server").name}`);
   // What a screen reader hears of a block: a button named by its face and how to open it, not
-  // expanded, current while selected. A click on it while it's selected opens it (a screen
-  // reader's browse mode sends Enter as a click), and the open frame is expanded.
+  // expanded, current while selected. A pointerless click on it while it's selected opens it (a
+  // screen reader's browse mode sends Enter as one), and the open frame is expanded.
   await expect.poll(active).toBe("crates-server");
   const server = page.locator('[data-perf="block"][data-id="crates-server"]');
   const attr = (l: Locator, name: string) => l.evaluate((el, name) => el.getAttribute(name), name);
@@ -706,7 +705,13 @@ test("The keyboard: Tab lands on the changed column, arrows select the nearest p
   await expect(server).toHaveAttribute("aria-label", `service · changed, ${nodeOf("crates-server").name}, has parts inside, Enter opens`);
   expect(await attr(server, "aria-pressed")).toBeNull();
   await expect(viewport(page)).toHaveAttribute("aria-label", "The PR's parts and lines: arrow keys move the selection, Enter opens or folds it, ] and [ step through its lines");
+  // A mouse click on the selected block only selects it; a click with no pointer behind it
+  // (detail 0, as a screen reader's browse mode sends Enter) opens it.
   await server.click();
+  await page.waitForTimeout(300);
+  await expect(page.locator('[data-perf="frame"][data-id="crates-server"]')).not.toBeVisible();
+  await expect(server).toHaveAttribute("aria-expanded", "false");
+  await server.dispatchEvent("click");
   const serverFrame = page.locator('[data-perf="frame"][data-id="crates-server"]');
   await expect(serverFrame).toBeVisible();
   await expect(undoes(page)).toHaveText(`undoes: opened ${nodeOf("crates-server").name}`);

@@ -802,9 +802,10 @@ export function Canvas() {
       c.fold(it.id);
       return;
     }
-    // A click on the selected block, when it opens, opens it, as Enter does: so a screen reader's
-    // browse mode, which sends Enter as a click, opens a block (the first click selects it).
-    if (untrack(selItems).has(it.id) && opensIn(m(), it)) {
+    // A click with no pointer behind it (detail 0: a screen reader's browse mode sends Enter as
+    // one) on the selected block opens it, as Enter does. A mouse click only ever selects; a
+    // double-click opens.
+    if (e.detail === 0 && untrack(selItems).has(it.id) && opensIn(m(), it)) {
       openOrFold(it);
       return;
     }
